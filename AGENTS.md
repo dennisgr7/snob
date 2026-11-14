@@ -376,7 +376,7 @@ with a documented reason in the same place.
   no argument for a credential, and the updater's (`update/github.rs`,
   `http::plain_download`: HTTPS to GitHub's release hosts only, every
   redirect held to them). The webhook follows no redirect, says
-  `User-Agent: snob`, refuses `http://` outside private networks, signs with
+  `User-Agent: snob/<version>`, refuses `http://` outside private networks, signs with
   `X-Snob-Signature: sha256=<hex>`, and its token and key live in the
   keyring, never in `watch.toml`. Retries are allowed there (it is the user's
   server), never against Instagram. What it is sent is `format` under

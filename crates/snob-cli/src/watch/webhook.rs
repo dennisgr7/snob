@@ -10,7 +10,7 @@
 //!
 //! Two smaller rules follow from the same place. Redirects are not followed at
 //! all — a 3xx is exactly how a body lands at a host nobody named — and the
-//! User-Agent says `snob`, because claiming to be a browser to the user's own
+//! User-Agent says `snob/<version>`, because claiming to be a browser to the user's own
 //! server would be a lie told for no reason and would leak which browser they
 //! have.
 
