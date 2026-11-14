@@ -286,37 +286,16 @@ pub(crate) async fn save_named(
     // with its rename.
     sweep_stale_parts(dir, stem);
     let part = dir.join(format!("{stem}.{}.part", std::process::id()));
-    let mut file = files::create_new(&part)?;
-    let downloaded = match client.download_to(url, cap, &mut file).await {
-        Ok(downloaded) => downloaded,
-        Err(e) => {
-            drop(file);
-            let _ = std::fs::remove_file(&part);
-            return Err(e.into());
-        }
-    };
+    let file = files::create_new(&part)?;
+    // Only once the file is this download's own: one found there is not.
+    let part = files::Part(part);
+    // Bound after `part`, so it is closed before `part` is removed.
+    let mut file = file;
+    let downloaded = client.download_to(url, cap, &mut file).await?;
     file.sync_all()
-        .with_context(|| format!("could not finish writing {}", part.display()))?;
+        .with_context(|| format!("could not finish writing {}", part.0.display()))?;
     drop(file);
-
-    // `default_name` answers a bare name and checks the directory only for a
-    // collision; joined here, or `-o somewhere` made the directory and the
-    // file landed in the working directory.
-    let name = match files::default_path(dir, stem, extension_of(&downloaded.head)) {
-        Ok(name) => name,
-        Err(e) => {
-            let _ = std::fs::remove_file(&part);
-            return Err(e);
-        }
-    };
-    let path = dir.join(name);
-    if let Err(e) = std::fs::rename(&part, &path) {
-        let _ = std::fs::remove_file(&part);
-        return Err(
-            anyhow::Error::new(e).context(format!("could not move into place {}", path.display()))
-        );
-    }
-    Ok(Saved::Now(path))
+    files::place_new(&part.0, dir, stem, extension_of(&downloaded.head)).map(Saved::Now)
 }
 
 /// Removes `.part` files for this stem that no live download can still own.
@@ -446,7 +425,10 @@ pub(crate) async fn save_file_saying(
         }
         sweep_stale_parts(dir, &file.stem);
         match joined(client, &file.stem, best, file.ffmpeg.as_deref(), dir).await {
-            Ok(part) => return Ok((place(&part, dir, &file.stem)?, None)),
+            Ok(part) => {
+                let placed = files::place_new(&part, dir, &file.stem, "mp4")?;
+                return Ok((Saved::Now(placed), None));
+            }
             // A stop, and a push-back: neither is a reason to go on to the
             // smaller file, which would be one more fetch after a refusal.
             Err(e) if stopped_the_run(&e) => return Err(e),
@@ -569,25 +551,6 @@ async fn fetch_track(client: &IgClient, url: &str, cap: usize, part: &Path) -> R
     client.download_track_to(url, cap, &mut file).await?;
     file.sync_all()
         .with_context(|| format!("could not finish writing {}", part.display()))
-}
-
-/// `part` moved into `dir` as `<stem>.mp4`.
-fn place(part: &Path, dir: &Path, stem: &str) -> Result<Saved> {
-    let name = match files::default_path(dir, stem, "mp4") {
-        Ok(name) => name,
-        Err(e) => {
-            let _ = std::fs::remove_file(part);
-            return Err(e);
-        }
-    };
-    let path = dir.join(name);
-    if let Err(e) = std::fs::rename(part, &path) {
-        let _ = std::fs::remove_file(part);
-        return Err(
-            anyhow::Error::new(e).context(format!("could not move into place {}", path.display()))
-        );
-    }
-    Ok(Saved::Now(path))
 }
 
 /// [`download_many`] for any set of files of the CDN, each under the name it
