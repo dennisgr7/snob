@@ -149,6 +149,21 @@ pub fn next_after<Tz: TimeZone>(
     now: Epoch,
     zone: &Tz,
 ) -> Option<Epoch> {
+    next_after_asked_since(schedule, last_run, None, now, zone)
+}
+
+/// [`next_after`], for a caller that has been asking since `asked_since`.
+///
+/// The one difference is the left edge of the look back when nothing has run
+/// on a calendar: the minute of `asked_since` rather than the minute of `now`.
+/// Everything else, the forward search included, is the same search.
+fn next_after_asked_since<Tz: TimeZone>(
+    schedule: &Schedule,
+    last_run: Option<Epoch>,
+    asked_since: Option<Epoch>,
+    now: Epoch,
+    zone: &Tz,
+) -> Option<Epoch> {
     // The floor. Counted from the previous run rather than from an absolute
     // grid: `--every 6h` started at 09:13 means 15:13, which is what people
     // mean by it.
@@ -247,10 +262,18 @@ pub fn next_after<Tz: TimeZone>(
     // is the moment, and everything after it is owed.
     //
     // With nothing ever run, the window is the minute `now` is in, so a first
-    // run started at 09:00:20 with `--at 09:00` is not a week late.
+    // run started at 09:00:20 with `--at 09:00` is not a week late. **Or it
+    // starts at the minute a timer first asked** (`asked_since`, see
+    // [`due_asked_since`]): a timer keeps nothing between two looks, so a
+    // window of one minute would only ever be met by a look that fell inside
+    // the very minute the calendar names. Never later than `now`, so a stored
+    // ask from a clock that was ahead narrows nothing.
     let earliest = match served {
         Some(moment) => moment.get().div_euclid(60) + 1,
-        None => now.get().div_euclid(60),
+        None => asked_since
+            .map_or(now, |asked| asked.min(now))
+            .get()
+            .div_euclid(60),
     };
     if floor <= now {
         let latest = now.get().div_euclid(60);
@@ -343,13 +366,52 @@ pub fn due<Tz: TimeZone>(
     now: Epoch,
     zone: &Tz,
 ) -> Due {
+    due_from(schedule, last_run, None, now, zone)
+}
+
+/// [`due`], asked by something that keeps nothing between two looks and has
+/// been looking since `asked_since`: a system timer running `snob watch once
+/// --when-due`.
+///
+/// **Only a calendar that has never run is answered differently.** The loop
+/// waits for the moment it computed, so it is there when the moment comes; a
+/// timer asks afresh every quarter of an hour, at whatever phase it was
+/// created with, and [`due`] alone counts a first run on a calendar as owed
+/// only within the minute the calendar names. `--at 09:00` under a task that
+/// looks at :07, :22, :37 and :52 would then never run. Here every minute the
+/// calendar names from the minute of `asked_since` to now is owed, so the look
+/// after the moment takes it. A moment before the first ask is not owed: the
+/// timer did not exist yet, and a schedule written at 09:05 for 09:00 means
+/// tomorrow, as it does for the loop.
+///
+/// With a run behind it, or with no calendar, this is [`due`]: the window then
+/// starts at the moment the last run served, which a timer reads back from the
+/// store.
+pub fn due_asked_since<Tz: TimeZone>(
+    schedule: &Schedule,
+    last_run: Option<Epoch>,
+    asked_since: Epoch,
+    now: Epoch,
+    zone: &Tz,
+) -> Due {
+    due_from(schedule, last_run, Some(asked_since), now, zone)
+}
+
+/// The body of [`due`] and [`due_asked_since`].
+fn due_from<Tz: TimeZone>(
+    schedule: &Schedule,
+    last_run: Option<Epoch>,
+    asked_since: Option<Epoch>,
+    now: Epoch,
+    zone: &Tz,
+) -> Due {
     // A clock that went backwards. The same reading `rate_budget` takes: trust
     // the present over a stored future, rather than refusing to run for however
     // long the skew was.
     let last_run = last_run.map(|last| last.min(now));
 
     // Nothing has run, and a floor with no past to measure from is now.
-    let Some(next) = next_after(schedule, last_run, now, zone) else {
+    let Some(next) = next_after_asked_since(schedule, last_run, asked_since, now, zone) else {
         // An impossible calendar. Never due, and the caller says so rather than
         // sleeping on a moment that will not come.
         return Due::Never;
@@ -996,6 +1058,69 @@ mod tests {
             due(&schedule, None, at(hours(9) + 60), &Utc),
             Due::At(at(hours(9) + 7 * 24 * 3_600)),
             "09:01 on a Monday is not 09:00 on a Monday"
+        );
+    }
+
+    /// A timer that first asked before a calendar's moment, and looks again
+    /// after it, runs at that look.
+    ///
+    /// The case of a scheduled task created at a phase of its own: it asks at
+    /// 08:50 and at 09:07, never at 09:00, and a first run of `--at 09:00`
+    /// would otherwise never be in the minute a look falls in.
+    #[test]
+    fn a_timer_that_first_asked_before_the_moment_runs_at_its_next_look() {
+        let schedule = Schedule::calendar(&[Weekday::Mon], &[(9, 0)]).unwrap();
+        let asked = at(hours(8) + 50 * 60);
+
+        assert_eq!(
+            due_asked_since(&schedule, None, asked, at(hours(9) + 7 * 60), &Utc),
+            Due::Now { missed: 0 },
+            "09:00 went by between the first look and this one"
+        );
+        // And `due` alone, which is what the loop asks, still says next week.
+        assert_eq!(
+            due(&schedule, None, at(hours(9) + 7 * 60), &Utc),
+            Due::At(at(hours(9) + 7 * 24 * 3_600)),
+        );
+    }
+
+    /// A timer that looks twice before the moment waits for it.
+    #[test]
+    fn a_timer_asking_before_the_moment_waits_for_it() {
+        let schedule = Schedule::calendar(&[Weekday::Mon], &[(9, 0)]).unwrap();
+        let asked = at(hours(8) + 50 * 60);
+
+        assert_eq!(
+            due_asked_since(&schedule, None, asked, at(hours(8) + 52 * 60), &Utc),
+            Due::At(at(hours(9))),
+        );
+    }
+
+    /// A moment that went by before the timer first asked is not owed: a
+    /// schedule written at 09:05 for 09:00 means the next 09:00, as it does
+    /// for the loop.
+    #[test]
+    fn a_moment_before_the_first_ask_is_not_owed() {
+        let schedule = Schedule::calendar(&[Weekday::Mon], &[(9, 0)]).unwrap();
+        let asked = at(hours(9) + 5 * 60);
+
+        assert_eq!(
+            due_asked_since(&schedule, None, asked, at(hours(9) + 7 * 60), &Utc),
+            Due::At(at(hours(9) + 7 * 24 * 3_600)),
+        );
+    }
+
+    /// With a run behind it, the first ask changes nothing: the window starts
+    /// at the moment the last run served.
+    #[test]
+    fn a_run_behind_the_timer_makes_the_first_ask_irrelevant() {
+        let schedule = Schedule::calendar(&[Weekday::Mon], &[(9, 0)]).unwrap();
+        let last = at(hours(9) + 30);
+        let now = at(hours(9) + 7 * 60);
+
+        assert_eq!(
+            due_asked_since(&schedule, Some(last), at(hours(8)), now, &Utc),
+            due(&schedule, Some(last), now, &Utc),
         );
     }
 

@@ -39,7 +39,7 @@ use calendar::{Calendar, Times};
 use next::next_local_midnight;
 use parse::{FieldSet, parse_cron};
 
-pub use next::{due, next_after, wake_at};
+pub use next::{due, due_asked_since, next_after, wake_at};
 pub use parse::{Weekday, parse_time};
 
 /// The shortest gap between two runs.

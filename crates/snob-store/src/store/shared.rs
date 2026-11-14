@@ -32,6 +32,13 @@ const KEPT: Duration = Duration::from_secs(2 * 24 * 3600);
 /// The `meta` key the interval seed is kept under.
 const INTERVAL_SEED: &str = "interval_seeded_at";
 
+/// The `meta` key under which `snob watch once --when-due` writes when a timer
+/// first asked it whether a run is due. What a calendar that has never run
+/// counts its owed moments from (`schedule::due_asked_since`): a timer keeps
+/// nothing between two looks, so without it a first run would be owed only
+/// within the very minute the calendar names.
+const ASKED_SINCE: &str = "monitor_asked_since";
+
 /// The `meta` key under which the monitor writes since when it has held a due
 /// run back for a critical battery. A row in an existing table rather than a
 /// column: it is one value for the machine, and it needs no migration.
@@ -137,6 +144,24 @@ impl Shared {
             params![INTERVAL_SEED, at.get().to_string()],
         )?;
         Ok(self.interval_seeded_at()?.unwrap_or(at))
+    }
+
+    /// Since when a timer has been asking whether a run is due, if one ever
+    /// asked.
+    pub fn asked_since(&self) -> Result<Option<Epoch>, StoreError> {
+        let at = super::meta_get(&self.conn, ASKED_SINCE)?;
+        Ok(at.and_then(|at| at.parse().ok()).map(Epoch::new))
+    }
+
+    /// Writes down that a timer asked at `at`, unless one already did, and
+    /// answers with the moment kept: the first ask is the one that counts, as
+    /// with [`Self::seed_interval`], and of two asks racing either is right.
+    pub fn ask_since(&self, at: Epoch) -> Result<Epoch, StoreError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
+            params![ASKED_SINCE, at.get().to_string()],
+        )?;
+        Ok(self.asked_since()?.unwrap_or(at))
     }
 
     /// The run that is due being held back for a critical battery; `None`
@@ -293,6 +318,22 @@ mod tests {
             shared.interval_seeded_at().unwrap(),
             Some(Epoch::new(1_000))
         );
+    }
+
+    #[test]
+    fn the_first_ask_of_a_timer_is_the_one_kept() {
+        let (_tmp, shared) = shared();
+        assert_eq!(shared.asked_since().unwrap(), None);
+        assert_eq!(
+            shared.ask_since(Epoch::new(1_000)).unwrap(),
+            Epoch::new(1_000)
+        );
+        assert_eq!(
+            shared.ask_since(Epoch::new(2_000)).unwrap(),
+            Epoch::new(1_000),
+            "a later look keeps the first"
+        );
+        assert_eq!(shared.asked_since().unwrap(), Some(Epoch::new(1_000)));
     }
 
     /// STRICT, like every table in the accounts' databases.

@@ -110,6 +110,12 @@ pub(super) async fn once(
 /// at most. The jitter is not rolled: the timer's own cadence already keeps
 /// runs off the second the grid names. Not due is said on standard error and
 /// costs nothing: no session is read and nothing is sent.
+///
+/// **A timer keeps nothing between two looks**, so the first look is written
+/// down (`Shared::ask_since`) and a calendar that has never run counts the
+/// moments it owes from it (`schedule::due_asked_since`). Asked only from the
+/// minute of `now`, `--at 09:00` under a task that looks at :07, :22, :37 and
+/// :52 would never be due.
 fn is_due(paths: &AppPaths, configured: Option<&config::WatchConfig>) -> Result<bool> {
     use snob_core::watch::schedule::{self, Due};
 
@@ -117,7 +123,8 @@ fn is_due(paths: &AppPaths, configured: Option<&config::WatchConfig>) -> Result<
         super::schedule::schedule_from(&crate::cli::WatchRunArgs::default(), configured)?;
     let now = snob_core::clock::now();
     let last_run = super::scheduled::seed_for(paths, &schedule, now)?;
-    match schedule::due(&schedule, last_run, now, &chrono::Local) {
+    let asked_since = snob_store::store::shared::Shared::open(paths)?.ask_since(now)?;
+    match schedule::due_asked_since(&schedule, last_run, asked_since, now, &chrono::Local) {
         Due::Now { .. } => Ok(true),
         Due::At(at) => {
             ui::info(&format!(

@@ -706,13 +706,25 @@ pub(super) enum NextRun {
 /// (`scheduled::seed_as_stored`, read and never written). Costs nothing:
 /// no session, no request. `None` when the file names no schedule that can
 /// be built, or one that never comes round, which `health` says.
+///
+/// Since when a timer has asked is read too, never written, so a calendar
+/// that has never run says what `watch once --when-due` would answer
+/// (`schedule::due_asked_since`) rather than a moment it would not keep.
 fn next_run(paths: &AppPaths, config: &WatchConfig, now: Epoch) -> Option<NextRun> {
     let schedule = schedule_from(&Default::default(), Some(config)).ok()?;
     let last_run = super::scheduled::seed_as_stored(paths, &schedule).ok()?;
     if last_run.is_none() && !schedule.is_on_a_calendar() {
         return config.every.map(NextRun::AfterFirstStart);
     }
-    match schedule::due(&schedule, last_run, now, &chrono::Local) {
+    let asked_since = snob_store::store::shared::Shared::read_existing(paths)
+        .ok()
+        .flatten()
+        .and_then(|shared| shared.asked_since().ok().flatten());
+    let due = match asked_since {
+        Some(asked) => schedule::due_asked_since(&schedule, last_run, asked, now, &chrono::Local),
+        None => schedule::due(&schedule, last_run, now, &chrono::Local),
+    };
+    match due {
         schedule::Due::At(at) => Some(NextRun::At(at)),
         schedule::Due::Now { .. } => Some(NextRun::Now),
         schedule::Due::Never => None,

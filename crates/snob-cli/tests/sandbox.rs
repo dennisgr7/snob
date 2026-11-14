@@ -857,6 +857,58 @@ async fn a_run_asked_for_before_it_is_due_sends_nothing() {
     );
 }
 
+/// A calendar that has never run is due at the timer's next look after its
+/// moment, not only within the minute it names.
+///
+/// A scheduled task looks at a phase of its own (`/MO 15` from whenever it was
+/// created), so its looks can miss the minute `at` names for ever. Since when
+/// the timer has been asking is written in `shared.db`, here half an hour
+/// before a moment that went by a quarter of an hour ago.
+#[tokio::test]
+async fn a_calendar_never_run_is_due_at_the_timers_next_look() {
+    use chrono::{Local, TimeZone, Timelike};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    log_in(tmp.path(), &instagram);
+
+    let now = snob_core::clock::now().get();
+    let moment = Local.timestamp_opt(now - 15 * 60, 0).unwrap();
+    configure(
+        tmp.path(),
+        &format!(
+            "schema = 2\nat = [\"{:02}:{:02}\"]\n",
+            moment.hour(),
+            moment.minute()
+        ),
+    );
+    let paths = snob_store::paths::AppPaths::rooted_at(tmp.path());
+    snob_store::store::shared::Shared::open(&paths)
+        .unwrap()
+        .ask_since(snob_core::Epoch::new(now - 45 * 60))
+        .unwrap();
+
+    let said = json(&snob(tmp.path(), None, &["watch", "status", "--json"]));
+    assert_eq!(said["next_run"]["due_now"], true, "{said}");
+
+    let out = snob(
+        tmp.path(),
+        Some(&instagram),
+        &["watch", "once", "--when-due"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("Not due yet"), "{}", stderr(&out));
+
+    // And having run, the moment is served: the next look waits for tomorrow.
+    let out = snob(
+        tmp.path(),
+        Some(&instagram),
+        &["watch", "once", "--when-due"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).contains("Not due yet"), "{}", stderr(&out));
+}
+
 /// A stranger's lists are not read on an answer nobody gave.
 ///
 /// The domain rule, asserted of the program rather than of a function: an
