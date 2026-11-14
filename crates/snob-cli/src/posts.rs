@@ -30,11 +30,9 @@ use snob_store::config::VideoQuality;
 
 use crate::exit::{ExitCode, ExitError};
 use crate::ffmpeg::{self, Ffmpeg};
-use crate::media::{
-    Best, Kind, Named, Saved, download_named, save_file, save_file_saying, save_file_to, save_named,
-};
-use crate::output;
-use crate::ui;
+use crate::files;
+use crate::host;
+use crate::media::{Best, Kind, Named, Saved, save_file_saying, save_named};
 
 /// Ceiling on one downloaded file of a post: 128 MiB.
 ///
@@ -299,7 +297,7 @@ impl Post {
         if self.taken_at == Epoch::default() {
             "-".to_string()
         } else {
-            crate::report::dated(self.taken_at)
+            crate::sentences::dated(self.taken_at)
         }
     }
 
@@ -358,7 +356,7 @@ impl Post {
     /// **Eleven characters of the code**, which are the post's pk
     /// ([`shortcode`]): a private account's post has a code of 39, and with a
     /// thirty-character name and the item's number the name would pass what
-    /// `output::default_path` accepts.
+    /// `files::default_path` accepts.
     pub fn stem(&self, index: usize) -> String {
         let code = self.code.get(..11).unwrap_or(&self.code);
         let base = format!("{}-{code}", printable(&self.owner));
@@ -455,7 +453,7 @@ impl Videos {
     pub(crate) fn prepare(&self, files: Vec<Named>) -> Vec<Named> {
         if matches!(self, Self::Compat { say_how: true }) && files.iter().any(|f| f.best.is_some())
         {
-            ui::info(&format!(
+            host::info(&format!(
                 "Videos are saved as the app's 720-wide file: with ffmpeg installed ({}), \
                  snob saves them at their best, joined into one MP4",
                 ffmpeg::how_to_install()
@@ -1132,9 +1130,9 @@ pub async fn comment_pages(client: &IgClient, post: &Post, pages: u32) -> Result
 async fn rest_before_a_page(client: &IgClient, of: &str) -> Result<bool> {
     Ok(client
         .rest_before_a_page(&Pace::default(), |left| {
-            ui::info(&format!(
+            host::info(&format!(
                 "Resting {} between sittings before the next page of {of}.",
-                crate::report::rest_left(left)
+                crate::sentences::rest_left(left)
             ));
         })
         .await?)
@@ -1188,49 +1186,6 @@ async fn keep_one(
 pub struct Kept {
     pub path: PathBuf,
     pub said: Option<String>,
-}
-
-/// Downloads `files` the way `-d` does: one file and `-o` names it; several,
-/// or none named, and they go into a directory (`-o`, or the working one)
-/// under their own names, three at a time, past the ones that fail.
-pub(crate) async fn download(
-    client: std::sync::Arc<IgClient>,
-    files: Vec<Named>,
-    destination: Option<&Path>,
-) -> Result<ExitCode> {
-    if destination.is_some_and(output::is_stdout) {
-        output::one_file_to_stdout(files.len())?;
-        let file = &files[0];
-        let url = file
-            .url
-            .as_deref()
-            .ok_or_else(|| anyhow!("{} has no downloadable version", file.what))?;
-        let mut sink = output::StdoutSink::default();
-        let streamed = client.download_to(url, file.cap, &mut sink).await;
-        sink.finish(streamed)?;
-        return Ok(ExitCode::Ok);
-    }
-    if let ([file], Some(path)) = (files.as_slice(), destination)
-        && !path.is_dir()
-    {
-        save_file_to(&client, file, path).await?;
-        ui::info(&format!("Saved {}", path.display()));
-        return Ok(ExitCode::Ok);
-    }
-    if files.len() == 1 && destination.is_none() {
-        let file = &files[0];
-        return match save_file(&client, file, Path::new(".")).await? {
-            Saved::Now(path) => {
-                ui::info(&format!("Saved {}", path.display()));
-                Ok(ExitCode::Ok)
-            }
-            Saved::Already(path) => {
-                ui::info(&format!("Already saved {}", path.display()));
-                Ok(ExitCode::Ok)
-            }
-        };
-    }
-    download_named(client, files, destination, "files").await
 }
 
 /// What a download told as a document stops at ([`save_telling`]): the bytes it
@@ -1514,19 +1469,6 @@ pub async fn fetched_item(
     Ok(path)
 }
 
-/// Hands item `index` of `post` to the system viewer, from `scratch`.
-pub async fn open_item(
-    client: &IgClient,
-    post: &Post,
-    index: usize,
-    scratch: &Path,
-    opened: &mut Opened,
-) -> Result<PathBuf> {
-    let path = fetched_item(client, post, index, scratch, opened).await?;
-    opener::open(&path).map_err(|e| anyhow!("the system viewer would not start: {e}"))?;
-    Ok(path)
-}
-
 /// Saves item `index` of `post` where the user works: the copy already fetched
 /// to look at, when there is one and it is what would be saved, and otherwise
 /// the CDN's.
@@ -1543,7 +1485,7 @@ pub async fn keep_item(
         && let Some(name) = seen.file_name()
     {
         let target = Path::new(".").join(name);
-        let mut out = output::create_new(&target)?;
+        let mut out = files::create_new(&target)?;
         let mut from = std::fs::File::open(&seen)?;
         std::io::copy(&mut from, &mut out)?;
         return Ok(Kept {

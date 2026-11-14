@@ -13,8 +13,8 @@ use snob_store::store::Store;
 use snob_store::store::rate_budget::SqliteRateBudget;
 
 use crate::engine::target;
+use crate::host::{Front, Progress, Wait};
 use crate::interrupt;
-use crate::progress::Progress;
 
 /// The account the run is acting as, when there is one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,10 +96,6 @@ pub use crate::interrupt::stop_when_stdin_closes;
 /// which watches only where a program drives the run (`parent`).
 pub use crate::interrupt::stop_when_parent_exits;
 
-/// `--progress-json`, the third: every progress stack this run builds says
-/// how its walks go in JSON lines rather than drawing a bar.
-pub use crate::progress::progress_json;
-
 /// `--spend-alone`, set once by `main` before any command runs.
 static SPEND_ALONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -134,7 +130,7 @@ pub fn pacer_saying_a_line(paths: &AccountPaths) -> Result<Pacer> {
     pacer(
         paths,
         Arc::new(|waited: std::time::Duration| {
-            crate::ui::info(&format!(
+            crate::host::info(&format!(
                 "The request budget is rationing; waiting {}.",
                 snob_core::duration::format(waited)
             ));
@@ -197,7 +193,8 @@ pub struct App {
     /// downloads. Everywhere else reads it through [`App::client`].
     client: Arc<IgClient>,
     db: Store,
-    progress: Progress,
+    progress: Arc<dyn Progress>,
+    ask: Arc<dyn crate::host::Ask>,
     consent_in_advance: ConsentInAdvance,
     viewer: Viewer,
     /// Where the other accounts are named, for [`App::held`].
@@ -233,13 +230,15 @@ impl App {
     ///
     /// **A session this computer no longer sends as is refused here**, with the
     /// no-session exit and a sentence that says so
-    /// (`commands::common::signed_out_here`): its account was signed out of
-    /// here since it was stored, which `owner::signed_out` asks again before
-    /// every request, the backstop for one signed out of while the run goes on.
+    /// (`sentences::signed_out_here`): its account was signed out of here
+    /// since it was stored, which `owner::signed_out` asks again before every
+    /// request, the backstop for one signed out of while the run goes on.
+    /// The run reports to and asks through what `front` makes, once the
+    /// session is known to be one it may send as.
     pub fn open(
         secrets: &SessionStore,
         paths: &AccountPaths,
-        with_progress: bool,
+        front: impl FnOnce() -> Front,
     ) -> Result<Option<Self>> {
         let Some(mut session) = secrets.load()? else {
             return Ok(None);
@@ -253,7 +252,7 @@ impl App {
             );
         }
         if crate::owner::signed_out(paths, &session) {
-            return Err(crate::commands::common::signed_out_here());
+            return Err(crate::sentences::signed_out_here());
         }
 
         // Before anything that could send a request: a run refused here has
@@ -281,23 +280,23 @@ impl App {
             pk: session.ds_user_id,
             username: session.username.clone(),
         };
-        crate::report::act_as(viewer.clone());
+        crate::sentences::act_as(viewer.clone());
 
         let db = Store::open(paths)?;
         // Retention, for the commands that are not the monitor.
         crate::engine::watch::settle_daily(&db);
-        let progress = Progress::new(with_progress);
+        let Front { progress, ask } = front();
         // Armed before the pacer opens the store and the budget, so a Ctrl+C
         // during those opens stops the run in order rather than killing it.
         interrupt::install();
 
         let pacer = pacer(paths, {
-            let progress = progress.clone();
+            let progress = Arc::clone(&progress);
             // `waiting` rather than `note`: the number counts down on the bar
             // instead of being frozen into the message at the moment the wait
             // began.
             Arc::new(move |waited: std::time::Duration| {
-                progress.waiting("the request budget is rationing", waited);
+                progress.waiting(Wait::Budget, waited);
             })
         })?;
 
@@ -305,6 +304,7 @@ impl App {
             client: Arc::new(IgClient::new(session, pacer)?),
             db,
             progress,
+            ask,
             viewer,
             app_paths: Some(AppPaths::clone(paths)),
             consented: None,
@@ -318,10 +318,12 @@ impl App {
     /// An app wired by hand, so the engine can be driven against a mock server.
     #[doc(hidden)]
     pub fn for_test(client: IgClient, db: Store, viewer: Viewer) -> Self {
+        let Front { progress, ask } = Front::quiet();
         Self {
             client: Arc::new(client),
             db,
-            progress: Progress::new(false),
+            progress,
+            ask,
             viewer,
             app_paths: None,
             consented: None,
@@ -343,8 +345,8 @@ impl App {
 
     /// The three pieces a walk needs at once: it reads through the client and
     /// writes through the store while both are borrowed.
-    pub fn parts(&mut self) -> (&IgClient, &mut Store, &Progress) {
-        (&self.client, &mut self.db, &self.progress)
+    pub fn parts(&mut self) -> (&IgClient, &mut Store, &dyn Progress) {
+        (&self.client, &mut self.db, &*self.progress)
     }
 
     pub fn db(&self) -> &Store {
@@ -357,8 +359,23 @@ impl App {
         &mut self.db
     }
 
-    pub fn progress(&self) -> &Progress {
+    pub fn progress(&self) -> &Arc<dyn Progress> {
         &self.progress
+    }
+
+    /// Whether somebody is there to answer the run's questions.
+    pub fn can_ask(&self) -> bool {
+        self.ask.can_ask()
+    }
+
+    /// A yes-or-no question whose answer, unless one is given, is no, asked
+    /// without holding an async worker while the person thinks about it.
+    pub async fn confirm(&self, question: String) -> Result<bool> {
+        use anyhow::Context as _;
+        let ask = Arc::clone(&self.ask);
+        tokio::task::spawn_blocking(move || ask.confirm(&question))
+            .await
+            .context("the question could not be asked")?
     }
 
     /// The token the client's pacer watches, so canceling it reaches a request.
@@ -464,6 +481,67 @@ impl App {
     }
 }
 
+/// How a client is named in the record of what it was told yes to: its name and
+/// version as it declared them, **through `printable`, then cut to letters,
+/// digits, spaces and `._/-`, and to 64 characters**.
+pub fn client_label(name: &str, version: &str) -> Option<String> {
+    let said = snob_core::model::printable(&format!("{name} {version}"));
+    let kept: String = said
+        .chars()
+        .filter(|&c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '_' | '/' | '-'))
+        .collect();
+    let kept: String = kept
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(64)
+        .collect();
+    let kept = kept.trim_end();
+    (!kept.is_empty()).then(|| kept.to_string())
+}
+
+/// The account's database and its request budget as they stand at `now`, read
+/// **writing nothing**: an account that has never sent anything is read over an
+/// empty database rather than having its file made, and a `shared.db` that
+/// cannot be read counts no brake.
+pub fn standing(
+    paths: &AccountPaths,
+    now: snob_core::EpochMs,
+) -> Result<(
+    snob_store::store::Store,
+    snob_store::store::rate_budget::BudgetState,
+)> {
+    use snob_store::store::Store;
+    use snob_store::store::shared::Shared;
+    let store = match Store::read_existing(paths)? {
+        Some(store) => store,
+        None => Store::in_memory()?,
+    };
+    let shared = Shared::read_existing(paths).unwrap_or_else(|e| {
+        tracing::debug!(error = %e, "shared.db could not be read; no brake is counted");
+        None
+    });
+    let budget = snob_store::store::rate_budget::state(store.conn(), shared.as_ref(), now)?;
+    Ok((store, budget))
+}
+
+/// The cooldown the account is in at `now`, if it is in one, out of its
+/// budget's state ([`standing`]), named as a run would name it
+/// (`App::held`).
+pub fn held_in(
+    budget: &snob_store::store::rate_budget::BudgetState,
+    paths: &AccountPaths,
+    now: snob_core::EpochMs,
+) -> Option<crate::app::Held> {
+    let until = budget.held_until(now)?;
+    Some(crate::app::held_by(
+        until,
+        budget.brake.as_ref(),
+        Some(&**paths),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{App, Viewer, target_label};
@@ -488,7 +566,7 @@ mod tests {
             )
             .unwrap();
 
-        let refused = App::open(&store, &other, false)
+        let refused = App::open(&store, &other, crate::host::Front::quiet)
             .err()
             .expect("another account's session is refused");
         assert!(refused.to_string().contains("account 42"), "{refused}");
@@ -517,7 +595,7 @@ mod tests {
             )
             .unwrap();
 
-        let refused = App::open(&store, &account, false)
+        let refused = App::open(&store, &account, crate::host::Front::quiet)
             .err()
             .expect("a session signed out of is refused");
         assert_eq!(

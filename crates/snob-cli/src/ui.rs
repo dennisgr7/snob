@@ -136,11 +136,11 @@ pub fn prompt_line(prompt: &str) -> Result<String> {
 /// A yes or no question, asked without holding an async worker while the person
 /// thinks about it.
 pub async fn confirm_off_thread(
-    progress: &crate::progress::Progress,
+    progress: &std::sync::Arc<dyn crate::host::Progress>,
     question: String,
     default: bool,
 ) -> Result<bool> {
-    let progress = progress.clone();
+    let progress = std::sync::Arc::clone(progress);
     tokio::task::spawn_blocking(move || progress.while_paused(|| confirm(&question, default)))
         .await
         .context("the question could not be asked")?

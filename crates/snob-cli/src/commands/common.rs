@@ -26,6 +26,9 @@ use crate::output::{self, Presentation, Rendered};
 use crate::report;
 use crate::ui::accounts::Browsed;
 
+pub use crate::app::{client_label, held_in, standing};
+pub use crate::sentences::{no_session, signed_out_here};
+
 /// The three forms either media listing has, and the refusal for the others —
 /// so `-o out.xlsx` cannot fall through to a table with a spreadsheet's name on
 /// it.
@@ -117,29 +120,9 @@ pub async fn rewalk<T>(
 
 /// Opens the app, or refuses because there is no session.
 pub fn app(secrets: &SessionStore, paths: &AccountPaths, with_progress: bool) -> Result<Box<App>> {
-    App::open(secrets, paths, with_progress)?
+    App::open(secrets, paths, || crate::front::front(with_progress))?
         .map(Box::new)
         .ok_or_else(no_session)
-}
-
-/// How a client is named in the record of what it was told yes to: its name and
-/// version as it declared them, **through `printable`, then cut to letters,
-/// digits, spaces and `._/-`, and to 64 characters**.
-pub fn client_label(name: &str, version: &str) -> Option<String> {
-    let said = snob_core::model::printable(&format!("{name} {version}"));
-    let kept: String = said
-        .chars()
-        .filter(|&c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '_' | '/' | '-'))
-        .collect();
-    let kept: String = kept
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(64)
-        .collect();
-    let kept = kept.trim_end();
-    (!kept.is_empty()).then(|| kept.to_string())
 }
 
 /// Records what an agent was told yes to through `snob mcp`, for a run given
@@ -254,63 +237,6 @@ pub fn alone_ahead(
         return Err(crate::app::held_elsewhere());
     }
     Ok(session)
-}
-
-/// The account's database and its request budget as they stand at `now`, read
-/// **writing nothing**: an account that has never sent anything is read over an
-/// empty database rather than having its file made, and a `shared.db` that
-/// cannot be read counts no brake.
-pub fn standing(
-    paths: &AccountPaths,
-    now: snob_core::EpochMs,
-) -> Result<(
-    snob_store::store::Store,
-    snob_store::store::rate_budget::BudgetState,
-)> {
-    use snob_store::store::Store;
-    use snob_store::store::shared::Shared;
-    let store = match Store::read_existing(paths)? {
-        Some(store) => store,
-        None => Store::in_memory()?,
-    };
-    let shared = Shared::read_existing(paths).unwrap_or_else(|e| {
-        tracing::debug!(error = %e, "shared.db could not be read; no brake is counted");
-        None
-    });
-    let budget = snob_store::store::rate_budget::state(store.conn(), shared.as_ref(), now)?;
-    Ok((store, budget))
-}
-
-/// The cooldown the account is in at `now`, if it is in one, out of its
-/// budget's state ([`standing`]), named as a run would name it
-/// (`App::held`).
-pub fn held_in(
-    budget: &snob_store::store::rate_budget::BudgetState,
-    paths: &AccountPaths,
-    now: snob_core::EpochMs,
-) -> Option<crate::app::Held> {
-    let until = budget.held_until(now)?;
-    Some(crate::app::held_by(
-        until,
-        budget.brake.as_ref(),
-        Some(&**paths),
-    ))
-}
-
-/// The refusal every command gives when there is no session.
-pub fn no_session() -> anyhow::Error {
-    ExitError::new(ExitCode::NoSession, "no session is stored")
-        .with_hint("run \"snob login\"")
-        .into()
-}
-
-/// Refuses a session stored here that this computer no longer sends as
-/// (`owner::signed_out`), with the code and hint of having none, and the
-/// sentence that says why ([`report::SIGNED_OUT_HERE`]).
-pub fn signed_out_here() -> anyhow::Error {
-    ExitError::new(ExitCode::NoSession, report::SIGNED_OUT_HERE)
-        .with_hint(report::SIGN_IN_AGAIN)
-        .into()
 }
 
 /// The part of the command line the engine is asked with.

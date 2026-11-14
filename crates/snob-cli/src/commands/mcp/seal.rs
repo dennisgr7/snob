@@ -87,7 +87,7 @@ impl Sealer {
     /// A sealer under 256 random bits from the operating system.
     pub fn new() -> anyhow::Result<Self> {
         let mut key = [0u8; 32];
-        crate::relay::fill_random(&mut key)?;
+        crate::random::fill_random(&mut key)?;
         Ok(Self::with_key(&key))
     }
 
@@ -102,7 +102,7 @@ impl Sealer {
     /// A ticket of `kind` for the command `binding`, good for `life`.
     pub fn issue(&self, kind: Kind, binding: &str, life: Duration) -> anyhow::Result<Ticket> {
         let mut nonce = [0u8; 16];
-        crate::relay::fill_random(&mut nonce)?;
+        crate::random::fill_random(&mut nonce)?;
         Ok(Ticket {
             token: self.token(
                 kind,

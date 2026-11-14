@@ -15,9 +15,9 @@ use snob_core::model::printable;
 use snob_core::{Epoch, EpochMs};
 use snob_store::paths::{AccountPaths, JobId};
 
-use super::{Seen, Status, argv, file};
+use super::{Check, Seen, Status, file};
 use crate::exit::{ExitCode, ExitError};
-use crate::report;
+use crate::sentences;
 
 /// How much of the end of `err.log` is read for the newest progress line.
 const TAIL: u64 = 8 * 1024;
@@ -41,7 +41,7 @@ pub fn no_such_job(id: &str) -> anyhow::Error {
 }
 
 /// The job named `id`, read now.
-fn find(account: &AccountPaths, id: &str) -> Result<Seen> {
+pub fn find(account: &AccountPaths, id: &str) -> Result<Seen> {
     let parsed = JobId::parse(id).ok_or_else(|| no_such_job(id))?;
     super::look(account, &parsed, now())?.ok_or_else(|| no_such_job(id))
 }
@@ -198,6 +198,7 @@ pub fn eta(
     progress: Option<&Value>,
     served: &[String],
     now: i64,
+    check: Check,
 ) -> Option<(u64, u64)> {
     if seen.status.is_over() {
         return None;
@@ -222,8 +223,8 @@ pub fn eta(
     // stops it (`ListRequest::max_pages`, `HARD_PAGE_CAP`); a crossing walks
     // each of its lists with the same.
     let cap = u64::from(
-        job.and_then(|job| argv::check(&job.argv).ok())
-            .and_then(|checked| checked.list.walk.max_pages)
+        job.and_then(|job| check(&job.argv).ok())
+            .and_then(|walk| walk.max_pages)
             .map_or(snob_ig::pager::HARD_PAGE_CAP, |most| {
                 most.min(snob_ig::pager::HARD_PAGE_CAP)
             }),
@@ -319,12 +320,18 @@ pub fn eta(
 }
 
 /// The record of a job, as one JSON object.
-pub fn record(seen: &Seen, now: i64) -> Value {
+pub fn record(seen: &Seen, now: i64, check: Check) -> Value {
     let job = seen.job.as_ref();
     let state = seen.state.as_ref();
-    let checked = job.and_then(|job| argv::check(&job.argv).ok());
+    let checked = job.and_then(|job| check(&job.argv).ok());
     let progress = newest_progress(&seen.dir);
-    let eta = eta(seen, progress.as_ref(), &served_lists(&seen.dir), now);
+    let eta = eta(
+        seen,
+        progress.as_ref(),
+        &served_lists(&seen.dir),
+        now,
+        check,
+    );
     json!({
         "job_id": seen.id.as_str(),
         "status": seen.status.as_str(),
@@ -414,8 +421,8 @@ pub fn finished(seen: &Seen) -> Option<Value> {
 }
 
 /// The record with the walk's answer under `finished` when there is one.
-pub fn whole(seen: &Seen, now: i64) -> Value {
-    let mut out = record(seen, now);
+pub fn whole(seen: &Seen, now: i64, check: Check) -> Value {
+    let mut out = record(seen, now, check);
     out["finished"] = finished(seen).unwrap_or(Value::Null);
     out
 }
@@ -438,29 +445,9 @@ pub async fn settle(account: &AccountPaths, seen: Seen, wait: Duration) -> Resul
     Ok(seen)
 }
 
-/// `show <id>`: the job, and its result once it has one.
-pub async fn show(
-    account: &AccountPaths,
-    id: &str,
-    wait: Duration,
-    json: bool,
-) -> Result<ExitCode> {
-    let seen = settle(account, find(account, id)?, wait).await?;
-    let now = now();
-    if json {
-        crate::ui::say!("{}", serde_json::to_string(&whole(&seen, now))?);
-    } else {
-        crate::ui::say!("{}", line(&seen, now));
-        if let Some(finished) = finished(&seen) {
-            crate::ui::say!("  {}", ended(&finished, seen.id.as_str()));
-        }
-    }
-    Ok(ExitCode::Ok)
-}
-
 /// How a finished job ended, for a person: its exit, and, when it left a
 /// result, how many entries it holds and where to read it.
-fn ended(finished: &Value, id: &str) -> String {
+pub fn ended(finished: &Value, id: &str) -> String {
     let exit = finished["exit"].as_str().unwrap_or("error");
     match finished.get("output") {
         Some(Value::Array(items)) => format!(
@@ -486,73 +473,17 @@ fn ended(finished: &Value, id: &str) -> String {
 /// the sitting), which an agent listing its jobs pays for in its context
 /// once per job and never needs there: `eta_seconds` is what it is for, and
 /// `show` (`snob_job`) still gives it whole.
-fn row(seen: &Seen, now: i64) -> Value {
-    let mut row = record(seen, now);
+pub fn row(seen: &Seen, now: i64, check: Check) -> Value {
+    let mut row = record(seen, now, check);
     if let Some(fields) = row.as_object_mut() {
         fields.remove("estimate");
     }
     row
 }
 
-/// `list`: the jobs not yet finished, or every one kept with `all`.
-pub fn list(account: &AccountPaths, all: bool, json: bool) -> Result<ExitCode> {
-    let now = now();
-    let jobs: Vec<Seen> = super::all(account, now)?
-        .into_iter()
-        .filter(|seen| all || !seen.status.finished())
-        .collect();
-    if json {
-        let records: Vec<Value> = jobs.iter().map(|seen| row(seen, now)).collect();
-        crate::ui::say!("{}", serde_json::to_string(&json!({ "jobs": records }))?);
-    } else if jobs.is_empty() {
-        crate::ui::say!(
-            "{}",
-            if all {
-                "No jobs are kept for this account."
-            } else {
-                "No job is running for this account."
-            }
-        );
-    } else {
-        for seen in &jobs {
-            crate::ui::say!("{}", line(seen, now));
-        }
-    }
-    Ok(ExitCode::Ok)
-}
-
-/// `cancel <id>`: asks the job to stop, as Ctrl+C stops a walk, keeping what
-/// it read, and waits at most `wait` for it to have.
-pub async fn cancel(
-    account: &AccountPaths,
-    id: &str,
-    wait: Duration,
-    json: bool,
-) -> Result<ExitCode> {
-    let seen = find(account, id)?;
-    let asked = !seen.status.is_over();
-    if asked {
-        super::ask_to_stop(&seen)?;
-    }
-    let seen = settle(account, seen, wait).await?;
-    let now = now();
-    if json {
-        crate::ui::say!("{}", serde_json::to_string(&whole(&seen, now))?);
-    } else if asked {
-        crate::ui::say!("{} was asked to stop; it keeps what it read.", seen.id);
-        crate::ui::say!("{}", line(&seen, now));
-    } else {
-        crate::ui::say!("{}", line(&seen, now));
-    }
-    Ok(ExitCode::Ok)
-}
-
 /// What a job walks, in words: "followers of @someone", "your unfollowers".
-pub fn walks(seen: &Seen) -> String {
-    let checked = seen
-        .job
-        .as_ref()
-        .and_then(|job| argv::check(&job.argv).ok());
+pub fn walks(seen: &Seen, check: Check) -> String {
+    let checked = seen.job.as_ref().and_then(|job| check(&job.argv).ok());
     match checked {
         Some(checked) => match &checked.target {
             Some(who) => format!("{} of @{}", checked.command, printable(who)),
@@ -563,13 +494,13 @@ pub fn walks(seen: &Seen) -> String {
 }
 
 /// One line about a job, for a person.
-pub fn line(seen: &Seen, now: i64) -> String {
+pub fn line(seen: &Seen, now: i64, check: Check) -> String {
     let mut line = format!(
         "{}  {:<9}  {}, since {}",
         seen.id,
         seen.status.as_str(),
-        walks(seen),
-        report::stored_on(seconds(seen.created_at()))
+        walks(seen, check),
+        sentences::stored_on(seconds(seen.created_at()))
     );
     if let Some(by) = seen.job.as_ref().and_then(|job| job.started_by.as_deref()) {
         line.push_str(&format!(", started by {}", printable(by)));
@@ -584,13 +515,19 @@ pub fn line(seen: &Seen, now: i64) -> String {
         }
     }
     let served = served_lists(&seen.dir);
-    if let Some((least, most)) = eta(seen, newest_progress(&seen.dir).as_ref(), &served, now) {
-        line.push_str(&format!("; {} left", report::time_left(least, most)));
+    if let Some((least, most)) = eta(
+        seen,
+        newest_progress(&seen.dir).as_ref(),
+        &served,
+        now,
+        check,
+    ) {
+        line.push_str(&format!("; {} left", sentences::time_left(least, most)));
     }
     if let Some(frees_at) = seen.claim_frees_at() {
         line.push_str(&format!(
             "; its walk lets go of the list by {}",
-            report::stored_on(seconds(frees_at))
+            sentences::stored_on(seconds(frees_at))
         ));
     } else if seen.status == Status::Lost {
         line.push_str("; its walk never started, and its lists are free");
@@ -601,6 +538,11 @@ pub fn line(seen: &Seen, now: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reading of the command line that reads none.
+    fn none(_: &[String]) -> Result<super::super::Walk, String> {
+        Err("no command line is read here".into())
+    }
 
     /// The records of the log are told from the sentences around them,
     /// with or without a time, spans or colors.
@@ -709,7 +651,7 @@ mod tests {
             "event": "page", "at": now, "page": 10, "accounts": 120, "of": 240,
             "list": "followers", "sitting": 10, "rest_until": null,
         });
-        let (least, most) = eta(&seen, Some(&line), &[], now).unwrap();
+        let (least, most) = eta(&seen, Some(&line), &[], now, none).unwrap();
         assert_eq!((least, most), walking(&[(10, 10), (30, 30)], 10));
         let alone = walking(&[(10, 10)], 10);
         assert!(most > alone.1, "{most} against {alone:?}");
@@ -721,7 +663,7 @@ mod tests {
         });
         let served = ["followers".to_string()];
         assert_eq!(
-            eta(&seen, Some(&finished), &served, now).unwrap(),
+            eta(&seen, Some(&finished), &served, now, none).unwrap(),
             walking(&[(0, 0), (30, 30)], 20)
         );
     }
@@ -741,7 +683,7 @@ mod tests {
             "event": "page", "at": now, "page": 5, "accounts": 60, "of": 300,
             "list": "followers", "sitting": 35, "rest_until": null,
         });
-        let (_, most) = eta(&seen, Some(&line), &[], now).unwrap();
+        let (_, most) = eta(&seen, Some(&line), &[], now, none).unwrap();
         let from_its_own_pages = walking(&[(20, 20)], 5).1;
         let longest_rest = snob_ig::pace::SITTING_PAUSE_MS.1 / 1000;
         assert!(
@@ -754,38 +696,8 @@ mod tests {
             "event": "page", "at": now, "page": 5, "accounts": 60, "of": 300,
             "list": "followers", "sitting": 40, "rest_until": now + 600_000,
         });
-        let (least, _) = eta(&seen, Some(&full), &[], now).unwrap();
+        let (least, _) = eta(&seen, Some(&full), &[], now, none).unwrap();
         assert!(least >= 600, "{least}");
-    }
-
-    /// A walk given `--max-pages` stops there whatever the list's size, so
-    /// the time left counts no page past it.
-    #[test]
-    fn the_time_left_counts_no_page_past_the_walks_cap() {
-        let now = snob_core::clock::now_ms().get();
-        let mut seen = crossing(json!([
-            {"list": "followers", "fate": "walked", "pages": {"least": 40, "most": 40}},
-        ]));
-        seen.job.as_mut().unwrap().argv = ["followers", "--format", "json", "--max-pages", "40"]
-            .map(String::from)
-            .to_vec();
-        let line = json!({
-            "event": "page", "at": now, "page": 5, "accounts": 60, "of": 5000,
-            "list": "followers", "sitting": 5, "rest_until": null,
-        });
-        assert_eq!(
-            eta(&seen, Some(&line), &[], now).unwrap(),
-            walking(&[(35, 35)], 5)
-        );
-        seen.job.as_mut().unwrap().argv = ["followers", "--max-pages=1"].map(String::from).to_vec();
-        let first = json!({
-            "event": "page", "at": now, "page": 1, "accounts": 12, "of": 5000,
-            "list": "followers", "sitting": 1, "rest_until": null,
-        });
-        assert_eq!(
-            eta(&seen, Some(&first), &[], now).unwrap(),
-            walking(&[(0, 0)], 1)
-        );
     }
 
     /// The second list of a crossing on an account never read here is of a
@@ -803,7 +715,7 @@ mod tests {
             "list": "followers", "sitting": 10, "rest_until": null,
         });
         assert_eq!(
-            eta(&seen, Some(&line), &[], now).unwrap(),
+            eta(&seen, Some(&line), &[], now, none).unwrap(),
             walking(&[(10, 10), (1, 20)], 10)
         );
     }
@@ -823,7 +735,7 @@ mod tests {
             "event": "started", "at": now, "page": 0, "accounts": 0, "of": 36,
             "list": "followers", "sitting": null, "rest_until": null,
         });
-        let (least, most) = eta(&seen, Some(&started), &[], now).unwrap();
+        let (least, most) = eta(&seen, Some(&started), &[], now, none).unwrap();
         assert!(least >= 301 && most >= 912, "{least}..{most}");
         // Once a page says where the sitting is, it is timed from there.
         let page = json!({
@@ -831,7 +743,7 @@ mod tests {
             "list": "followers", "sitting": 1, "rest_until": null,
         });
         assert_eq!(
-            eta(&seen, Some(&page), &[], now).unwrap(),
+            eta(&seen, Some(&page), &[], now, none).unwrap(),
             walking(&[(2, 2)], 1)
         );
     }
@@ -867,7 +779,7 @@ mod tests {
         seen.dir = tmp.path().to_path_buf();
         let newest = newest_progress(tmp.path()).unwrap();
         assert_eq!(
-            eta(&seen, Some(&newest), &served_lists(tmp.path()), now).unwrap(),
+            eta(&seen, Some(&newest), &served_lists(tmp.path()), now, none).unwrap(),
             walking(&[(17, 17)], 400 % 40)
         );
 

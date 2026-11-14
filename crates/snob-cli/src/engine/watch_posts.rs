@@ -161,7 +161,7 @@ pub async fn look(
         !app.cancel().is_canceled() && app.stop_between_pages().is_some_and(|stop| stop());
     if app.cancel().is_canceled() || power_stop {
         if power_stop && !battery_said {
-            app.warn(crate::report::BATTERY_CRITICAL_SKIP);
+            app.warn(crate::sentences::BATTERY_CRITICAL_SKIP);
         }
         return Ok(Some(PostsLook::skipped(
             None,

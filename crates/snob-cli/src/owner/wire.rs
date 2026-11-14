@@ -33,7 +33,7 @@ pub(super) fn build() -> String {
     static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BUILD
         .get_or_init(|| {
-            let file = std::env::current_exe()
+            let file = crate::exe::program()
                 .and_then(std::fs::metadata)
                 .ok()
                 .map(|meta| {

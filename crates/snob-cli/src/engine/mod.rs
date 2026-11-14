@@ -21,7 +21,6 @@ use snob_store::store::{accounts, snapshots, users};
 
 use crate::app::App;
 use crate::exit::ExitCode;
-use crate::ui;
 
 /// Where a returned list came from, in the sense that decides whether two of
 /// them may be crossed against each other.
@@ -221,7 +220,8 @@ async fn decide(
     // consent governs enumerating somebody else's lists, and this reads a list
     // that was already walked — with permission — off this machine's own disk.
     if !args.cache {
-        ask_consent_with(app, args, ui::can_be_asked()).await?;
+        let someone_is_there = app.can_ask();
+        ask_consent_with(app, args, someone_is_there).await?;
     }
 
     // The check at the top cannot see a cooldown that landed while the
@@ -261,7 +261,7 @@ async fn decide(
 
     if args.cache {
         let Some(snapshot) = stored else {
-            return Err(crate::report::refuse_nothing_stored(
+            return Err(crate::sentences::refuse_nothing_stored(
                 kind,
                 args.target.as_deref(),
             ));
@@ -292,7 +292,7 @@ pub(super) fn serve_stored(
         let applied =
             snob_store::store::own_writes::apply(app.db().conn(), &mut members, outcome.taken_at)?;
         if !applied.is_empty() {
-            app.warn(&crate::report::own_writes_applied(
+            app.warn(&crate::sentences::own_writes_applied(
                 outcome.taken_at,
                 &applied,
             ));
@@ -309,7 +309,7 @@ pub(super) fn serve_stored(
 /// on a run the user never authorized.
 ///
 /// **The third argument is for tests only**; `decide` passes
-/// `ui::can_be_asked()`.
+/// `App::can_ask`.
 #[doc(hidden)]
 pub async fn ask_consent_with(
     app: &mut App,
@@ -349,21 +349,18 @@ pub async fn ask_consent_with(
         // Which way to answer in advance is the *caller's* fact, not this
         // function's, and it is the one thing this hands over: the sentence
         // itself is `report`'s, like every other sentence the tool prints.
-        return Err(crate::report::refuse_unconsented(
+        return Err(crate::sentences::refuse_unconsented(
             &shown,
             app.consent_in_advance(),
         ));
     }
 
-    app.warn(crate::report::READING_SOMEBODY_ELSES_LIST);
-    if !ui::confirm_off_thread(
-        app.progress(),
-        crate::report::ask_to_continue(&shown),
-        false,
-    )
-    .await?
+    app.warn(crate::sentences::READING_SOMEBODY_ELSES_LIST);
+    if !app
+        .confirm(crate::sentences::ask_to_continue(&shown))
+        .await?
     {
-        return Err(crate::report::refuse_declined(&shown));
+        return Err(crate::sentences::refuse_declined(&shown));
     }
     // Asked and answered.
     app.record_consent(name);

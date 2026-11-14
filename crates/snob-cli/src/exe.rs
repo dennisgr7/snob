@@ -2,11 +2,31 @@
 
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
+
+/// Set by [`start_as`].
+static PROGRAM: OnceLock<PathBuf> = OnceLock::new();
+
+/// Makes `program` the binary the engine starts for its own processes (the
+/// owner of the browsers, a job's supervisor and walk, the updater, a tool
+/// call's child) and names in a configuration. Set once, before any is
+/// started; unset, it is the running binary.
+pub fn start_as(program: PathBuf) {
+    let _ = PROGRAM.set(program);
+}
+
+/// The binary the engine starts for its own processes ([`start_as`]).
+pub fn program() -> std::io::Result<PathBuf> {
+    match PROGRAM.get() {
+        Some(program) => Ok(program.clone()),
+        None => std::env::current_exe(),
+    }
+}
 
 /// The stable path to this binary, warning with `consequence` when the best
 /// there is sits in a directory named after this version.
 pub(crate) fn to_print(consequence: &str) -> std::io::Result<PathBuf> {
-    let current = std::env::current_exe()?;
+    let current = program()?;
     let path_var = std::env::var_os("PATH");
     let exe = stable_exe(
         &current,
@@ -14,7 +34,7 @@ pub(crate) fn to_print(consequence: &str) -> std::io::Result<PathBuf> {
         path_var.as_deref(),
     );
     if names_a_version(&exe) {
-        crate::ui::warn(&format!(
+        crate::host::warn(&format!(
             "{} is in a directory named after this version of snob, so {consequence}",
             exe.display()
         ));

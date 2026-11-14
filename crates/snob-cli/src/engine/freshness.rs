@@ -37,11 +37,11 @@ pub async fn decide_and_fetch(
             if let Some(snapshot) = &stored
                 && !args.refresh
             {
-                app.warn(&crate::report::poll_failed_serving_stored(&e));
+                app.warn(&crate::sentences::poll_failed_serving_stored(&e));
                 // Served, but with nothing said about whether it is still true.
                 return super::serve_stored(app, snapshot, Provenance::PollFailed);
             }
-            app.warn(&crate::report::poll_failed(&e));
+            app.warn(&crate::sentences::poll_failed(&e));
             None
         }
     };

@@ -415,7 +415,8 @@ impl Found<'_> {
                 .jobs
                 .iter()
                 .map(|seen| {
-                    let record = crate::jobs::show::record(seen, self.now.get());
+                    let record =
+                        crate::jobs::show::record(seen, self.now.get(), crate::jobs::argv::walk_of);
                     let mut kept = serde_json::Map::new();
                     for key in [
                         "job_id",
@@ -638,7 +639,7 @@ impl Found<'_> {
             for seen in self.jobs {
                 lines.push(format!(
                     "  {}",
-                    crate::jobs::show::line(seen, self.now.get())
+                    crate::jobs::show::line(seen, self.now.get(), crate::jobs::argv::walk_of)
                 ));
             }
             blocks.push(lines);

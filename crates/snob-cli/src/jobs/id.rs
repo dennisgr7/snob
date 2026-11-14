@@ -5,7 +5,7 @@ use snob_store::paths::JobId;
 /// A new id, made `at_ms` milliseconds after the epoch.
 pub(crate) fn new(at_ms: u64) -> std::io::Result<JobId> {
     let mut random = [0u8; 10];
-    crate::relay::fill_random(&mut random)?;
+    crate::random::fill_random(&mut random)?;
     Ok(encode(at_ms, random))
 }
 

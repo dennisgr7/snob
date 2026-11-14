@@ -997,7 +997,7 @@ impl Gate {
     fn new(key: &key::Key) -> Result<Self> {
         use base64::Engine as _;
         let mut bytes = [0u8; 32];
-        crate::relay::fill_random(&mut bytes)
+        crate::random::fill_random(&mut bytes)
             .context("the system would not hand out random bytes")?;
         let under = Secret::new(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes));
         Ok(Self {

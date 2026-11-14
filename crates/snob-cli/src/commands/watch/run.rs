@@ -47,7 +47,9 @@ pub(super) async fn run_viewers(
         timing,
         &cancel,
         |account| {
-            let opened = App::open(&secrets.session_of(account), account, with_progress)?;
+            let opened = App::open(&secrets.session_of(account), account, || {
+                crate::front::front(with_progress)
+            })?;
             Ok(opened.map(|mut app| {
                 app.stops_on_a_critical_battery(crate::power::battery::critical);
                 Box::new(app)

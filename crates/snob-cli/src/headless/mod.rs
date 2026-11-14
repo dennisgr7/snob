@@ -989,7 +989,7 @@ impl Headless {
                 continue;
             }
             if !told {
-                crate::ui::info(&format!(
+                crate::host::info(&format!(
                     "Another snob is using {}'s browser; waiting for it to finish (Ctrl+C to stop)",
                     crate::app::label(session.ds_user_id, session.username.as_deref())
                 ));

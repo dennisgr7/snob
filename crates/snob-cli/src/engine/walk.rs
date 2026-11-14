@@ -99,7 +99,7 @@ pub async fn fetch(
     let stopping = || {
         let stop = stop_between_pages.is_some_and(|stop| stop());
         if stop {
-            progress.warn(crate::report::BATTERY_CRITICAL_STOP);
+            progress.warn(crate::sentences::BATTERY_CRITICAL_STOP);
         }
         stop
     };
@@ -153,7 +153,7 @@ pub async fn fetch(
     // What Instagram said, said out loud: the walker keeps the error next to
     // the stop reason, and a checkpoint carries the address that clears it.
     let stopped_by = summary.error.map(|error| {
-        app.warn(&crate::report::what_instagram_said(&error));
+        app.warn(&crate::sentences::what_instagram_said(&error));
         crate::exit::from_ig_error(&error)
     });
 
@@ -198,8 +198,8 @@ fn choose_over_budget(
     let needed = declared.saturating_sub(already_stored as u64);
     let left = u64::from(app.client().pacer().accounts_left()?);
     if needed > left {
-        app.warn(&crate::report::over_the_day(needed, left));
-        app.warn(crate::report::PAUSING_BY_DEFAULT);
+        app.warn(&crate::sentences::over_the_day(needed, left));
+        app.warn(crate::sentences::PAUSING_BY_DEFAULT);
     }
     Ok(OverBudget::Pause)
 }
@@ -215,7 +215,7 @@ fn walk_failed(app: &App, error: WalkError, target: &Target, kind: ListKind) -> 
                 until_ms,
                 braked: Vec::new(),
             });
-            crate::report::refuse_cooldown_mid_walk(&held)
+            crate::sentences::refuse_cooldown_mid_walk(&held)
         }
         // A crossing walks two lists in the same run, so "the walk failed" would
         // not say which one stopped.
@@ -273,7 +273,7 @@ fn open_snapshot(
     // Beginning beside it would pay again for every page it has stored, and
     // store two captures of one moment.
     if snapshots::walked_elsewhere(conn, target.pk, kind)? {
-        return Err(crate::report::walked_elsewhere(
+        return Err(crate::sentences::walked_elsewhere(
             target.username.as_deref(),
             kind,
         ));

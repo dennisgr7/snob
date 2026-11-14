@@ -49,7 +49,7 @@ impl Unresolved {
     /// in what was asked.
     pub fn into_error(self) -> anyhow::Error {
         match self {
-            Self::NoAccount => crate::commands::common::no_session(),
+            Self::NoAccount => crate::sentences::no_session(),
             Self::Unknown(name) => ExitError::new(
                 ExitCode::Error,
                 format!("no account {} is signed in here", shown(&name)),

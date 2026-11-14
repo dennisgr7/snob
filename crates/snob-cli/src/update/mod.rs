@@ -212,7 +212,7 @@ fn start_detached(files: &Files, globals: &[OsString], what: &[OsString]) {
 /// `snob.exe` it would replace runs, and so runs from a copy in the data
 /// directory.
 fn applier(files: &Files, applying: bool) -> anyhow::Result<PathBuf> {
-    let exe = std::env::current_exe()?;
+    let exe = crate::exe::program()?;
     if !(cfg!(windows) && applying) {
         return Ok(exe);
     }
@@ -360,7 +360,7 @@ fn tell(files: &Files) {
         return;
     }
     for line in &said {
-        crate::ui::info(line);
+        crate::host::info(line);
     }
     let _ = state::change(files, |s| {
         if applied_told && let Some(applied) = &mut s.applied {

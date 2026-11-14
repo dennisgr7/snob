@@ -20,7 +20,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::cdp::{self, CALL_TIMEOUT, Cdp, Connection, Event};
-use crate::progress::Progress;
+use crate::host::{Progress, Wait};
 use crate::seat::Ssh;
 
 mod http;
@@ -107,7 +107,7 @@ impl Relay {
         cdp: &Cdp,
         tab: &str,
         cancel: &CancelToken,
-        progress: &Progress,
+        progress: &dyn Progress,
     ) -> Result<BrowserCookies> {
         let Self {
             listener,
@@ -145,7 +145,7 @@ async fn relay(
     tab: &str,
     shared: &Arc<Shared>,
     cancel: &CancelToken,
-    progress: &Progress,
+    progress: &dyn Progress,
 ) -> Result<BrowserCookies> {
     // Everything relayed runs in these, and ends when they are dropped:
     // on the way out of this function, however it leaves.
@@ -181,7 +181,7 @@ async fn relay(
     )
     .await?;
 
-    progress.waiting("waiting for the link to be opened", cdp::LOGIN_TIMEOUT);
+    progress.waiting(Wait::LinkToOpen, cdp::LOGIN_TIMEOUT);
     let mut opened = shared.opened.subscribe();
     tokio::select! {
         _ = async { opened.wait_for(|opened| *opened).await.is_ok() } => {}
@@ -191,7 +191,7 @@ async fn relay(
         ),
         () = cancel.canceled() => bail!("canceled"),
     }
-    progress.waiting("waiting for you to log in", cdp::LOGIN_TIMEOUT);
+    progress.waiting(Wait::LogIn, cdp::LOGIN_TIMEOUT);
     let cookies = cdp::wait_for_login(cdp, cancel).await?;
 
     // Told to the page, which says it is done, and given a moment to get
@@ -638,39 +638,8 @@ async fn text<S: AsyncWrite + Unpin>(
 fn secret() -> Result<String> {
     use base64::Engine as _;
     let mut bytes = [0u8; 32];
-    fill_random(&mut bytes).context("the system would not hand out random bytes")?;
+    crate::random::fill_random(&mut bytes).context("the system would not hand out random bytes")?;
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
-}
-
-#[cfg(unix)]
-pub(crate) fn fill_random(bytes: &mut [u8]) -> std::io::Result<()> {
-    use std::io::Read as _;
-    std::fs::File::open("/dev/urandom")?.read_exact(bytes)
-}
-
-#[cfg(windows)]
-pub(crate) fn fill_random(bytes: &mut [u8]) -> std::io::Result<()> {
-    use windows_sys::Win32::Security::Cryptography::{
-        BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
-    };
-    let length = u32::try_from(bytes.len()).map_err(std::io::Error::other)?;
-    // SAFETY: the buffer is valid for writes of `length` bytes, and a null
-    // algorithm handle is what the system-preferred generator flag asks for.
-    let status = unsafe {
-        BCryptGenRandom(
-            std::ptr::null_mut(),
-            bytes.as_mut_ptr(),
-            length,
-            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-        )
-    };
-    if status == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!(
-            "BCryptGenRandom failed with {status:#x}"
-        )))
-    }
 }
 
 /// A connection, whichever listener it came from.

@@ -313,7 +313,7 @@ pub async fn run_for_account(
     // Its jobs first, so none starts a browser again; then its browser, which
     // would write into the profile as it went, or keep Windows from removing
     // it. The owner and the other accounts' browsers stay.
-    let stopping = crate::jobs::stop_before_leaving(vec![app_paths.account(pk)]).await?;
+    let stopping = crate::jobs::dispatch::stop_before_leaving(vec![app_paths.account(pk)]).await?;
     // And every other process running as it is refused its next request
     // (`owner::sign_out`), so none starts the browser again on what goes,
     // and none sends again once a login has made the directory again.
@@ -341,7 +341,7 @@ pub async fn run_everything(
     }
     let pks = app_paths.account_dirs();
     let accounts = pks.iter().map(|pk| app_paths.account(*pk)).collect();
-    let stopping = crate::jobs::stop_before_leaving(accounts).await?;
+    let stopping = crate::jobs::dispatch::stop_before_leaving(accounts).await?;
     // Every other process running as one of them is refused its next request
     // (`owner::sign_out`), and once the directory is gone, by that alone,
     // until a login lets in a session of its own.
@@ -498,7 +498,7 @@ fn finish(
 
 /// Says where the executable is, since this command deliberately leaves it.
 fn report_the_binary() {
-    let location = match std::env::current_exe() {
+    let location = match crate::exe::program() {
         Ok(path) => format!(
             "\nThe binary itself is still installed, at {}.",
             path.display()

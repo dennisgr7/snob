@@ -81,9 +81,10 @@ pub async fn run(args: LikersArgs, store: SecretStore, paths: &AccountPaths) -> 
                 .iter()
                 .map(serde_json::to_value)
                 .collect::<Result<Vec<_>, _>>()?;
-            let mut text = crate::media::rows_or_envelope(rows, destination.format(), |_| {
-                serde_json::to_value(&likers).unwrap_or_default()
-            })?;
+            let mut text =
+                crate::output::media::rows_or_envelope(rows, destination.format(), |_| {
+                    serde_json::to_value(&likers).unwrap_or_default()
+                })?;
             if !text.is_empty() {
                 text.push('\n');
             }

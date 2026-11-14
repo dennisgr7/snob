@@ -297,7 +297,7 @@ pub async fn with_a_session(
                 backend: secrets.backend().as_str(),
             },
             verdict: Verdict::Failed,
-            problem: Some(Problem::Foreign(crate::report::what_instagram_said(&e))),
+            problem: Some(Problem::Foreign(crate::sentences::what_instagram_said(&e))),
         },
     };
     let session_works = session.verdict == Verdict::Ok;
@@ -492,7 +492,9 @@ async fn account_of(
                         Checked {
                             what,
                             verdict: Verdict::Failed,
-                            problem: Some(Problem::Foreign(crate::report::what_instagram_said(&e))),
+                            problem: Some(Problem::Foreign(crate::sentences::what_instagram_said(
+                                &e,
+                            ))),
                         },
                         None,
                         None,
@@ -552,7 +554,7 @@ async fn account_of(
             Checked {
                 what,
                 verdict: Verdict::Failed,
-                problem: Some(Problem::Foreign(crate::report::what_instagram_said(&e))),
+                problem: Some(Problem::Foreign(crate::sentences::what_instagram_said(&e))),
             },
             None,
             None,

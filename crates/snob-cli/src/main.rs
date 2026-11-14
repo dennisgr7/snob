@@ -28,6 +28,7 @@ async fn main() -> std::process::ExitCode {
     }
     init_tracing(cli.verbose, matches!(cli.command, Command::BrowserOwner));
     restore_terminal_on_panic();
+    snob_cli::front::install();
 
     let wording = wording_for(&cli);
     // Awaited in place, the future of `run` would be part of this function's
@@ -323,7 +324,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         snob_cli::app::spend_alone();
     }
     if cli.progress_json {
-        snob_cli::app::progress_json();
+        snob_cli::progress::progress_json();
     }
     // Before the layout, the owner and the session: the server spends nothing
     // and stores nothing itself.
@@ -351,7 +352,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 // `--max-wait` is the server's to hand each child, which
                 // waits as long as what it runs allows (`mcp::Waits`).
                 let launch = commands::mcp::child::Launch::new(
-                    std::env::current_exe()?,
+                    snob_cli::exe::program()?,
                     mcp_globals(&cli, None)?,
                 );
                 // The account the server is held to, by a flag or by the
@@ -441,7 +442,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     // The jobs send nothing themselves and use no browser: a walk a job runs
     // is a process of its own, which comes through here again.
     if matches!(cli.command, Command::Job(_) | Command::Jobs(_)) {
-        return boxed(|| snob_cli::jobs::dispatch(&cli, &store, &paths)).await;
+        return boxed(|| snob_cli::jobs::dispatch::dispatch(&cli, &store, &paths)).await;
     }
 
     // Every request to Instagram goes out from a browser from here on, unless

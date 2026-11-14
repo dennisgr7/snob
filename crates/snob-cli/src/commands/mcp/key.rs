@@ -70,7 +70,7 @@ impl Key {
     /// A new key, from 256 random bits of the operating system's.
     pub fn generate() -> Result<Self> {
         let mut bytes = [0u8; BYTES];
-        crate::relay::fill_random(&mut bytes)?;
+        crate::random::fill_random(&mut bytes)?;
         let text = format!(
             "{PREFIX}{}",
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)

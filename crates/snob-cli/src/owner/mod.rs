@@ -141,7 +141,7 @@ pub async fn release(paths: &AppPaths, pk: Option<Pk>) {
 pub(crate) fn sign_out(paths: &AppPaths, leaving: &[Pk]) {
     for pk in leaving {
         if let Err(e) = paths.account(*pk).sign_out() {
-            crate::ui::warn(&format!(
+            crate::host::warn(&format!(
                 "could not mark account {pk} as signed out ({e}); a command still running \
                  as it may go on sending until it ends"
             ));
@@ -797,7 +797,7 @@ fn start_one(paths: &AppPaths, args: &[OsString]) -> Result<spawn::Started> {
     // then cannot open. The browser this process starts instead says why.
     crate::headless::refuse_root()?;
     snob_store::paths::create_private_dir(paths.data_dir())?;
-    let program = std::env::current_exe().context("could not find this program to start it")?;
+    let program = crate::exe::program().context("could not find this program to start it")?;
     let started = spawn::spawn(&program, args, &log_of(paths))
         .context("could not start the owner of the browsers")?;
     // Said, because an owner left in the command's job ends with it: a

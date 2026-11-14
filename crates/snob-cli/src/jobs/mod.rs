@@ -14,6 +14,7 @@
 //! feature's).
 
 pub(crate) mod argv;
+pub mod dispatch;
 mod id;
 pub mod show;
 pub mod start;
@@ -26,7 +27,34 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use snob_core::Pk;
+use snob_core::model::ListKind;
 use snob_store::paths::{self, AccountPaths, JobId};
+
+/// The hidden command a supervisor is started as.
+pub const COMMAND: &str = "__job";
+
+/// How long the start waits for the supervisor to take the job, before it
+/// waits `--wait` for the walk (`commands::mcp::longest_call` counts both).
+pub const SUPERVISOR_WITHIN: Duration = Duration::from_secs(10);
+
+/// A job's command line, as the program that runs it reads one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Walk {
+    /// The command line, as it will be run.
+    pub args: Vec<String>,
+    /// The command, by the name the help gives it.
+    pub command: &'static str,
+    /// The lists it walks, in order.
+    pub kinds: &'static [ListKind],
+    /// Whose lists, as typed less a leading `@`; `None` is the viewer's own.
+    pub target: Option<String>,
+    /// Its `--max-pages`, when it has one.
+    pub max_pages: Option<u32>,
+}
+
+/// Reads a stored command line as a walk a job may run, or says why not: the
+/// command line's own check (`argv::check`), handed in by whoever runs jobs.
+pub type Check = fn(&[String]) -> Result<Walk, String>;
 
 /// The version of `job.json`'s shape.
 pub const SCHEMA: u32 = 1;
@@ -476,7 +504,7 @@ impl Stopping {
                 };
             }
             Err(e) => {
-                crate::ui::warn(&format!(
+                crate::host::warn(&format!(
                     "could not hold the jobs of {}: {e}; asking them to stop without it",
                     account.dir().display()
                 ));
@@ -519,7 +547,7 @@ impl Stopping {
 fn ask_every_job_to_stop(account: &AccountPaths) -> Vec<JobId> {
     let now = snob_core::clock::now_ms().get();
     let every = ids(account).unwrap_or_else(|e| {
-        crate::ui::warn(&format!(
+        crate::host::warn(&format!(
             "could not read the jobs of {}: {e}; going on without stopping them",
             account.dir().display()
         ));
@@ -534,7 +562,7 @@ fn ask_every_job_to_stop(account: &AccountPaths) -> Vec<JobId> {
                 // What it is doing is unknown, so it is asked all the
                 // same; a `stop` in a job that is over changes nothing.
                 let sent = private_marker(&file(&account.job_dir(&id), "stop"));
-                crate::ui::warn(&format!(
+                crate::host::warn(&format!(
                     "could not read job {}: {e}; {}, and going on",
                     id.as_str(),
                     match sent {
@@ -550,7 +578,7 @@ fn ask_every_job_to_stop(account: &AccountPaths) -> Vec<JobId> {
         }
         match ask_to_stop(&seen) {
             Ok(()) => asked.push(seen.id),
-            Err(e) => crate::ui::warn(&format!(
+            Err(e) => crate::host::warn(&format!(
                 "could not ask job {} to stop: {e}; going on",
                 seen.id.as_str()
             )),
@@ -565,12 +593,11 @@ pub const STOPPING_WITHIN: Duration = Duration::from_secs(GRACE.as_secs() + 5);
 
 /// For `purge` and `logout`: stops the jobs of `accounts`, holding each
 /// one's jobs lock so no other starts, and waits for them to have stopped
-/// (`jobs::Stopping`). Said when there were any, and warned when one did not
-/// stop in time, or could not be held; **the removal goes on either way**
-/// ([`Stopping::every_job_of`] does not fail), so a session is never kept
-/// over its jobs.
-pub async fn stop_before_leaving(accounts: Vec<AccountPaths>) -> anyhow::Result<Vec<Stopping>> {
-    let (stopping, settled) = tokio::task::spawn_blocking(move || {
+/// (`jobs::Stopping`), answering whether every one did; **the removal goes on
+/// either way** ([`Stopping::every_job_of`] does not fail), so a session is
+/// never kept over its jobs.
+pub async fn stop_every_job(accounts: Vec<AccountPaths>) -> anyhow::Result<(Vec<Stopping>, bool)> {
+    Ok(tokio::task::spawn_blocking(move || {
         let stopping: Vec<Stopping> = accounts.iter().map(Stopping::every_job_of).collect();
         // Every one waited for, whether or not one before it settled.
         let late = stopping
@@ -580,69 +607,7 @@ pub async fn stop_before_leaving(accounts: Vec<AccountPaths>) -> anyhow::Result<
         let settled = late == 0;
         (stopping, settled)
     })
-    .await?;
-    let count: usize = stopping.iter().map(|jobs| jobs.ids.len()).sum();
-    if count > 0 {
-        crate::ui::say!(
-            "Stopped {count} {} first.",
-            if count == 1 { "job" } else { "jobs" }
-        );
-    }
-    if !settled {
-        crate::ui::warn("a job did not stop in time; what it holds may not all go");
-    }
-    Ok(stopping)
-}
-
-/// Runs `snob __job …` and `snob jobs …`, as the account this run acts as and
-/// on that account's jobs alone.
-pub async fn dispatch(
-    cli: &crate::cli::Cli,
-    store: &snob_store::secrets::SecretStore,
-    app: &paths::AppPaths,
-) -> anyhow::Result<crate::exit::ExitCode> {
-    use crate::cli::{Command, JobCommand, JobsArgs, JobsCommand};
-
-    let env = std::env::var("SNOB_ACCOUNT").ok();
-    let registry = snob_store::registry::Registry::load(app)?;
-    let viewer = crate::account::resolve_if_any(cli.account.as_deref(), env.as_deref(), &registry)?
-        .ok_or_else(crate::commands::common::no_session)?;
-    crate::report::act_as(viewer.clone());
-    let account = app.account(viewer.pk);
-    // What reads the jobs sweeps what is past its keeping first, when the
-    // lock is free: a start sweeps under it, and a supervisor touches only
-    // its own job.
-    if !matches!(
-        cli.command,
-        Command::Job(JobCommand::Start(_) | JobCommand::Run(_))
-    ) {
-        sweep_if_free(&account, snob_core::clock::now_ms().get());
-    }
-
-    match &cli.command {
-        Command::Job(JobCommand::Start(args)) => start::run(cli, args, store, &account).await,
-        Command::Job(JobCommand::Run(args)) => supervise::run(cli, &account, &args.id).await,
-        Command::Job(JobCommand::Show(args))
-        | Command::Jobs(JobsArgs {
-            command: Some(JobsCommand::Show(args)),
-            ..
-        }) => show::show(&account, &args.id, args.wait, args.output.json).await,
-        Command::Job(JobCommand::Cancel(args))
-        | Command::Jobs(JobsArgs {
-            command: Some(JobsCommand::Cancel(args)),
-            ..
-        }) => show::cancel(&account, &args.id, args.wait, args.output.json).await,
-        Command::Job(JobCommand::List(args))
-        | Command::Jobs(JobsArgs {
-            command: Some(JobsCommand::List(args)),
-            ..
-        })
-        | Command::Jobs(JobsArgs {
-            command: None,
-            list: args,
-        }) => show::list(&account, args.all, args.output.json),
-        _ => unreachable!("only the jobs' commands are dispatched here"),
-    }
+    .await?)
 }
 
 #[cfg(test)]
@@ -868,7 +833,7 @@ mod tests {
         account.ensure_dirs().unwrap();
         std::fs::write(account.jobs_dir(), b"x").unwrap();
         assert!(lock_jobs(&account).is_err(), "the lock cannot be taken");
-        let stopping = stop_before_leaving(vec![account.clone()]).await.unwrap();
+        let (stopping, _) = stop_every_job(vec![account.clone()]).await.unwrap();
         assert_eq!(stopping.len(), 1);
         assert!(stopping[0].ids.is_empty());
         assert!(stopping[0]._lock.is_none());

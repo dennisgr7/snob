@@ -603,7 +603,7 @@ impl<'a> Session<'a> {
                     .run(
                         tui,
                         client.pacer().cancel_token(),
-                        posts::open_item(
+                        crate::output::posts::open_item(
                             client,
                             &detail.post,
                             at,

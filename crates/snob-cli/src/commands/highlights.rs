@@ -24,8 +24,9 @@ use crate::cli::{DownloadSelection, Format, HighlightsArgs, StoryFormat};
 use crate::commands::common::{self, Switched};
 use crate::commands::stories::story_from;
 use crate::exit::{ExitCode, ExitError};
-use crate::media::{self, Story, download_many, empty_document, was_canceled};
+use crate::media::{self, Story, download_many, was_canceled};
 use crate::output::Presentation;
+use crate::output::media::empty_document;
 use crate::report;
 use crate::ui;
 
@@ -277,7 +278,7 @@ async fn inside_one(
     }
 
     if let Some(selection) = args.action.selection() {
-        return media::download_selected(
+        return crate::output::media::download_selected(
             app.client_shared(),
             stem_of(tray, number),
             &items,
@@ -414,7 +415,7 @@ async fn download_entries(
     selection: DownloadSelection,
     destination: Option<&Path>,
 ) -> Result<ExitCode> {
-    let numbers = media::numbers_of(selection, tray.entries.len(), |number| {
+    let numbers = crate::output::media::numbers_of(selection, tray.entries.len(), |number| {
         no_such_highlight(tray, number)
     })?;
     // A whole highlight is as many files as it holds, which is not known until
@@ -542,7 +543,7 @@ fn list_tray(
          to browse",
         printable(&tray.username)
     );
-    media::print_listing(text, destination, &hint)
+    crate::output::media::print_listing(text, destination, &hint)
 }
 
 /// Prints what one entry holds. The numbers here are what `-d` takes.
@@ -561,7 +562,7 @@ fn list_items(
         }
         _ => items_table(items, Presentation::detect(destination)),
     };
-    media::print_listing(
+    crate::output::media::print_listing(
         text,
         destination,
         "--download <number> to save one, or --interactive to move through them",
@@ -569,7 +570,8 @@ fn list_items(
 }
 
 fn tray_table(tray: &Tray, presentation: Presentation) -> String {
-    let mut table = media::listing_table(&["#", "Title", "Items", "Updated"], presentation);
+    let mut table =
+        crate::output::media::listing_table(&["#", "Title", "Items", "Updated"], presentation);
 
     for (index, entry) in tray.entries.iter().enumerate() {
         table.add_row([
@@ -601,7 +603,8 @@ fn tray_table(tray: &Tray, presentation: Presentation) -> String {
 fn items_table(items: &[Story], presentation: Presentation) -> String {
     // No "Gone in": nothing in a highlight is going anywhere, which is what a
     // highlight is.
-    let mut table = media::listing_table(&["#", "Kind", "Posted", "Mentions"], presentation);
+    let mut table =
+        crate::output::media::listing_table(&["#", "Kind", "Posted", "Mentions"], presentation);
 
     for (index, story) in items.iter().enumerate() {
         table.add_row([
@@ -633,7 +636,7 @@ fn tray_json(tray: &Tray, format: Format) -> Result<String> {
         })
         .collect();
 
-    media::rows_or_envelope(rows, format, |rows| {
+    crate::output::media::rows_or_envelope(rows, format, |rows| {
         serde_json::json!({
             "username": tray.username,
             "highlights": rows,
@@ -658,7 +661,7 @@ fn items_json(tray: &Tray, number: usize, items: &[Story], format: Format) -> Re
         })
         .collect();
 
-    media::rows_or_envelope(rows, format, |rows| {
+    crate::output::media::rows_or_envelope(rows, format, |rows| {
         serde_json::json!({
             "username": tray.username,
             "highlight": {

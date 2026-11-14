@@ -14,6 +14,15 @@ static BY_THE_SYSTEM: AtomicBool = AtomicBool::new(false);
 /// Set by [`stop_when_stdin_closes`].
 static ON_STDIN_EOF: AtomicBool = AtomicBool::new(false);
 
+/// Set by [`before_a_forced_exit`].
+static BEFORE_EXIT: OnceLock<fn()> = OnceLock::new();
+
+/// What to undo before the second Ctrl+C ends the process at once, where no
+/// destructor runs: the command line puts its terminal back. Set once.
+pub fn before_a_forced_exit(undo: fn()) {
+    let _ = BEFORE_EXIT.set(undo);
+}
+
 /// Makes standard input reaching its end one more way of asking the process to
 /// stop, taken as the system's requests are (no message, exit 130).
 ///
@@ -183,7 +192,9 @@ pub fn install() -> CancelToken {
                     // Nothing below this runs a destructor, so a cursor hidden
                     // by the login menu would stay hidden for the rest of the
                     // user's shell session.
-                    crate::ui::restore_terminal();
+                    if let Some(undo) = BEFORE_EXIT.get() {
+                        undo();
+                    }
                     std::process::exit(130);
                 }
             });

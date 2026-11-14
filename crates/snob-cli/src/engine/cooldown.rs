@@ -9,7 +9,7 @@ use snob_store::store::snapshots::{self, Snapshot};
 
 use crate::app::{App, Held};
 use crate::engine::{ListOutcome, ListQuery, Provenance, target};
-use crate::report::{self, Blocked};
+use crate::sentences::{self, Blocked};
 
 /// Serves what is stored, or explains why nothing can be.
 pub fn serve(
@@ -20,7 +20,7 @@ pub fn serve(
 ) -> Result<(Vec<User>, ListOutcome)> {
     let snapshot = stored(app.db(), app.viewer().pk, args, kind, held)?;
     let taken_at = snapshot.taken_at.unwrap_or_default();
-    app.warn(&report::serving_stored_in_cooldown(held, kind, taken_at));
+    app.warn(&sentences::serving_stored_in_cooldown(held, kind, taken_at));
 
     super::serve_stored(app, &snapshot, Provenance::Cooldown)
 }
@@ -38,7 +38,7 @@ pub fn stored(
     held: &Held,
 ) -> Result<Snapshot> {
     if args.refresh {
-        return Err(report::refuse_in_cooldown(held, Blocked::RefreshWanted));
+        return Err(sentences::refuse_in_cooldown(held, Blocked::RefreshWanted));
     }
 
     let pk = match args.target.as_deref() {
@@ -48,7 +48,7 @@ pub fn stored(
             match snob_store::store::accounts::find_pk_by_username(store.conn(), username)? {
                 Some(pk) => pk,
                 None => {
-                    return Err(report::refuse_in_cooldown(
+                    return Err(sentences::refuse_in_cooldown(
                         held,
                         Blocked::AccountUnknown(username),
                     ));
@@ -58,7 +58,7 @@ pub fn stored(
     };
 
     snapshots::latest_complete(store.conn(), pk, kind)?
-        .ok_or_else(|| report::refuse_in_cooldown(held, Blocked::NothingStored(kind)))
+        .ok_or_else(|| sentences::refuse_in_cooldown(held, Blocked::NothingStored(kind)))
 }
 
 /// Two lists may only be crossed if they describe roughly the same moment.
@@ -76,7 +76,7 @@ pub fn check_same_moment(a: &ListOutcome, b: &ListOutcome) -> Result<()> {
         return Ok(());
     }
 
-    Err(report::refuse_different_moments(
+    Err(sentences::refuse_different_moments(
         a.provenance,
         b.provenance,
         a.taken_at,

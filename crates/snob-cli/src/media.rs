@@ -5,7 +5,6 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use comfy_table::{ContentArrangement, Table, presets};
 use snob_core::Epoch;
 use snob_core::model::printable;
 use snob_ig::client::IgClient;
@@ -13,13 +12,11 @@ use snob_ig::error::IgError;
 use snob_ig::model::PictureVersion;
 use snob_ig::model::dash::Track;
 
-use crate::cli::{DownloadSelection, Format};
 use crate::exit::{ExitCode, ExitError};
 use crate::ffmpeg::Ffmpeg;
-use crate::output::{self, Presentation, Rendered};
-use crate::report;
-use crate::ui;
-use crate::ui::browser::scratch::ABANDONED_AFTER;
+use crate::files::{self, ABANDONED_AFTER};
+use crate::host;
+use crate::sentences;
 
 /// Ceiling on one downloaded story.
 ///
@@ -97,38 +94,6 @@ pub struct Stories {
     /// As Instagram spells it, not as it was typed.
     pub username: String,
     pub items: Vec<Story>,
-}
-
-/// Writes a listing and, at a terminal, the hint about what to do with it.
-pub(crate) fn print_listing(
-    mut text: String,
-    destination: Option<&Path>,
-    hint: &str,
-) -> Result<ExitCode> {
-    // Every rendering ends in a newline, like `output::render`'s do.
-    text.push('\n');
-    output::write_rendered(&Rendered::Text(text), destination)?;
-
-    // On standard error, so it does not land in a redirect.
-    if destination.is_none() && Presentation::detect(None).interactive {
-        ui::info(hint);
-    }
-    Ok(ExitCode::Ok)
-}
-
-/// The table a listing is drawn in, with its header and nothing else yet.
-pub(crate) fn listing_table(headers: &[&str], presentation: Presentation) -> Table {
-    let mut table = Table::new();
-    table.load_style(presets::UTF8_FULL_CONDENSED);
-    table.set_content_arrangement(ContentArrangement::Dynamic);
-    if let Some(width) = presentation.width {
-        table.set_width(width);
-    }
-    table.set_header(output::table::header_cells(headers, presentation));
-    if presentation.color {
-        table.enforce_styling();
-    }
-    table
 }
 
 /// The most one small picture may weigh ([`small_pictures`]): half a megabyte.
@@ -220,23 +185,6 @@ pub(crate) fn with_pictures(
     }
 }
 
-/// A listing's rows as JSON: NDJSON is the rows alone, one to a line, and
-/// JSON is the document `envelope` wraps them in.
-pub(crate) fn rows_or_envelope(
-    rows: Vec<serde_json::Value>,
-    format: Format,
-    envelope: impl FnOnce(Vec<serde_json::Value>) -> serde_json::Value,
-) -> Result<String> {
-    Ok(match format {
-        Format::Ndjson => rows
-            .iter()
-            .map(serde_json::to_string)
-            .collect::<Result<Vec<_>, _>>()?
-            .join("\n"),
-        _ => serde_json::to_string_pretty(&envelope(rows))?,
-    })
-}
-
 /// The accounts a story tags, `@a @b`, for a table cell.
 pub(crate) fn mentions_of(story: &Story) -> String {
     story
@@ -247,27 +195,10 @@ pub(crate) fn mentions_of(story: &Story) -> String {
         .join(" ")
 }
 
-/// An empty tray is still an answer, and a document asked for is written even
-/// when there is nothing in it: `{"username": …, "stories": []}`, the way an
-/// empty list command prints `[]`, so a script reading JSON from a pipe has
-/// something to parse.
-pub(crate) fn empty_document(
-    format: Format,
-    destination: Option<&Path>,
-    json: impl FnOnce() -> Result<String>,
-) -> Result<()> {
-    if format != Format::Json {
-        return Ok(());
-    }
-    let mut text = json()?;
-    text.push('\n');
-    output::write_rendered(&Rendered::Text(text), destination)
-}
-
 /// When a story was posted, and what is left of it: the two time columns of
 /// the printed listing and of the browser, read off the same clock code.
 pub(crate) fn posted_of(story: &Story) -> String {
-    report::stored_on(story.taken_at)
+    sentences::stored_on(story.taken_at)
 }
 
 pub(crate) fn left_of(story: &Story) -> String {
@@ -300,75 +231,6 @@ fn countdown(seconds: i64) -> String {
         (h, 0) => format!("{h}h"),
         (h, m) => format!("{h}h {m}m"),
     }
-}
-
-/// Turns a parsed selection into item numbers and refuses any the listing
-/// does not have -- before the first request, so `-d 3,9` against a listing
-/// of five downloads nothing rather than three items and an error.
-pub(crate) fn numbers_of(
-    selection: DownloadSelection,
-    len: usize,
-    no_such: impl Fn(usize) -> anyhow::Error,
-) -> Result<Vec<usize>> {
-    let numbers: Vec<usize> = match selection {
-        DownloadSelection::All => (1..=len).collect(),
-        DownloadSelection::These(numbers) => numbers,
-    };
-    match numbers.iter().find(|&&number| number > len) {
-        Some(&number) => Err(no_such(number)),
-        None => Ok(numbers),
-    }
-}
-
-/// Downloads items of one listing by the numbers it printed.
-pub(crate) async fn download_selected(
-    client: std::sync::Arc<IgClient>,
-    stem_base: String,
-    items: &[Story],
-    selection: DownloadSelection,
-    destination: Option<&Path>,
-    no_such: impl Fn(usize) -> anyhow::Error,
-) -> Result<ExitCode> {
-    let numbers = numbers_of(selection, items.len(), &no_such)?;
-    let to_stdout = destination.is_some_and(output::is_stdout);
-    if to_stdout {
-        output::one_file_to_stdout(numbers.len())?;
-    }
-    let [number] = numbers[..] else {
-        return download_many(client, stem_base, items.to_vec(), numbers, destination).await;
-    };
-    // One-based because that is what the listing shows.
-    let story = number
-        .checked_sub(1)
-        .and_then(|i| items.get(i))
-        .ok_or_else(|| no_such(number))?;
-    match destination {
-        // `-o -`: the file itself, and nothing said about where it went.
-        Some(_) if to_stdout => {
-            let bytes = bytes_of(&client, story).await?;
-            output::write_bytes(&bytes, None)?;
-        }
-        // A directory that is there already: the file goes into it under the
-        // listing's name, as several would.
-        Some(dir) if dir.is_dir() => {
-            match save_story(&client, &stem_base, items, number, dir).await? {
-                Saved::Now(path) => ui::info(&format!("Saved {}", path.display())),
-                Saved::Already(path) => ui::info(&format!("Already saved {}", path.display())),
-            }
-        }
-        // The user named it, so replacing what is there is their call -- and so
-        // is downloading it again.
-        Some(path) => {
-            let bytes = bytes_of(&client, story).await?;
-            output::write_bytes(&bytes, Some(path))?;
-            ui::info(&format!("Saved {}", path.display()));
-        }
-        None => match save_story(&client, &stem_base, items, number, Path::new(".")).await? {
-            Saved::Now(path) => ui::info(&format!("Saved {}", path.display())),
-            Saved::Already(path) => ui::info(&format!("Already saved {}", path.display())),
-        },
-    }
-    Ok(ExitCode::Ok)
 }
 
 /// What [`save_story`] found: the file it wrote, or the one already there.
@@ -406,7 +268,7 @@ pub(crate) async fn save_story(
 /// `<stem>.<extension>`, the extension read from the bytes, by the same steps
 /// and for the same reasons.
 ///
-/// **The stem passes `output::usable_stem` before anything is made of it.**
+/// **The stem passes `files::usable_stem` before anything is made of it.**
 pub(crate) async fn save_named(
     client: &IgClient,
     stem: &str,
@@ -415,7 +277,7 @@ pub(crate) async fn save_named(
     cap: usize,
     dir: &Path,
 ) -> Result<Saved> {
-    output::usable_stem(stem)?;
+    files::usable_stem(stem)?;
     if let Some(existing) = already_saved(dir, stem) {
         return Ok(Saved::Already(existing));
     }
@@ -427,7 +289,7 @@ pub(crate) async fn save_named(
     // with its rename.
     sweep_stale_parts(dir, stem);
     let part = dir.join(format!("{stem}.{}.part", std::process::id()));
-    let mut file = output::create_new(&part)?;
+    let mut file = files::create_new(&part)?;
     let downloaded = match client.download_to(url, cap, &mut file).await {
         Ok(downloaded) => downloaded,
         Err(e) => {
@@ -443,7 +305,7 @@ pub(crate) async fn save_named(
     // `default_name` answers a bare name and checks the directory only for a
     // collision; joined here, or `-o somewhere` made the directory and the
     // file landed in the working directory.
-    let name = match output::default_path(dir, stem, extension_of(&downloaded.head)) {
+    let name = match files::default_path(dir, stem, extension_of(&downloaded.head)) {
         Ok(name) => name,
         Err(e) => {
             let _ = std::fs::remove_file(&part);
@@ -566,7 +428,7 @@ impl Best {
 pub(crate) async fn save_file(client: &IgClient, file: &Named, dir: &Path) -> Result<Saved> {
     let (saved, said) = save_file_saying(client, file, dir).await?;
     if let Some(said) = said {
-        ui::warn(&said);
+        host::warn(&said);
     }
     Ok(saved)
 }
@@ -611,7 +473,7 @@ pub(crate) async fn save_file_saying(
 pub(crate) async fn save_file_to(client: &IgClient, file: &Named, path: &Path) -> Result<()> {
     let (best, said) = joinable(file);
     if let Some(said) = said {
-        ui::warn(&said);
+        host::warn(&said);
     }
     if let Some(best) = best {
         let dir = path
@@ -626,14 +488,14 @@ pub(crate) async fn save_file_to(client: &IgClient, file: &Named, path: &Path) -
                 });
             }
             Err(e) if was_canceled(&e) => return Err(e),
-            Err(e) => ui::warn(&smaller(file, &format!("{e:#}"))),
+            Err(e) => host::warn(&smaller(file, &format!("{e:#}"))),
         }
     }
     let url = file
         .url
         .as_deref()
         .ok_or_else(|| anyhow!("{} has no downloadable version", file.what))?;
-    let mut out = output::Replacing::open(path)?;
+    let mut out = files::Replacing::open(path)?;
     client.download_to(url, file.cap, out.file()).await?;
     out.commit()
 }
@@ -706,7 +568,7 @@ async fn joined(
 
 /// One track from `url` into `part`, a file this creates, synced.
 async fn fetch_track(client: &IgClient, url: &str, cap: usize, part: &Path) -> Result<()> {
-    let mut file = output::create_new(part)?;
+    let mut file = files::create_new(part)?;
     client.download_track_to(url, cap, &mut file).await?;
     file.sync_all()
         .with_context(|| format!("could not finish writing {}", part.display()))
@@ -714,7 +576,7 @@ async fn fetch_track(client: &IgClient, url: &str, cap: usize, part: &Path) -> R
 
 /// `part` moved into `dir` as `<stem>.mp4`.
 fn place(part: &Path, dir: &Path, stem: &str) -> Result<Saved> {
-    let name = match output::default_path(dir, stem, "mp4") {
+    let name = match files::default_path(dir, stem, "mp4") {
         Ok(name) => name,
         Err(e) => {
             let _ = std::fs::remove_file(part);
@@ -777,9 +639,9 @@ pub(crate) async fn download_named(
         match saved {
             // Numbered, because they finish in whichever order the network
             // decides and the listing's numbers are what the user reads.
-            Ok(Saved::Now(path)) => ui::info(&format!("Saved {number}: {}", path.display())),
+            Ok(Saved::Now(path)) => host::info(&format!("Saved {number}: {}", path.display())),
             Ok(Saved::Already(path)) => {
-                ui::info(&format!("Already saved {number}: {}", path.display()));
+                host::info(&format!("Already saved {number}: {}", path.display()));
             }
             Err(e) if was_canceled(&e) => {
                 // The token is shared, so every download still running has
@@ -902,7 +764,7 @@ pub(crate) fn default_name(
     number: usize,
     extension: &str,
 ) -> Result<PathBuf> {
-    output::default_path(dir, &format!("{}-{number}", printable(username)), extension)
+    files::default_path(dir, &format!("{}-{number}", printable(username)), extension)
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! `snob __job run <id>`: the supervisor, which runs a job's walk and writes
 //! what it came to.
 //!
-//! **What it runs is checked here, again**, and is this binary (`current_exe`):
+//! **What it runs is checked here, again**, and is this binary (`exe::program`):
 //! `job.json` names no program, and its command line passes `argv::check` or
 //! the job ends `failed` with `refused_argv` and nothing run.
 //!
@@ -24,8 +24,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use snob_store::paths::{self, AccountPaths, JobId};
 
-use super::{GRACE, HEARTBEAT, Job, SCHEMA, State, Status, argv, file, read, show, write};
-use crate::cli::Cli;
+use super::{Check, GRACE, HEARTBEAT, Job, SCHEMA, State, Status, file, read, show, write};
 use crate::exit::ExitCode;
 
 /// How often it asks whether it should stop, and whether the walk ended.
@@ -41,7 +40,14 @@ const LOCK_WITHIN: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 const NO_WINDOW: u32 = windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
-pub async fn run(cli: &Cli, account: &AccountPaths, id: &str) -> Result<ExitCode> {
+/// Runs job `id` of `account`: its command line read by `check`, and its walk
+/// started with what `walk_args` makes of the command.
+pub async fn run(
+    account: &AccountPaths,
+    id: &str,
+    check: Check,
+    walk_args: &dyn Fn(&[String]) -> std::io::Result<Vec<std::ffi::OsString>>,
+) -> Result<ExitCode> {
     let Some(id) = JobId::parse(id) else {
         return Err(show::no_such_job(id));
     };
@@ -75,7 +81,7 @@ pub async fn run(cli: &Cli, account: &AccountPaths, id: &str) -> Result<ExitCode
         Some(job)
             if job.schema == SCHEMA && job.id == id.as_str() && job.viewer_pk == account.pk() =>
         {
-            argv::check(&job.argv)
+            check(&job.argv)
         }
         _ => Err("the job's record is not one this build runs".to_string()),
     };
@@ -111,9 +117,9 @@ pub async fn run(cli: &Cli, account: &AccountPaths, id: &str) -> Result<ExitCode
     }
     write(&dir, "state.json", &state)?;
 
-    let mut command = std::process::Command::new(std::env::current_exe()?);
+    let mut command = std::process::Command::new(crate::exe::program()?);
     command
-        .args(argv::walk(cli, account.pk(), &checked.args)?)
+        .args(walk_args(&checked.args)?)
         .stdin(Stdio::piped())
         .stdout(private(&file(&dir, "out.json.partial"), false)?)
         .stderr(private(&file(&dir, "err.log"), true)?);

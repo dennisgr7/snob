@@ -623,7 +623,7 @@ pub async fn tick(app: &mut App, watched: &Watched) -> Result<TickReport> {
                     )
                 })
             {
-                app.warn(crate::report::BATTERY_CRITICAL_SKIP);
+                app.warn(crate::sentences::BATTERY_CRITICAL_SKIP);
             }
             lists.push(TickList {
                 kind,
@@ -681,7 +681,7 @@ pub async fn tick(app: &mut App, watched: &Watched) -> Result<TickReport> {
             // the same tick on a walked account, and the `--json` stream does
             // not say `"error"` about a state that lifts on its own.
             accounts::find_pk_by_username(app.db().conn(), name)?.ok_or_else(|| {
-                crate::report::refuse_nothing_looked_at(
+                crate::sentences::refuse_nothing_looked_at(
                     name,
                     refused_outcome(&lists, posts_skipped),
                 )
@@ -959,7 +959,7 @@ fn resolve(app: &App, typed: Option<&str>) -> Result<(Pk, Option<String>)> {
 
     let name = target::clean(typed);
     let Some(pk) = accounts::find_pk_by_username(app.db().conn(), name)? else {
-        return Err(crate::report::refuse_never_walked(name));
+        return Err(crate::sentences::refuse_never_walked(name));
     };
 
     Ok((pk, users::name(app.db().conn(), pk)?))

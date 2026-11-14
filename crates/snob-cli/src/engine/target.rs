@@ -119,7 +119,7 @@ pub async fn resolve(app: &mut App, args: &ListQuery) -> Result<Target> {
     // Only certainty blocks.
     if !is_self && profile.is_private == Some(true) && profile.followed_by_viewer == Some(false) {
         // Which of the two refusals it is, and nothing about how either reads.
-        return Err(crate::report::refuse_private(
+        return Err(crate::sentences::refuse_private(
             &profile.username,
             profile.requested_by_viewer == Some(true),
         ));
@@ -129,7 +129,7 @@ pub async fn resolve(app: &mut App, args: &ListQuery) -> Result<Target> {
     // client falls back to search to get an id at all.
     if !profile.counters_are_knowable() {
         app.progress()
-            .warn(&crate::report::counters_unknowable(&profile.username));
+            .warn(&crate::sentences::counters_unknowable(&profile.username));
     }
 
     Ok(Target {
@@ -155,7 +155,7 @@ pub fn from_store(app: &App, typed: Option<&str>, kind: ListKind) -> Result<Targ
 
     let typed = clean(typed);
     let Some(pk) = accounts::find_pk_by_username(app.db().conn(), typed)? else {
-        return Err(crate::report::refuse_nothing_stored(kind, Some(typed)));
+        return Err(crate::sentences::refuse_nothing_stored(kind, Some(typed)));
     };
 
     Ok(Target {
