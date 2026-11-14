@@ -1,35 +1,10 @@
-//! HTTP client against Instagram's web API.
+//! HTTP client against Instagram's web API (`www.instagram.com`, never the
+//! mobile hosts: cookie, User-Agent and endpoint have to agree).
 //!
-//! It uses the `www.instagram.com` endpoints rather than the `i.instagram.com`
-//! ones, to stay consistent with a session that originated in a desktop
-//! browser. That consistency between cookie, User-Agent and endpoint is what
-//! Instagram evaluates, and breaking it is what produces `useragent mismatch`.
-//!
-//! One `IgClient`, split by concern. What is here is the client itself: how it
-//! is built, what it holds, where it is pointed, and the two steps every answer
-//! goes through whichever half of the API produced it -- [`IgClient::decode`]
-//! and [`IgClient::classify_and_record`]. The files below add to the same
-//! `impl`, which is what lets each of them be read on its own.
-//!
-//! - [`transport`] -- how a request goes out and how the answer comes back:
-//!   the origin rule, the redirect loop that pays for every hop it follows,
-//!   the ceilings on what will be read, and the races against the cancel
-//!   token.
-//! - [`headers`] -- what a request says about itself. [`headers::Surface`] is
-//!   the difference between the app talking to the API and the browser
-//!   navigating to a page, and it decides most of the set.
-//! - [`read`] -- the endpoints this tool reads, one method per URL.
-//! - [`write`] -- the follow and the unfollow, and nothing else. One file, so
-//!   that the rule about which function may send a method other than GET can
-//!   be checked by opening it.
-//! - [`cdn`] -- the CDN half: where a picture is allowed to come from, and
-//!   the download that carries nothing identifying; [`media`], which of the
-//!   tab and that client fetches a file.
-//! - [`page`] -- the browser tab every request to Instagram is sent from by
-//!   default, and the allowlist wrapped around it.
-//! - [`ask`] -- what the client asks that tab for by name rather than by
-//!   request, and what each kind of ask is paid with.
-//! - [`posts`] -- a profile's posts, one post, and its comments.
+//! One `IgClient`, its `impl` split by concern: [`transport`] (how a request
+//! goes out, redirects, ceilings), [`headers`], [`read`], [`write`] (the only
+//! file that sends a method other than GET), [`cdn`] and [`media`], [`page`]
+//! (the browser tab and its allowlist), [`ask`], [`posts`].
 
 mod ask;
 mod cdn;
@@ -64,102 +39,58 @@ use crate::pace::{Pace, Pacer};
 use self::transport::{Answer, api_policy, build_client, same_origin};
 
 pub struct IgClient {
-    /// Talks to Instagram, the reads and the two writes alike. Carries the
-    /// session, and follows no redirect on its own: see [`api_policy`].
+    /// Carries the session, and follows no redirect on its own: see [`api_policy`].
     api: reqwest::Client,
-    /// Talks to the CDN. Carries nothing that identifies the account, and
-    /// every hop has to be somewhere pictures come from: see [`CdnClient`].
-    ///
-    /// Two clients rather than one because the two have opposite rules: the
-    /// API request must not leave instagram.com, and the asset request has to
-    /// be allowed to move between CDN hosts. One client can only have one
-    /// redirect policy, so sharing it meant the looser of the two governed the
-    /// requests carrying the credentials.
-    ///
-    /// Built on first use, which is a download and nothing else. A
-    /// `reqwest::Client` is a connection pool and a TLS configuration — the
-    /// platform trust store is read to assemble one — and every other command
-    /// paid for that on the startup path to never send a request through it.
+    /// Carries nothing that identifies the account. A second client because
+    /// its redirect rule is the opposite of the API's. Built on first use:
+    /// assembling one reads the platform trust store.
     cdn: OnceLock<CdnClient>,
     base: Url,
     session: Session,
-    /// Reserving budget lives here rather than in each caller, so a request
-    /// that is never paid for cannot be written.
+    /// Reserving budget lives here, so a request never paid for cannot be written.
     pacer: Pacer,
     hints: ClientHints,
     /// Instagram's session-continuity token. See [`IgClient::claim`].
     claim: Mutex<String>,
-    /// The browser tab every request to Instagram is sent from, when there is
-    /// one. See [`page`]. `None` sends them with `reqwest`: under
-    /// `SNOB_NO_BROWSER`, and to a test server.
+    /// The browser tab requests are sent from. `None` sends with `reqwest`:
+    /// under `SNOB_NO_BROWSER`, and to a test server.
     page: Option<std::sync::Arc<dyn page::Page>>,
-    /// The `X-Web-Session-ID` the client that sends without a browser puts on
-    /// its REST reads: made once, as a page makes one for all of its calls.
+    /// The `X-Web-Session-ID` of the client that sends without a browser.
     web_session: String,
-    /// The highlights tray the last profile opened was read with, for the
-    /// command that shows it to take rather than ask again. See
+    /// The highlights tray the last profile opened was read with. See
     /// `IgClient::profile_by_pk`.
     held_tray: Mutex<Option<ask::HeldTray>>,
-    /// Whether a `show_many` has come back unbuilt for want of the token the
-    /// app's REST POSTs carry: the next ones are not paid for. See
-    /// `IgClient::statuses`.
+    /// Whether a `show_many` came back unbuilt for want of the app's token:
+    /// the next ones are not paid for. See `IgClient::statuses`.
     statuses_unbuilt: AtomicBool,
 }
 
 /// What a browser sends before the server has told it anything.
 const INITIAL_CLAIM: &str = "0";
 
-/// Whether `url` is Instagram itself: the one copy of the question both the
-/// page and the pace ask of an address.
 fn is_instagram(url: &Url) -> bool {
     static LIVE: std::sync::LazyLock<Url> =
         std::sync::LazyLock::new(|| Url::parse(BASE_URL).expect("BASE_URL parses"));
     same_origin(url, &LIVE)
 }
 
-/// Where every client built after this call points, in a testing build.
+/// Where every client built after [`point_every_client_at`] points.
 ///
-/// **Compiled out of a release build entirely**, feature and all: a shipped
-/// binary has neither this function nor the flag that calls it, so there is no
-/// way to point it at another server and nothing to disable. That is what the
-/// whole Cargo feature buys over a hidden flag, and it is the reason it is a
-/// feature.
-///
-/// A process-global rather than an argument, which is normally the wrong answer
-/// and is the right one here. Three separate places build a client — `App`,
-/// `whoami`, and `login::validate`, which is in this crate and takes no path
-/// from the binary at all — so an argument would have to be threaded through
-/// five signatures that exist in the release build, to carry a value that never
-/// exists in it. It is set once from `main` before any client exists, and never
-/// again: [`OnceLock::set`] returns the value back on a second call rather than
-/// replacing it, so a run cannot be redirected halfway through.
-///
-/// It sets the **base URL**, not a "skip the pace" switch, which is the
-/// difference that matters. [`IgClient::is_live`] answers by address, so a
-/// client pointed here is genuinely not Instagram and turning the pace off is
-/// telling the truth. The failure that shape avoids is the one a loopback-only
-/// escape hatch would have created: a proxy on `127.0.0.1` forwarding to
-/// Instagram is a test server by address and Instagram by content, and the walk
-/// it produces is a real account read with no waits between pages.
-///
-/// The binary refuses `--ig-base-url` unless `--sandbox-root` is given too, so
-/// the session a redirected client carries comes out of a store inside that
-/// root. The stored session of the person running it is not reachable from
-/// here.
+/// **Compiled out of a release build**, which is why it is a Cargo feature
+/// and not a hidden flag. It sets the base URL, not a "skip the pace" switch:
+/// [`IgClient::is_live`] answers by address. Set once from `main`; the binary
+/// refuses `--ig-base-url` without `--sandbox-root`.
 #[cfg(feature = "testing")]
 static SANDBOX_BASE: std::sync::OnceLock<Url> = std::sync::OnceLock::new();
 
-/// Points every client built from now on somewhere other than Instagram.
-///
-/// See [`SANDBOX_BASE`]. `Err` carries the base already set, on a second call.
+/// `Err` carries the base already set, on a second call.
 #[cfg(feature = "testing")]
 pub fn point_every_client_at(base: Url) -> Result<(), Url> {
     SANDBOX_BASE.set(base)
 }
 
 /// The site a client built now points at: Instagram, or in a testing build
-/// the server [`point_every_client_at`] named. What a [`CdnClient`] built
-/// with no `IgClient` behind it judges an address against.
+/// the server [`point_every_client_at`] named.
 pub fn site() -> Url {
     #[cfg(feature = "testing")]
     if let Some(base) = SANDBOX_BASE.get() {
@@ -170,9 +101,6 @@ pub fn site() -> Url {
 
 impl IgClient {
     pub fn new(session: Session, pacer: Pacer) -> Result<Self, IgError> {
-        // Read here rather than at each call site, because `login::validate`
-        // builds a client inside this crate and never sees the binary's
-        // arguments. In a release build this line does not exist.
         #[cfg(feature = "testing")]
         if let Some(base) = SANDBOX_BASE.get() {
             return Self::pointed_at(session, pacer, base.clone());
@@ -201,11 +129,6 @@ impl IgClient {
         })
     }
 
-    /// The CDN client, built the first time a picture is downloaded.
-    ///
-    /// Everything the policy needs is already a field, so nothing has to be
-    /// captured at construction time, and only a download the tab does not
-    /// fetch pays for building it.
     pub(in crate::client) fn cdn(&self) -> Result<&CdnClient, IgError> {
         if let Some(cdn) = self.cdn.get() {
             return Ok(cdn);
@@ -218,25 +141,16 @@ impl IgClient {
         Ok(self.cdn.get_or_init(|| built))
     }
 
-    /// Reads Instagram's answer and, if it was a push-back, records the
+    /// Classifies Instagram's answer and, if it was a push-back, records the
     /// cooldown before handing the error on.
-    ///
-    /// It lives here for the same reason the budget does: every caller needs
-    /// the same reaction, and a 429 that left no mark would have the next run
-    /// knock on the same door straight away. Making the request is what earns
-    /// the cooldown, so the place that makes requests is the place that
-    /// records it.
     pub(in crate::client) fn classify_and_record(&self, status: u16, body: &str) -> IgError {
         self.record(classify(status, body))
     }
 
-    /// The second half of [`Self::classify_and_record`], for an answer that
-    /// was classified some other way: a navigation's landing page, which has
-    /// no status or body to classify.
+    /// For an answer classified some other way (a navigation's landing page).
     pub(in crate::client) fn record(&self, error: IgError) -> IgError {
         if let Some((reason, minimum)) = crate::error::cooldown_for(&error) {
-            // A cooldown that cannot be written is not worth losing the real
-            // error over: the caller still gets told what Instagram said.
+            // A cooldown that cannot be written must not hide the real error.
             if let Err(e) = self.pacer.start_cooldown(reason, minimum) {
                 tracing::warn!(error = %e, "could not record the cooldown");
             }
@@ -246,14 +160,9 @@ impl IgClient {
 
     /// Points the client at a different server. Tests only.
     ///
-    /// Rebuilds rather than assigns: both redirect policies are decided from
-    /// the base URL when the client is made, so moving the field alone would
-    /// leave them judging every hop against the wrong server.
-    ///
-    /// **This is also what turns the pace off**, through [`IgClient::is_live`],
-    /// so a consumer of this crate that pointed a client at a proxy would walk
-    /// Instagram with no waits between pages. `snob-cli` is the only consumer,
-    /// and it only does this in tests.
+    /// **This is also what turns the pace off**, through [`IgClient::is_live`].
+    /// Rebuilds rather than assigns: the redirect policies are decided from
+    /// the base URL when the client is made.
     #[doc(hidden)]
     #[must_use]
     pub fn with_base_url(self, base: Url) -> Self {
@@ -261,18 +170,14 @@ impl IgClient {
             .expect("rebuilding a client that already exists cannot fail")
     }
 
-    /// The same client, sending through `page`: for the tests of what the
-    /// client makes of a page's answers, with no browser behind it.
     #[cfg(test)]
     pub(crate) fn through(mut self, page: std::sync::Arc<dyn page::Page>) -> Self {
         self.page = Some(page::allowlisted(page));
         self
     }
 
-    /// The same client, asking and sending through `page`, allowlist and
-    /// all: for a test that drives the browser path with a page of its own.
-    /// After [`Self::with_base_url`], which builds the client again without
-    /// one.
+    /// Sends through `page`, allowlist and all. After [`Self::with_base_url`],
+    /// which builds the client again without one.
     #[cfg(feature = "testing")]
     #[doc(hidden)]
     #[must_use]
@@ -285,20 +190,13 @@ impl IgClient {
         &self.session
     }
 
-    /// Whether this client sends from a browser page: which of its two arms
-    /// a read takes, told to a caller that never chooses it.
+    /// Whether this client sends from a browser page.
     pub fn has_page(&self) -> bool {
         self.page.is_some()
     }
 
-    /// Whether this client can send a write at all.
-    ///
-    /// A write needs a CSRF token. Sent with `reqwest`, that is the one the
-    /// session was stored with, and `snob login --paste` without
-    /// `--csrftoken` stores none. Sent from the browser it is the browser's
-    /// own, read from its cookie jar at the moment of sending — Instagram sets
-    /// one on every page load — so any session can write. One question with
-    /// one answer, asked by every place that needs to know.
+    /// Whether this client can send a write: it needs a CSRF token, the
+    /// browser's own from the tab, or the stored one with `reqwest`.
     pub fn can_write(&self) -> bool {
         self.page.is_some() || self.session.csrftoken.is_some()
     }
@@ -307,27 +205,16 @@ impl IgClient {
         &self.pacer
     }
 
-    /// Whether this client is pointed at Instagram itself.
-    ///
-    /// What decides whether the pace is real: a walk against the live host pays
-    /// every wait between pages, and a walk against a mock server pays none.
-    ///
-    /// Asked of the base URL rather than set by a caller, and that is the whole
-    /// point: "walk Instagram with no waits" is not a thing anybody can ask
-    /// for. A test server cannot be Instagram, and Instagram cannot be a test
-    /// server, so the question answers itself.
+    /// Whether this client is pointed at Instagram itself, which decides
+    /// whether the pace is real. **Asked of the base URL, never set by a
+    /// caller**: nobody can ask to walk Instagram with no waits.
     pub fn is_live(&self) -> bool {
         is_instagram(&self.base)
     }
 
-    /// Waits a step between two pages or entries of one action, the one a
-    /// list walk takes ([`Pace::step`]), and answers whether it was canceled.
-    ///
-    /// Only against Instagram ([`Self::is_live`]), like every wait in the
-    /// walker: a mock server is not somebody's account. For what pages by
-    /// hand rather than through the walker, so the rule is kept in one place.
-    ///
-    /// Lengthened when the latest answers were slow (`Pacer::slowed`).
+    /// Waits a step between two pages of one action ([`Pace::step`]) and
+    /// answers whether it was canceled. Only against Instagram; lengthened
+    /// when the latest answers were slow (`Pacer::slowed`).
     pub async fn step_between(&self, pace: &Pace) -> bool {
         if !self.is_live() {
             return false;
@@ -340,9 +227,7 @@ impl IgClient {
     }
 
     /// Waits as a person looks at a profile before opening one of its lists
-    /// ([`Pace::dwell`]), and answers whether it was canceled. Only against
-    /// Instagram, as [`Self::step_between`]; for what reads a list by hand
-    /// rather than through the walker, which waits it itself.
+    /// ([`Pace::dwell`]); otherwise as [`Self::step_between`].
     pub async fn dwell_before_a_list(&self, pace: &Pace) -> bool {
         if !self.is_live() {
             return false;
@@ -354,9 +239,8 @@ impl IgClient {
         self.pacer.cancel_token().sleep_or_cancel(dwell).await
     }
 
-    /// Writes down how long an answer of the API took to arrive, under
-    /// `operation` (`transport::named`): what the pace slows down on, and
-    /// what `snob status` shows. Nothing when there was no time to write.
+    /// Writes down how long an answer took to arrive, under `operation`
+    /// (`transport::named`): what the pace slows down on.
     pub(in crate::client) async fn timed(
         &self,
         operation: String,
@@ -365,8 +249,7 @@ impl IgClient {
         load: Option<String>,
         via: snob_core::budget::Via,
     ) {
-        // Status 0 is a redirect the page did not follow: no answer of the
-        // server's to time.
+        // Status 0 is a redirect the page did not follow: nothing to time.
         let Some(waited) = waited.filter(|_| status != 0) else {
             return;
         };
@@ -382,15 +265,19 @@ impl IgClient {
             .await;
     }
 
-    /// Pays the rest a sitting owes, if one is owed (`Pacer::rest_owed`),
-    /// before a page of a list read by hand rather than through the walker,
-    /// which pays it itself; `Ok(true)` when it was canceled. `tell` hears
-    /// how long the rest is before it begins, since nothing else on screen
-    /// would say why the command went quiet.
-    ///
-    /// Slept only against Instagram, as [`Self::step_between`]; against a
-    /// test server the rest is counted paid as soon as it is told, as the
-    /// walker counts it.
+    /// Charges the day's accounts for the `accounts` a read named. A failure
+    /// to record it is logged, not raised: the read was already paid for.
+    pub(in crate::client) async fn charge_accounts(&self, accounts: usize) {
+        let accounts = u32::try_from(accounts).unwrap_or(u32::MAX);
+        if let Err(e) = self.pacer.spend_accounts(accounts).await {
+            tracing::warn!(error = %e, "could not record the accounts a read carried");
+        }
+    }
+
+    /// Pays the rest a sitting owes, if any (`Pacer::rest_owed`), before a
+    /// page read by hand; `Ok(true)` when canceled. `tell` hears how long the
+    /// rest is before it begins. Against a test server it is counted paid at
+    /// once.
     pub async fn rest_before_a_page(
         &self,
         pace: &Pace,
@@ -411,12 +298,9 @@ impl IgClient {
         Ok(false)
     }
 
-    /// Turns what Instagram said into either the value asked for or an error,
-    /// recording a cooldown on the way if the answer earned one.
-    ///
-    /// Shared by the read and the write path so that "a 200 can still be a
-    /// failure" is one rule rather than two; [`refused`] is that rule, and the
-    /// browser's listener asks it too.
+    /// Turns an answer into the value asked for or an error, recording a
+    /// cooldown if it earned one. [`refused`] is the one rule for "a 200 can
+    /// still be a failure".
     pub(in crate::client) fn decode<T: DeserializeOwned>(
         &self,
         answer: &Answer,
@@ -427,10 +311,6 @@ impl IgClient {
         }
 
         serde_json::from_str(body).map_err(|e| {
-            // The same excerpt every other error gets: filtered, since it is
-            // printed to a terminal, and aware that a body starting with `<` is
-            // a captive portal rather than the API, which is what a body that
-            // will not parse usually is.
             IgError::Decode(format!(
                 "{e} - response: {}",
                 crate::error::body_excerpt(body)
@@ -438,18 +318,11 @@ impl IgClient {
         })
     }
 
-    /// [`IgClient::decode`], for the answer to a query of the registry's
-    /// asked of the page, whose `data` is under `root`, the operation's root
-    /// field ([`crate::allowlist::Operation::root_field`]).
+    /// [`IgClient::decode`] for a registry query asked of the page, whose
+    /// `data` is under `root` ([`crate::allowlist::Operation::root_field`]).
     ///
-    /// **An answer whose `data` lacks `root` does not decode.** Every field
-    /// of the models is optional, so such an answer would otherwise read as
-    /// an account with no highlight, no story or no profile, and say nothing
-    /// of the field Instagram did answer under.
-    ///
-    /// One that does not decode says in the log what the live check needs to
-    /// tell why: the names of the keys under `data`, the content-type it was
-    /// served as, and whether it came behind `for (;;);`. Never a value.
+    /// **An answer whose `data` lacks `root` does not decode**: every field of
+    /// the models is optional, so it would read as an empty account.
     pub(in crate::client) fn decode_query<T: DeserializeOwned>(
         &self,
         answer: &Answer,
@@ -469,42 +342,17 @@ impl IgClient {
             })
     }
 
-    /// The one way a push-back leaves the client: classified and recorded,
-    /// then noted, since whether the note is a warning depends on the cause.
-    /// One function rather than a pair of calls at each site, so that "every
-    /// push-back is measured" is checkable by reading it, the write path
-    /// included.
+    /// The one way a push-back leaves the client: classified, recorded, noted.
     pub(in crate::client) fn refuse(&self, answer: &Answer) -> IgError {
         let error = self.classify_and_record(answer.status, &answer.body);
         self.note_push_back(answer, &error);
         error
     }
 
-    /// Writes down what a push-back looked like, and changes nothing.
-    ///
-    /// **This is a measurement, not a mechanism.** Reading `Retry-After` would
-    /// make snob the only tool of its class that does, and nobody has
-    /// established whether these endpoints send it at all; the honest first
-    /// step is to log it on every push-back so that a real run answers the
-    /// question. Until it has, inventing behavior on the assumption that the
-    /// header arrives is guessing with somebody's account.
-    ///
-    /// **When it is implemented it is a floor and never a ceiling.** A server
-    /// naming thirty seconds must not shorten a local cooldown that is longer:
-    /// the cooldown lengths here are about how long an account is left alone
-    /// after Instagram has objected, which is a different question from how
-    /// soon the endpoint will answer again. Written here because this is where
-    /// somebody will come looking when they add it.
-    ///
-    /// **`warn` for a push-back, `debug` for any other refusal.** The user is
-    /// told the cause, "throttling", and not which endpoint, what status or
-    /// what body, and a push-back met live leaves nothing else to go on. A run
-    /// stops at its first push-back, so this is a line or two, not a stream:
-    /// the browser's listener writes its own when it hears one first.
-    ///
-    /// The value is logged as it arrived. A header value cannot carry a byte
-    /// below 0x20 — the HTTP parser refuses one before we ever see it — so
-    /// there is nothing here that a terminal would act on.
+    /// Logs what a push-back looked like and changes nothing: `Retry-After`
+    /// is measured, not acted on. **If it is ever acted on, it is a floor and
+    /// never a ceiling** for the local cooldown. `warn` for a push-back,
+    /// `debug` for any other refusal.
     pub(in crate::client) fn note_push_back(&self, answer: &Answer, error: &IgError) {
         let endpoint = answer.endpoint.as_str();
         let status = answer.status;
@@ -521,9 +369,7 @@ impl IgClient {
     }
 }
 
-/// The answers before a push-back, oldest first, as its log line says them:
-/// `followers 200 420ms, followers 200 2300ms`, the refusal itself among
-/// them when it was timed.
+/// `followers 200 420ms, followers 200 2300ms`, oldest first.
 fn answered_before(answers: &[snob_core::budget::AnswerTime]) -> String {
     if answers.is_empty() {
         return "<none timed>".to_string();
@@ -535,19 +381,15 @@ fn answered_before(answers: &[snob_core::budget::AnswerTime]) -> String {
         .join(", ")
 }
 
-/// The names of the fields under `data` when `data` is an object without
-/// `root`, and `None` otherwise: a `data` that is `null`, or absent, is the
-/// model's to read.
+/// The names of the fields under `data` when it is an object without `root`.
 fn under_another_field(body: &str, root: &str) -> Option<Vec<String>> {
     let answer: serde_json::Value = serde_json::from_str(body).ok()?;
     let data = answer.get("data")?.as_object()?;
     (!data.contains_key(root)).then(|| data.keys().cloned().collect())
 }
 
-/// Says what a query's answer that did not decode looked like: its
-/// endpoint, the content-type it was served as (`served`, with `x-stack`),
-/// whether it came behind `for (;;);`, and the names of the keys under its
-/// `data`, which say which root field Instagram answered with.
+/// Logs the shape of a query's answer that did not decode: key names, never
+/// a value.
 fn note_undecoded(answer: &Answer) {
     let endpoint = answer.endpoint.as_str();
     let served = answer.served.as_deref().unwrap_or("<absent>");

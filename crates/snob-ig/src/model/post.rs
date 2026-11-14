@@ -1,11 +1,7 @@
-//! Models of a profile's posts, one post, and its comments, as the web app
-//! reads them: the grid's two queries, `media/<pk>/info/`,
-//! `media/<pk>/comments/` and the replies under a comment.
-//!
-//! The grid and the info read describe a post with the same fields, so one
-//! type reads both. Every field but the pk is optional, as everywhere in
-//! these models: the answers name dozens more, change them without notice,
-//! and answer `null` where a post has nothing.
+//! Models of a profile's posts, one post, its comments, replies and likers,
+//! as the web app reads them. The grid and the info read describe a post with
+//! the same fields, so one type reads both. Every field but the pk is
+//! optional, and `null` reads as empty.
 
 use serde::Deserialize;
 use snob_core::Epoch;
@@ -18,12 +14,10 @@ use crate::shortcode::MediaPk;
 #[derive(Debug, Clone, Deserialize)]
 pub struct Media {
     pub pk: MediaPk,
-    /// The code its address carries: eleven characters, or 39 for a private
-    /// account's post.
+    /// Eleven characters, or 39 for a private account's post.
     #[serde(default)]
     pub code: Option<String>,
-    /// 1 a photo, 2 a video, 8 a carousel: Instagram's integer, turned into
-    /// something meaningful where it is shown.
+    /// 1 a photo, 2 a video, 8 a carousel.
     #[serde(default)]
     pub media_type: u8,
     /// `feed`, `carousel_container`, `clips` (a reel), `carousel_item`.
@@ -37,8 +31,7 @@ pub struct Media {
     pub like_count: Option<u64>,
     #[serde(default)]
     pub comment_count: Option<u64>,
-    /// How many times a reel was played. The grid's answer leaves it out;
-    /// the info read and the profile's reels carry it.
+    /// A reel's plays. The grid's answer leaves it out.
     #[serde(default)]
     pub play_count: Option<u64>,
     #[serde(default)]
@@ -46,52 +39,45 @@ pub struct Media {
     /// The owner hid the counts: the likes are then not said as a number.
     #[serde(default)]
     pub like_and_view_counts_disabled: Option<bool>,
-    /// The accounts the app names under the post, "Liked by <name> and
-    /// others": the viewer's own contacts who liked it, as plain names. At
-    /// most one in the capture of 2026-11-13.
+    /// "Liked by <name> and others": the viewer's contacts who liked it, as
+    /// names. At most one in the capture of 2026-11-13.
     #[serde(default, deserialize_with = "nullable")]
     pub top_likers: Vec<String>,
-    /// The same contacts as accounts, the faces the app draws beside that
-    /// line: none to three in the capture of 2026-11-13, `null` on some
-    /// posts, and a few entries with no name at all.
+    /// The same contacts as accounts: none to three in the capture of
+    /// 2026-11-13, `null` on some posts, some entries with no name.
     #[serde(default, deserialize_with = "nullable")]
     pub facepile_top_likers: Vec<Account>,
-    /// How many accounts reposted it.
     #[serde(default)]
     pub media_repost_count: Option<u64>,
-    /// How many times it was shared: a reel's count, absent when the owner
-    /// turned it off ([`Self::share_count_disabled`]).
+    /// A reel's shares, absent when the owner turned the count off.
     #[serde(default)]
     pub reshare_count: Option<u64>,
     #[serde(default)]
     pub share_count_disabled: Option<bool>,
-    /// A reel's plays on Facebook, beside [`Self::ig_play_count`]; the two
-    /// make [`Self::play_count`] where it is on both.
+    /// A reel's plays on Facebook, beside [`Self::ig_play_count`].
     #[serde(default)]
     pub fb_play_count: Option<u64>,
-    /// A video's length in seconds.
+    /// Seconds.
     #[serde(default)]
     pub video_duration: Option<f64>,
     #[serde(default)]
     pub has_audio: Option<bool>,
-    /// The DASH manifest of a video, an MPD as text: its renditions, the
-    /// widest of them wider than [`Self::video_versions`] on most videos.
+    /// A video's DASH manifest, an MPD as text: its renditions, the widest
+    /// wider than [`Self::video_versions`] on most videos.
     #[serde(default)]
     pub video_dash_manifest: Option<String>,
-    /// The picture's description, written by its owner or made by
-    /// Instagram: per item on a carousel.
+    /// Per item on a carousel.
     #[serde(default)]
     pub accessibility_caption: Option<String>,
-    /// The accounts whose grid it is pinned to the top of, by pk: its
-    /// owner's or a co-author's when it is pinned (20 lists of 20 in the
-    /// capture of 2026-11-13).
+    /// The accounts whose grid it is pinned to the top of, by pk: its owner's
+    /// or a co-author's (20 lists of 20 in the capture of 2026-11-13).
     #[serde(default, deserialize_with = "flexible_ids")]
     pub timeline_pinned_user_ids: Vec<String>,
     #[serde(default)]
     pub is_paid_partnership: Option<bool>,
     #[serde(default)]
     pub caption_is_edited: Option<bool>,
-    /// A reel's sound: licensed music, or the original sound of a video.
+    /// A reel's sound: licensed music, or the video's own.
     #[serde(default)]
     pub clips_metadata: Option<ClipsMetadata>,
     /// The music of a photo or a carousel; `null` on a reel.
@@ -99,7 +85,7 @@ pub struct Media {
     pub music_metadata: Option<MusicMetadata>,
     #[serde(default)]
     pub usertags: Option<Usertags>,
-    /// The accounts it is posted with, a collaboration's other authors.
+    /// A collaboration's other authors.
     #[serde(default, deserialize_with = "nullable")]
     pub coauthor_producers: Vec<Account>,
     /// The owner.
@@ -110,12 +96,9 @@ pub struct Media {
     #[serde(default)]
     pub image_versions2: Option<Candidates>,
     /// A video's progressive files: one MP4 with its sound, 720 wide at most
-    /// in the captures, offered three times under three `type`s. The higher
-    /// resolutions are only in `video_dash_manifest`, as separate video and
-    /// sound tracks, which snob does not join.
+    /// in the captures. Higher resolutions are only in `video_dash_manifest`.
     #[serde(default, deserialize_with = "nullable")]
     pub video_versions: Vec<PictureVersion>,
-    /// A carousel's items, each a [`Media`] of its own.
     #[serde(default, deserialize_with = "nullable")]
     pub carousel_media: Vec<Media>,
     #[serde(default)]
@@ -124,21 +107,18 @@ pub struct Media {
     pub original_width: Option<u32>,
     #[serde(default)]
     pub original_height: Option<u32>,
-    /// The notes written on it where it was reposted: up to three on an
-    /// item of a reposts tab in the capture of 2026-11-14, each by another
-    /// account, and `null` elsewhere.
+    /// The notes written on it where it was reposted: up to three on an item
+    /// of a reposts tab (capture of 2026-11-14), `null` elsewhere.
     #[serde(default)]
     pub media_notes: Option<MediaNotes>,
 }
 
-/// The notes on a reposted post ([`Media::media_notes`]).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MediaNotes {
     #[serde(default, deserialize_with = "nullable")]
     pub items: Vec<MediaNote>,
 }
 
-/// One note: what another account wrote on the repost.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MediaNote {
     #[serde(default)]
@@ -163,12 +143,11 @@ pub struct Usertag {
     pub user: Option<Account>,
 }
 
-/// An account named on a post: its owner, a tagged account, a co-author, a
-/// liker the viewer knows, or a commenter.
+/// An account named on a post: owner, tagged, co-author, liker or commenter.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Account {
-    /// Text in most answers, a number in some nested ones (a reply's
-    /// parent's author in the capture of 2026-11-13): read as either.
+    /// Text in most answers, a number in some nested ones (capture of
+    /// 2026-11-13).
     #[serde(default, deserialize_with = "flexible_id")]
     pub pk: Option<String>,
     #[serde(default)]
@@ -193,11 +172,10 @@ pub struct Location {
     pub lng: Option<f64>,
 }
 
-/// What a reel says of its sound.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ClipsMetadata {
-    /// `licensed_music` or `original_sounds`, and absent on some reels,
-    /// which are then told apart by which of the two below is filled.
+    /// `licensed_music` or `original_sounds`; absent on some reels, which
+    /// are told apart by which of the two below is filled.
     #[serde(default)]
     pub audio_type: Option<String>,
     #[serde(default)]
@@ -206,7 +184,6 @@ pub struct ClipsMetadata {
     pub original_sound_info: Option<OriginalSound>,
 }
 
-/// What a photo or a carousel says of its music.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MusicMetadata {
     #[serde(default)]
@@ -221,7 +198,6 @@ pub struct MusicInfo {
     pub music_asset_info: Option<MusicAsset>,
 }
 
-/// A licensed song.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MusicAsset {
     #[serde(default)]
@@ -232,7 +208,6 @@ pub struct MusicAsset {
     pub ig_username: Option<String>,
 }
 
-/// A video's own sound, and the account it came from.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct OriginalSound {
     #[serde(default)]
@@ -244,28 +219,25 @@ pub struct OriginalSound {
 /// What a post plays, whichever of the two places said it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Music {
-    /// `true` for a licensed song, `false` for a video's own sound.
+    /// `false` for a video's own sound.
     pub licensed: bool,
     pub title: Option<String>,
     pub artist: Option<String>,
-    /// The artist's account on Instagram, when it has one.
     pub artist_username: Option<String>,
 }
 
-/// An account a post names, by pk and name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Named {
     pub pk: Option<String>,
     pub username: String,
 }
 
-/// The most likers the app names under a post, and so the most snob does:
-/// three faces in the capture of 2026-11-13, never more.
+/// The most likers the app names under a post: three faces in the capture of
+/// 2026-11-13.
 pub const FACEPILE_SHOWN: usize = 3;
 
 impl Media {
-    /// What a person sees as the post's items: a carousel's, or the post
-    /// itself when it is one photo or one video.
+    /// A carousel's items, or the post itself when it is one photo or video.
     pub fn items(&self) -> Vec<&Media> {
         if self.carousel_media.is_empty() {
             vec![self]
@@ -274,9 +246,8 @@ impl Media {
         }
     }
 
-    /// The best copy of this one item: a video's progressive file, the
-    /// widest of them, and otherwise the largest picture. `None` when the
-    /// answer offered none, which happens and is not a crash.
+    /// The best copy of this one item: a video's widest progressive file,
+    /// otherwise the largest picture. `None` when the answer offered none.
     pub fn best_url(&self) -> Option<&str> {
         widest(&self.video_versions).or_else(|| {
             self.image_versions2
@@ -285,12 +256,10 @@ impl Media {
         })
     }
 
-    /// Whether this one item is a video.
     pub fn is_video(&self) -> bool {
         self.media_type == 2 || !self.video_versions.is_empty()
     }
 
-    /// The caption's text, or nothing.
     pub fn caption_text(&self) -> &str {
         self.caption
             .as_ref()
@@ -298,13 +267,11 @@ impl Media {
             .unwrap_or_default()
     }
 
-    /// The owner's name, when the answer gave it.
     pub fn owner(&self) -> Option<&str> {
         self.user.as_ref().and_then(|u| u.username.as_deref())
     }
 
-    /// The accounts tagged on it or on any of its items, each once, in the
-    /// order they were first tagged.
+    /// The accounts tagged on it or on any of its items, each once, in order.
     pub fn tagged(&self) -> Vec<String> {
         let mut names: Vec<String> = Vec::new();
         let all = std::iter::once(self).chain(self.carousel_media.iter());
@@ -324,8 +291,7 @@ impl Media {
         mentions_in(self.caption_text())
     }
 
-    /// The accounts tagged on it or on any of its items, with their pks,
-    /// each once, in the order [`Self::tagged`] gives their names.
+    /// [`Self::tagged`], with their pks.
     pub fn tagged_accounts(&self) -> Vec<Named> {
         let mut found: Vec<Named> = Vec::new();
         let all = std::iter::once(self).chain(self.carousel_media.iter());
@@ -343,14 +309,12 @@ impl Media {
         found
     }
 
-    /// The accounts it is posted with, with their pks.
     pub fn with_accounts(&self) -> Vec<Named> {
         self.coauthor_producers.iter().filter_map(named).collect()
     }
 
-    /// The likers the viewer knows that the app names under the post, at
-    /// most [`FACEPILE_SHOWN`]: the faces it draws, by pk and name, or the
-    /// one name of [`Self::top_likers`] when it drew none.
+    /// The likers the viewer knows, at most [`FACEPILE_SHOWN`]: the faces, or
+    /// the one name of [`Self::top_likers`] when there are none.
     pub fn known_likers(&self) -> Vec<Named> {
         let faces: Vec<Named> = self
             .facepile_top_likers
@@ -371,7 +335,7 @@ impl Media {
             .collect()
     }
 
-    /// What it plays: a reel's song or its own sound, or a photo's song.
+    /// A reel's song or its own sound, or a photo's song.
     pub fn music(&self) -> Option<Music> {
         let clips = self.clips_metadata.as_ref();
         let song = clips
@@ -401,8 +365,7 @@ impl Media {
         })
     }
 
-    /// Whether it is pinned to the top of its owner's grid, or of a
-    /// co-author's: the list of accounts it is pinned for names one of them.
+    /// Whether it is pinned to the top of its owner's grid or a co-author's.
     pub fn pinned(&self) -> bool {
         let owner = self.user.as_ref().and_then(|u| u.pk.as_deref());
         let coauthors = self
@@ -415,8 +378,7 @@ impl Media {
             .any(|pk| self.timeline_pinned_user_ids.iter().any(|id| id == pk))
     }
 
-    /// The text of the notes written on it where it was reposted, those
-    /// with any.
+    /// The notes written on it where it was reposted, those with any text.
     pub fn notes(&self) -> Vec<&str> {
         self.media_notes
             .iter()
@@ -426,7 +388,6 @@ impl Media {
             .collect()
     }
 
-    /// The accounts it is posted with.
     pub fn with(&self) -> Vec<String> {
         self.coauthor_producers
             .iter()
@@ -434,15 +395,12 @@ impl Media {
             .collect()
     }
 
-    /// How many times it was played: a reel's count, from whichever field
-    /// carried it.
     pub fn plays(&self) -> Option<u64> {
         self.play_count.or(self.ig_play_count)
     }
 
-    /// The line the app shows under a post: "Liked by <name> and N others",
-    /// from the first of [`Self::top_likers`] and the like count. `None` when
-    /// nobody the viewer knows liked it, where the app shows the count alone.
+    /// "Liked by <name> and N others". `None` when nobody the viewer knows
+    /// liked it.
     pub fn liked_by(&self) -> Option<LikedBy> {
         let name = self.top_likers.first()?.clone();
         let others = if self.like_and_view_counts_disabled == Some(true) {
@@ -454,7 +412,6 @@ impl Media {
     }
 }
 
-/// `account` by pk and name, when it has a name.
 fn named(account: &Account) -> Option<Named> {
     Some(Named {
         pk: account.pk.clone(),
@@ -462,8 +419,7 @@ fn named(account: &Account) -> Option<Named> {
     })
 }
 
-/// The widest of `versions`, the tallest among equals, the first among
-/// those: the largest copy offered.
+/// The widest of `versions`, the tallest among equals, the first among those.
 fn widest(versions: &[PictureVersion]) -> Option<&str> {
     versions
         .iter()
@@ -472,18 +428,16 @@ fn widest(versions: &[PictureVersion]) -> Option<&str> {
         .map(|v| v.url.as_str())
 }
 
-/// "Liked by <name> and N others", or "and others" when the owner hid the
-/// count.
+/// `others` is `None` when the owner hid the count.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LikedBy {
     pub name: String,
     pub others: Option<u64>,
 }
 
-/// The names `text` mentions: an at sign at the start or after a character
-/// that is not part of a name, then one to thirty letters, digits, dots and
-/// underscores, without the dots a sentence may end it with. Each once, in
-/// order.
+/// The names `text` mentions: an at sign not preceded by a name character,
+/// then a profile name, without the dots a sentence may end it with. Each
+/// once, in order.
 pub fn mentions_in(text: &str) -> Vec<String> {
     let name_char = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '_';
     let mut names: Vec<String> = Vec::new();
@@ -504,8 +458,7 @@ pub fn mentions_in(text: &str) -> Vec<String> {
     names
 }
 
-/// The answer of the grid's two queries: `data.<root>`, a connection of
-/// posts (`allowlist::Operation::ProfilePosts`).
+/// The answer of the grid's two queries (`allowlist::Operation::ProfilePosts`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct TimelinePage {
     #[serde(default)]
@@ -523,10 +476,8 @@ pub struct TimelineData {
 
 impl TimelinePage {
     /// The posts, in the grid's order, and where the next page starts.
-    ///
-    /// **A short page is not the last one**: in the capture of 2026-10-01 one
-    /// page of a profile's grid held two posts and said there were more. Only
-    /// the cursor says where the grid ends.
+    /// **A short page is not the last one** (two posts and more to come, in
+    /// the capture of 2026-10-01): only the cursor says where the grid ends.
     pub fn posts(self) -> (Vec<Media>, Option<String>) {
         let Some(timeline) = self.data.and_then(|d| d.timeline) else {
             return (Vec::new(), None);
@@ -536,11 +487,9 @@ impl TimelinePage {
     }
 }
 
-/// Whether `cursor` has the shape of every next page's cursor of a reels or
-/// reposts tab the app sent in the captures of 2026-11-13 and 2026-11-14
-/// (13 `end_cursor`s of the reels and 12 `repost_next_max_id`s, each 90
-/// characters of base64url starting `AQHT`): one to
-/// [`MOST_TAB_CURSOR_BYTES`] of `A-Z a-z 0-9 - _`, and nothing else.
+/// The shape of every next cursor of a reels or reposts tab in the captures of
+/// 2026-11-13 and 2026-11-14 (13 and 12 of them, each 90 characters of
+/// base64url starting `AQHT`): `A-Z a-z 0-9 - _`, and nothing else.
 pub fn reels_cursor_has_its_shape(cursor: &str) -> bool {
     (1..=MOST_TAB_CURSOR_BYTES).contains(&cursor.len())
         && cursor
@@ -548,22 +497,18 @@ pub fn reels_cursor_has_its_shape(cursor: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
-/// The longest reels or reposts cursor taken: twice and more the 90 of
-/// every one seen, so a longer token still passes and text of any length
-/// does not.
+/// More than twice the 90 of every cursor seen.
 pub const MOST_TAB_CURSOR_BYTES: usize = 200;
 
-/// Whether `cursor` has the shape of every next page's cursor of a tagged
-/// tab in the capture of 2026-11-14 (9 of 9): a post's pk, 19 digits, so
-/// one to twenty digits. **`"None"` is no cursor**: the last page names its
-/// end with the word, as text.
+/// The shape of every next cursor of a tagged tab in the capture of
+/// 2026-11-14 (9 of 9): a post's pk in digits. **`"None"` is no cursor**: the
+/// last page names its end with the word.
 pub fn tagged_cursor_has_its_shape(cursor: &str) -> bool {
     (1..=20).contains(&cursor.len()) && cursor.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// The next cursor of a tab's page, `next`, when there is one and it has the
-/// shape `shaped` holds to: a cursor of another shape ends the tab, said in
-/// the log, since it would be text nobody vouched for in a request.
+/// A tab's next cursor, when it has the shape `shaped` holds to. Another
+/// shape ends the tab: it would be text nobody vouched for in a request.
 fn tab_cursor(next: Option<&str>, shaped: fn(&str) -> bool) -> Option<String> {
     let next = next.filter(|next| !next.is_empty() && *next != "None")?;
     if !shaped(next) {
@@ -576,8 +521,8 @@ fn tab_cursor(next: Option<&str>, shaped: fn(&str) -> bool) -> Option<String> {
     Some(next.to_string())
 }
 
-/// The answer of the reels tab's two queries: `data.fetch__XDTUserDict`,
-/// whose `clips_connection` holds one reel per edge, under `media`.
+/// The reels tab's answer: `data.fetch__XDTUserDict.clips_connection`, one
+/// reel per edge under `media`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReelsTabPage {
     #[serde(default)]
@@ -602,7 +547,6 @@ pub struct ReelsTabNode {
 }
 
 impl ReelsTabPage {
-    /// The reels, in the tab's order, and where the next page starts.
     pub fn posts(self) -> (Vec<Media>, Option<String>) {
         let Some(clips) = self
             .data
@@ -616,8 +560,6 @@ impl ReelsTabPage {
     }
 }
 
-/// The answer of the tagged tab's two queries: a connection of posts under
-/// `data.xdt_api__v1__usertags__user_id__feed_connection`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TaggedTabPage {
     #[serde(default)]
@@ -631,7 +573,6 @@ pub struct TaggedTabData {
 }
 
 impl TaggedTabPage {
-    /// The posts, in the tab's order, and where the next page starts.
     pub fn posts(self) -> (Vec<Media>, Option<String>) {
         let Some(feed) = self.data.and_then(|d| d.feed) else {
             return (Vec::new(), None);
@@ -641,9 +582,7 @@ impl TaggedTabPage {
     }
 }
 
-/// The answer of the reposts tab's two queries:
-/// `data.fetch__XDTUserDict.user_reposts_timeline`, its items each a post
-/// under `media`, and the `max_id` of the next page while there is more.
+/// The reposts tab's answer: `data.fetch__XDTUserDict.user_reposts_timeline`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RepostsTabPage {
     #[serde(default)]
@@ -678,9 +617,8 @@ pub struct RepostItem {
 }
 
 impl RepostsTabPage {
-    /// The reposts, in the tab's order, and where the next page starts:
-    /// only while the answer says more are available (`false` and `null`
-    /// ended the tab in the capture of 2026-11-13).
+    /// The reposts and where the next page starts, only while the answer says
+    /// more are available (`false` and `null` ended the tab on 2026-11-13).
     pub fn posts(self) -> (Vec<Media>, Option<String>) {
         let Some(timeline) = self
             .data
@@ -725,8 +663,7 @@ pub struct CommentsPage {
     pub has_more_comments: Option<bool>,
     #[serde(default)]
     pub has_more_headload_comments: Option<bool>,
-    /// Where the next page starts: a JSON object as text, sent back as it
-    /// came, as `min_id`.
+    /// A JSON object as text, sent back as it came, as `min_id`.
     #[serde(default)]
     pub next_min_id: Option<String>,
 }
@@ -734,11 +671,9 @@ pub struct CommentsPage {
 impl CommentsPage {
     /// Where the next page starts, when there is one.
     ///
-    /// **`has_more_comments` is no guide**: it was `false` on all 25 pages of
-    /// the capture of 2026-10-01, a post with 2,797 comments among them. What
-    /// the app pages by is `next_min_id`, which every page carried beside
-    /// `has_more_headload_comments: true`. A page that says neither has more
-    /// is the last.
+    /// **`has_more_comments` is no guide**: `false` on all 25 pages of the
+    /// capture of 2026-10-01. The app pages by `next_min_id`, beside
+    /// `has_more_headload_comments: true`.
     pub fn next(&self) -> Option<&str> {
         let more =
             self.has_more_headload_comments != Some(false) || self.has_more_comments == Some(true);
@@ -747,9 +682,7 @@ impl CommentsPage {
             .as_deref()
             .filter(|next| more && !next.is_empty())?;
         if !comments_cursor_has_its_shape(next) {
-            // Ended rather than sent: a cursor is handed back as `min_id`
-            // whole, so one of another shape would be text nobody vouched
-            // for in a request. Said, since it ends the comments early.
+            // Ended rather than sent: text nobody vouched for in a request.
             tracing::warn!(
                 bytes = next.len(),
                 "a page of comments handed out a cursor of a shape never seen; reading no further"
@@ -759,9 +692,8 @@ impl CommentsPage {
         Some(next)
     }
 
-    /// How many accounts the page names: each comment's author and the
-    /// author of each reply it shows. What the page is charged to the day's
-    /// accounts with.
+    /// The accounts the page names, authors of comments and of the replies
+    /// shown: what it is charged to the day's accounts with.
     pub fn accounts(&self) -> usize {
         self.comments
             .iter()
@@ -770,17 +702,12 @@ impl CommentsPage {
     }
 }
 
-/// The longest comments cursor taken: the longest of the capture of
-/// 2026-11-13 was 346 bytes (a 280-character token), and four times that
-/// leaves room for a longer token without taking text of any length.
+/// The longest cursor of the capture of 2026-11-13 was 346 bytes.
 const MOST_CURSOR_BYTES: usize = 1_400;
 
-/// Whether `cursor` has the shape of every `next_min_id` Instagram handed
-/// out in the capture of 2026-11-13 (9 of 9 pages): a JSON object holding
-/// `cached_comments_cursor`, a comment's pk in digits, and maybe
-/// `bifilter_token`, base64 of either alphabet, and nothing else. What
-/// [`CommentsPage::next`] hands on, and what
-/// `IgClient::media_comments` sends.
+/// The shape of every `next_min_id` of the capture of 2026-11-13 (9 of 9): a
+/// JSON object holding `cached_comments_cursor`, a pk in digits, and maybe
+/// `bifilter_token`, base64 of either alphabet, and nothing else.
 pub fn comments_cursor_has_its_shape(cursor: &str) -> bool {
     if cursor.len() > MOST_CURSOR_BYTES {
         return false;
@@ -808,11 +735,9 @@ pub fn comments_cursor_has_its_shape(cursor: &str) -> bool {
         })
 }
 
-/// `media/<pk>/likers/`: the accounts that liked a post, as many as the app
-/// is shown (105 of 603,328 in the capture of 2026-11-13, the same 105 both
-/// times; 125 of 1,796 in the capture of 2026-11-14), and how many there
-/// are. **No cursor**: the app asked for no second page, even with the list
-/// scrolled to its end (2026-11-14), so there is none to read.
+/// `media/<pk>/likers/`: as many likers as the app is shown (105 of 603,328
+/// on 2026-11-13; 125 of 1,796 on 2026-11-14), and how many there are.
+/// **No cursor**: the app asked for no second page.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LikersPage {
     #[serde(default, deserialize_with = "nullable")]
@@ -822,9 +747,8 @@ pub struct LikersPage {
 }
 
 impl LikersPage {
-    /// The likers that name an account, each with how the viewer stands
-    /// with it when the answer said. One with no pk or no name is skipped
-    /// rather than failing the rest.
+    /// The likers that name an account, each with how the viewer stands with
+    /// it. One with no pk or no name is skipped.
     pub fn accounts(&self) -> Vec<(snob_core::model::User, Option<super::FriendshipStatus>)> {
         self.users
             .iter()
@@ -847,9 +771,8 @@ impl LikersPage {
     }
 }
 
-/// One account in [`LikersPage`]: what a list's account carries, and how
-/// the viewer stands with it, which is why the app's `show_many` after the
-/// list is not needed.
+/// One account of [`LikersPage`], with how the viewer stands with it, which
+/// is why the app's `show_many` after the list is not needed.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Liker {
     #[serde(default, deserialize_with = "flexible_id")]
@@ -881,50 +804,41 @@ pub struct Comment {
     pub user: Option<Account>,
     #[serde(default)]
     pub comment_like_count: Option<u64>,
-    /// How many replies it has. **More than any answer hands out**: three
-    /// threads of 9, 7 and 8 answered with 7, 5 and 7 replies and nothing
-    /// more to read in the capture of 2026-11-14, so what is left is never
+    /// **More than any answer hands out**: threads of 9, 7 and 8 answered
+    /// with 7, 5 and 7 (capture of 2026-11-14), so what is left is never
     /// worked out from it.
     #[serde(default)]
     pub child_comment_count: Option<u64>,
-    /// The replies the page shows under it: none on most comments with
-    /// replies (19 of 19 in the capture of 2026-11-14), the one there is on
-    /// a comment with one, whose thread then is not asked for.
+    /// The replies shown under it: none on most comments with replies (19 of
+    /// 19 in the capture of 2026-11-14).
     #[serde(default, deserialize_with = "nullable")]
     pub preview_child_comments: Vec<Comment>,
 }
 
 impl Comment {
-    /// Whether its thread holds replies the page did not show, so that
-    /// "View replies" is what would read them (`allowlist::Rest::Replies`).
-    /// A thread whose previews are as many as its count is whole.
+    /// Whether its thread holds replies the page did not show
+    /// (`allowlist::Rest::Replies`).
     pub fn replies_missing(&self) -> bool {
         let shown = u64::try_from(self.preview_child_comments.len()).unwrap_or(u64::MAX);
         self.child_comment_count.unwrap_or(0) > shown
     }
 }
 
-/// The comment a thread's replies were asked under, as the answer names it:
-/// whose post it is on, which is how a comment named by a person is told to
-/// be on the post or not.
+/// The comment a thread's replies were asked under, and the post it is on.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ParentComment {
     #[serde(default, deserialize_with = "flexible_id")]
     pub pk: Option<String>,
-    /// The post's pk, as text in every answer of the capture of 2026-11-14.
     #[serde(default, deserialize_with = "flexible_id")]
     pub media_id: Option<String>,
 }
 
 /// `media/<pk>/comments/<comment_pk>/child_comments/`: the replies under one
-/// comment, in the order they were written, as the app's "View replies"
-/// reads them (three threads in the capture of 2026-11-14).
+/// comment, in the order written.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RepliesPage {
     #[serde(default, deserialize_with = "nullable")]
     pub child_comments: Vec<Comment>,
-    /// How many replies the comment has: more than are handed out on every
-    /// thread seen ([`Comment::child_comment_count`]).
     #[serde(default)]
     pub child_comment_count: Option<u64>,
     #[serde(default)]
@@ -933,20 +847,15 @@ pub struct RepliesPage {
     pub has_more_tail_child_comments: Option<bool>,
     #[serde(default)]
     pub parent_comment: Option<ParentComment>,
-    /// The names of the answer's other keys, never their values: what is
-    /// said in the log when a thread says it has more ([`Self::more`]), so
-    /// that the cursor of a second page can be learned from a real answer
-    /// before any is sent.
+    /// The names of the answer's other keys, logged when a thread says it has
+    /// more ([`Self::more`]): how a second page's cursor will be learned.
     #[serde(flatten)]
     pub other: std::collections::BTreeMap<String, serde::de::IgnoredAny>,
 }
 
 impl RepliesPage {
-    /// Whether Instagram said the thread holds replies this answer does not.
-    /// **Never sent for**: no capture shows how a second page is asked
-    /// (both flags were false on every thread of 2026-11-14), so they are
-    /// said to be there and are not read. The first time it happens, the
-    /// names of the answer's keys are written to the log at debug.
+    /// Whether Instagram said the thread holds more. **Never sent for**: no
+    /// capture shows how a second page is asked (AGENTS.md, "Open questions").
     pub fn more(&self) -> bool {
         let more = self.has_more_head_child_comments == Some(true)
             || self.has_more_tail_child_comments == Some(true);
@@ -960,9 +869,7 @@ impl RepliesPage {
         more
     }
 
-    /// Whether the answer is the thread of a comment on post `pk`: it names
-    /// its parent comment and the post that comment is on. An answer that
-    /// names another post, or none, is no thread of this one.
+    /// Whether the answer is the thread of a comment on post `pk`.
     pub fn is_on(&self, pk: MediaPk) -> bool {
         let pk = pk.to_string();
         self.parent_comment
@@ -971,8 +878,7 @@ impl RepliesPage {
             .is_some_and(|media| media == pk)
     }
 
-    /// How many accounts the page names: each reply's author. What the page
-    /// is charged to the day's accounts with.
+    /// Each reply's author: what the page is charged to the day's accounts with.
     pub fn accounts(&self) -> usize {
         self.child_comments.len()
     }

@@ -1,25 +1,11 @@
 //! What a request to Instagram says about itself.
 //!
-//! One list per transport: [`IgClient::dressed`] for a request `reqwest`
-//! sends, whatever its method, and [`IgClient::page_request`] for a read
-//! built here for the browser to send, which names only what the app's own
-//! script adds. Two copies
-//! of either is how the coherence `client_hints.rs` exists to maintain gets
-//! lost: a header added for a good reason on one and forgotten on the other
-//! makes two requests on one session look like two clients.
-//!
-//! **The `reqwest` list is the divergent one.** Under `SNOB_NO_BROWSER` the
-//! requests go to endpoints the web app never calls (`web_profile_info`,
-//! `topsearch`, the REST stories and highlights) and write with twelve fields
-//! rather than twenty-nine, so their headers can agree with the app's at most
-//! in what a request of that shape carries. They carry the identifiers the
-//! app's own calls do, `X-IG-Max-Touch-Points` and, on `/api/v1/`, a web
-//! session id made once for the client. The browser's requests are built in
-//! [`crate::web`] from the page, and are the ones that match.
-//!
-//! [`Surface`] is the one thing that varies, and it is not cosmetic -- it
-//! changes which handler answers. The `X-IG-WWW-Claim` cycle is here too,
-//! because a header is the whole of what it is for.
+//! One list per transport: [`IgClient::dressed`] for what `reqwest` sends,
+//! whatever its method, and [`IgClient::page_request`] for a read the browser
+//! sends, which names only what the app's own script adds. The `reqwest` list
+//! is the divergent one (`SNOB_NO_BROWSER`): it reaches endpoints the web app
+//! never calls. Every value is the page's or computed from the User-Agent; see
+//! "Talking to Instagram" in `AGENTS.md`.
 
 use url::Url;
 
@@ -31,38 +17,17 @@ use super::page::Method;
 
 /// Which of the two things a browser does on instagram.com a request is.
 ///
-/// **They do not carry the same headers, and the difference is not cosmetic —
-/// it changes which handler answers.** `POST /web/friendships/{pk}/follow/`
-/// sent with the app's headers answers 404, which reads exactly like the route
-/// having been removed.
-///
-/// - [`Surface::App`] is the single-page application talking to `/api/v1/` and
-///   `/api/graphql`. It announces itself with `X-IG-App-ID`, `X-ASBD-ID`,
-///   `X-IG-WWW-Claim` and `X-Requested-With`, and without the first of those
-///   the API routes answer 403 even with a good session. Every read this tool
-///   makes is one of these; the write is [`Surface::Relay`].
-/// - [`Surface::Document`] is the browser **navigating** to a page, which is
-///   how the two tokens a mutation needs are obtained without a browser. With
-///   one, a document is asked of the tab as a `web::Ask::Document`, and one
-///   built here is refused there. It is not an XHR at all:
-///   it asks for HTML, it says `Sec-Fetch-Mode: navigate` and
-///   `Sec-Fetch-Dest: document`, and it announces none of the app headers,
-///   because at that moment there is no app yet — the page is what loads it.
-///
-/// So coherence here is per request rather than per client. One superset of
-/// headers sent everywhere is a shape no browser produces anywhere.
+/// **The difference changes which handler answers**: the API routes answer
+/// 403 without `X-IG-App-ID`, and a route sent with the wrong set answers 404.
+/// A navigation asks for HTML and announces none of the app headers, because
+/// the page is what loads the app. One superset sent everywhere is a shape no
+/// browser produces.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Surface<'a> {
     App,
     Document,
-    /// The app again, but talking to Relay rather than to `/api/v1/`.
-    ///
-    /// It carries values rather than being a third marker, because the two
-    /// headers that tell it apart are per request: the operation's name, and
-    /// the page-scoped `lsd`. Both are already in hand at the call site and
-    /// both already travel in the body, so putting them in the headers too is
-    /// saying the same true thing in the second place the site says it -- not
-    /// a disguise, which is what the header rule in `AGENTS.md` forbids.
+    /// The app talking to Relay. Both values already travel in the body of
+    /// the same request.
     Relay {
         friendly_name: &'a str,
         lsd: &'a str,
@@ -70,20 +35,13 @@ pub(super) enum Surface<'a> {
 }
 
 impl Surface<'_> {
-    /// What this kind of request says it will accept.
     fn accept(self) -> &'static str {
         match self {
-            // `*/*`, not `application/json`: that is what `fetch()` sends when
-            // the page does not set one, and no browser sends the latter here.
+            // What `fetch()` sends when the page sets none.
             Self::App | Self::Relay { .. } => "*/*",
-            // **Byte for byte what Chrome 151 sent on all six navigations in
-            // the August 2026 capture**, `application/signed-exchange` and all.
-            //
-            // **`concat!`, and that is not a style choice.** Given a
-            // `\`-continued string literal, `cargo fmt` joins the lines and
-            // materializes the indentation as spaces inside the value, and a
-            // single long line goes past the width. Separate literals are the
-            // form that survives formatting.
+            // Byte for byte what Chrome 151 sent on all six navigations of the
+            // August 2026 capture. `concat!` because `cargo fmt` would put a
+            // continued literal's indentation inside the value.
             Self::Document => concat!(
                 "text/html,application/xhtml+xml,application/xml;q=0.9,",
                 "image/avif,image/webp,image/apng,*/*;q=0.8,",
@@ -92,9 +50,6 @@ impl Surface<'_> {
         }
     }
 
-    /// The `Sec-Fetch-Mode` and `Sec-Fetch-Dest` pair, which Instagram answers
-    /// what a browser sends -- see the note on `Vary` in `dressed`, which the
-    /// capture measured and which does not name these.
     fn fetch_mode(self) -> (&'static str, &'static str) {
         match self {
             Self::App | Self::Relay { .. } => ("cors", "empty"),
@@ -102,19 +57,12 @@ impl Surface<'_> {
         }
     }
 
-    /// Whether there is an app behind this request to announce.
-    ///
-    /// False for a navigation, and that is the whole of the distinction: at the
-    /// moment a page is fetched there is no app yet, because the page is what
-    /// loads it.
+    /// False for a navigation: the page is what loads the app.
     fn announces_the_app(self) -> bool {
         !matches!(self, Self::Document)
     }
 
-    /// How urgently the browser wants it.
-    ///
-    /// A navigation is `u=0`: nothing on the page can start until the document
-    /// lands. Everything else is a fetch at the default urgency.
+    /// A navigation is `u=0`; everything else is a fetch at the default urgency.
     fn priority(self) -> &'static str {
         match self {
             Self::Document => client_hints::NAVIGATION_PRIORITY,
@@ -126,11 +74,8 @@ impl Surface<'_> {
 /// A web session id in the app's shape, three segments of six letters and
 /// digits, for the client that sends without a browser.
 ///
-/// **Made up, which nothing else in this client is**: the app makes its own
-/// in the page and sends it with every call of a document, and without a page
-/// there is no app to copy it from. It is made once for a client and kept for
-/// all of its requests, as one page keeps its own, which is as close as this
-/// fallback comes to the app.
+/// **Made up, which nothing else in this client is**: without a page there is
+/// no app to copy it from. Made once for a client, as a page keeps its own.
 pub(super) fn new_web_session() -> String {
     const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let segment = || -> String {
@@ -142,17 +87,9 @@ pub(super) fn new_web_session() -> String {
 }
 
 impl IgClient {
-    /// The current `X-IG-WWW-Claim`.
-    ///
-    /// Instagram's session-continuity token. The server hands one back in
-    /// `x-ig-set-www-claim` and expects it echoed on every request after that;
-    /// the literal `0` is what a client sends **once**, on its first request of
-    /// the session, to say it has not been given one yet.
-    ///
-    /// Following that cycle is just implementing the protocol as specified.
-    /// Ignoring the response header would leave the client sending `0` forever
-    /// — announcing on every request that it is making its first — which is a
-    /// false statement about our own session and costs one line to avoid.
+    /// The current `X-IG-WWW-Claim`: the server hands one back in
+    /// `x-ig-set-www-claim` and expects it echoed; `0` is what a client sends
+    /// once, before it has been given one.
     fn claim(&self) -> String {
         self.claim.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -168,11 +105,8 @@ impl IgClient {
         *self.claim.lock().unwrap_or_else(|e| e.into_inner()) = fresh.to_string();
     }
 
-    /// The request itself, with the headers a browser would send.
-    ///
-    /// Split from the sending so that a redirect hop is built the same way the
-    /// first request was, rather than by whatever the HTTP client decided to
-    /// carry forward.
+    /// Split from the sending so that a redirect hop is built as the first
+    /// request was.
     pub(super) fn api_request(
         &self,
         url: &Url,
@@ -188,22 +122,12 @@ impl IgClient {
         self.dressed(request, referer, style)
     }
 
-    /// The GET [`Self::dressed`] would build, for the browser to send: a read
-    /// the client builds itself rather than asks of the tab as an intent.
-    /// Nothing else is built here: from the page a write is a
-    /// `web::Ask::Write`, and a document a `web::Ask::Document`. A
-    /// [`Surface::Document`] still comes out as a navigation, which the
-    /// process holding the browser refuses, so no document's HTML is
-    /// fetched past the tab.
-    ///
-    /// Only what the site's own script adds goes in the list: the app's
-    /// identifiers and the claim for an `/api/v1/` call. `X-CSRFToken` goes
-    /// in empty, and the page writes in the cookie the browser holds at that
-    /// moment, because only the page knows its current value — it rotates,
-    /// and this process never sees the `Set-Cookie` that rotates it. The page
-    /// fills in only a header the request already carries, so a navigation
-    /// gets none. Everything else a browser adds on its own, correctly, and
-    /// adding it here would only be a second opinion.
+    /// The GET [`Self::dressed`] would build, for the browser to send. Only
+    /// what the site's own script adds goes in the list; the browser adds the
+    /// rest itself. `X-CSRFToken` goes in empty and the page writes in the
+    /// cookie it holds at that moment, since it rotates. A
+    /// [`Surface::Document`] comes out as a navigation, which the process
+    /// holding the browser refuses.
     pub(super) fn page_request(
         &self,
         url: &Url,
@@ -237,9 +161,8 @@ impl IgClient {
         }
     }
 
-    /// The headers every request `reqwest` sends to Instagram carries,
-    /// whatever its method: the read's GET and the write's POST share this
-    /// one list, for the reason the module doc gives.
+    /// The headers every request `reqwest` sends to Instagram carries, the
+    /// read's GET and the write's POST alike.
     pub(super) fn dressed(
         &self,
         request: reqwest::RequestBuilder,
@@ -249,75 +172,42 @@ impl IgClient {
         let mut request = request;
         if style.announces_the_app() {
             request = request
-                // Without these Instagram answers 403 even with a good session
-                // -- on the API routes. A navigation announces neither, because
-                // at that moment there is no app yet.
+                // Without these the API routes answer 403 even with a good session.
                 .header("X-IG-App-ID", IG_APP_ID)
                 .header("X-ASBD-ID", client_hints::ASBD_ID)
-                // On every API call of the capture's: a desktop browser says
-                // it has no touch points, and says it each time.
+                // On every API call of the capture.
                 .header("X-IG-Max-Touch-Points", "0");
         }
-        // **Only on `/api/v1/`, and this is measured rather than reasoned.**
-        // The headers that went on the wire in an August 2026 browser capture:
-        //
+        // Only on `/api/v1/`, measured in the August 2026 browser capture:
         //     x-ig-www-claim     0/171 on /api/graphql, 97/97 on /api/v1/*
         //     x-requested-with   0/171 on /api/graphql, 97/97 on /api/v1/*
-        //
-        // Relay does not announce itself as an XHR and does not echo the claim.
-        // It sends `X-FB-Friendly-Name` and `X-FB-LSD` instead, which is what
-        // the branch below is for, and sending both sets is a shape no browser
-        // produces -- the failure [`Surface`] exists to prevent.
         if matches!(style, Surface::App) {
             request = request
                 .header("X-IG-WWW-Claim", self.claim())
                 .header("X-Requested-With", "XMLHttpRequest")
                 .header("X-Web-Session-ID", self.web_session.as_str());
         }
-        // What a Relay request says about itself that an `/api/v1/` one does
-        // not. Both values already travel in the body of the same request --
-        // `fb_api_req_friendly_name` and `lsd` -- so neither is new state and
-        // neither is invented; this is the request agreeing with itself in the
-        // second place the site states it. Read off a real browser in August
-        // 2026, where every `/api/graphql` call carried both.
+        // Every `/api/graphql` call of the August 2026 capture carried both.
         if let Surface::Relay { friendly_name, lsd } = style {
             request = request
                 .header("X-FB-Friendly-Name", friendly_name)
                 .header("X-FB-LSD", lsd);
         }
         let mut request = request
-            // Not a literal: a navigation asks for HTML and an XHR asks for
-            // anything. The August 2026 capture saw `Vary` on `Origin`, on
-            // `Accept-Encoding` and on `Accept-Language, Cookie`, and on no
-            // `Sec-Fetch-*` at all; it kept no response headers to re-read, so
-            // whether Instagram varies on `Sec-Fetch-*` is unverified. The
-            // reason to send them does not depend on it: a browser sends them,
-            // and a request without them is the anomaly.
+            // Whether Instagram varies on `Sec-Fetch-*` is unverified (the
+            // capture saw `Vary` on none); a browser sends them regardless.
             .header("Accept", style.accept())
-            // Computed from the User-Agent like the rest of the set, because
-            // Chromium began offering `zstd` in the same release it began
-            // sending `Priority`, and the two have to agree.
-            // `client_hints::ACCEPT_ENCODING` carries the value, and why it is
-            // not left to the HTTP client to invent.
+            // From the User-Agent: `zstd` and `Priority` arrived in the same
+            // Chromium release and have to agree.
             .header("Accept-Encoding", self.hints.accept_encoding)
-            // The one header here that comes from the person rather than from
-            // the User-Agent. Every browser sends it on every request.
             .header("Accept-Language", client_hints::accept_language())
-            // `Accept-Language` is the one `Vary` the capture confirmed:
-            // Instagram answered `Vary: Accept-Language, Cookie`, so the value
-            // `client_hints::accept_language` computes changes the reply.
+            // The capture confirmed `Vary: Accept-Language, Cookie`.
             .header("Sec-Fetch-Site", "same-origin")
             .header("Sec-Fetch-Mode", style.fetch_mode().0)
             .header("Sec-Fetch-Dest", style.fetch_mode().1)
-            // Built rather than interpolated. Every caller encodes the name it
-            // puts in here, so this cannot fail today — but a header value
-            // that will not build is not an error reqwest raises where it is
-            // made. It carries it to `send()`, where `?` classifies it as
-            // `Network`, whose reaction is `Retry`: the pager would send the
-            // same impossible request three more times, each one paid for by a
-            // budget that thinks it bought a request. The site's own address
-            // is a truthful referer, and a slightly less specific one costs
-            // nothing next to that.
+            // Built rather than interpolated: a header value that will not
+            // build surfaces at `send()` as `Network`, which is retried. The
+            // site's own address is a truthful fallback.
             .header(
                 "Referer",
                 reqwest::header::HeaderValue::try_from(format!("{BASE_URL}/{referer}"))
@@ -325,27 +215,18 @@ impl IgClient {
             )
             .header("Cookie", self.session.cookie_header().as_str());
 
-        // Deliberately no `Origin` **here**: the Fetch standard omits it on
-        // same-origin GETs, so sending one next to `Sec-Fetch-Site:
-        // same-origin` would be two headers contradicting each other. Easy to
-        // add by reflex, which is why it is called out.
-        //
-        // The other half of the same rule: the standard requires `Origin` on a
-        // POST even when it is same-origin, so `post` adds it, and only `post`.
+        // No `Origin` here: the Fetch standard omits it on same-origin GETs.
+        // It requires one on a POST, so `post` adds it, and only `post`.
 
-        // **Only where an app would send one.** A browser navigating to a
-        // profile sends no `X-CSRFToken`; it is a header the page adds to its
-        // own XHRs once it is running, so the page fetch in [`IgClient::page`]
-        // must not carry it. `a_navigation_does_not_claim_to_be_the_app`
-        // checks it.
+        // Only where an app would send one: a navigation carries no
+        // `X-CSRFToken` (`a_navigation_does_not_claim_to_be_the_app`).
         if let Some(csrf) = &self.session.csrftoken
             && style.announces_the_app()
         {
             request = request.header("X-CSRFToken", csrf.expose());
         }
 
-        // Only for browsers that send client hints at all. Inventing them for
-        // Firefox would be a mismatch rather than an improvement.
+        // Only for browsers that send client hints at all.
         if let Some(brands) = &self.hints.ua_brands {
             request = request
                 .header("Sec-CH-UA", brands)
@@ -353,10 +234,8 @@ impl IgClient {
                 .header("Sec-CH-UA-Platform", self.hints.platform);
         }
 
-        // Likewise: only the versions that send one. **Which one is the
-        // surface's to say, not the browser's** -- the hints answer whether
-        // this Chrome sends a `Priority` at all, and the request answers how
-        // urgent it is.
+        // Whether this Chrome sends a `Priority` is the hints' to say; how
+        // urgent the request is, the surface's.
         if self.hints.priority.is_some() {
             request = request.header("Priority", style.priority());
         }

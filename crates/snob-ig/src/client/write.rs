@@ -1,15 +1,9 @@
 //! The follow and the unfollow, and everything only a write needs.
 //!
-//! **One file, so that the rule can be checked by opening it.** `AGENTS.md`
-//! says a write leaves only through [`IgClient::post`], without a browser, or
-//! as a [`web::Ask::Write`] asked of the page; this is the only file that
-//! does either, and the two mutations below are the only things that reach
-//! them.
-//!
-//! What can be sent is a [`graphql::Mutation`] rather than a path, so the set
-//! of writes this program can make is the set of variants that enum has --
-//! which is what makes a third one a compile error rather than a string
-//! somebody typed.
+//! **The only file that writes** (see "the write regime" in `AGENTS.md`): a
+//! write leaves through [`IgClient::post`] without a browser, or as a
+//! [`web::Ask::Write`] asked of the page, and takes a [`graphql::Mutation`],
+//! never a path, so a third write is a compile error.
 
 use serde::de::DeserializeOwned;
 use snob_core::Pk;
@@ -25,36 +19,15 @@ use super::ask::{answered, told_otherwise};
 use super::headers::Surface;
 use super::transport::{Answer, MAX_BODY_BYTES, load_of, read_capped, retry_after, served_of};
 
-/// Whether a refused mutation is worth spending a discovery walk on.
+/// Whether a refused mutation is worth a discovery walk and a second attempt.
 ///
-/// **Narrow on purpose.** A rotated identifier and a throttled account both
-/// come back as a refusal, and walking megabytes of JavaScript at an account
-/// Instagram has just said no to is the opposite of what the pacing rules are
-/// for. So everything that means "stop asking" is excluded: a push-back, an
-/// action block, a challenge, a dead session, a cancellation. What is left is
-/// the shapes a bad `doc_id` actually takes — a 400 with a body that did not
-/// parse, or one that did and said nothing useful.
-/// **`NotFound` is in here and is not in `IgError::worth_a_second_route`**, and
-/// the two are not contradicting each other. There, a 404 means the
-/// account does not exist and a second lookup would be a second request spent
-/// confirming it. Here, a 404 is one of the ways Instagram refuses an operation
-/// it no longer serves under that identifier, and the discovery walk costs it
-/// nothing: it reads the CDN, not the API, so a wrong guess is bytes rather
-/// than a request against the account's budget.
-///
-/// **And narrow in a second direction, which is the one that matters for a
-/// write.** The walk ends in a second attempt at the mutation, and a second
-/// mutation is only safe when the first is known not to have happened. A 4xx
-/// and a 404 say so; a 200 carrying `errors` says so -- that is a GraphQL
-/// refusal, and the shape a stale identifier actually arrives in -- unless
-/// the errors say not to repeat it ([`IgError::QueryRefused`]). A 5xx does
-/// not: an edge that answers 502 may have forwarded the request before it
-/// failed. Nor does the redirect either arm reports (an `Unexpected` 3xx
-/// from `post`, status 0 from the page), nor a 200 whose body would not
-/// decode, which is a write that very probably happened and an answer this
-/// program could not read. Letting any of those through would send the
-/// follow again on a budget paid once and a confirmation given once -- the
-/// replay the redirect policy exists to prevent, arriving by another road.
+/// **Narrow twice over.** Everything that means "stop asking" is out: a
+/// push-back, a challenge, a dead session, a cancellation. And the second
+/// attempt is only safe when the first is known not to have happened: a 4xx,
+/// a 404 (here a way of refusing a stale identifier; the walk reads the CDN,
+/// not the API) or a 200 carrying `errors` that do not say otherwise
+/// ([`IgError::QueryRefused`]) say so. A 5xx, a redirect, and a 200 that
+/// would not decode do not: the write may have happened.
 fn worth_rediscovering(error: &IgError) -> bool {
     match error {
         IgError::NotFound { .. } => true,
@@ -67,53 +40,22 @@ fn worth_rediscovering(error: &IgError) -> bool {
 
 impl IgClient {
     /// **The only function in this workspace that sends anything other than a
-    /// GET to Instagram without a browser.** Everything the write rule in
-    /// `AGENTS.md` promises is enforced on the way through here; from the
-    /// page, [`IgClient::ask_page`] keeps the same promises for a
+    /// GET to Instagram without a browser.** From the page,
+    /// [`IgClient::ask_page`] keeps the same promises for a
     /// [`web::Ask::Write`], and this refuses to send.
     ///
-    /// What it does that [`IgClient::get`] does not, each of them there
-    /// because a write is not a read:
+    /// - **It pays the write budget**, before it sends.
+    /// - **It refuses without a CSRF token**: Instagram's 403 would cost a
+    ///   request and a write slot and read as a dead session.
+    /// - **It sends `Origin`**, which the Fetch standard requires on a POST.
+    /// - **It follows no redirect** ([`super::transport::api_policy`]).
+    /// - **It is not abandoned once in flight**: giving up on a write costs
+    ///   knowing whether it happened. It is cancelable up to the moment it is
+    ///   sent (`clear_to_send_write` reads the token) and not after.
+    /// - **It cannot be pointed anywhere**: it takes a [`graphql::Mutation`].
     ///
-    /// - **It pays the write budget**, not the read one, and like `get` it pays
-    ///   before it sends. There is no argument that selects between the two:
-    ///   `get` calls `clear_to_send` and this calls `clear_to_send_write`, so
-    ///   the choice is made by which function the caller reached rather than by
-    ///   a value it passed.
-    /// - **It refuses without a CSRF token instead of finding out.** Instagram
-    ///   would answer 403, and that 403 would cost a request, a slot of write
-    ///   budget and — because `classify` reads a 403 as a dead session — a
-    ///   message telling the user to log in again when their session is fine.
-    ///   Sent with `reqwest` (`SNOB_NO_BROWSER`, or a test server), a `snob
-    ///   login --paste` session has none unless `--csrftoken` gave it one.
-    /// - **It sends `Origin`**, which the Fetch standard requires on a POST even
-    ///   when the request is same-origin. See the comment in
-    ///   [`IgClient::dressed`] for the half of that rule which lives on
-    ///   the read side.
-    /// - **It follows no redirect at all**: the API client's policy is
-    ///   `none()`, and [`super::transport::api_policy`] says why a write
-    ///   depends on that.
-    /// - **It is not abandoned once it is in flight**, and that is one of the
-    ///   two places this program does not do what `AGENTS.md` says about
-    ///   Ctrl+C; the other is [`IgClient::ask_page`], for a
-    ///   [`web::Ask::Write`] from the page.
-    ///   Every read races the cancel token against the socket, because giving
-    ///   up on a read costs nothing: the answer was going to be thrown away.
-    ///   Giving up on a write costs the one thing worth having, which is
-    ///   knowing whether it happened — the request has already gone, Instagram
-    ///   may well act on it, and reporting "canceled" to somebody who is now
-    ///   following an account is worse than making them wait out the timeout.
-    ///
-    ///   The boundary is exact rather than convenient: `clear_to_send_write`
-    ///   reads the token before it reserves and again inside the wait, so a
-    ///   write is cancelable up to the moment it is sent and not after it. The
-    ///   uncancelable part is the part that must not be abandoned.
-    /// - **It cannot be pointed anywhere.** It takes a
-    ///   [`graphql::Mutation`], not a path; the crate doc says why that is what
-    ///   makes a third write a compile error.
-    ///
-    /// `referer` is the profile page the button would have been clicked on, in
-    /// the same spelling `get` wants: a path with no leading slash.
+    /// `referer` is the profile page the button would have been clicked on, a
+    /// path with no leading slash.
     async fn post<T: DeserializeOwned>(
         &self,
         write: graphql::Mutation,
@@ -121,16 +63,13 @@ impl IgClient {
         referer: &str,
         style: Surface<'_>,
     ) -> Result<T, IgError> {
-        // Before the budget is charged, so that a session which cannot write
-        // does not spend a slot discovering it. The token itself is put on the
-        // request by `dressed`, which adds it whenever the session has
-        // one; this guard is what makes "whenever" mean "always" on this path.
+        // Before the budget is charged: a session that cannot write must not
+        // spend a slot discovering it.
         if !self.can_write() {
             return Err(IgError::NoCsrfToken);
         }
-        // From the page, a write is asked of the tab, which builds it beside
-        // the document's values ([`IgClient::write_from_the_page`]); it is
-        // never sent as a request built here.
+        // From the page a write is asked of the tab
+        // ([`IgClient::write_from_the_page`]), never built here.
         if self.page.is_some() {
             return Err(IgError::NotAllowed(format!(
                 "POST {} built outside the tab",
@@ -153,16 +92,13 @@ impl IgClient {
         self.remember_claim(&response);
 
         let status = response.status();
-        // Read before the body, for the same reason `get_body` reads it there:
-        // the header is on the response, and a body that will not read must not
-        // take the one measurement worth having away with it.
+        // Read before the body: one that will not read must not take them away.
         let retry_after = retry_after(&response);
         let load = load_of(&response);
         let served = served_of(&response);
 
-        // A redirect reaches here as a status rather than as a new request,
-        // because the policy is `none()`. It is not success and it is not
-        // something to replay, so it is reported as what it is.
+        // With the policy `none()` a redirect arrives as a status. It is
+        // neither success nor something to replay.
         if status.is_redirection() {
             return Err(IgError::Unexpected {
                 status: status.as_u16(),
@@ -186,8 +122,7 @@ impl IgClient {
         })
     }
 
-    /// Follows an account. **A write.** See [`IgClient::post`], and
-    /// [`IgClient::write_from_the_page`] for a browser.
+    /// Follows an account. **A write.** See [`IgClient::post`].
     pub async fn follow(
         &self,
         pk: Pk,
@@ -198,8 +133,7 @@ impl IgClient {
             .await
     }
 
-    /// Unfollows an account. **A write.** See [`IgClient::post`], and
-    /// [`IgClient::write_from_the_page`] for a browser.
+    /// Unfollows an account. **A write.** See [`IgClient::post`].
     pub async fn unfollow(
         &self,
         pk: Pk,
@@ -210,39 +144,22 @@ impl IgClient {
             .await
     }
 
-    /// The `doc_id` of a mutation, out of the page's own JavaScript.
+    /// The `doc_id` of a mutation, out of the page's own JavaScript, fetched
+    /// with no cookie and no app id and not charged to the request budget.
     ///
-    /// The walk goes through the **CDN client**, which is the right one twice
-    /// over: those bundles really are on the CDN, and that client carries no
-    /// cookie and no app id -- a public script has no business being fetched
-    /// with a session attached. It also means they are not charged against
-    /// Instagram's request budget, for the reason [`IgClient::download`]
-    /// already gives about pictures.
-    ///
-    /// `bundles` are the ones the page the write is made from names, in the
-    /// page's order, which puts the chunk its route needs near the front: read
-    /// off the HTML without a browser, and handed back by the tab with one.
-    /// **Only those [`graphql::is_bundle`] takes are opened**, whatever list
-    /// they came in: the host rule is the command's, so a list that crossed
-    /// the owner's socket cannot point the walk anywhere else.
+    /// `bundles` are the ones the page the write is made from names, in its
+    /// order. **Only those [`graphql::is_bundle`] takes are opened**, so a
+    /// list that crossed the owner's socket cannot point the walk elsewhere.
     async fn doc_id_for(
         &self,
         mutation: graphql::Mutation,
         bundles: &[String],
         ids: &dyn graphql::DocIds,
     ) -> Result<String, IgError> {
-        /// One bundle. Instagram's largest is around five megabytes; twelve is
-        /// a ceiling rather than a target, and it is here for the reason every
-        /// other ceiling in this file is.
+        /// Instagram's largest bundle is around five megabytes.
         const MAX_BUNDLE_BYTES: usize = 12 * 1024 * 1024;
-        /// How many to open before giving up.
-        ///
-        /// **A page names around four hundred and forty of these**, so this is
-        /// a real bound rather than a formality: the walk is bytes off the CDN
-        /// and minutes of wall clock, and it happens once per rotation because
-        /// the answer is cached. Sixty is roughly seven megabytes, measured.
-        /// Past that the answer is more likely to be that the shape changed
-        /// than that the right chunk is one further along.
+        /// A page names about 440 bundles; sixty is roughly seven megabytes,
+        /// measured. Past that the shape has more likely changed.
         const MOST_BUNDLES: usize = 60;
 
         let name = mutation.friendly_name();
@@ -251,13 +168,8 @@ impl IgClient {
         for url in walked.take(MOST_BUNDLES) {
             let bytes = match self.download_capped(url, MAX_BUNDLE_BYTES).await {
                 Ok(bytes) => bytes,
-                // The user stopping it is not a bundle that would not come
-                // down. Read as one, an interrupt here would churn through the
-                // remaining sixty and then report Instagram's original
-                // refusal, with its exit code, for what was a Ctrl+C.
+                // A Ctrl+C is not a bundle that would not come down.
                 Err(IgError::Canceled) => return Err(IgError::Canceled),
-                // A bundle that will not come down is not the end of the
-                // search: there are others, and the next may hold it.
                 Err(_) => continue,
             };
             if let Some(id) = graphql::doc_id_in(&String::from_utf8_lossy(&bytes), name) {
@@ -270,33 +182,14 @@ impl IgClient {
         Err(IgError::MutationNotFound { name })
     }
 
-    /// The body of both, because the two differ by one word.
+    /// The body of both writes, which differ by one word: `POST /api/graphql`
+    /// naming the mutation (see [`crate::graphql`]).
     ///
-    /// # Which request
-    ///
-    /// `POST /api/graphql`, naming the mutation, as the real web client sent it
-    /// in an August 2026 capture -- see [`crate::graphql`], which carries the
-    /// finding and the two REST routes that change nothing.
-    ///
-    /// Two requests, and both are paid for: the page the write is made from,
-    /// and the mutation. The page is the expensive one at around six hundred
-    /// kilobytes, and it is why there is no bulk mode to be tempted by even if
-    /// the rule allowed one.
-    ///
-    /// The profile loaded is **the target's**, which is the page a browser
-    /// would have been on when the button was pressed. From the browser that
-    /// is what the write is made from: its route, its referrer and the app's
-    /// calls on it go into the form. Without one, any logged-in page would
-    /// hand out the same tokens, so it is coherence rather than necessity --
-    /// but a request whose `Referer` names a page nobody loaded is the kind of
-    /// small incoherence the rest of this module exists to avoid.
-    ///
-    /// The `doc_id` is what is known, and otherwise what was captured.
-    /// [`graphql::Mutation::seed_doc_id`] explains why there is a captured
-    /// value at all, and why discovery is the recovery rather than the way in.
-    ///
+    /// Two paid requests: the target's profile page, which is where the button
+    /// would have been pressed, and the mutation. The `doc_id` is the one found
+    /// last, else the captured seed ([`graphql::Mutation::seed_doc_id`]).
     /// **Nothing is read after the write**: the answer carries the
-    /// relationship it left, and that is the result.
+    /// relationship it left.
     async fn friendship(
         &self,
         mutation: graphql::Mutation,
@@ -304,10 +197,8 @@ impl IgClient {
         username: &str,
         ids: &dyn graphql::DocIds,
     ) -> Result<FriendshipStatus, IgError> {
-        // **Before the page.** `post` refuses without a CSRF token too, but by
-        // then the expensive half has been spent: a profile page is around six
-        // hundred kilobytes and a paid-for request. Without the browser, every
-        // `snob login --paste` without `--csrftoken` is such a session.
+        // Before the page: `post` refuses too, but only after a paid request
+        // of about 600 KB.
         if !self.can_write() {
             return Err(IgError::NoCsrfToken);
         }
@@ -326,16 +217,12 @@ impl IgClient {
 
         let html = self.page(&format!("/{referer}")).await?;
         // **Whose page it is, before any token is read off it.** A logged-out
-        // page carries both tokens, so the tokens alone do not tell one apart
-        // (`graphql::extract_tokens`); its `PolarisViewer` does. A page served
-        // to nobody, to an unread viewer, or to another account cannot
-        // authorize a write as this session, so it is reported as a dead
-        // session and nothing is posted.
+        // page carries both tokens; its `PolarisViewer` tells it apart. A page
+        // served to nobody or to another account authorizes no write.
         let values = PageValues::parse(&html);
         if web::viewer_of(&values, self.session.ds_user_id).is_err() {
             return Err(IgError::SessionExpired);
         }
-        // A page without the tokens cannot authorize a mutation either.
         let tokens = graphql::extract_tokens(&html).ok_or(IgError::SessionExpired)?;
 
         let doc_id = Self::known_doc_id(mutation, ids);
@@ -346,22 +233,14 @@ impl IgClient {
         .await
     }
 
-    /// A write from the browser: the tab loads the profile it is made from,
-    /// one paid read, and then builds the write beside that document's
-    /// values and the app's calls on it, paid from the write budget. The
-    /// command sees neither the HTML nor a token: only the document's status
-    /// and the bundles it names, which the rediscovery walks.
+    /// A write from the browser: the tab loads the profile (one paid read),
+    /// then builds the write beside that document's values, paid from the
+    /// write budget. The command sees neither the HTML nor a token.
     ///
-    /// **The write's wait comes first.** The write budget can hold a write
-    /// back for a quarter of an hour, which outlasts the browser, and the
-    /// write is built only on the document it is made from, while the tab
-    /// is still on it. So the wait is paid before the profile is loaded
-    /// ([`crate::pace::Pacer::rested_for_a_write`]), and the write follows
-    /// the document as a person's click follows the page.
-    ///
-    /// A document served to nobody, or to another account, ends it as an
-    /// expired session before the write is asked; a document that is not a
-    /// success is refused as any answer is.
+    /// **The write's wait comes first**
+    /// ([`crate::pace::Pacer::rested_for_a_write`]): the write bucket can hold
+    /// one back a quarter of an hour, and the write is built only while the
+    /// tab is still on its document.
     async fn write_from_the_page(
         &self,
         mutation: graphql::Mutation,
@@ -387,8 +266,7 @@ impl IgClient {
         .await
     }
 
-    /// One attempt at the mutation from the page: the write asked of the
-    /// tab, under `doc_id`, on the profile's route, made from `referrer`.
+    /// One attempt at the mutation from the page.
     async fn write_asked(
         &self,
         mutation: graphql::Mutation,
@@ -410,22 +288,16 @@ impl IgClient {
         Ok(answer.status())
     }
 
-    /// The `doc_id` a mutation is sent under first: the one found last, or
-    /// the seed.
+    /// The `doc_id` a mutation is sent under first: the one found last, or the seed.
     fn known_doc_id(mutation: graphql::Mutation, ids: &dyn graphql::DocIds) -> String {
         ids.get(mutation.friendly_name())
             .unwrap_or_else(|| mutation.seed_doc_id().to_string())
     }
 
-    /// `send` under `doc_id`, and once more under a rediscovered one only
-    /// when the first answer says the write did not happen.
-    ///
-    /// **The recovery path.** A rotated identifier is refused, and the
-    /// refusal looks like several other things — so rather than trying to
-    /// read Instagram's mind, the walk runs and is worth something only if it
-    /// comes back with a *different* answer. It costs megabytes off the CDN,
-    /// which is why it is here and not on the way in, and the original error
-    /// is what the user hears if it fails.
+    /// `send` under `doc_id`, and once more under a rediscovered one only when
+    /// the first answer says the write did not happen
+    /// ([`worth_rediscovering`]) and the walk found a different id. The
+    /// original error is what the user hears otherwise.
     async fn rediscovering(
         &self,
         mutation: graphql::Mutation,
@@ -453,7 +325,7 @@ impl IgClient {
         }
     }
 
-    /// One attempt at the mutation.
+    /// One attempt at the mutation without a browser.
     async fn mutate(
         &self,
         mutation: graphql::Mutation,

@@ -1,45 +1,24 @@
-//! Telling that the machine slept.
+//! Telling that the machine slept, so a walk treats it as the end of a
+//! sitting rather than as network failures in a row (`pager::ListWalker`).
 //!
-//! A walk is fifteen minutes to over an hour of pages and rests, which is
-//! long enough for a laptop to be shut or put to sleep in the middle of it.
-//! Nothing about a walk breaks then — the process is frozen and carries on
-//! where it stood — but what it carries on *with* is stale: the network is
-//! still coming back, the page the requests are built from is hours old, and
-//! a request in flight as the lid closed fails on waking. The walk has to know
-//! it slept to treat that as the end of a sitting rather than as three network
-//! failures in a row (`pager::ListWalker`).
-//!
-//! **Two clocks, compared.** The wall clock moves while the machine sleeps,
-//! and [`now`] here does not: the difference between how far each moved since
-//! the last look is the time spent asleep. Comparing the wall clock against
-//! the length of the sleep that was asked for is not enough, because a walk
-//! also waits inside the client, for the request budget, for as long as that
-//! takes; and comparing it against [`std::time::Instant`] is not either,
-//! because what that one does across a sleep is up to the platform, and on
-//! Windows it keeps counting.
+//! **Two clocks, compared.** The wall clock moves while the machine sleeps
+//! and [`now`] does not; how much further the first ran since the last look
+//! is the time asleep. [`std::time::Instant`] alone will not do: on Windows
+//! it counts through a sleep.
 
 use std::time::Duration;
 
 use snob_core::EpochMs;
 
-/// How much further the wall clock may run than the awake one between two
-/// looks before the difference is taken for a sleep.
-///
-/// A minute: far above what the time service corrects at a time, which is
-/// seconds and done by slewing rather than jumping, and far below the shortest
-/// sleep worth calling one: a laptop's lid closed and opened again in a minute
-/// comes back to a network that never went.
+/// How much further the wall clock may run than the awake one before the
+/// difference is a sleep. Far above what the time service corrects at a time,
+/// and below the shortest sleep that takes the network away.
 pub const MARGIN: Duration = Duration::from_secs(60);
 
-/// A clock that stands still while the machine sleeps, counted from an
-/// arbitrary point. Only differences between two readings mean anything.
-///
-/// - **Linux**: [`std::time::Instant`] reads `CLOCK_MONOTONIC`, which the
-///   kernel stops during a suspend (`CLOCK_BOOTTIME` is the one that runs on).
-/// - **macOS**: it reads `CLOCK_UPTIME_RAW`, which stops while the Mac sleeps.
-/// - **Windows**: `Instant` counts through a sleep, so this asks for the
-///   *unbiased* interrupt time, which is the one Windows documents as leaving
-///   sleep and hibernation out.
+/// A clock that stands still while the machine sleeps. Only differences
+/// between two readings mean anything. `Instant` is one on Linux
+/// (`CLOCK_MONOTONIC`) and macOS (`CLOCK_UPTIME_RAW`); on Windows it counts
+/// through a sleep, so the unbiased interrupt time is read there.
 pub fn now() -> Duration {
     #[cfg(windows)]
     {
@@ -51,8 +30,8 @@ pub fn now() -> Duration {
         if read != 0 {
             return Duration::from_nanos(hundreds_of_nanoseconds.saturating_mul(100));
         }
-        // Documented to fail only on a null pointer; a reading that does not
-        // move makes every gap look like sleep, which is the safe mistake.
+        // Fails only on a null pointer. A reading that does not move makes
+        // every gap look like sleep, which is the safe mistake.
         Duration::ZERO
     }
     #[cfg(not(windows))]
@@ -62,8 +41,7 @@ pub fn now() -> Duration {
     }
 }
 
-/// The last look at both clocks, to tell from the next one whether the
-/// machine slept in between.
+/// The last look at both clocks.
 #[derive(Debug, Clone, Copy)]
 pub struct Asleep {
     wall: EpochMs,
@@ -76,10 +54,8 @@ impl Asleep {
     }
 
     /// How long the machine slept since the last look, when the wall clock
-    /// ran at least [`MARGIN`] further than the awake one; and the look
-    /// becomes the last one either way, so a sleep is reported once.
-    ///
-    /// A wall clock that went backwards is a clock somebody set, not a sleep.
+    /// ran at least [`MARGIN`] further than the awake one. Reported once. A
+    /// wall clock that went backwards is a clock somebody set, not a sleep.
     pub fn check(&mut self, wall: EpochMs, awake: Duration) -> Option<Duration> {
         let on_the_wall = wall - self.wall;
         let awake_for = awake.saturating_sub(self.awake);

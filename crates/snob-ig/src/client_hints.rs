@@ -1,142 +1,55 @@
-//! The User-Agent Client Hints that go with a request, derived from the
-//! User-Agent itself.
+//! The client hints and related headers that go with a request, computed from
+//! the User-Agent. See "Talking to Instagram" in `AGENTS.md`.
 //!
-//! **This dresses the `reqwest` path**: `SNOB_NO_BROWSER`, and tests against
-//! a mock server. By default every request to Instagram leaves from a real
-//! browser (`headless/` in `snob-cli`, behind [`crate::client::page`]), which
-//! sends its own client hints, handshake and header order; the argument below
-//! about not copying a browser is about a process that is not one. What the
-//! browser path takes from here is [`brand_list`], when the browser cannot say
-//! its own brands, [`platform_name`], and [`ASBD_ID`].
+//! **This dresses the `reqwest` path** (`SNOB_NO_BROWSER`, and tests); a real
+//! browser sends its own. The browser path takes only [`brand_list`],
+//! [`platform_name`] and [`ASBD_ID`] from here.
 //!
-//! These are ordinary HTTP request headers with a written specification:
-//! `Sec-CH-UA`, `Sec-CH-UA-Platform`, `Sec-CH-UA-Mobile`, `Priority` and
-//! `Accept-Language`.
+//! **The set has to agree with itself**: every value is computed from the
+//! User-Agent the session was created with, and what cannot be computed is
+//! left out. An absent header is honest, an invented one is not.
+//! `Accept-Language` describes the person, so it is read from the system; it
+//! is the one header the captures saw in `Vary` (132 times in August 2026;
+//! no `Sec-Fetch-*` in 4210 `Vary` headers).
 //!
-//! **They are not what Instagram varies its answers on.** Two browser captures
-//! in August 2026 recorded 4210 `Vary` headers across every route this tool
-//! touches, and no `Sec-Fetch-*` in any of them. What they did confirm is
-//! `Accept-Language`, in `Vary` 132 times, so the value [`accept_language`]
-//! computes really does change Instagram's reply. The headers are sent because
-//! a browser sends them, and a request without them is the anomaly.
-//!
-//! **The rule is that the set has to agree with itself.** A request that
-//! declares Chrome 151 in its User-Agent and then sends no client hints at all
-//! describes a browser that does not exist, and a server is entitled to answer
-//! nonsense however it likes. So every value here is *computed* from the
-//! User-Agent the session was actually created with, and anything that cannot
-//! be computed is left out rather than guessed: an absent header is honest, an
-//! invented one is not.
-//!
-//! `Accept-Language` is the one exception, and has to be — it describes the
-//! person rather than the program, so it is read from the operating system.
-//! That is still deriving it from something true rather than picking a value.
-//!
-//! Two things this module deliberately does not do. It does not touch **the
-//! TLS handshake, the HTTP/2 SETTINGS or the order of the headers on the
-//! wire**, and it does not invent a browser — the User-Agent comes from one
-//! actually installed on the machine (see `browser.rs`), and everything here
-//! follows from that.
-//!
-//! There *is* a stable handshake to copy: Chrome randomizes its ClientHello
-//! extension order, but JA4 sorts the extension list before hashing it. Three
-//! reasons not to, in the order they matter:
-//!
-//! - **Copying a handshake is a claim to be a browser, and snob is not one.**
-//!   Sending headers that agree with each other is asking a question properly;
-//!   adopting somebody else's cryptographic identity is asserting something
-//!   untrue about who is asking. The line between those two is exactly here,
-//!   and this module stays on the near side of it.
-//! - It means leaving `rustls`, and with it the clean static cross-compilation
-//!   to five targets that is most of what "single binary, no runtime" costs to
-//!   keep.
-//! - It would buy nothing anyway. What decides whether Instagram throttles an
-//!   account is, in order, the address the requests come from, how many there
-//!   are, and how fast. Only the last two are the project's to control, and
-//!   they live in `pace.rs`.
-//!
-//! This applies to the whole wire signature and not only to TLS: the h2
-//! fingerprint (`http2_initial_stream_window_size` and the like) gets the same
-//! answer, for the same three reasons.
+//! **The TLS handshake, the HTTP/2 settings and the header order are never
+//! imitated**: copying a handshake is a claim to be a browser, it would mean
+//! leaving `rustls`, and what decides throttling is the address, the volume
+//! and the speed.
 
 /// From which Chromium sends `Priority` on a fetch or XHR.
-///
-/// Below this it does not send the header at all, so a request claiming to be
-/// an older Chrome and carrying one would be the same kind of mismatch as
-/// inventing client hints for Firefox.
 const PRIORITY_SINCE_CHROMIUM: u32 = 123;
 
-/// What Chromium sends on a fetch it did not prioritize itself: the default
-/// urgency, and incremental delivery.
+/// What Chromium sends on a fetch it did not prioritize itself.
 pub const FETCH_PRIORITY: &str = "u=1, i";
 
-/// And what it sends on a top-level navigation, which is the highest urgency
-/// there is: nothing on the page can start until the document arrives.
-///
-/// Split from the constant above because they are different requests: that
-/// one is what Chromium sends **on a fetch**, and the page fetch in
-/// `IgClient::page` is a navigation.
-///
-/// **Measured**, from a capture that kept the wire headers (`Priority` is added
-/// by the network stack, so a page's own headers do not show it): `u=0, i` on
-/// all six navigations, `u=1, i` on all 924 fetches and XHRs, and nothing else
-/// in between.
+/// What it sends on a top-level navigation. **Measured** on the wire:
+/// `u=0, i` on all six navigations, `u=1, i` on all 924 fetches and XHRs.
 pub const NAVIGATION_PRIORITY: &str = "u=0, i";
 
-/// From which Chromium offers `zstd` in `Accept-Encoding`.
-///
-/// The same release as [`PRIORITY_SINCE_CHROMIUM`], and a constant of its own on
-/// purpose: two facts that happened to ship together, and folding them into one
-/// number would make a later divergence look like a typo. Without it, a
-/// session created with a Chrome 120 User-Agent would leave `Priority` off and
-/// then offer a codec that browser cannot decode — the self-contradiction the
-/// rest of this module exists to prevent, on an axis the other end can check
-/// for nothing.
+/// From which Chromium offers `zstd`. The same release as
+/// [`PRIORITY_SINCE_CHROMIUM`], and a constant of its own: two facts that
+/// happened to ship together.
 const ZSTD_SINCE_CHROMIUM: u32 = 123;
 
-/// What a current browser offers to have its answers compressed with.
-///
-/// Stated here rather than left to the HTTP client, which builds its own from
-/// whichever decoders were compiled in and produces `zstd,gzip,deflate,br` — a
-/// fixed string, on every request, that no browser has ever sent. This is
-/// Chrome's, and every codec in it is one the client can actually decode.
-///
-/// There is deliberately no non-Chromium branch. Firefox has offered the same
-/// four since 126, so this is the honest value for a browser this module knows
-/// nothing else about, and inventing a different one is the thing the module
-/// refuses to do.
+/// What a current browser offers, stated here because the HTTP client would
+/// send `zstd,gzip,deflate,br`, which no browser does. Firefox has offered
+/// the same four since 126, so there is no non-Chromium branch.
 pub const ACCEPT_ENCODING: &str = "gzip, deflate, br, zstd";
 
 /// What Chromium offered before it could decode `zstd`.
 pub const ACCEPT_ENCODING_BEFORE_ZSTD: &str = "gzip, deflate, br";
 
-/// Language preference, as a browser would state it.
-///
-/// Every browser sends `Accept-Language` on every request without exception,
-/// so having none at all was the most conspicuous thing missing from the set.
-/// It is also the one header here that cannot be derived from the User-Agent:
-/// it comes from the person, not the program.
-///
-/// So it is read from the system, and the fallback is the last resort rather
-/// than the plan. A Spanish user on a Spanish address announcing `en-US` is
-/// the same class of incoherence as a Windows User-Agent with a macOS platform
-/// hint — Instagram can see the address the request came from, and it knows
-/// which language the account reads in.
-///
-/// Worked out once: the answer cannot change while the process runs, and this
-/// is on the path of every request.
+/// Language preference, as a browser would state it, read from the system: a
+/// Spanish user on a Spanish address announcing `en-US` is an incoherence.
+/// Worked out once.
 pub fn accept_language() -> &'static str {
     static VALUE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     VALUE.get_or_init(|| language_header(system_locale().as_deref()))
 }
 
-/// Builds the header value from a locale tag such as `es-ES`.
-///
-/// `es-ES,es;q=0.9` is the shape Chrome produces for a browser configured with
-/// one language, and one language is what a system locale describes. English
-/// is deliberately **not** appended as a second preference: Chrome only lists
-/// what the user actually configured, and inventing an extra entry would be
-/// guessing at the person rather than reading them.
+/// `es-ES,es;q=0.9` is what Chrome produces for one configured language.
+/// English is **not** appended: that would be guessing at the person.
 fn language_header(locale: Option<&str>) -> String {
     const FALLBACK: &str = "en-US,en;q=0.9";
 
@@ -145,17 +58,13 @@ fn language_header(locale: Option<&str>) -> String {
     };
     match tag.split_once('-') {
         Some((language, _)) => format!("{tag},{language};q=0.9"),
-        // A bare language with no region is already its own primary
-        // preference, and repeating it at a lower weight is not something a
-        // browser does.
+        // A bare language is already its own primary preference.
         None => tag,
     }
 }
 
-/// Turns what a platform hands back into a language tag.
-///
-/// Unix locales arrive as `es_ES.UTF-8` and may be the C locale, which
-/// describes no language at all and must not become one.
+/// Unix locales arrive as `es_ES.UTF-8`, and may be the C locale, which
+/// describes no language.
 fn normalize_tag(raw: &str) -> String {
     let tag = raw
         .split(['.', '@'])
@@ -171,13 +80,11 @@ fn normalize_tag(raw: &str) -> String {
     tag
 }
 
-/// The user's configured language, as the operating system states it.
 #[cfg(windows)]
 fn system_locale() -> Option<String> {
     use windows_sys::Win32::Globalization::GetUserDefaultLocaleName;
 
-    /// `LOCALE_NAME_MAX_LENGTH`, which the binding does not export. Windows
-    /// documents it as the ceiling for every locale name it will produce.
+    /// `LOCALE_NAME_MAX_LENGTH`, which the binding does not export.
     const MAX_LOCALE_UNITS: usize = 85;
 
     let mut buffer = [0u16; MAX_LOCALE_UNITS];
@@ -191,8 +98,7 @@ fn system_locale() -> Option<String> {
     String::from_utf16(&buffer[..written as usize - 1]).ok()
 }
 
-/// Elsewhere the environment is where this lives. `LC_ALL` overrides `LANG`,
-/// which is the order the C library itself resolves them in.
+/// `LC_ALL` overrides `LANG`, as the C library resolves them.
 #[cfg(not(windows))]
 fn system_locale() -> Option<String> {
     ["LC_ALL", "LC_MESSAGES", "LANG"]
@@ -201,41 +107,28 @@ fn system_locale() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// Build counter of Instagram's own web bundle.
-///
-/// A constant, not a session token, whatever the search results say: real
-/// captures show a handful of fixed values that move when the bundle is
-/// rebuilt. It is the lowest-value header of the set and is sent only because
-/// the browser sends it.
-///
-/// **Taken from a capture rather than from a search.** Chrome 151 on
-/// instagram.com in August 2026 sends `359341`; search results give older
-/// bundles' values such as `198387`, and a value that stale is the kind of
-/// small inconsistency the header set exists to avoid. It moves when Instagram
-/// rebuilds, so the way to refresh it is to look at a capture, not to guess.
+/// Build counter of Instagram's own web bundle: a constant that moves when
+/// the bundle is rebuilt. `359341` is what Chrome 151 sent on instagram.com
+/// in August 2026; refresh it from a capture, never from a search.
 pub const ASBD_ID: &str = "359341";
 
 /// What the browser behind a User-Agent would say about itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientHints {
-    /// `sec-ch-ua`, already formatted. `None` for browsers that do not send
-    /// client hints at all, which is every non-Chromium one.
+    /// `sec-ch-ua`, formatted. `None` for every non-Chromium browser.
     pub ua_brands: Option<String>,
-    /// `sec-ch-ua-platform`, quoted, from the enumerated list.
+    /// `sec-ch-ua-platform`, quoted.
     pub platform: &'static str,
     /// `sec-ch-ua-mobile`, an sf-boolean.
     pub mobile: &'static str,
-    /// `priority`, for the browsers that send one on a fetch. `None` for the
-    /// rest, and for Chromium old enough to predate it.
+    /// `None` for browsers that send no `Priority` on a fetch, old Chromium
+    /// included.
     pub priority: Option<&'static str>,
-    /// `accept-encoding`: the codecs this browser would offer. Never absent,
-    /// because every browser sends one — what moves with the version is which
-    /// codecs are in it.
+    /// Never absent: what moves with the version is which codecs are in it.
     pub accept_encoding: &'static str,
 }
 
 impl ClientHints {
-    /// Reads a User-Agent and works out what else the browser would send.
     pub fn from_user_agent(user_agent: &str) -> Self {
         let major = chromium_major(user_agent);
         Self {
@@ -253,18 +146,14 @@ impl ClientHints {
     }
 }
 
-/// The major version out of a Chromium User-Agent, or `None` when it is not one.
-///
-/// Since Chrome reduced its User-Agent, the minor, build and patch parts are
-/// frozen at zero, so the major is the only thing that varies — and the only
-/// thing needed to reproduce the rest.
+/// The major version out of a Chromium User-Agent: since the User-Agent was
+/// reduced, the only part that varies.
 fn chromium_major(user_agent: &str) -> Option<u32> {
     let after = user_agent.split("Chrome/").nth(1)?;
     after.split('.').next()?.parse().ok()
 }
 
-/// The brand a Chromium derivative reports as its own. The order matters:
-/// every one of them also says `Chrome/` somewhere.
+/// The order matters: every Chromium derivative also says `Chrome/`.
 fn brand_of(user_agent: &str) -> &'static str {
     if user_agent.contains("Edg/") {
         "Microsoft Edge"
@@ -275,19 +164,9 @@ fn brand_of(user_agent: &str) -> &'static str {
     }
 }
 
-/// Builds `sec-ch-ua` exactly as Chromium does.
-///
-/// Three entries — the GREASE entry, Chromium, and the brand — where **both the
-/// GREASE entry's spelling and the order of the three are derived from the
-/// major version**. GREASE is the standard trick of including a deliberately
-/// meaningless value so that parsers cannot come to depend on the list being
-/// fixed; it is part of the header, not an embellishment on it. Hardcoding "the
-/// GREASE entry goes first" is wrong for two versions out of every three, and
-/// since the whole thing is a pure function of the major version, the other end
-/// can check it for free.
-///
-/// The algorithm is Chromium's `GetGreasedUserAgentBrandVersion`, kept here
-/// because there is nowhere to read it from at runtime.
+/// Builds `sec-ch-ua` as Chromium does: the GREASE entry, Chromium and the
+/// brand, **the GREASE entry's spelling and the order of the three derived
+/// from the major version** (Chromium's `GetGreasedUserAgentBrandVersion`).
 fn brands(brand: &str, major: u32) -> String {
     brand_entries(brand, major)
         .iter()
@@ -296,18 +175,13 @@ fn brands(brand: &str, major: u32) -> String {
         .join(", ")
 }
 
-/// The brands of a User-Agent, in the order Chromium lists them, each with its
-/// major version — what `navigator.userAgentData.brands` holds.
-///
-/// Public for the headless browser, which has to state them itself: a
-/// headless Chrome describes itself as `HeadlessChrome`, and the override
-/// that corrects that needs the list rather than the header built from it.
+/// What `navigator.userAgentData.brands` holds. For the headless browser,
+/// which describes itself as `HeadlessChrome` and has to be corrected.
 pub fn brand_list(user_agent: &str) -> Option<Vec<(String, String)>> {
     let major = chromium_major(user_agent)?;
     Some(brand_entries(brand_of(user_agent), major).to_vec())
 }
 
-/// The three entries, GREASE included, in Chromium's order for this version.
 fn brand_entries(brand: &str, major: u32) -> [(String, String); 3] {
     const GREASE_CHARS: [&str; 11] = [" ", "(", ":", "-", ".", "/", ")", ";", "=", "?", "_"];
     const GREASE_VERSIONS: [&str; 3] = ["8", "99", "24"];
@@ -344,14 +218,12 @@ fn brand_entries(brand: &str, major: u32) -> [(String, String); 3] {
     shuffled
 }
 
-/// The platform a User-Agent claims, unquoted, as the client-hints metadata
-/// wants it.
+/// The platform a User-Agent claims, unquoted.
 pub fn platform_name(user_agent: &str) -> &'static str {
     platform_of(user_agent).trim_matches('"')
 }
 
-/// The `sec-ch-ua-platform` value, from the enumerated list the specification
-/// allows. Already quoted, because it is a structured-header string.
+/// From the enumerated list the specification allows, already quoted.
 fn platform_of(user_agent: &str) -> &'static str {
     if user_agent.contains("Android") {
         "\"Android\""

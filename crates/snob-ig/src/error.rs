@@ -1,29 +1,20 @@
-//! Client errors and classification of Instagram's responses.
-//!
-//! Instagram returns uninformative HTTP status codes and puts the real cause in
-//! the body. Telling them apart matters because the right response differs in
-//! each case: retry after a wait, ask the user to log in again, or stop
-//! altogether.
+//! Client errors and the classification of Instagram's answers: its status
+//! codes lie, and the body says why. Advice about what to do is `snob-cli`'s
+//! (`report::advice_for`); the messages here are the diagnosis only.
 
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 use snob_core::EpochMs;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum IgError {
-    /// The diagnosis and nothing else. What to do about it — running a
-    /// subcommand of a binary this crate does not know it is part of — is
-    /// `snob_cli::report::advice_for`, which puts it back as the `hint:` line
-    /// beside every other piece of advice the tool gives.
     #[error("the session has expired")]
     SessionExpired,
 
-    /// The session was signed out of on this computer since it was read: a
-    /// logout or a purge of its account, or its account's data removed. The
-    /// caller refused it before anything was sent, and Instagram said
-    /// nothing; read as [`IgError::SessionExpired`] in every other way. Its
-    /// own variant so the failure says what happened rather than blaming
-    /// Instagram.
+    /// The account was signed out of on this computer since the session was
+    /// read. Refused before anything was sent; Instagram said nothing.
+    /// Otherwise read as [`IgError::SessionExpired`].
     #[error(
         "this session was signed out on this computer (a logout or a purge, or its data was \
          removed), so nothing more was sent as it"
@@ -46,23 +37,9 @@ pub enum IgError {
 
     /// The account is already in cooldown, so this request was never sent.
     ///
-    /// **Not [`IgError::RateLimited`], and the difference is which direction it
-    /// travels.** `RateLimited` comes back *from* Instagram and is what opens a
-    /// cooldown; this one is read *out of* the store before anything goes on the
-    /// wire, and closes one that is already open. Sharing a variant would have
-    /// made `classify_and_record` record a second cooldown for a push-back that
-    /// never happened.
-    ///
-    /// It carries the moment and no wording. When a cooldown lifts is a date,
-    /// and dates are formatted in `snob-cli` — this crate has no clock and no
-    /// business having one. An [`EpochMs`], because that is the unit the budget
-    /// answers in, and the conversion to the seconds every date is printed from
-    /// is `EpochMs::to_epoch` rather than a division somebody writes again.
-    ///
-    /// `reaction` answers `Abort` for it through the fallback arm, which is
-    /// right and worth saying out loud: retrying is the one thing that must not
-    /// happen, because the wait is measured in hours and every attempt would be
-    /// charged.
+    /// **Not [`IgError::RateLimited`]**: that one comes back from Instagram
+    /// and opens a cooldown; this is read out of the store, and recording it
+    /// would open a second one for a push-back that never happened. `Abort`.
     #[error("the account is in cooldown, so nothing may be spent until it lifts")]
     InCooldown { until_ms: EpochMs },
 
@@ -76,29 +53,20 @@ pub enum IgError {
     Unexpected { status: u16, body: String },
 
     /// A GraphQL answer whose errors say the call is not worth repeating:
-    /// `allow_user_retry` false, or a variable of the wrong type (so the
-    /// operation was found). Nothing is sent again, under this `doc_id` or a
-    /// rediscovered one.
+    /// `allow_user_retry` false, or a variable of the wrong type. Nothing is
+    /// sent again, under this `doc_id` or a rediscovered one.
     #[error("Instagram refused the call and said repeating it would not help: {body}")]
     QueryRefused { body: String },
 
-    /// A redirect pointed somewhere this client will not follow.
-    ///
-    /// Its own variant rather than an [`IgError::Unexpected`] or an
-    /// [`IgError::Network`] because the reaction is what matters: retrying
-    /// cannot help, and a `Retry` would have the pager send the same
-    /// impossible request three more times with the session on it.
+    /// A redirect pointed off the origin. Its own variant so that it is an
+    /// `Abort` and never a retry with the session on it.
     #[error("a redirect tried to take an API call off instagram.com: {to}")]
     OffOrigin { to: String },
 
-    /// A redirect chain that is a loop by another name. Same reasoning as
-    /// [`IgError::OffOrigin`] for why it is not an `Unexpected`.
+    /// As [`IgError::OffOrigin`], for a chain that is a loop by another name.
     #[error("too many redirects")]
     TooManyRedirects,
 
-    /// Every capped read answers this -- an API body, a story, a script
-    /// bundle -- so it says what happened and not what the first caller was
-    /// fetching.
     #[error("the response exceeds {limit} bytes, which is more than this could be")]
     TooLarge { limit: usize },
 
@@ -108,81 +76,46 @@ pub enum IgError {
     #[error("could not consult the request budget: {0}")]
     Budget(String),
 
-    /// The browser the requests are sent from failed: it would not start, it
-    /// went away, or the page would not answer.
-    ///
-    /// Its reaction is `Abort` rather than `Retry` on purpose. A retry would
-    /// relaunch a browser, which is not a network blip, and a browser that
-    /// will not start will not start three times either.
+    /// The browser would not start, went away, or would not answer. `Abort`:
+    /// a retry would relaunch a browser.
     #[error("the browser snob sends its requests from failed: {0}")]
     Browser(String),
 
-    /// The browser is fine and the request got no answer: the network went,
-    /// or the page's own timeout ran out.
-    ///
-    /// What [`IgError::Network`] is for a request `reqwest` sends, and read
-    /// the same way — `Retry`, and tolerable at login. Read as
-    /// [`IgError::Browser`], a dropped Wi-Fi connection would abort a monitor
-    /// run, fail a login, and relaunch the browser besides.
+    /// The browser is fine and the request got no answer: what
+    /// [`IgError::Network`] is for `reqwest`, and read the same way.
     #[error("network error in the browser: {0}")]
     Unreachable(String),
 
-    /// The mutation's identifier could not be found in Instagram's own code.
-    ///
-    /// Instagram rotates these, and this crate reads the current one out of the
-    /// page rather than pinning it — so this arrives when the *shape* changed
-    /// rather than the value: the operation was renamed, or the code stopped
-    /// carrying the two together. It is worth its own variant because there is
-    /// nothing the user can do about it and the message has to say so.
+    /// The mutation's identifier is not in Instagram's code any more: the
+    /// shape changed, not the value, and the user can do nothing about it.
     #[error(
         "Instagram's page no longer carries the identifier for {name}, so this cannot be sent. \
          That is a change on their side, and nothing here can work around it."
     )]
     MutationNotFound { name: &'static str },
 
-    /// The stored session carries no `csrftoken`, so it cannot write.
-    ///
-    /// Reads do not need one, which is why a session that cannot write is a
-    /// perfectly good session and this is not `SessionExpired`. From the
-    /// browser the page's own token is used; without it (`SNOB_NO_BROWSER`, or
-    /// a test server) this arrives on a session created by `snob login --paste`
-    /// without `--csrftoken`, because the sessionid is all that is pasted.
-    ///
-    /// The two ways out of it are advice about a binary, so they are in
-    /// `snob_cli::report::advice_for` with the rest of the tool's advice, and
-    /// this says only what is wrong. The same reasoning as
-    /// [`IgError::SessionExpired`], and the same reason
-    /// [`IgError::InCooldown`] carries an epoch rather than a date.
+    /// The stored session carries no `csrftoken`, so it cannot write. Still a
+    /// good session: reads need none. Only without a browser, on a session
+    /// pasted without `--csrftoken`.
     #[error("this session has no CSRF token, so it can read but not follow or unfollow")]
     NoCsrfToken,
 
-    /// A call that is not one of those snob may send
-    /// ([`crate::allowlist`]), refused before it left. A defect in snob,
-    /// never Instagram's answer.
+    /// Not one of the calls snob may send ([`crate::allowlist`]), refused
+    /// before it left. A defect in snob, never Instagram's answer.
     #[error("snob refused to send {0}: it is not one of the calls it may make")]
     NotAllowed(String),
 
-    /// The browser's page has not shown a value a call is built from — one
-    /// only the app's own calls carry, after they were waited on — so the
-    /// call was not built and nothing was sent. The browser stays open.
-    ///
-    /// `Abort`, through the fallback arm: the page is waited on where it is
-    /// read, and a retry here would only wait again.
+    /// The page has not shown a value a call is built from, so nothing was
+    /// sent. The browser stays open. `Abort`: a retry would only wait again.
     #[error("Instagram's page has not shown {0} yet, so nothing was sent; try again in a moment")]
     PageNotReady(String),
 
     #[error("canceled")]
     Canceled,
 
-    /// The request budget would have made this wait longer than the caller
-    /// allowed (`Pacer::waiting_at_most`), so nothing was sent and nothing was
-    /// charged for it.
-    ///
-    /// **Stopping, not throttling.** Instagram said nothing; the run stopped
-    /// at a limit its caller set, the way Ctrl+C stops it, and a walk it
-    /// stops ends `Canceled` and continues where it left off. It carries
-    /// durations and no wording, for the reason [`IgError::InCooldown`]
-    /// carries an epoch.
+    /// The budget would have made this wait longer than the caller allowed
+    /// (`Pacer::waiting_at_most`): nothing sent, nothing charged.
+    /// **Stopping, not throttling**: a walk it stops ends `Canceled`.
     #[error(
         "the request budget would wait {}, longer than the {} allowed, so nothing was sent",
         snob_core::duration::format(*.wait),
@@ -207,14 +140,8 @@ fn url_suffix(url: &Option<String>) -> String {
     }
 }
 
-/// A 404 names what was being looked for whenever the caller knows it. Only
-/// the endpoints that ask about one account can fill it in.
-///
-/// Filtered, for the reason [`body_excerpt`] gives: this sentence is printed to a
-/// terminal by `report::print_error`, and the name in it is whatever was typed on
-/// the command line. `snob followers $'gh\e[2K\e[A'` reaches this arm, so without
-/// the filter the refusal erased the line above itself — the same hole every
-/// sibling refusal closes at the point it names an account.
+/// Names the account when the caller knows it. Filtered: the name is whatever
+/// was typed on the command line and is printed to a terminal.
 fn missing_message(what: &Option<String>) -> String {
     match what {
         Some(name) => format!(
@@ -225,27 +152,16 @@ fn missing_message(what: &Option<String>) -> String {
     }
 }
 
-/// How long the account should be left alone after this error, and under what
-/// name it gets recorded.
-///
-/// Lives here, next to [`Reaction`], because every caller that makes a request
-/// needs the same answer: the walker reaching it through a stop reason and a
-/// single-request command reaching it directly. Two copies of this table is one
-/// copy too many — the second would be the one passing a length of zero.
+/// How long the account is left alone after this error, and the name it is
+/// recorded under. The one table, for the walker and single requests alike.
 pub fn cooldown_for(error: &IgError) -> Option<(&'static str, std::time::Duration)> {
     use snob_core::budget::{ACTION_BLOCK_COOLDOWN, CHALLENGE_COOLDOWN, RATE_LIMIT_COOLDOWN};
 
     match error {
         IgError::FeedbackRequired => Some(("feedback_required", ACTION_BLOCK_COOLDOWN)),
         IgError::RateLimited => Some(("rate_limit", RATE_LIMIT_COOLDOWN)),
-        // A challenge is a hard stop **and** a cooldown: without the second
-        // half the next run walks straight back into an account Instagram has
-        // just flagged.
-        //
-        // Its own length, not the action block's, because it is the one cause
-        // waiting does not fix — the user clears it by opening the link. Long
-        // enough that an unattended rerun cannot knock again, short enough that
-        // someone who dealt with it in a minute is not locked out for the day.
+        // A hard stop and a cooldown: the user clears it by opening the link,
+        // and an unattended rerun must not walk back in meanwhile.
         IgError::Challenge { .. } | IgError::Checkpoint { .. } => {
             Some(("challenge", CHALLENGE_COOLDOWN))
         }
@@ -253,23 +169,15 @@ pub fn cooldown_for(error: &IgError) -> Option<(&'static str, std::time::Duratio
     }
 }
 
-/// Whether an answer is a refusal: anything but a success, and a success
-/// that declares a failure in its body — Instagram answers `{"status":"fail"}`
-/// under a 200 in some cases, and a GraphQL refusal is *always* a 200 with the
-/// reason in an `errors` array.
+/// Whether an answer is a refusal: anything but a success, or a success that
+/// declares a failure in its body (`{"status":"fail"}`, a GraphQL `errors`).
 pub fn refused(status: u16, body: &str) -> bool {
     !(200..300).contains(&status) || declares_failure(body)
 }
 
-/// Whether an answer is Instagram pushing back — one that earns a cooldown —
-/// and which push-back it is.
-///
-/// The client's rule for its own answers — [`refused`], then [`classify`],
-/// then [`cooldown_for`] when it records — asked for the browser, which hears
-/// answers the client never reads: the calls Instagram's app makes on its
-/// own, and snob's own before they reach the client. Both use these same
-/// three, or one push-back would be recorded twice — which doubles a
-/// cooldown — or not at all.
+/// The push-back an answer is, if it earns a cooldown. For the browser, which
+/// hears answers the client never reads; both use [`refused`], [`classify`]
+/// and [`cooldown_for`], or one push-back would be recorded twice.
 pub fn push_back(status: u16, body: &str) -> Option<IgError> {
     if !refused(status, body) {
         return None;
@@ -278,36 +186,20 @@ pub fn push_back(status: u16, body: &str) -> Option<IgError> {
     cooldown_for(&error).is_some().then_some(error)
 }
 
-/// What the list engine should do about an error.
-///
-/// It is the single authority on that decision. Retry decisions are not made by
-/// combining the individual predicates below: each answers a different question,
-/// and mixing them is how a 429 ends up being retried.
+/// What the list engine should do about an error. **The single authority**:
+/// retry decisions are never made by combining the predicates below.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reaction {
-    /// Retry with a growing wait.
     Retry,
     /// Stop and put the account in cooldown.
     Cooldown,
-    /// Stop, because retrying within this run cannot help.
-    ///
-    /// Whether a cooldown follows is a separate question: [`Reaction`]
-    /// answers what the walk in progress should do, and [`cooldown_for`]
-    /// answers whether the account is left alone afterwards. A challenge says
-    /// yes to both — waiting is not what clears it, but walking back in before
-    /// the user has cleared it is exactly what turns a checkpoint into
-    /// something longer.
+    /// Stop: retrying within this run cannot help. Whether a cooldown follows
+    /// is [`cooldown_for`]'s to say (a challenge says yes to both).
     Abort,
 }
 
 impl IgError {
     /// The address that clears a security check, when Instagram gave one.
-    ///
-    /// Lives here rather than in the command that reports it, next to the
-    /// validation that decides whether the address may be repeated at all: the
-    /// two variants that can carry one are the two this has to know about, and a
-    /// copy of the list in another crate is one that keeps compiling after a
-    /// third variant gains a URL and simply stops mentioning it.
     pub fn challenge_url(&self) -> Option<&str> {
         match self {
             Self::Challenge { url } | Self::Checkpoint { url } => url.as_deref(),
@@ -315,32 +207,24 @@ impl IgError {
         }
     }
 
-    /// What to do with this error during a walk.
     pub fn reaction(&self) -> Reaction {
         match self {
-            // **A refused redirect is not a network failure**: retrying cannot
-            // help, and each retry is a request sent with the session on it.
-            // `is_redirect()` is true exactly for a policy refusal, which is
-            // what makes this a one-line question rather than a guess about the
-            // message. Reachable through the CDN client's own policy, whose
-            // refused hop arrives this way.
-            Self::Network(e) if e.is_redirect() => Reaction::Abort,
+            // A refused redirect is not a network failure (the CDN client's
+            // policy refusal arrives this way): each retry would carry the
+            // session. Nor is a request that would not build (a header value
+            // `reqwest` refuses): it was never sent, and never will be.
+            Self::Network(e) if e.is_redirect() || e.is_builder() => Reaction::Abort,
             Self::Network(_) | Self::Unreachable(_) => Reaction::Retry,
-            // A 5xx is the server's problem, not ours.
             Self::Unexpected { status, .. } if *status >= 500 => Reaction::Retry,
             Self::RateLimited | Self::FeedbackRequired => Reaction::Cooldown,
-            // `Decode` lands here on purpose: when the body is not the expected
-            // JSON it is usually a firewall page, and retrying against a
-            // firewall is exactly how you end up in a loop.
+            // `Decode` lands here on purpose: a body that is not the expected
+            // JSON is usually a firewall page.
             _ => Reaction::Abort,
         }
     }
 
-    /// Whether, **while logging in**, the session is worth storing anyway
-    /// rather than making the user repeat the whole process.
-    ///
-    /// Not a retry criterion: during a walk, throttling is a hard stop. That is
-    /// what [`IgError::reaction`] is for.
+    /// Whether, **while logging in**, the session is worth storing anyway.
+    /// Not a retry criterion.
     pub fn is_login_tolerable(&self) -> bool {
         matches!(
             self,
@@ -348,37 +232,16 @@ impl IgError {
         )
     }
 
-    /// Whether a **second, different** request is allowed to be sent after this
-    /// one, to answer the same question another way.
-    ///
-    /// Deliberately narrow, because the standing rule is that when a service
-    /// says no the answer is to stop asking. Everything that means "no" says no
-    /// here: a 429, an action block and a challenge all carry a cooldown; a 401
-    /// or 403 arrives as [`IgError::SessionExpired`]; a cancel is the user; a
-    /// 404 is a real answer, and asking a second endpoint about a name nobody
-    /// owns spends a request to be told the same thing. A 5xx is the server
-    /// being unwell, which [`Reaction::Retry`] already covers, and a second
-    /// route there would only hide an outage.
-    ///
-    /// What is left is a 4xx that is none of those: Instagram answered, and its
-    /// answer was broken. That is the case this exists for — certain business
-    /// accounts make `web_profile_info` answer 400 with
-    /// `Asset asset://laser.provider/ig_business_category_subvertical has been
-    /// deleted`, which is Instagram failing to serialize its own reply and has
-    /// nothing to do with the request. Reproduced against the live API in
-    /// August 2026.
-    ///
-    /// [`Reaction::Retry`]: crate::error::Reaction::Retry
+    /// Whether a second, different request may be sent to answer the same
+    /// question another way. Only for a 4xx that is no push-back, no dead
+    /// session and no 404: Instagram answered, and its answer was broken (see
+    /// `IgClient::web_profile_info`).
     pub fn worth_a_second_route(&self) -> bool {
         matches!(self, Self::Unexpected { status, .. } if (400..500).contains(status))
     }
 
-    /// Whether Instagram objected to the account, as opposed to the request.
-    ///
-    /// The four answers that earn a cooldown, and the backstop that reports
-    /// one already standing. What they have in common is that the next
-    /// request will be refused too, which is what makes them worth saying
-    /// out loud even from a place that could otherwise shrug.
+    /// Whether Instagram objected to the account rather than the request: the
+    /// four answers that earn a cooldown, and one already standing.
     pub(crate) fn is_push_back(&self) -> bool {
         matches!(
             self,
@@ -403,8 +266,8 @@ impl IgError {
     }
 }
 
-/// Shape of Instagram's error bodies. Every field is optional because the
-/// response varies by endpoint and by version.
+/// Instagram's error bodies. Every field is optional: the shape varies by
+/// endpoint and version.
 #[derive(Debug, Default, Deserialize)]
 struct ErrorBody {
     #[serde(default)]
@@ -417,25 +280,17 @@ struct ErrorBody {
     challenge: Option<ChallengeBody>,
     #[serde(default)]
     spam: Option<bool>,
-    /// When true, the problem is the session even though the message talks
-    /// about waiting a few minutes. Verified against the live API: an invalid
-    /// cookie returns exactly that.
+    /// When true the problem is the session, even though the message talks
+    /// about waiting a few minutes (verified live with an invalid cookie).
     #[serde(default)]
     require_login: Option<bool>,
-    /// A GraphQL refusal, which is the shape the write path gets.
     #[serde(default)]
     errors: Option<Vec<GraphqlError>>,
 }
 
 impl ErrorBody {
-    /// Every piece of text a refusal might have put its reason in, joined and
-    /// lowercased, ready for the word matching below.
-    ///
-    /// Joined rather than picked. The two endpoint families disagree about
-    /// where the reason goes and neither of them is wrong, so searching one
-    /// field and falling back to the other in some priority order would be a
-    /// third opinion invented here. Every branch below asks `contains`, so a
-    /// longer haystack costs nothing and cannot pick the wrong field.
+    /// Every piece of text a refusal might carry its reason in, joined and
+    /// lowercased: the two endpoint families put it in different fields.
     fn searchable(&self) -> String {
         let mut text = self.message.clone().unwrap_or_default();
         for error in self.errors.iter().flatten() {
@@ -451,18 +306,8 @@ impl ErrorBody {
     }
 }
 
-/// One entry from a GraphQL `errors` array.
-///
-/// **A refusal from `/api/graphql` looks nothing like a refusal from
-/// `/api/v1/`.** There is no `message` at the top level, no `status`, and the
-/// HTTP status is 200. What arrives is `{"errors":[{...}],"data":null}`, and
-/// the words this file decides on -- `feedback_required`, `checkpoint_required`
-/// -- are inside there.
-///
-/// Three fields because the same refusal is spelled differently depending on
-/// which layer answered: `message` is the machine-readable one, `summary` and
-/// `description` are what the interface would have shown the person. All three
-/// are read, because which one carries the word is not ours to decide.
+/// One entry of a GraphQL `errors` array. A refusal from `/api/graphql` is a
+/// 200 with `{"errors":[{...}],"data":null}` and no top-level `message`.
 #[derive(Debug, Deserialize)]
 struct GraphqlError {
     #[serde(default)]
@@ -476,7 +321,6 @@ struct GraphqlError {
 }
 
 impl GraphqlError {
-    /// Whether Instagram said this call is not worth repeating.
     fn not_worth_repeating(&self) -> bool {
         self.allow_user_retry == Some(false)
             || [&self.message, &self.summary, &self.description]
@@ -496,22 +340,9 @@ struct ChallengeBody {
 
 /// Whether a body that arrived with a successful status is really a failure.
 ///
-/// Instagram answers `{"status":"fail"}` under a 200 in some cases, so the
-/// status code alone is not enough. It has to be **parsed**, not searched:
-/// looking for the two substrings anywhere in the text meant that a follower
-/// whose full name was `fail` turned a perfectly good page into a stopped walk,
-/// and every good answer already carries `"status":"ok"` so the first half of
-/// that test was always true.
-///
-/// Three fields rather than one, because this is the gate in front of
-/// [`classify`] and therefore in front of the cooldown. `status` alone meant a
-/// 200 carrying `spam: true` without it went to the deserializer instead: the
-/// run stopped, which is safe, but nothing was written down, so the next run
-/// walked straight back into the same wall. All three are typed fields, so the
-/// follower named `fail` stays fixed.
-///
-/// A body that is not JSON is not a declared failure. Deciding what it is
-/// instead is the deserializer's job, and it says so more precisely.
+/// **Parsed, not searched**: a follower whose full name is `fail` must not
+/// stop a walk. This is the gate in front of [`classify`] and so of the
+/// cooldown. A body that is not JSON is not a declared failure.
 pub fn declares_failure(body: &str) -> bool {
     #[derive(Deserialize)]
     struct Envelope {
@@ -521,30 +352,16 @@ pub fn declares_failure(body: &str) -> bool {
         spam: Option<bool>,
         #[serde(default)]
         require_login: Option<bool>,
-        /// **The one that made this a bug rather than a gap.** A GraphQL
-        /// refusal arrives under a 200 with `data: null` and the reason in
-        /// here. Without it the write path read an action block as a
-        /// successful no-op: `FriendshipResult` is optional in every field, so
-        /// the body deserialized cleanly with all of them absent and `status()`
-        /// fell to its default arm -- not following, nothing outstanding --
-        /// which is exactly what a successful unfollow looks like. The budget
-        /// was spent, no cooldown was written down, and the user was told
-        /// nothing had happened.
-        ///
-        /// Untyped on purpose: this gate only has to know that Instagram
-        /// objected. What it objected about is [`classify`]'s question, and
-        /// [`GraphqlError`] is where that is spelled out.
+        /// A GraphQL refusal: a 200 with `data: null` and the reason in here.
+        /// Without it an action block read as a successful unfollow.
         #[serde(default)]
-        errors: Option<Vec<serde_json::Value>>,
-        /// Read only to qualify `errors`. GraphQL permits an answer that
-        /// carries both -- a field-level complaint beside a mutation that
-        /// was performed -- and the refusal this gate exists for arrives
-        /// with `data: null`. Treating the partial answer as a total one
-        /// reported a follow Instagram had carried out as a failure, and
-        /// worse, let the request be replayed over a write that had already
-        /// happened.
+        errors: Option<Vec<IgnoredAny>>,
+        /// Only to qualify `errors`: an answer with both is a write that was
+        /// performed, and must be neither failed nor replayed. `None` for a
+        /// `null`. Skipped, not kept: it is the whole of a GraphQL answer,
+        /// and this runs on every one.
         #[serde(default)]
-        data: Option<serde_json::Value>,
+        data: Option<IgnoredAny>,
     }
 
     let Ok(envelope) = serde_json::from_str::<Envelope>(body) else {
@@ -553,22 +370,12 @@ pub fn declares_failure(body: &str) -> bool {
     envelope.status.as_deref() == Some("fail")
         || envelope.spam == Some(true)
         || envelope.require_login == Some(true)
-        || (envelope.errors.is_some_and(|errors| !errors.is_empty())
-            && envelope
-                .data
-                .as_ref()
-                .is_none_or(serde_json::Value::is_null))
+        || (envelope.errors.is_some_and(|errors| !errors.is_empty()) && envelope.data.is_none())
 }
 
-/// What a document navigation that was redirected to `target` means, when the
-/// place it landed says it on its own. `target` is the path with its query, so
-/// the challenge address shown to the user is the whole of it.
-///
-/// Instagram sends a page it will not show to one of two places. Landing on
-/// the challenge is a challenge, with the cooldown [`cooldown_for`] gives one;
-/// landing on the login form is a session that has gone. Anything else is left
-/// to the page that loaded. Whole path segments are matched, because
-/// `/challenger/` is somebody's profile.
+/// What a navigation redirected to `target` (path and query) means: the
+/// challenge, the login form (a session that has gone), or nothing. Whole
+/// path segments are matched: `/challenger/` is somebody's profile.
 pub fn landed_on(target: &str) -> Option<IgError> {
     let path = target.split(['?', '#']).next().unwrap_or_default();
     if path == "/challenge" || path.starts_with("/challenge/") {
@@ -582,23 +389,13 @@ pub fn landed_on(target: &str) -> Option<IgError> {
     None
 }
 
-/// Translates an Instagram error response into the matching error.
-///
-/// A pure function: it takes the status code and the raw body. It is the base
-/// the rate control is built on, so being testable without touching the network
-/// matters.
+/// Translates an Instagram error response into the matching error. Pure.
 pub fn classify(status: u16, body: &str) -> IgError {
     let parsed: ErrorBody = serde_json::from_str(body).unwrap_or_default();
-    // Every place a reason might be, not just the REST one. See
-    // [`ErrorBody::searchable`]; the branches below serve both endpoint
-    // families, which is the point -- a `feedback_required` is the same event
-    // whichever route reported it.
     let message = parsed.searchable();
 
-    // Checked before the message: Instagram returns "Please wait a few minutes"
-    // with `require_login: true` when the cookie is no good. Without this
-    // branch, a mistyped sessionid would look like transient throttling and we
-    // would end up storing a session that does not work.
+    // Before the message: an invalid cookie answers "Please wait a few
+    // minutes" with `require_login: true`, and must not read as throttling.
     if parsed.require_login == Some(true) {
         return IgError::SessionExpired;
     }
@@ -649,12 +446,8 @@ pub fn classify(status: u16, body: &str) -> IgError {
 
     match status {
         429 => IgError::RateLimited,
-        // A 401 or 403 with no recognizable message is almost always a session
-        // that no longer works.
         401 | 403 => IgError::SessionExpired,
-        // Instagram serves a whole HTML page for a name nobody owns. Without
-        // this branch the answer to a typo is three hundred characters of
-        // markup.
+        // A name nobody owns is served as a whole HTML page.
         404 => IgError::NotFound { what: None },
         _ => IgError::Unexpected {
             status,
@@ -663,14 +456,8 @@ pub fn classify(status: u16, body: &str) -> IgError {
     }
 }
 
-/// What an unexpected body contributes to the message. An HTML page is a
-/// firewall or an error page: naming it says as much as spilling it over the
-/// terminal would.
-///
-/// What is left goes through the same filter a username does. This excerpt is
-/// printed to a terminal by `main`, and a response body is no more trustworthy
-/// than a profile field — less, when the thing answering is a captive portal
-/// rather than Instagram.
+/// What an unexpected body contributes to a message printed to a terminal:
+/// an HTML page is only named, and anything else goes through `printable`.
 pub fn body_excerpt(body: &str) -> String {
     if body.trim_start().starts_with('<') {
         return "(an HTML page, not the API's JSON)".into();
@@ -678,18 +465,10 @@ pub fn body_excerpt(body: &str) -> String {
     snob_core::model::printable(&body.chars().take(300).collect::<String>())
 }
 
-/// Hosts a security check can legitimately live on.
 const CHALLENGE_HOSTS: [&str; 3] = ["instagram.com", "www.instagram.com", "i.instagram.com"];
 
-/// The address the user is told to open, if the body named one we would follow
-/// ourselves.
-///
-/// The tool's own words are "Open it in a browser to clear it", so whatever
-/// comes back here carries this program's authority. Instagram naming its own
-/// challenge page is the only case that is worth anything, and it is also the
-/// only case that is safe: a body that names somewhere else gets the generic
-/// wording instead, which loses a convenience rather than sending someone to a
-/// login form that is not Instagram's.
+/// The address the user is told to open, if it is Instagram's own. Any other
+/// gets the generic wording rather than this program's authority.
 fn checked_url(value: String) -> Option<String> {
     let absolute = if value.starts_with("http") {
         value
@@ -701,18 +480,9 @@ fn checked_url(value: String) -> Option<String> {
 
     let parsed = url::Url::parse(&absolute).ok()?;
     let host = parsed.host_str()?;
-    // The **parsed** address is what comes back, not the string that was
-    // checked. They are not the same text: the parser skips interior tab,
-    // carriage return and newline and percent-encodes C0 controls in the path,
-    // so `/challenge/x\x1b[2K\x1b[A` and a host split by a newline both parse
-    // to `www.instagram.com` and pass this check, and the raw text would keep
-    // its control bytes — in a sentence that carries this program's
-    // authority, telling somebody to open a link. Erasing the lines above it
-    // and offering a different address is the whole attack, and it needs
-    // nothing more than a body.
-    //
-    // Beyond the injection: an address that was validated and an address that
-    // is displayed should not be able to differ at all.
+    // The **parsed** address is returned, never the string checked: the
+    // parser drops interior tab, CR and LF and encodes C0 controls, so the
+    // raw text could pass the host check and still carry control bytes.
     (parsed.scheme() == "https" && CHALLENGE_HOSTS.contains(&host)).then(|| parsed.to_string())
 }
 
@@ -1159,5 +929,18 @@ mod tests {
             what: Some("someone".into()),
         };
         assert_eq!(e.to_string(), "the account \"someone\" does not exist");
+    }
+
+    /// A header value `reqwest` refuses fails the request before it is sent:
+    /// retried, the walker would pay the budget three more times for nothing.
+    #[test]
+    fn a_request_that_does_not_build_is_not_retried() {
+        let unbuilt = reqwest::Client::new()
+            .get("http://127.0.0.1:9/")
+            .header("X-FB-LSD", "a token\nwith a line break")
+            .build()
+            .expect_err("a header value with a line break does not build");
+        assert!(unbuilt.is_builder());
+        assert_eq!(IgError::Network(unbuilt).reaction(), Reaction::Abort);
     }
 }

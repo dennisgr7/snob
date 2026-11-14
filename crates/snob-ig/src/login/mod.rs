@@ -1,13 +1,6 @@
-//! Obtaining the Instagram session.
-//!
-//! There are two ways, and neither is a programmatic login: the tool never sees
-//! or asks for the password. Either the user copies the cookie out of the
-//! browser's developer tools, or a browser we launch hands it over through its
-//! debugging protocol.
-//!
-//! The `sessionid` cookie is marked `HttpOnly`, so JavaScript cannot read it.
-//! That detail rules out the console-snippet shortcut and is the reason the two
-//! ways are the ones they are.
+//! Obtaining the Instagram session: a pasted cookie, or the cookies a browser
+//! snob launched hands over. Never a programmatic login: the password is
+//! never seen. (`sessionid` is `HttpOnly`, so no console snippet can read it.)
 
 use snob_core::secret::Secret;
 use snob_core::session::{Session, SessionError, SessionOrigin};
@@ -34,11 +27,8 @@ pub enum LoginError {
 }
 
 impl LoginError {
-    /// The Instagram error behind this one, if there is one.
-    ///
-    /// Needed explicitly because `#[error(transparent)]` delegates `source()`
-    /// to the inner error rather than exposing it, so walking the cause chain
-    /// does not find it.
+    /// The Instagram error behind this one: `#[error(transparent)]` hides it
+    /// from a walk of the cause chain.
     pub fn as_instagram(&self) -> Option<&IgError> {
         match self {
             Self::Instagram(e) => Some(e),
@@ -47,14 +37,8 @@ impl LoginError {
     }
 }
 
-/// The cookies a browser hands over for `instagram.com`.
-///
-/// Only `sessionid` is required. The rest travel with every request the browser
-/// makes, and sending them too keeps our requests looking like the ones the
-/// session was created by.
-///
-/// The credential fields are [`Secret`], so a derived `Debug` is safe: they
-/// print as `<hidden>` and clear themselves when dropped.
+/// The cookies a browser hands over for `instagram.com`. Only `sessionid` is
+/// required; the rest travel with every request the browser makes.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BrowserCookies {
     pub sessionid: Secret,
@@ -65,21 +49,18 @@ pub struct BrowserCookies {
     pub datr: Option<String>,
 }
 
-/// Result of validating a freshly obtained session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValidationOutcome {
-    /// Instagram answered correctly.
     Confirmed,
-    /// It could not be confirmed because of a transient problem, but the
-    /// session is stored anyway.
+    /// A transient problem kept it from being confirmed; stored anyway.
     Unconfirmed,
-    /// Nothing was asked because the account is in cooldown. Storing an
-    /// unchecked session beats spending the one request the cooldown exists to
-    /// prevent — and a fresh session is the usual reason someone is here.
-    Skipped { until_ms: EpochMs },
+    /// Nothing was asked: the account is in cooldown, and an unchecked
+    /// session beats spending the request the cooldown exists to prevent.
+    Skipped {
+        until_ms: EpochMs,
+    },
 }
 
-/// Builds a session from what the user pasted.
 pub fn session_from_paste(sessionid: &str, user_agent: &str) -> Result<Session, LoginError> {
     Ok(Session::from_sessionid(
         sessionid,
@@ -88,13 +69,9 @@ pub fn session_from_paste(sessionid: &str, user_agent: &str) -> Result<Session, 
     )?)
 }
 
-/// Builds a session from the cookies a browser handed over.
-///
-/// The account id is still taken from the `sessionid`, exactly as with a paste,
-/// so there is one authority on whose session this is. The `ds_user_id` cookie
-/// is only used to cross-check it: when a browser is signed into several
-/// accounts they can disagree, and storing a session that quietly acts as
-/// somebody else is worse than refusing to store one at all.
+/// Builds a session from the cookies a browser handed over. The account id
+/// comes from the `sessionid`, as with a paste; `ds_user_id` only
+/// cross-checks it, since a browser signed into several accounts can disagree.
 pub fn session_from_cookies(
     cookies: &BrowserCookies,
     user_agent: &str,
@@ -121,15 +98,10 @@ pub fn session_from_cookies(
     Ok(session)
 }
 
-/// Checks against Instagram that the session works and, along the way, fills in
-/// the username if it can.
-///
-/// On throttling or a network failure the session is taken as good but
-/// unconfirmed: the cookie is almost certainly fine and Instagram is merely
-/// throttling. Forcing a repeat login over a transient error makes the
-/// throttling worse on top of being annoying. On an expired session, a
-/// mismatched User-Agent or a pending check, the error propagates and nothing
-/// is stored.
+/// Checks against Instagram that the session works and fills in the username
+/// if it can. On throttling or a network failure the session is taken as good
+/// but unconfirmed; on an expired session, a mismatched User-Agent or a
+/// pending check, the error propagates and nothing is stored.
 pub async fn validate(
     session: &mut Session,
     pacer: Pacer,
@@ -144,11 +116,8 @@ pub async fn validate(
         Ok(()) => {
             session.mark_validated();
         }
-        // The pacer re-reads the cooldown table before every request, so one
-        // written by another process between the pre-check above and this
-        // request arrives here as `InCooldown`. It is the same fact the
-        // pre-check answers `Skipped` for, and it must not cost the person
-        // the session they just produced.
+        // A cooldown another process wrote since the check above: the same
+        // fact, and it must not cost the person the session just produced.
         Err(crate::error::IgError::InCooldown { until_ms }) => {
             return Ok(ValidationOutcome::Skipped { until_ms });
         }
@@ -160,12 +129,8 @@ pub async fn validate(
         Err(e) => return Err(e.into()),
     }
 
-    // The username is cosmetic: failing to get it does not invalidate anything.
-    // A push-back on it is not cosmetic, though. `classify_and_record` has
-    // just written a cooldown, so the next command will refuse for half an
-    // hour -- and at `debug` the person would be told only that their login
-    // succeeded. The session is still good; the warning is about what
-    // Instagram said on the way.
+    // The username is cosmetic. A push-back on it is not: a cooldown was just
+    // written, and the person has to be told.
     if session.username.is_none() {
         match client.resolve_username(session.ds_user_id).await {
             Ok(name) => session.username = name,

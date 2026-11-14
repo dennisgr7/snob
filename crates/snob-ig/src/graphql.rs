@@ -1,83 +1,40 @@
-//! The one part of Instagram that this tool reaches through GraphQL, and the
-//! machinery for not being broken by it.
+//! The two writes, which the web serves through Relay only, and what a
+//! mutation is built from.
 //!
-//! # Why this exists at all
+//! The August 2026 capture of the real web client showed the Follow button
+//! sending `POST /api/graphql` with `fb_api_req_friendly_name:
+//! usePolarisFollowMutation`. The REST spellings are the mobile app's:
+//! `/api/v1/friendships/create/{pk}/` answers 200 with the app's HTML shell and
+//! `/web/friendships/{pk}/follow/` answers 404 (both sent live; neither
+//! changed anything).
 //!
-//! The reads in `client/read.rs` go to `/api/v1/`; the calls the web app
-//! itself reads with are built in [`crate::web`]. Instagram rotates GraphQL
-//! `doc_id`s (it deprecated them in bulk in June 2026 and broke `instaloader`
-//! twice doing it), which is the failure mode this module is built to survive.
-//!
-//! Following and unfollowing go through Relay because that is the only route
-//! the web serves for them. A capture of the real web client in August 2026
-//! showed it: the Follow button sends
-//! `POST /api/graphql` with `fb_api_req_friendly_name: usePolarisFollowMutation`,
-//! and **the word `friendship` does not appear anywhere in the browser's
-//! traffic**. The REST spellings every write-up gives are the mobile app's and
-//! are not served here — `/api/v1/friendships/create/{pk}/` answers 200 with
-//! the web app's HTML shell, and `/web/friendships/{pk}/follow/` answers 404.
-//! Both were sent live and the relationship read back after each; neither
-//! changed anything.
-//!
-//! # What a request needs, and where each piece comes from
-//!
-//! | Piece | Where |
-//! |---|---|
-//! | `fb_dtsg` | the HTML of a logged-in page |
-//! | `lsd` | the same HTML |
-//! | `jazoest` | **computed** from `fb_dtsg`; see [`jazoest`] |
-//! | `doc_id` | discovered from the page's own JavaScript; see [`doc_id_in`] |
-//! | `variables` | the account id, and the two strings saying which screen |
-//!
-//! The `doc_id` being **discovered rather than written down** is the whole
-//! point. A constant would work today and stop working on the day Instagram
-//! rebuilds, with no warning and no way for a user to fix it. Reading it out of
-//! the page that would have used it means the rotation fixes itself.
-//!
-//! From the browser, the write is built in the tab as the app builds it
-//! ([`crate::web`]): its 29 fields, on [`PROFILE_ROUTE`], with the bitmaps
-//! the app itself sent on the profile's document. Without one
-//! (`SNOB_NO_BROWSER`), it sends the twelve fields of [`mutation_body`], and
-//! **not** the telemetry the browser attaches — `__dyn`, `__csr`, `__hsdp`,
-//! `__hblp`, `__sjsp` and their neighbors. Those are Relay's record of what
-//! the page had already loaded, and inventing them would be describing a
-//! browsing session that did not happen; [`crate::web`] copies the app's own
-//! when it builds a call, rather than making them up.
+//! `fb_dtsg` and `lsd` come from the HTML of a logged-in page, `jazoest` is
+//! computed ([`jazoest`]), and the `doc_id` is **discovered from the page's own
+//! JavaScript** ([`doc_id_in`]), since Instagram rotates them. From the browser
+//! the tab builds the app's 29 fields ([`crate::web`]); without one, the twelve
+//! of [`mutation_body`], and none of the app's telemetry, which would describe
+//! a browsing session that did not happen.
 
 use snob_core::secret::Secret;
 
-/// What a run already knows about the mutation identifiers.
+/// What a run already knows about the mutation identifiers. Discovery costs
+/// megabytes of bundles, so it is cached: once per rotation, not per follow.
 ///
-/// **Discovery has to be cached or it is unaffordable.** Finding a `doc_id`
-/// means fetching JavaScript bundles until one contains the mutation, and those
-/// are megabytes. Once per rotation is fine; once per follow is not.
-///
-/// A trait rather than a field, because the thing that remembers is the
-/// database and this crate does not open one. `snob-cli` implements it over the
-/// `meta` table; the tests implement it with `client::harness::Known`.
-///
-/// **Deliberately not `Send + Sync`.** The obvious bound would not compile
-/// against the one implementation that matters: `rusqlite::Connection` is
-/// neither, by design, because a SQLite connection belongs to one thread. It is
-/// not needed either — the cache is consulted on the task that is already
-/// making the request, and never moved.
+/// A trait because the database remembers and this crate opens none.
+/// **Deliberately not `Send + Sync`**: `rusqlite::Connection` is neither.
 pub trait DocIds {
     fn get(&self, friendly_name: &str) -> Option<String>;
     fn put(&self, friendly_name: &str, doc_id: &str);
 }
 
 /// The two tokens a page hands out, which together authorize a mutation.
-///
-/// Both are per-session and short-lived, and both are `Secret` for the same
-/// reason the session cookie is: they are credentials, they must not be
-/// printed, and they should not be left in freed memory.
+/// Credentials, hence `Secret`.
 #[derive(Debug)]
 pub struct PageTokens {
     pub fb_dtsg: Secret,
     pub lsd: Secret,
 }
 
-/// Which of the two mutations is being sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Mutation {
     Follow,
@@ -85,36 +42,19 @@ pub enum Mutation {
 }
 
 impl Mutation {
-    /// Every write this program can make.
-    ///
-    /// Named as a set so that "there are two, and there is no third" is a value
-    /// a test can read rather than a sentence in a document. The same shape
-    /// `ExitCode::ALL` and `secrets::Kind::ALL` use, and for the same reason.
-    ///
-    /// Adding a variant is already a compile error in the three matches below,
-    /// which have no wildcard arm on purpose. This is what stops the quieter
-    /// version: pointing an existing variant at a different operation.
+    /// Every write this program can make, as a value a test can read. The
+    /// three matches below have no wildcard arm on purpose.
     pub const ALL: [Self; 2] = [Self::Follow, Self::Unfollow];
 
-    /// Where the write goes.
-    ///
-    /// **On the mutation rather than at the call site**, so that a third write
-    /// needs a third variant; the crate doc says why that is the rule.
+    /// Where the write goes: on the mutation, never at the call site.
     pub fn path(self) -> &'static str {
         match self {
-            // Both go to the same place. Per-variant anyway, because the
-            // browser also uses `/graphql/query` for some operations and a
-            // future variant may need it -- and because a single shared
-            // constant would put the path back at the call site by the back
-            // door.
             Self::Follow | Self::Unfollow => "/api/graphql",
         }
     }
 
-    /// The name the request announces itself with, and the name to look for
-    /// when discovering the `doc_id`. One constant for both, because a
-    /// disagreement between them would send a request whose id belongs to a
-    /// different operation.
+    /// The name the request announces itself with, and the one looked for
+    /// when discovering the `doc_id`: one constant, so they cannot disagree.
     pub fn friendly_name(self) -> &'static str {
         match self {
             Self::Follow => "usePolarisFollowMutation",
@@ -122,30 +62,14 @@ impl Mutation {
         }
     }
 
-    /// The identifier as it was on the day this was captured.
+    /// The identifier as captured on 21 August 2026 (Chrome 151, `POST
+    /// /api/graphql`): a seed.
     ///
-    /// # Why there is a written-down value here at all
-    ///
-    /// A constant stops working the day Instagram rebuilds, but discovering the
-    /// id on the way in is not buildable:
-    ///
-    /// A profile page names around four hundred and forty JavaScript bundles.
-    /// The mutation is in none of them: it lives in a chunk the client loads on
-    /// demand once the profile route has mounted, and the loader builds that
-    /// URL from a manifest that is not resolvable by reading the page. Measured
-    /// in August 2026 against the real logged-in page — sixty bundles opened,
-    /// about seven megabytes, no match; and against the logged-out one, the
-    /// same. What the page *does* carry is the two tokens, which is why those
-    /// are still read rather than stored.
-    ///
-    /// So the value below is a seed, and it is treated the way `ASBD_ID` is:
-    /// captured on a date, from a real request, with the way to refresh it
-    /// written next to it. The recovery path is not a rebuild — it is
-    /// [`crate::client::IgClient::doc_id_for`] trying the discovery walk when
-    /// the seed is refused, and failing that, an error that tells the user
-    /// where to look. Both are worth more than a silent stop.
-    ///
-    /// Captured 21 August 2026, Chrome 151, from `POST /api/graphql`.
+    /// Discovering it on the way in is not buildable: the mutation lives in a
+    /// chunk loaded on demand, in none of the about 440 bundles a profile page
+    /// names (measured August 2026: sixty opened, about seven megabytes, no
+    /// match). When the seed is refused,
+    /// [`crate::client::IgClient::doc_id_for`] tries the walk anyway.
     pub fn seed_doc_id(self) -> &'static str {
         match self {
             Self::Follow => "26508036048874888",
@@ -154,67 +78,35 @@ impl Mutation {
     }
 }
 
-/// Instagram's checksum over `fb_dtsg`.
-///
-/// **Not a secret and not fetched: it is derived.** The literal `2`, then the
-/// sum of the code points of the token. Facebook's own client computes it
-/// exactly this way, and it is sent alongside the token it summarizes, so it
-/// adds no security — but it is part of the shape, and a request without it is
-/// a shape the site does not produce.
-///
-/// Bytes rather than characters. The token is ASCII in every capture, so the
-/// two agree today; bytes are what the reference implementation sums, and
-/// choosing characters would differ the moment a non-ASCII one appeared.
+/// Instagram's checksum over `fb_dtsg`: the literal `2`, then the sum of the
+/// token's bytes, as Facebook's own client computes it. Derived, not a secret.
 pub fn jazoest(fb_dtsg: &str) -> String {
     let sum: u32 = fb_dtsg.bytes().map(u32::from).sum();
     format!("2{sum}")
 }
 
-/// Pulls `fb_dtsg` and `lsd` out of a rendered page.
+/// Pulls `fb_dtsg` and `lsd` out of a rendered page's bootstrap JSON
+/// (`["DTSGInitData",[],{"token":"..."}]`, `["LSD",[],{"token":"..."}]`),
+/// without parsing megabytes of it.
 ///
-/// They arrive inside the JSON blob the page bootstraps itself from, as
-/// `["DTSGInitData",[],{"token":"..."}]` and `["LSD",[],{"token":"..."}]`.
-/// Read by locating the marker and taking the next `"token":"..."`, rather than
-/// with a JSON parse: the blob is megabytes of Relay state and parsing all of
-/// it to reach two strings would be the expensive way to be no more correct.
-///
-/// `None` when either is missing, so the caller reports a dead session rather
-/// than sending a mutation that cannot be authorized. A logged-out page still
-/// carries `DTSGInitData` and `LSD`, so this does not tell one apart: the
-/// page's `PolarisViewer` does, and the write reads it first.
+/// `None` when either is missing. A logged-out page carries both too: the
+/// page's `PolarisViewer` tells it apart, and the write reads that first.
 pub fn extract_tokens(html: &str) -> Option<PageTokens> {
     Some(PageTokens {
-        // **The opening bracket and the comma are part of the marker, not
-        // decoration.** `LSD` on its own is three characters, and the page has
-        // `LSDatabaseSingletonLazyWrapper` in it five times, in the module-name
-        // lists further down. Today the real entry comes first and the bare
-        // substring finds it -- by ordering, which is not a property anybody
-        // maintains. If that order ever flipped the answer would not be
-        // `None`: it would be whatever `"token":"` sat within five hundred
-        // bytes of the decoy, and a mutation sent with a good-looking wrong
-        // token is refused with a 400 that `worth_rediscovering` reads as a
-        // stale identifier -- so the recovery walk runs, seven megabytes off
-        // the CDN, and then spends a second write slot on the same wrong token.
+        // **The bracket and the comma are part of the marker**: the page also
+        // holds `LSDatabaseSingletonLazyWrapper`, and a wrong token would be
+        // refused as a stale identifier and spend a second write slot.
         fb_dtsg: Secret::new(token_after(html, r#"["DTSGInitData","#)?),
         lsd: Secret::new(token_after(html, r#"["LSD","#)?),
     })
 }
 
-/// The first `"token":"…"` after `marker`.
-///
-/// Bounded on purpose: the search for the token starts at the marker and gives
-/// up after a few hundred bytes. Without the bound, a page missing
-/// `DTSGInitData` would happily return the `lsd` token further down as the
-/// `fb_dtsg`, and the request would fail in a way that pointed at the wrong
-/// thing.
-///
-/// The window's end is a byte offset into six hundred kilobytes of profile
-/// bootstrap full of names and biographies, so it is floored to a character
-/// boundary: slicing a `str` mid-character is a panic, not an error. Bytes
-/// rather than characters, because the offsets are measured against `find`.
+/// The first `"token":"…"` within reach of `marker`. Bounded, so a page
+/// missing `DTSGInitData` cannot hand back the `lsd` token as `fb_dtsg`. The
+/// window's end is floored to a character boundary: slicing mid-character
+/// panics.
 fn token_after(html: &str, marker: &str) -> Option<String> {
-    /// How far past the marker the token may be. In every capture it is within
-    /// forty bytes; this is generous without being unbounded.
+    /// In every capture the token is within forty bytes of the marker.
     const REACH: usize = 512;
 
     let at = html.find(marker)?;
@@ -226,50 +118,34 @@ fn token_after(html: &str, marker: &str) -> Option<String> {
     (!token.is_empty()).then(|| token.to_string())
 }
 
-/// Finds the `doc_id` of a named mutation in a compiled Relay artifact.
+/// Finds the `doc_id` of a named mutation in a compiled Relay artifact, where
+/// `name:"usePolarisFollowMutation"` sits beside `id:"26508036048874888"`, in
+/// either order. Only a long, all-digit id is taken.
 ///
-/// Relay writes the operation's parameters as an object carrying both the name
-/// and the id, so the two sit within a few dozen bytes of each other:
-/// `name:"usePolarisFollowMutation"` beside `id:"26508036048874888"`. Which
-/// comes first is a property of the minifier rather than of the format, so both
-/// orders are looked for.
-///
-/// The id is all digits and long. That is checked rather than assumed: a match
-/// on some other `id:` in the neighbourhood would send a request naming an
-/// operation Instagram does not have, and the answer to that is an error nobody
-/// could act on.
-///
-/// **The id taken is the one nearest the name, not the first one in the
-/// window**, and that distinction is the whole safety of this function. The two
-/// mutations sit next to each other in the same chunk, so a window centered on
-/// `usePolarisUnfollowMutation` reaches back over the follow operation's id,
-/// and a first-match search would follow when asked to unfollow.
+/// **The id taken is the one nearest the name, not the first in the window**:
+/// the two mutations sit side by side in one chunk, and a first match would
+/// follow when asked to unfollow.
 pub fn doc_id_in(js: &str, friendly_name: &str) -> Option<String> {
-    /// How far either side of the name an id may sit.
     const REACH: usize = 400;
-    /// Instagram's ids are seventeen digits today. Ten is a floor that no
-    /// unrelated numeric field in the neighbourhood reaches.
+    /// Instagram's ids are seventeen digits today; no unrelated numeric field
+    /// nearby reaches ten.
     const SHORTEST: usize = 10;
 
     let quoted = format!("\"{friendly_name}\"");
     let at = js.find(&quoted)?;
-    // Floored to character boundaries: the bundle is `from_utf8_lossy` of
-    // minified JavaScript, where every replacement character is three bytes,
-    // so an edge landing mid-character is ordinary, and slicing there panics.
+    // Floored to character boundaries: slicing mid-character panics, and
+    // `from_utf8_lossy` leaves three-byte replacement characters.
     let from = js.floor_char_boundary(at.saturating_sub(REACH));
     let to = js.floor_char_boundary(at + quoted.len() + REACH);
     let window = &js[from..to];
-    // Where the name sits inside the window. Both ends, because "nearest" is
-    // the **gap** between the two spans and not the distance between their
-    // starting offsets: an id just before the name starts further away than one
-    // just after it, while sitting closer. Measured start-to-start, the follow
-    // operation's id would win the search for the unfollow one.
+    // "Nearest" is the gap between the two spans, not the distance between
+    // their starts: measured start to start, the follow id would win the
+    // search for the unfollow one.
     let name_at = at - from;
     let name_ends = name_at + quoted.len();
 
     let mut best: Option<(usize, String)> = None;
-    // `id:"…"` and `"id":"…"`, which is the same field before and after
-    // minification.
+    // The same field before and after minification.
     for key in ["id:\"", "\"id\":\""] {
         let mut offset = 0;
         while let Some(found) = window[offset..].find(key) {
@@ -295,13 +171,8 @@ pub fn doc_id_in(js: &str, friendly_name: &str) -> Option<String> {
     best.map(|(_, id)| id)
 }
 
-/// The `variables` object, as the site sends it.
-///
-/// `container_module` and `nav_chain` say which screen the button was on. They
-/// are sent because the site sends them and their absence is the anomaly;
-/// `nav_chain` is a constant rather than assembled per request, because
-/// assembling one would be inventing a path through the site that nobody walked.
-/// Both arms send the same variables: the page's form and the twelve fields.
+/// The `variables` object, as the site sends it. `nav_chain` is a constant:
+/// assembling one would invent a path through the site nobody walked.
 pub(crate) fn variables(target_pk: snob_core::Pk) -> String {
     format!(
         r#"{{"target_user_id":"{target_pk}","container_module":"profile","nav_chain":"{NAV_CHAIN}"}}"#
@@ -310,61 +181,37 @@ pub(crate) fn variables(target_pk: snob_core::Pk) -> String {
 
 const NAV_CHAIN: &str = "PolarisProfilePostsTabRoot:profilePage:1:via_cold_start";
 
-/// The route a write from a profile is made on, the `__crn` of its form: the
-/// profile's posts tab, the route a profile document loads cold, which is
-/// what [`NAV_CHAIN`] describes too.
+/// The `__crn` of a write made from a profile: the route a profile document
+/// loads cold, which [`NAV_CHAIN`] describes too.
 pub const PROFILE_ROUTE: &str = "comet.igweb.PolarisProfilePostsTabRoute";
 
-/// The address every bundle is fetched from, host fixed and anchored: the
-/// trailing slash is what makes the host the host rather than a prefix of a
-/// longer one, such as `static.cdninstagram.com.evil.example`.
+/// The trailing slash anchors the host: without it
+/// `static.cdninstagram.com.evil.example` would match.
 const BUNDLE_PREFIX: &str = "https://static.cdninstagram.com/";
 
-/// Whether `url` is a bundle a `doc_id` may be looked for in: a script on
-/// the fixed CDN address, and nothing else. The rule [`bundles_in`] applies
-/// to a page it reads, and applied again to any list of bundles, whoever
-/// made it, before one is downloaded.
+/// Whether `url` is a bundle a `doc_id` may be looked for in. Applied to any
+/// list of bundles, whoever made it, before one is downloaded.
 pub(crate) fn is_bundle(url: &str) -> bool {
     url.starts_with(BUNDLE_PREFIX) && url.ends_with(".js")
 }
 
-/// Every JavaScript bundle a page pulls in, in the order it names them.
-///
-/// The `doc_id` lives in one of these and there is no way to know which without
-/// looking, so the caller walks them. **The order matters and it is the page's,
-/// not ours**: a page lists the chunk that its own route needs, and that is the
-/// one holding the profile page's mutations, so walking in order finds it
-/// early rather than after megabytes of unrelated code.
-///
-/// Only the script host is accepted. A page's HTML is full of URLs, some of
-/// them from places this tool has no business fetching from, and the one thing
-/// that makes walking them safe is that the host is fixed here rather than
-/// taken from the document.
-///
-/// **Most of them arrive with their slashes escaped.** A page names a handful
-/// of bundles in `<script src>` attributes, where the URL is written plainly,
-/// and every other one inside a JSON string in the bootstrap payload, where it
-/// is `https:\/\/static.cdninstagram.com\/rsrc.php\/…`. Reading only the plain
-/// ones looks like it works — the list is not empty — and finds six of four
-/// hundred and thirty-seven.
+/// Every JavaScript bundle a page pulls in, **in the page's order**: it lists
+/// the chunk its own route needs early. Only the fixed script host is
+/// accepted. Most arrive with their slashes escaped, inside JSON strings
+/// (`https:\/\/static.cdninstagram.com\/…`): reading only the plain ones
+/// finds six of 437.
 pub fn bundles_in(html: &str) -> Vec<String> {
     const HOST: &str = "static.cdninstagram.com";
 
     let mut found: Vec<String> = Vec::new();
     let mut rest = html;
     while let Some(at) = rest.find(HOST) {
-        // Back up over the scheme, which is `https://` or `https:\/\/`.
         let line_start = rest[..at].rfind("https:").filter(|s| at - s <= 10);
         let from = &rest[line_start.unwrap_or(at)..];
-        // A URL ends at the first character that cannot be in one. A backslash
-        // can, here, because it is the escape in front of a slash — so it is
-        // not a terminator and is unescaped below instead.
+        // A backslash is no terminator here: it escapes a slash.
         let end = from
             .find(|c: char| c == '"' || c == '\'' || c == '<' || c == ')' || c.is_whitespace())
             .unwrap_or(from.len());
-        // **The whole prefix, unescaped, and anchored at the start**
-        // ([`is_bundle`]). Matching the host as a substring would let
-        // `static.cdninstagram.com.evil.example` through.
         let url = from[..end].replace("\\/", "/");
         if is_bundle(&url) && !found.contains(&url) {
             found.push(url);
@@ -374,15 +221,8 @@ pub fn bundles_in(html: &str) -> Vec<String> {
     found
 }
 
-/// The form body of a mutation.
-///
-/// Ordered the way the browser orders it, which costs nothing and means a
-/// capture of ours and a capture of the site's line up when somebody compares
-/// them.
-///
-/// `__user=0` is not a mistake: the real request sends exactly that even when
-/// logged in, which is worth a note because it looks like a bug every time
-/// somebody reads it.
+/// The form body of a mutation, in the browser's order. `__user=0` is what
+/// the real request sends, logged in.
 pub fn mutation_body(
     tokens: &PageTokens,
     mutation: Mutation,

@@ -1,20 +1,11 @@
-//! How a picture or a video reaches the caller: through the tab when there is
-//! one to fetch it, and otherwise through the `CdnClient`, which is where
-//! the rules about where a file may come from live ([`super::cdn`]).
+//! How a picture or a video reaches the caller: through the tab when it can
+//! fetch it ([`crate::web::Ask::Asset`]), otherwise through the `CdnClient`,
+//! where the rules about where a file may come from live ([`super::cdn`]).
 //!
-//! Nothing identifying travels from here: no session cookie, no app id, and no
-//! charge against Instagram's budget. [`super::write`] reads the mutation
-//! bundles through the same path, for both of those reasons.
-//!
-//! **From a browser, the tab fetches them** ([`crate::web::Ask::Asset`]):
-//! the browser's own TLS handshake and HTTP/2, its headers, `Sec-Fetch-*` and
-//! cookie rules for the CDN host, and the page's `Referer`, as the app's own
-//! images and scripts arrive. Two things stay with the `CdnClient`, as ever
-//! without the session: a video, which the tab lets no further than it lets a
-//! play (`headless::guard`), and a file past what the tab hands back over its
-//! protocol ([`PAGE_ASSET_BYTES`]); and so does anything the tab could not
-//! read, such as an answer the CDN gave no access to the page. Without a
-//! browser, all of it does.
+//! Nothing identifying travels either way, and nothing is charged to
+//! Instagram's budget. The `CdnClient` keeps a video, which the tab lets no
+//! further than a play (`headless::guard`), a file past [`PAGE_ASSET_BYTES`],
+//! and whatever the tab could not read.
 
 use url::Url;
 
@@ -25,13 +16,11 @@ use super::IgClient;
 use super::cdn::MAX_ASSET_BYTES;
 pub use super::cdn::{Downloaded, HEAD_BYTES};
 
-/// The most the tab hands back of one file: what travels over its protocol as
-/// text, base64 making a third more of it, with room for the envelope. A
-/// bigger file is the `CdnClient`'s.
+/// The most the tab hands back of one file: it travels over the protocol as
+/// base64 text. A bigger file is the `CdnClient`'s.
 pub(super) const PAGE_ASSET_BYTES: usize = 4 * 1024 * 1024;
 
-/// Whether `url` is a piece of video, which the tab never lets through: the
-/// guard fails one by address, since a play counts.
+/// The guard fails a video by its address, since a play counts.
 fn is_video(url: &Url) -> bool {
     let path = url.path().to_ascii_lowercase();
     [".mp4", ".webm", ".m3u8"]
@@ -39,8 +28,7 @@ fn is_video(url: &Url) -> bool {
         .any(|video| path.ends_with(video))
 }
 
-/// The bytes of standard base64, as the tab hands a file back. `None` for
-/// anything else.
+/// Standard base64, as the tab hands a file back. `None` for anything else.
 fn decode_base64(text: &str) -> Option<Vec<u8>> {
     fn sextet(byte: u8) -> Option<u32> {
         Some(u32::from(match byte {
@@ -74,15 +62,12 @@ fn decode_base64(text: &str) -> Option<Vec<u8>> {
 }
 
 impl IgClient {
-    /// Downloads a public asset, such as a profile picture: by the tab when
-    /// there is one, and otherwise by the `CdnClient`, which carries
-    /// nothing identifying.
+    /// Downloads a public asset, such as a profile picture.
     pub async fn download(&self, url: &str) -> Result<Vec<u8>, IgError> {
         self.download_capped(url, MAX_ASSET_BYTES).await
     }
 
-    /// The same, with the caller naming the ceiling: see
-    /// `CdnClient::download_capped` for why one has to be able to.
+    /// The same, with the caller naming the ceiling.
     pub async fn download_capped(&self, url: &str, cap: usize) -> Result<Vec<u8>, IgError> {
         if let Some(bytes) = self.asset_from_the_page(url, cap).await? {
             return Ok(bytes);
@@ -90,8 +75,8 @@ impl IgClient {
         self.cdn()?.download_capped(url, cap).await
     }
 
-    /// [`IgClient::download_capped`], written to `sink` as it arrives rather
-    /// than held in memory first: see `CdnClient::download_to`.
+    /// [`IgClient::download_capped`], written to `sink`: see
+    /// `CdnClient::download_to`.
     pub async fn download_to(
         &self,
         url: &str,
@@ -110,13 +95,9 @@ impl IgClient {
         self.cdn()?.download_to(url, cap, sink).await
     }
 
-    /// A track of a video's DASH manifest (`model::dash`), written to `sink`:
-    /// always by the `CdnClient`, never by the tab. **A track is a video
-    /// whatever its address ends in**, and the tab lets a video no further
-    /// than it lets a play (`headless::guard`); today's tracks end in `.mp4`
-    /// (1,612 of 1,612 addresses of the capture of 2026-11-13), which
-    /// [`Self::download_to`] would route the same way, but by its name alone.
-    /// Held to the same rule as every download before anything is asked.
+    /// A track of a video's DASH manifest (`model::dash`): always by the
+    /// `CdnClient`. **A track is a video whatever its address ends in** (today
+    /// `.mp4`, 1,612 of 1,612 in the capture of 2026-11-13).
     pub async fn download_track_to(
         &self,
         url: &str,
@@ -127,15 +108,10 @@ impl IgClient {
         self.cdn()?.download_to(url, cap, sink).await
     }
 
-    /// The file at `url`, fetched by the tab, when the tab is to fetch it:
-    /// `None` leaves it to the `CdnClient` (no browser, a video, a file past
-    /// [`PAGE_ASSET_BYTES`], or an answer the tab could not read).
-    ///
-    /// Held to the same rule as the other path before anything is asked
-    /// (`CdnClient::check_downloadable`). A status that is not a success is
-    /// the answer here too, never retried the other way; what is left to the
-    /// other path is what the tab could not read. A push-back the browser
-    /// heard, and Ctrl+C, stop the download.
+    /// The file at `url`, fetched by the tab; `None` leaves it to the
+    /// `CdnClient`. Held to `CdnClient::check_downloadable` before anything is
+    /// asked. A status that is not a success is the answer, never retried the
+    /// other way.
     async fn asset_from_the_page(&self, url: &str, cap: usize) -> Result<Option<Vec<u8>>, IgError> {
         let url = Url::parse(url)?;
         super::cdn::check_downloadable(&self.base, &url)?;
@@ -166,8 +142,8 @@ impl IgClient {
         };
         tracing::debug!(%url, status = answer.status, "an asset fetched by the tab");
         if answer.too_large {
-            // Past what the tab hands back: the caller's own ceiling, if that
-            // is the lower, and otherwise the other path's to read.
+            // Past what the tab hands back: the other path's, unless the
+            // caller's own ceiling is the lower.
             return if cap <= PAGE_ASSET_BYTES {
                 Err(IgError::TooLarge { limit: cap })
             } else {
@@ -175,8 +151,7 @@ impl IgClient {
             };
         }
         if answer.status == 0 {
-            // A redirect, which the tab does not follow: the other path
-            // follows it, hop by hop, over the CDN.
+            // A redirect, which the tab does not follow and the CDN path does.
             return Ok(None);
         }
         if !(200..300).contains(&answer.status) {

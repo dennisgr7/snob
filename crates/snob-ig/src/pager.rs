@@ -1,9 +1,5 @@
-//! Paginated walk over a followers or following list.
-//!
-//! The loop the project we took inspiration from is missing: theirs does
-//! `catch { continue }`, which skips every wait and repeats the request at
-//! once, so throttling turns it into a burst against Instagram. Here every stop
-//! condition is explicit.
+//! Paginated walk over a followers or following list, with every stop
+//! condition explicit: nothing here answers a failure with `continue`.
 
 use std::collections::HashSet;
 use std::error::Error;
@@ -18,82 +14,56 @@ use crate::error::{IgError, Reaction};
 use crate::model::FriendshipsPage;
 use crate::pace::{CancelToken, Pace};
 
-/// Hard page ceiling. No failure should ever be able to produce an endless
-/// stream of requests, whatever happens to the other stop conditions.
+/// No failure may produce an endless stream of requests, whatever happens to
+/// the other stop conditions.
 pub const HARD_PAGE_CAP: u32 = 2_000;
 
-/// Past this **declared** size, falling short smells like Instagram truncating
-/// the list rather than the counter lying.
-///
-/// It is a guess based on unverified reports. That is why it is a named
-/// constant and why both numbers are logged: so real data can correct it.
-///
-/// It is compared against what Instagram declared, not against what was walked.
-/// The other way round was a hole: a walk that stopped at six thousand of a
-/// declared forty thousand fell under the threshold on the walked count and was
-/// reported as a complete list, which is precisely the case the threshold
-/// exists for.
+/// Past this **declared** size (never the walked one), falling short reads as
+/// Instagram truncating the list. A guess from unverified reports (AGENTS.md,
+/// "Known walls"), which is why both numbers are logged.
 pub(crate) const TRUNCATION_THRESHOLD: usize = 10_000;
 
-/// How many pages in a row without a single new account are tolerated before
-/// assuming the list is going round in circles.
+/// Pages in a row without a single new account before the list is taken to
+/// be going round in circles.
 const MAX_PAGES_WITHOUT_NEW: u32 = 3;
 
 /// The share of a walk's rows, in percent, that may be accounts the same walk
-/// was already served before the list is not believed complete.
-///
-/// Instagram's lists serve some accounts twice across pages: the web app asks
-/// for twelve and gets eight to twelve, some of them seen on an earlier page. A
-/// list where more than one row in twenty is a repeat has room for accounts
-/// that were never served at all in the places the repeats took, and a list
-/// missing accounts crossed against another names people who never left. So
-/// such a walk is read as truncated, however cleanly it ended. The five is the
-/// owner's decision, to be checked against what a real list serves; there is no
-/// minimum sample, so one repeat in a short list counts.
+/// already received before the list is not believed complete: repeats sit
+/// where accounts never served would have been. The owner's number, with no
+/// minimum sample.
 pub(crate) const REPEAT_LIMIT_PERCENT: usize = 5;
 
-/// The waits a walk pays. The request budget's own wait is not among them: it
-/// is imposed inside the client, announced by the [`crate::pace::Pacer`], and
-/// the walker never learns of it.
+/// The waits a walk pays. The request budget's own wait is inside the client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitKind {
-    /// Before the walk's first page, as a person looks at a profile before
-    /// opening its list: [`Pace::dwell`].
+    /// Before the walk's first page: [`Pace::dwell`].
     Dwell,
-    /// Between two pages of the walk: [`Pace::step`].
+    /// Between two pages: [`Pace::step`].
     Step,
-    /// A sitting is full: what is left of the rest it owes
-    /// ([`Pace::sitting_pause`], `snob_core::budget::Sitting`), paid before
-    /// the next page of any walk of the account, this one's or the next
-    /// run's.
+    /// What is left of the rest a full sitting owes ([`Pace::sitting_pause`]),
+    /// paid before the next page of any walk of the account.
     Sitting,
-    /// The day's accounts ran out: the walk sleeps until the last 24 hours
-    /// have room for `PAGES_AFTER_A_PAUSE` more pages, then carries on.
+    /// The day's accounts ran out: until the last 24 hours have room for
+    /// `PAGES_AFTER_A_PAUSE` more pages.
     Day,
-    /// The machine slept, and the network is not back yet: one of
-    /// [`crate::pace::RECONNECT_WAITS_SECS`].
+    /// The machine slept and the network is not back yet
+    /// ([`crate::pace::RECONNECT_WAITS_SECS`]).
     Reconnect,
 }
 
-/// How many pages the day must have room for before a walk paused on its
-/// accounts wakes up. One would wake it for every page as the day frees up,
-/// with a pause and a line on screen between each.
+/// Pages the day must have room for before a walk paused on its accounts
+/// wakes up, so it does not wake for every page as the day frees up.
 pub(crate) const PAGES_AFTER_A_PAUSE: u32 = 8;
 
-/// How often a walk asleep on the day's accounts tells its caller it is still
-/// there. Well inside the claim's lifetime in `snob-store`'s `snapshots`, so a
-/// sleeping walk is never mistaken for a dead one.
+/// Well inside the claim's lifetime in `snob-store`'s `snapshots`, so a
+/// sleeping walk is never taken for a dead one.
 const HEARTBEAT: Duration = Duration::from_secs(10 * 60);
 
-/// What a walk asleep on the day's accounts calls every [`HEARTBEAT`]:
-/// `false` means whoever the pages are saved for no longer wants them (another
-/// process took the capture over), and the walk stops.
+/// Called every [`HEARTBEAT`] by a walk asleep on the day's accounts: `false`
+/// means the pages are no longer wanted, and the walk stops.
 pub type Heartbeat<'a> = &'a dyn Fn() -> Result<bool, Box<dyn Error + Send + Sync>>;
 
 /// What happens as the walk proceeds.
-///
-/// An enum and an `FnMut` rather than a trait: this crate depends on no
-/// presentation library, and tests can spy on the exact sequence with a `Vec`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Started {
@@ -105,8 +75,7 @@ pub enum Event {
         received: usize,
         added: usize,
         running_total: usize,
-        /// The account's sitting as this page left it: its pages, which
-        /// carry across walks, and the rest it owes once full.
+        /// The account's sitting as this page left it.
         sitting: snob_core::budget::Sitting,
     },
     Waiting {
@@ -119,9 +88,8 @@ pub enum Event {
         error: String,
     },
     Warning(Warning),
-    /// The machine slept for `slept` in the middle of the walk. The walk
-    /// carries on as after a sitting: the page reloaded once the network is
-    /// back, and the list opened again.
+    /// The machine slept for `slept` mid-walk; the walk reloads the page and
+    /// opens the list again.
     Resumed {
         slept: Duration,
     },
@@ -132,83 +100,66 @@ pub enum Event {
     },
 }
 
-/// Something the walk noticed and the caller ought to say out loud.
-///
-/// A variant per condition rather than a sentence, because the sentence is not
-/// this crate's to write: `snob-ig` reports what it saw and `snob-cli`'s
-/// `report::pager_warning` decides the words, so the wording of the walk's
-/// most alarming lines does not live inside the HTTP client.
-///
-/// Six of the seven end the walk as [`StopReason::Truncated`]; they are separate
-/// variants because what a reader has to understand differs by guard, and
-/// because a caller may want to recognize one of them without reading a
-/// sentence.
+/// Something the walk noticed, for the caller to word
+/// (`snob-cli`'s `report::pager_warning`). All but `ShortOfDeclared` end the
+/// walk as [`StopReason::Truncated`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Warning {
-    /// The cursor came back the same as the one just sent, so following it
-    /// would ask for the page that has already been served.
+    /// The cursor came back the same as the one just sent.
     SameCursorTwice,
-    /// Two pages in a row carried nobody.
     TwoEmptyPages,
-    /// [`MAX_PAGES_WITHOUT_NEW`] pages in a row carried only accounts that had
-    /// already been walked.
+    /// [`MAX_PAGES_WITHOUT_NEW`] pages in a row carried only accounts already
+    /// walked.
     GoingInCircles,
     /// One empty page, and no counter to tell an account with no followers
-    /// from an account Instagram would not serve.
+    /// from one Instagram would not serve.
     EmptyAndNoCounter,
-    /// The walk ended cleanly far short of what the profile declared, and
-    /// [`truncated`] read that as Instagram having stopped serving pages.
-    StoppedShort { walked: usize, declared: usize },
-    /// The same shortfall, read the other way: a counter that includes
-    /// accounts which no longer appear in the list.
-    ShortOfDeclared { walked: usize, declared: usize },
-    /// More than [`REPEAT_LIMIT_PERCENT`] of the rows the walk received were
-    /// accounts it had already received.
-    Repeated { repeated: usize, received: usize },
+    /// A clean end far short of what the profile declared, read by
+    /// [`truncated`] as Instagram having stopped serving pages.
+    StoppedShort {
+        walked: usize,
+        declared: usize,
+    },
+    /// The same shortfall, read as a counter that overstates.
+    ShortOfDeclared {
+        walked: usize,
+        declared: usize,
+    },
+    /// More than [`REPEAT_LIMIT_PERCENT`] of the rows were repeats.
+    Repeated {
+        repeated: usize,
+        received: usize,
+    },
 }
 
 /// What a walk does when the day's accounts run out before the list does.
-///
-/// A choice rather than a rule because both answers cost something the person
-/// running it is better placed to weigh: pausing spreads a large list over two
-/// days and a list read over two days describes a longer stretch of time;
-/// carrying on reads more accounts in one day than the ceiling in
-/// `budget::accounts_per_day` was set at, which is what the account is judged
-/// on. Pausing is the default because it is the one that cannot make things
-/// worse with Instagram.
+/// Pausing is the default: it is the one that cannot make things worse with
+/// Instagram.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OverBudget {
-    /// Sleep before the page that would go over until the day has room, and
-    /// carry on as the same walk: [`WaitKind::Day`].
+    /// Sleep until the day has room, and carry on as the same walk.
     #[default]
     Pause,
-    /// Read on. The pace still applies; the daily ceiling does not, so the
-    /// day's reading is bounded only by the request budget's daily bucket,
-    /// about two thousand pages.
+    /// Read on, bounded only by the pace and the request budget's daily bucket.
     Continue,
 }
 
-/// What to walk.
 #[derive(Debug, Clone)]
 pub struct ListRequest<'a> {
     pub pk: Pk,
-    /// Only used to name the page a browser would have called from. Empty is
-    /// allowed and simply leaves the referer generic.
+    /// Only names the referring page. May be empty.
     pub username: &'a str,
     pub direction: Direction,
     /// Cursor to continue an interrupted walk from.
     pub from: Option<&'a str>,
-    /// How many are expected, for progress. Never a stop condition.
+    /// For progress and the completion check. Never a stop condition.
     pub estimated: Option<u64>,
-    /// Page cap requested by the caller.
     pub max_pages: Option<u32>,
     /// How many were already stored, when resuming.
     pub already_stored: usize,
-    /// What to do when the day's accounts run out mid-walk.
     pub over_budget: OverBudget,
 }
 
-/// How the walk ended.
 #[derive(Debug)]
 pub struct WalkSummary {
     pub pages: u32,
@@ -216,7 +167,6 @@ pub struct WalkSummary {
     pub reason: StopReason,
     /// Where it left off, if anything is left.
     pub pending_cursor: Option<String>,
-    /// The error that cut the walk short, if any.
     pub error: Option<IgError>,
 }
 
@@ -231,8 +181,6 @@ pub enum WalkError {
     #[error("the account is in cooldown for another {}", minutes(.remaining_ms))]
     Cooldown {
         until_ms: EpochMs,
-        /// How long is left of it, in milliseconds. A length of time rather than
-        /// a moment, which is why it stays a number.
         remaining_ms: i64,
     },
     #[error(transparent)]
@@ -241,7 +189,7 @@ pub enum WalkError {
     Save(Box<dyn Error + Send + Sync>),
 }
 
-/// "1 minute" / "45 minutes"; a remainder under a minute still says 1.
+/// A remainder under a minute still says 1.
 fn minutes(remaining_ms: &i64) -> String {
     match (remaining_ms / 60_000).max(1) {
         1 => "1 minute".to_string(),
@@ -249,47 +197,32 @@ fn minutes(remaining_ms: &i64) -> String {
     }
 }
 
-/// How many accounts the next page will carry, to ask the day's budget
-/// whether it has room for them: at most what was asked for, on either list
-/// (see [`crate::pace::ACCOUNTS_PER_PAGE`]).
-fn expected_on_a_page(pace: &Pace) -> u32 {
-    pace.per_page
-}
-
 pub struct ListWalker<'a> {
     client: &'a IgClient,
     pace: Pace,
     sleeps: bool,
     heartbeat: Option<Heartbeat<'a>>,
-    /// Asked between every two pages: `true` ends the walk there, as a stop
-    /// rather than a failure, with its cursor. See [`ListWalker::with_stop`].
+    /// Asked before every page: `true` ends the walk there, as a stop with
+    /// its cursor. See [`ListWalker::with_stop`].
     stop: Option<&'a dyn Fn() -> bool>,
-    /// The wall clock the day's wait is measured against: always
-    /// [`snob_core::clock::now_ms`] outside the tests, which put a clock that
-    /// jumps here to stand in for a machine that slept.
+    /// The wall clock; the tests put one that jumps here.
     wall: fn() -> EpochMs,
     /// The clock that stands still while the machine sleeps
-    /// ([`crate::awake::now`]), read beside `wall` to tell that it slept.
+    /// ([`crate::awake::now`]).
     awake: fn() -> Duration,
 }
 
-/// What [`ListWalker::fetch_page`] came back with.
 enum Fetched {
     Page(FriendshipsPage),
-    /// The request failed after the machine slept for this long: not a
-    /// network failure to retry, but a walk to pick up again
-    /// ([`ListWalker::come_back`]).
+    /// The request failed after the machine slept this long: a walk to pick
+    /// up again ([`ListWalker::come_back`]), not a failure to retry.
     Slept(Duration),
 }
 
 impl<'a> ListWalker<'a> {
-    /// Rate control is not a parameter: it is inside the client, which cannot
-    /// be built without it, so walking without it cannot be written.
-    ///
-    /// **The client also decides whether the waits are real**, by the server it
-    /// is pointed at, not the caller: a walk against Instagram with no waits
-    /// between pages is not something any caller can ask for. A mock server is
-    /// not Instagram and Instagram is not a mock server.
+    /// Rate control is inside the client, and **the client decides whether
+    /// the waits are real**, by the server it is pointed at: no caller can
+    /// ask for a walk against Instagram with no waits.
     pub fn new(client: &'a IgClient) -> Self {
         Self {
             client,
@@ -302,20 +235,17 @@ impl<'a> ListWalker<'a> {
         }
     }
 
-    /// Sets who is told the walk is still there while it sleeps on the day's
-    /// accounts. See [`Heartbeat`].
+    /// See [`Heartbeat`].
     #[must_use]
     pub fn with_heartbeat(mut self, heartbeat: Heartbeat<'a>) -> Self {
         self.heartbeat = Some(heartbeat);
         self
     }
 
-    /// Sets what is asked before every page: `true` stops the walk there,
-    /// as [`StopReason::Canceled`] with its cursor, so the next run picks it
-    /// up. For a reason outside the walk that is not the person stopping it,
-    /// such as the battery running out under the monitor; the process's
-    /// cancellation is not used for it, since that one also stops everything
-    /// after the walk.
+    /// Sets what is asked before every page: `true` stops the walk as
+    /// [`StopReason::Canceled`], with its cursor. For a reason outside the
+    /// walk that is not the person stopping it (the battery running out under
+    /// the monitor).
     #[must_use]
     pub fn with_stop(mut self, stop: &'a dyn Fn() -> bool) -> Self {
         self.stop = Some(stop);
@@ -328,17 +258,12 @@ impl<'a> ListWalker<'a> {
         self
     }
 
-    /// The client's own token, so the walk stops on the same Ctrl+C that
-    /// stops its requests.
     fn cancel(&self) -> &CancelToken {
         self.client.pacer().cancel_token()
     }
 
-    /// Walks the whole list, page by page.
-    ///
-    /// `save` receives each page as soon as it arrives and **before any wait**,
-    /// so the caller can persist it immediately; it returns how many users were
-    /// genuinely new.
+    /// Walks the whole list, page by page. `save` receives each page as it
+    /// arrives and **before any wait**, and returns how many users were new.
     pub async fn walk<S, O>(
         &self,
         request: ListRequest<'_>,
@@ -350,7 +275,7 @@ impl<'a> ListWalker<'a> {
         O: FnMut(Event),
     {
         self.check_cooldown().await?;
-        // A walk is an action, and so is each sitting after its rest below.
+        // A walk is an action, and so is each sitting after its rest.
         let pacer = self.client.pacer();
         pacer.begin_action();
 
@@ -360,9 +285,8 @@ impl<'a> ListWalker<'a> {
         });
 
         let mut state = WalkState::new(&request);
-        // Whether the list has been opened: once a walk, before its first
-        // page, whatever the loop starts over for before it, and again after
-        // the machine slept.
+        // Opened once a walk, before its first page, and again after the
+        // machine slept.
         let mut opened = false;
         let mut asleep = Asleep::new((self.wall)(), (self.awake)());
 
@@ -371,31 +295,10 @@ impl<'a> ListWalker<'a> {
                 break StopReason::Canceled;
             }
 
-            // Asked again on every page, not only before the first.
-            //
-            // `check_cooldown` above answers for the moment the walk started,
-            // and this loop is the longest unbroken run of requests the tool
-            // produces. A cooldown another process writes while this walk is in
-            // flight has to reach it — `snob whoami` in a second terminal
-            // drawing a 429 stops *that* process and must not leave this one
-            // paging into a door Instagram has just closed. The database is
-            // shared per user, which makes that ordinary rather than a corner
-            // case.
-            //
-            // It does not self-limit either, unless the push-back happens to
-            // cover `/api/v1/friendships/` as well: an endpoint-specific
-            // throttle leaves this walk answering normally to the end.
-            //
-            // **`Pacer::clear` reads the table too**, and this is still worth
-            // its place: the two stop the walk by different routes.
-            //
-            // `break` rather than `Err`, so the partial keeps its cursor and
-            // stays resumable — `verify_completion` passes a non-`Completed`
-            // reason through untouched. The backstop answers `Err`, which lands
-            // in `stop_reason_for` and also breaks with `RateLimit` carrying
-            // `state.cursor`, so nothing is lost either way; what this buys is
-            // catching the cooldown *between* pages, before the next request has
-            // been reserved at all. One local SQLite read a page.
+            // Asked on every page: a cooldown another process writes while
+            // this walk is in flight has to reach it. `break`, so the partial
+            // keeps its cursor; `Pacer::clear` is the backstop inside the
+            // client.
             if self
                 .client
                 .pacer()
@@ -415,15 +318,9 @@ impl<'a> ListWalker<'a> {
                 break StopReason::Canceled;
             }
 
-            // **A rest owed is paid before the page**, whoever owes it: this
-            // walk, a walk before it that ended on the page that filled its
-            // sitting, or a run stopped during its rest. It is the account's
-            // (`Pacer::rest_owed`), kept in its database, so a walk that
-            // ends, by its own end or its cap, leaves it owed rather than
-            // skipped; and before the list is opened, so a walk that starts
-            // owing one sends nothing until it is over. Cancelable as every
-            // wait is, and never cut by `--max-wait`. The loop starts over
-            // afterwards to ask the cancel, the cooldown and the caps again.
+            // **A rest owed is paid before the page**, whoever owes it
+            // (`Pacer::rest_owed`), and before the list is opened. Never cut
+            // by `--max-wait`. The loop starts over afterwards.
             if let Some((until, left)) = pacer
                 .rest_owed(&self.pace, (self.wall)())
                 .await
@@ -437,15 +334,11 @@ impl<'a> ListWalker<'a> {
                 continue;
             }
 
-            // The day's accounts, asked before the page rather than found out
-            // after it: a page that would go over is not asked for until the
-            // day has room for a run of them. The sleep is inside the walk, so
-            // every guard here keeps counting across it, and the loop starts
-            // over afterwards to ask the cancel, the cooldown and the caps
-            // again. Against a test server there is no day to spend, for the
-            // same reason there are no waits.
+            // The day's accounts, asked before the page: one that would go
+            // over is not asked for until the day has room for a run of them.
+            // Against a test server there is no day to spend.
             if self.sleeps && request.over_budget == OverBudget::Pause {
-                let page = expected_on_a_page(&self.pace);
+                let page = self.pace.per_page;
                 if !pacer
                     .accounts_wait(page)
                     .await
@@ -456,8 +349,7 @@ impl<'a> ListWalker<'a> {
                         .accounts_wait(page * PAGES_AFTER_A_PAUSE)
                         .await
                         .map_err(WalkError::Budget)?;
-                    // Past the caller's limit, the walk stops here as it
-                    // would at Ctrl+C, with every page so far kept.
+                    // Past the caller's limit the walk stops as at Ctrl+C.
                     if let Err(e) = pacer.within_the_limit(wait) {
                         break self.stop_reason_for(e, &mut state);
                     }
@@ -468,12 +360,8 @@ impl<'a> ListWalker<'a> {
                 }
             }
 
-            // **The list is opened as a person opens it**, before its first
-            // page: the profile's navigation goes out as the app's router
-            // sends it (`IgClient::open_list`), and then the walk waits as
-            // long as a person looks at a profile before clicking its list
-            // ([`Pace::dwell`]). Every walk does, so the second list of a
-            // crossing is opened, and waited for, as the second click is.
+            // **The list is opened as a person opens it**: the app's
+            // navigation (`IgClient::open_list`), then the dwell.
             if !opened {
                 opened = true;
                 if let Err(e) = self.client.open_list(request.username, false).await {
@@ -485,12 +373,8 @@ impl<'a> ListWalker<'a> {
                 }
             }
 
-            // A step before every page but the walk's first, which is the
-            // action starting. The budget's own wait is not paid here. It
-            // happens inside the client, after this one, so an exhausted
-            // budget makes the walk slower than the step suggests — the safe
-            // direction, and only once it is already rationing. Answers
-            // that came slowly lengthen it (`Pacer::slowed`), never shorten it.
+            // A step before every page but the first. The budget's own wait
+            // is paid inside the client, after this one.
             if state.pages > 0 {
                 let step = self.slowed(self.pace.step()).await;
                 if self.wait(WaitKind::Step, step, &mut observe).await {
@@ -498,11 +382,8 @@ impl<'a> ListWalker<'a> {
                 }
             }
 
-            // **A machine that slept is a walk to pick up again**, looked for
-            // before every page: after the rest, the day's wait, the dwell
-            // or the step the loop came through, any of which it may have
-            // slept in, and again when the page fails (`fetch_page`). See
-            // `come_back`.
+            // **A machine that slept is a walk to pick up again**: looked for
+            // before every page and when one fails (`come_back`).
             let fetched = match self.slept(&mut asleep) {
                 Some(slept) => Ok(Fetched::Slept(slept)),
                 None => {
@@ -524,9 +405,8 @@ impl<'a> ListWalker<'a> {
             };
             let received = page.users.len();
             let added = save(&page, state.pages + 1).map_err(WalkError::Save)?;
-            // Counted whether or not the walk goes on: the sitting is the
-            // account's, and the page that fills it owes the rest to
-            // whatever walks next, this walk's next page included.
+            // Counted whether or not the walk goes on: the page that fills a
+            // sitting owes its rest to whatever walks next.
             let sitting = pacer
                 .page_walked(&self.pace, (self.wall)())
                 .await
@@ -542,17 +422,12 @@ impl<'a> ListWalker<'a> {
                 sitting,
             });
 
-            // No rest here, after the page: the rest is owed and paid by
-            // whatever walks next, before its page, so a walk that ends on
-            // this one waits for nobody and leaves the rest to the next.
             if let Some(end) = state.record_page(received, added, &page, &mut observe) {
                 break end;
             }
         };
 
-        // The rate the repeat rule judges, written down whatever it found and
-        // however the walk ended, so that a rate under the threshold is
-        // measured too. Counts only.
+        // The rate the repeat rule judges, logged however the walk ended.
         tracing::debug!(
             list = ?request.direction,
             pages = state.pages,
@@ -582,24 +457,13 @@ impl<'a> ListWalker<'a> {
     }
 
     /// Sleeps until the day has room, calling the heartbeat every
-    /// [`HEARTBEAT`] so whoever saves the pages knows the walk is asleep
-    /// rather than dead.
+    /// [`HEARTBEAT`]. `true` when cut short: a stop, or the heartbeat said the
+    /// walk is no longer wanted.
     ///
-    /// `true` when the sleep was cut short: the person asked to stop, or the
-    /// heartbeat said the walk is no longer wanted.
-    ///
-    /// **The wait ends at a moment on the wall clock, not after an amount of
-    /// sleeping.** The day's budget is kept in wall-clock time, and the timers
-    /// a sleep runs on are not: on Linux and macOS they stand still while the
-    /// machine is suspended, and on Windows a relative wait does not count a
-    /// low-power state either. Counted in sleeps, a laptop shut for the night
-    /// halfway through a six-hour wait would wake to six more hours of it,
-    /// for room the day made long ago. Each heartbeat looks at the wall clock
-    /// again, so the wait is over at the first one after the moment passed.
-    ///
-    /// The sleeping is still counted, as the other bound: a wall clock set
-    /// back by hand would otherwise move the moment away, and the wait is
-    /// never longer than the budget asked for.
+    /// **The wait ends at a moment on the wall clock**: the timers a sleep
+    /// runs on stand still while the machine is suspended, so counted in
+    /// sleeps a laptop shut overnight would wake to the whole wait again. The
+    /// sleeping is counted too, as the bound against a clock set back.
     async fn sleep_through_the_day<O: FnMut(Event)>(
         &self,
         wait: Duration,
@@ -652,7 +516,6 @@ impl<'a> ListWalker<'a> {
         Ok(())
     }
 
-    /// Fetches a page, retrying only what is worth retrying.
     async fn fetch_page<O: FnMut(Event)>(
         &self,
         request: &ListRequest<'_>,
@@ -678,18 +541,16 @@ impl<'a> ListWalker<'a> {
                 Err(e) => e,
             };
 
-            // A request that failed across a sleep failed because of it: the
-            // network was going down as the lid closed, or is not back yet.
-            // Not one of the retries, which are for a server that failed.
+            // A request that failed across a sleep failed because of it, and
+            // is not one of the retries.
             if error.reaction() == Reaction::Retry
                 && let Some(slept) = self.slept(asleep)
             {
                 return Ok(Fetched::Slept(slept));
             }
 
-            // `reaction()` rather than the individual predicates: it is the
-            // single authority here, and it is what guarantees a 429 is never
-            // retried.
+            // `reaction()` is the single authority: it is what guarantees a
+            // 429 is never retried.
             if error.reaction() != Reaction::Retry || attempt >= self.pace.network_retries {
                 return Err(error);
             }
@@ -700,10 +561,8 @@ impl<'a> ListWalker<'a> {
                 after,
                 error: error.to_string(),
             });
-            // `Canceled`, not the server's error: a 503 on page nine plus
-            // Ctrl+C during the backoff is the user stopping, not the server
-            // failing, so it exits 130 rather than 1 with
-            // `stopped_by = 'network'`, the same as an interrupt a moment later.
+            // `Canceled`, not the server's error: Ctrl+C during the backoff is
+            // the user stopping.
             if self.sleeps && self.cancel().sleep_or_cancel(after).await {
                 return Err(IgError::Canceled);
             }
@@ -721,22 +580,12 @@ impl<'a> ListWalker<'a> {
                 | IgError::UserAgentMismatch
                 | IgError::Challenge { .. }
                 | IgError::Checkpoint { .. } => StopReason::SessionInvalid,
-                // Ctrl+C during the budget's wait arrives as an error from the
-                // client rather than through the token, and it is still the
-                // user stopping rather than anything going wrong.
+                // Ctrl+C during the budget's wait arrives as an error.
                 IgError::Canceled => StopReason::Canceled,
-                // A wait past the caller's limit is the caller stopping the
-                // walk, as Ctrl+C is: kept, resumable, and not a failure of
-                // the network or a word from Instagram.
+                // A wait past the caller's limit is the caller stopping.
                 IgError::WaitTooLong { .. } => StopReason::Canceled,
-                // The backstop in `Pacer::clear` refusing, which is throttling
-                // and not a network failure however it arrives. Its reaction is
-                // `Abort` — retrying a wait measured in hours is the one thing
-                // that must not happen — so without this arm it would fall to
-                // `Network`. The mid-walk check in `walk` breaks with
-                // `RateLimit` for the identical condition, and
-                // `exit::from_stop_reason` and `from_ig_error` are
-                // documented to agree.
+                // `Pacer::clear`'s backstop: throttling, the same condition
+                // the mid-walk check breaks on.
                 IgError::InCooldown { .. } => StopReason::RateLimit,
                 _ => StopReason::Network,
             },
@@ -745,24 +594,15 @@ impl<'a> ListWalker<'a> {
         reason
     }
 
-    /// How long the machine slept since `asleep` last looked, if it did.
     fn slept(&self, asleep: &mut Asleep) -> Option<Duration> {
         asleep.check((self.wall)(), (self.awake)())
     }
 
-    /// Picks the walk up again after the machine slept for `slept`.
-    ///
-    /// **As at the end of a sitting, not as after a failure.** Everything the
-    /// walk had in hand is as old as the sleep: the page the requests are
-    /// built from, the network the machine was on. So the document the list
-    /// opens over is loaded again ([`IgClient::reload`]), waiting for the
-    /// network as long as [`crate::pace::RECONNECT_WAITS_SECS`] allows, and
-    /// the walk starts a new action and opens the list again, with the dwell
-    /// a person takes, before its next page. Nothing is asked sooner than the
-    /// walk would have asked it: a sleep is already the longest pause it has.
-    ///
-    /// An error is how the walk ends: a network that never came back is a
-    /// network failure, as it was before, and the walk keeps its cursor.
+    /// Picks the walk up again after the machine slept. **As at the end of a
+    /// sitting, not as after a failure**: the document the list opens over is
+    /// loaded again ([`IgClient::reload`]), waiting for the network as
+    /// [`crate::pace::RECONNECT_WAITS_SECS`] allows, and the list is opened
+    /// again with its dwell. An error ends the walk, with its cursor.
     async fn come_back<O: FnMut(Event)>(
         &self,
         request: &ListRequest<'_>,
@@ -790,8 +630,6 @@ impl<'a> ListWalker<'a> {
         }
     }
 
-    /// `drawn`, lengthened when the latest answers came slowly
-    /// (`Pacer::slowed`).
     async fn slowed(&self, drawn: Duration) -> Duration {
         self.client
             .pacer()
@@ -817,23 +655,18 @@ impl<'a> ListWalker<'a> {
     }
 }
 
-/// Mutable state of the walk, kept apart so the stop conditions are functions
-/// rather than branches scattered through the loop.
 struct WalkState {
+    /// The cursor the next page is asked with: the one the page before
+    /// handed out, or the one a resumed walk starts from.
     cursor: Option<String>,
-    /// The cursor of the previous page, to catch one that does not advance.
-    last_cursor: Option<String>,
     pages: u32,
     users: usize,
     empty_in_a_row: u32,
     barren_in_a_row: u32,
-    /// Every account this walk has received, to tell a repeat from a new
-    /// row. A resumed walk starts it empty: rows an earlier run stored are
-    /// not this walk's, and serving them again is not a repeat.
+    /// Every account this walk has received, to tell a repeat. A resumed walk
+    /// starts it empty.
     seen: HashSet<Pk>,
-    /// Every row this walk received, repeats included.
     received: usize,
-    /// The rows that named an account this walk had already received.
     repeated: usize,
     error: Option<IgError>,
 }
@@ -842,7 +675,6 @@ impl WalkState {
     fn new(request: &ListRequest<'_>) -> Self {
         Self {
             cursor: request.from.map(str::to_string),
-            last_cursor: None,
             pages: 0,
             users: request.already_stored,
             empty_in_a_row: 0,
@@ -880,25 +712,14 @@ impl WalkState {
             }
         }
 
-        let next = page.next_cursor().map(str::to_string);
+        let next = page.next_cursor();
 
-        // No cursor means the list is done.
         let Some(next) = next else {
             return Some(StopReason::Completed);
         };
 
-        // A cursor that does not advance is a loop. This is the guard the
-        // original project lacks.
-        //
-        // Compared against the one just **sent**, not only against the previous
-        // page's: on the first page of a resumed walk there is no previous one,
-        // so a cursor that comes straight back unchanged would have gone
-        // undetected for one more request — and a walk that ends this way keeps
-        // that cursor and stays resumable for the resume window, so every run
-        // in that window paid the same two requests to rediscover it.
-        if self.last_cursor.as_deref() == Some(next.as_str())
-            || self.cursor.as_deref() == Some(next.as_str())
-        {
+        // A cursor that comes back as the one just sent is a loop.
+        if self.cursor.as_deref() == Some(next) {
             observe(Event::Warning(Warning::SameCursorTwice));
             return Some(StopReason::Truncated);
         }
@@ -923,13 +744,12 @@ impl WalkState {
             self.barren_in_a_row = 0;
         }
 
-        self.last_cursor = Some(next.clone());
-        self.cursor = Some(next);
+        self.cursor = Some(next.to_string());
         None
     }
 
-    /// Last filter: a clean but very short ending, measured against what was
-    /// declared, is probably not clean at all.
+    /// Last filter: a clean ending far short of what was declared is probably
+    /// not clean.
     fn verify_completion<O: FnMut(Event)>(
         &self,
         reason: StopReason,
@@ -940,7 +760,6 @@ impl WalkState {
             return reason;
         }
 
-        // Served twice too often to trust that everything was served once.
         if self.repeated * 100 > self.received * REPEAT_LIMIT_PERCENT {
             observe(Event::Warning(Warning::Repeated {
                 repeated: self.repeated,
@@ -949,19 +768,10 @@ impl WalkState {
             return StopReason::Truncated;
         }
 
-        // Nothing walked, and nothing to check that against.
-        //
-        // An account with no followers and an Instagram that served no
-        // followers look identical from here: one page, no users, no cursor,
-        // which `record_page` reads as the list being done. The counter is
-        // what tells them apart, and this is the branch where the counter is
-        // missing — the profile poll failed, which is the same bad afternoon
-        // that produces the empty page.
-        //
-        // Getting it wrong here is not a partial result but a wrong one: an
-        // empty followers list accepted as complete makes every account you
-        // follow an unfollower. A real empty account loses nothing by being
-        // asked again, so this refuses.
+        // Nothing walked and no counter: an account with no followers and an
+        // Instagram that served none look the same. An empty list accepted
+        // as complete makes every account followed an unfollower, so this
+        // refuses.
         if request.estimated.is_none() && self.users == 0 {
             observe(Event::Warning(Warning::EmptyAndNoCounter));
             return StopReason::Truncated;
@@ -976,9 +786,7 @@ impl WalkState {
             return reason;
         }
 
-        // A shortfall of more than a tenth is more than deleted accounts
-        // usually account for, and is what makes either explanation worth
-        // weighing at all.
+        // More than a tenth short is more than deleted accounts account for.
         let far_short = estimated > self.users * 11 / 10;
         if !far_short {
             return reason;
@@ -1000,25 +808,10 @@ impl WalkState {
     }
 }
 
-/// Which of the two explanations for a short list to believe.
-///
-/// A walk that ends cleanly with fewer accounts than declared is either the
-/// counter lying — it includes deleted and deactivated accounts that no longer
-/// appear — or Instagram having stopped serving pages. Getting it wrong in one
-/// direction disables comparison for every account whose counter overstates;
-/// getting it wrong in the other reports departures that never happened, which
-/// is the failure this whole tool is built to avoid.
-///
-/// Two independent signals, either of which is enough:
-///
-/// - **The declared size is past the threshold.** That is where Instagram is
-///   reported to stop paginating, so any real shortfall there is suspect. It is
-///   measured against what was *declared*, not against what was walked: reading
-///   six thousand of a declared forty thousand is exactly the case this is for,
-///   and testing the walked count would have called it complete.
-/// - **The shortfall is enormous whatever the size.** Deleted accounts are not
-///   half of anybody's followers. A hundred out of three thousand is not a
-///   counter that overstates, it is a list that stopped.
+/// Which explanation for a short list to believe: a counter that overstates,
+/// or Instagram having stopped serving pages. Truncated when the **declared**
+/// size is past the threshold, or when the list is under half of it: deleted
+/// accounts are not half of anybody's followers.
 fn truncated(walked: usize, declared: usize) -> bool {
     declared >= TRUNCATION_THRESHOLD || walked * 2 < declared
 }

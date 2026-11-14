@@ -1,26 +1,10 @@
-//! Requests sent from inside a browser page, rather than by this process.
+//! Requests sent from inside a browser page, the default last hop to Instagram.
 //!
-//! **Why this exists.** This is the default last hop for every request to
-//! Instagram. The other one, `reqwest`, is what runs under `SNOB_NO_BROWSER`
-//! and against a test server: this process's own TLS handshake, its own HTTP/2
-//! settings, the cookies it was handed at login and never updates, and a set
-//! of headers computed to agree with a User-Agent this process is not. Every
-//! one of those is a way for Instagram to tell that the session a browser
-//! created is being used by something that is not that browser — a textbook
-//! stolen-session signature. A request sent by `fetch()` from an open
-//! instagram.com tab has none of them: the handshake, the cookie jar, the
-//! rotating `rur` and `csrftoken`, the client hints and the `Referer` are the
-//! browser's own, because the browser is the one sending it.
-//!
-//! So this crate defines only the shape of such a request, and of an intent
-//! the tab builds one from ([`crate::web::Ask`]), and the one place a client
-//! picks it up. Launching and driving the browser is `snob-cli`'s
-//! (`headless/`), which already owns the DevTools pipe for the login; this
-//! crate still compiles no browser code at all.
-//!
-//! The pacing, the budgets, the cooldowns and the classification of every
-//! answer are untouched: a request from the page is paid for, charged and read
-//! exactly as a `reqwest` one is. Only the last hop changes hands.
+//! A `fetch()` from an open instagram.com tab has the browser's own handshake,
+//! cookie jar, client hints and `Referer`; `reqwest` has none of them. This
+//! crate defines only the shape of such a request and of an intent the tab
+//! builds one from ([`crate::web::Ask`]); driving the browser is `snob-cli`'s.
+//! Pacing, budgets, cooldowns and classification are the same on both paths.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -30,7 +14,6 @@ use snob_core::session::Session;
 
 use crate::web::{Call, Told, Unbuilt};
 
-/// The two methods a page sends with. Nothing else is sent from here either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Method {
     #[serde(rename = "GET")]
@@ -39,61 +22,45 @@ pub enum Method {
     Post,
 }
 
-/// One request for the page to send.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PageRequest {
     pub method: Method,
     /// Absolute, on the page's own origin.
     pub url: String,
-    /// Only the headers the site's own script adds. Everything a browser adds
-    /// by itself — `Cookie`, `User-Agent`, the client hints, `Sec-Fetch-*`,
-    /// `Accept-Encoding`, `Origin` — is the browser's to add, and it does.
+    /// Only the headers the site's own script adds; the browser adds the rest.
     pub headers: Vec<(String, String)>,
-    /// The page the request is made from, absolute. `fetch()` sends it as the
-    /// `Referer`.
+    /// The page the request is made from, absolute: sent as the `Referer`.
     pub referrer: String,
-    /// A form-encoded body, for the POSTs built in the tab: the registry's
-    /// reads and the two writes.
+    /// A form-encoded body, for the POSTs built in the tab.
     pub body: Option<String>,
-    /// A navigation rather than a fetch: the tab goes to `url` and the answer
-    /// is the document it lands on. Only the process holding the browser
-    /// sends one, for an `Ask::Document` or an `Ask::Pk`; one handed to it
-    /// as a request is refused.
+    /// A navigation rather than a fetch. Only the process holding the browser
+    /// sends one; handed to it as a request, it is refused.
     pub navigate: bool,
-    /// The most bytes of body worth reading.
     pub cap: u64,
-    /// How long the page may take before giving up.
     pub timeout_ms: u64,
 }
 
-/// What came back.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PageResponse {
     pub status: u16,
-    /// Lowercase names. `Set-Cookie` is never among them — the browser keeps
-    /// it, which is the point.
+    /// Lowercase names. Never `Set-Cookie`: the browser keeps it.
     pub headers: Vec<(String, String)>,
     pub body: String,
     /// Where the request ended up, after any redirect the browser followed.
     pub url: String,
     pub redirected: bool,
-    /// How many redirects the browser followed to get there. Only a
-    /// navigation follows any; it can also land elsewhere with none counted.
+    /// Redirects the browser followed. Only a navigation follows any, and it
+    /// can also land elsewhere with none counted.
     pub hops: u32,
     /// The body was longer than [`PageRequest::cap`] and was not kept.
     pub too_large: bool,
-    /// How long the answer took to arrive, in milliseconds: from the
-    /// `fetch()` to its headers, timed inside the tab (`FETCH` in
-    /// `headless/tab.rs`), so the owner's pipe and the DevTools protocol are
-    /// not in it, while the guard's pause on the request is, a few
-    /// milliseconds. `None` from what does not time it: a navigation, or an
-    /// owner from an older snob.
+    /// Milliseconds from the `fetch()` to its headers, timed inside the tab.
+    /// `None` for a navigation, or from an owner of an older snob.
     #[serde(default)]
     pub waited_ms: Option<u32>,
 }
 
 impl PageResponse {
-    /// A header, by lowercase name.
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -101,60 +68,47 @@ impl PageResponse {
             .map(|(_, v)| v.as_str())
     }
 
-    /// [`Self::waited_ms`] as a length of time.
     pub fn waited(&self) -> Option<std::time::Duration> {
         self.waited_ms
             .map(|ms| std::time::Duration::from_millis(u64::from(ms)))
     }
 
-    /// What Instagram said about its own load while answering, as the
-    /// client logs it.
     pub fn load(&self) -> Option<String> {
         super::transport::load_from(|name| self.header(name))
     }
 
-    /// Which backend answered, and in what form: `x-stack` and
-    /// `content-type`, as the client logs them.
     pub fn served(&self) -> Option<String> {
         super::transport::served_from(|name| self.header(name))
     }
 }
 
-/// Why a page handed back no answer. Three different things, read three
-/// different ways — which is why this is not a string.
+/// Why a page handed back no answer.
 #[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize)]
 pub enum PageError {
-    /// The request got no answer: the network, or the page's own timeout.
-    /// Worth a retry, as the same failure through `reqwest` is.
+    /// No answer: the network, or the page's own timeout. Worth a retry.
     #[error("{0}")]
     Unreachable(String),
     /// A write, and the browser holds no CSRF token to send it with.
     #[error("the browser holds no CSRF token to write with")]
     NoCsrfToken,
-    /// The browser itself: it would not start, went away, or stopped
-    /// answering its protocol.
+    /// The browser would not start, went away, or stopped answering.
     #[error("{0}")]
     Browser(String),
-    /// Instagram has pushed back on this session, and it was already written
-    /// down: the page refuses to send anything more. See [`PushedBack`].
+    /// Instagram pushed back on this session and it was already written down.
     #[error("{}", crate::error::IgError::from(.0.clone()))]
     PushedBack(PushedBack),
-    /// Not one of the calls snob may send ([`crate::allowlist`]), so it was
-    /// never sent. Carries the method and the path.
+    /// Not one of the calls snob may send ([`crate::allowlist`]): never sent.
     #[error("{}", crate::error::IgError::NotAllowed(.0.clone()))]
     NotAllowed(String),
-    /// The page has not shown a value the call is built from, and nothing
-    /// was sent. The browser is fine: this is never [`PageError::Browser`],
-    /// which would close it.
+    /// The page has not shown a value the call is built from; nothing sent.
+    /// Never [`PageError::Browser`], which would close the browser.
     #[error("{}", crate::error::IgError::PageNotReady(.0.clone()))]
     NotReady(String),
-    /// The tab's document is signed out, or served to another account, so
-    /// nothing was sent as this one.
+    /// The tab's document is signed out, or served to another account.
     #[error("{}", crate::error::IgError::SessionExpired)]
     LoggedOut,
-    /// The session's account was signed out of on this computer since the
-    /// session was read, so nothing was sent as it: refused by the caller,
-    /// never by Instagram.
+    /// The account was signed out of on this computer since the session was
+    /// read: refused by the caller, never by Instagram.
     #[error("{}", crate::error::IgError::SignedOutHere)]
     SignedOutHere,
 }
@@ -184,22 +138,12 @@ impl From<Unbuilt> for PageError {
     }
 }
 
-/// A push-back the browser heard and has already written down.
+/// A push-back the browser heard, on the app's calls or on snob's, and has
+/// already written down.
 ///
-/// **Why it exists.** Instagram talks to the session through every call its
-/// app makes on the page, not only through snob's own, and a 429 or a
-/// challenge on one of the app's calls is heard by the browser before snob's
-/// next request would hear it. The process holding the browser records every
-/// push-back heard on the page — the app's, and the answers to snob's own
-/// requests — once, and from then on its page refuses with this, carrying the
-/// cause, so a command stops with the right code and the challenge's link.
-///
-/// **Never recorded by the client.** It becomes the matching [`IgError`]
-/// through `From`, which is not the path that records a cooldown. A cooldown
-/// repeated within a day doubles, so one push-back written down twice would
-/// cost twice.
-///
-/// [`IgError`]: crate::error::IgError
+/// **Never recorded by the client**: it becomes the matching `IgError` through
+/// `From`, which records no cooldown. A cooldown repeated within a day
+/// doubles, so one push-back written down twice would cost twice.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PushedBack {
     RateLimited,
@@ -209,7 +153,6 @@ pub enum PushedBack {
 }
 
 impl PushedBack {
-    /// The push-back an error is, if it is one.
     pub fn of(error: &crate::error::IgError) -> Option<Self> {
         use crate::error::IgError;
         match error {
@@ -233,12 +176,9 @@ impl From<PushedBack> for crate::error::IgError {
     }
 }
 
-/// What sending returns: boxed, because the one implementation is behind a
-/// trait object and lives in another crate.
 pub type PageFuture<'a> =
     Pin<Box<dyn Future<Output = Result<PageResponse, PageError>> + Send + 'a>>;
 
-/// What asking returns, boxed for the same reason.
 pub type AskFuture<'a> = Pin<Box<dyn Future<Output = Result<Told, PageError>> + Send + 'a>>;
 
 /// A browser tab on Instagram that sends what it is given.
@@ -246,8 +186,7 @@ pub trait Page: Send + Sync {
     fn send(&self, request: PageRequest) -> PageFuture<'_>;
 
     /// Answers an intent: the tab builds the request from its document's
-    /// values right before it sends it ([`crate::web::build_call`]), or
-    /// answers from the document itself, and hands back what came of it.
+    /// values right before sending it ([`crate::web::build_call`]).
     fn ask(&self, call: Call) -> AskFuture<'_> {
         let _ = call;
         Box::pin(std::future::ready(Err(PageError::Browser(
@@ -255,50 +194,36 @@ pub trait Page: Send + Sync {
         ))))
     }
 
-    /// A push-back the browser has heard and written down already, if it has.
-    /// Asked before anything is paid for, so a command learns of it without
-    /// spending a request — and learns the cause, which the cooldown alone
-    /// does not say.
+    /// A push-back the browser has already heard and written down. Asked
+    /// before anything is paid for.
     fn heard(&self) -> Option<PushedBack> {
         None
     }
 }
 
-/// Builds the page a client for this session sends through.
-///
-/// Called once per client; an implementation shares one browser between them,
-/// because two browsers on one profile cannot both run.
+/// Called once per client; an implementation shares one browser between them.
 pub type PageFactory = Arc<dyn Fn(&Session) -> Arc<dyn Page> + Send + Sync>;
 
-/// Where every client built after this is set sends its requests from.
-///
-/// A process-global for the reason [`super::SANDBOX_BASE`] and `http::TRUST`
-/// are: three separate places build a client, one of them inside this crate
-/// with no path from the binary's arguments, and the answer is the same for
-/// the whole process. Set once from `main`, before any client exists.
+/// Process-global, set once from `main` before any client exists.
 static FACTORY: OnceLock<PageFactory> = OnceLock::new();
 
-/// Sends every request of every client built from now on from a browser page.
-///
 /// `Err` hands the factory back on a second call.
 pub fn send_every_request_from(factory: PageFactory) -> Result<(), PageFactory> {
     FACTORY.set(factory)
 }
 
-/// Whether a client built now would send from a browser page, as
-/// [`super::IgClient::has_page`] would answer once built: for a command that
-/// reports what a run would cost and builds no client (`--dry-run`).
+/// Whether a client built now would send from a browser page, for a command
+/// that builds no client (`--dry-run`).
 pub fn a_client_would_use_a_page() -> bool {
     FACTORY.get().is_some() && (super::is_instagram(&super::site()) || used_off_instagram())
 }
 
-/// The page a client for `session` should use, when one was set up.
 pub(crate) fn page_for(session: &Session) -> Option<Arc<dyn Page>> {
     FACTORY.get().map(|factory| allowlisted(factory(session)))
 }
 
-/// `page`, refusing whatever is not one of the calls snob may send before it
-/// leaves. Every page a client sends through is one of these.
+/// Every page a client sends through is one of these: whatever is not a call
+/// snob may send is refused before it leaves.
 pub(crate) fn allowlisted(page: Arc<dyn Page>) -> Arc<dyn Page> {
     Arc::new(Allowlisted(page))
 }
@@ -327,15 +252,11 @@ impl Page for Allowlisted {
     }
 }
 
-/// Whether a client pointed somewhere other than Instagram uses the page too.
-///
-/// Off by default, so a test server is reached the way the rest of the suite
-/// reaches it. A testing build turns it on to drive the page path end to end
-/// against a fake Instagram served locally.
+/// Whether a client pointed somewhere other than Instagram uses the page too:
+/// a testing build drives the page path against a fake Instagram.
 #[cfg(feature = "testing")]
 static OFF_INSTAGRAM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Uses the page even for a client that is not pointed at Instagram.
 #[cfg(feature = "testing")]
 pub fn use_the_page_off_instagram() {
     OFF_INSTAGRAM.store(true, std::sync::atomic::Ordering::Relaxed);

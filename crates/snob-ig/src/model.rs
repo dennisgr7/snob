@@ -1,8 +1,6 @@
-//! Models of Instagram's responses.
-//!
-//! Everything but `pk` is optional on purpose. This is an undocumented API
-//! with no contract: it adds and removes fields without notice, and one
-//! unexpected `null` should not bring down a walk over two thousand accounts.
+//! Models of Instagram's responses. **Everything but `pk` is optional**: this
+//! is an undocumented API, and one unexpected `null` must not bring down a
+//! walk. The JSON contract snob prints is `snob_core::model`, kept separate.
 
 use serde::Deserialize;
 use snob_core::{Epoch, Pk};
@@ -27,9 +25,6 @@ pub struct UserSummary {
     pub profile_pic_url: Option<String>,
 }
 
-/// From the wire format to the domain one. The conversion lives here because it
-/// is the only direction the dependencies allow: `snob-core` does not know
-/// about `snob-ig`.
 impl From<&UserSummary> for snob_core::model::User {
     fn from(u: &UserSummary) -> Self {
         Self {
@@ -57,7 +52,7 @@ impl From<snob_core::model::ListKind> for crate::client::Direction {
 pub struct FriendshipsPage {
     #[serde(default)]
     pub users: Vec<UserSummary>,
-    /// Cursor to the next page. Absent or empty means the list is done.
+    /// Absent or empty means the list is done.
     #[serde(default)]
     pub next_max_id: Option<String>,
 }
@@ -68,26 +63,21 @@ impl FriendshipsPage {
     }
 }
 
-/// Response of `/api/v1/users/{pk}/info/`. This is how a username is resolved
-/// from a numeric id.
+/// Response of `/api/v1/users/{pk}/info/`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserInfoEnvelope {
     #[serde(default)]
     pub user: Option<UserInfo>,
 }
 
-/// The account as this one endpoint describes it.
-///
-/// Kept apart from [`UserSummary`] rather than adding fields to it: that one is
-/// deserialized once per account on every page of a walk, and the picture
-/// details below would ride along thousands of times over for nothing.
+/// Kept apart from [`UserSummary`], which is deserialized once per account on
+/// every page of a walk.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserInfo {
     pub username: String,
-    /// The full-size picture. This endpoint is the only one that offers it:
-    /// `web_profile_info` calls its field `_hd` but hands back a URL the CDN
-    /// has been told to downscale, and the instruction is covered by the
-    /// signature, so it cannot be removed.
+    /// The full-size picture, which only this endpoint offers:
+    /// `web_profile_info`'s `_hd` URL tells the CDN to downscale, under the
+    /// signature.
     #[serde(default)]
     pub hd_profile_pic_url_info: Option<PictureVersion>,
 }
@@ -112,30 +102,22 @@ pub struct WebProfileInfoData {
     pub user: Option<WebProfileInfo>,
 }
 
-/// Which route answered.
-///
-/// It exists because the two do not answer the same question.
-/// `web_profile_info` carries the follower and following counters; search does
-/// not, and there is no third endpoint that would fill them in for free. A
-/// caller that needs a counter has to be able to tell "nobody asked" from
-/// "asked, and this route cannot say" — [`WebProfileInfo::counters_are_knowable`]
-/// is that question, and `engine::target` is where it is asked.
+/// Which route answered: only some carry the counters
+/// ([`WebProfileInfo::counters_are_knowable`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Via {
     /// `/api/v1/users/web_profile_info/`, which answers with everything.
     #[default]
     Profile,
-    /// The web client's profile query, by pk, which answers with the
-    /// counters too.
+    /// The web client's profile query, by pk, with the counters too.
     Graph,
-    /// The search box, which answers with an identity and no counters.
+    /// The search box: an identity and no counters.
     Search,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct WebProfileInfo {
-    /// Not deserialized: no response carries it. It is set by whichever route
-    /// built the value, and defaults to the one that parses from JSON.
+    /// Set by whichever route built the value; no response carries it.
     #[serde(skip)]
     pub via: Via,
     #[serde(deserialize_with = "flexible_pk")]
@@ -147,29 +129,23 @@ pub struct WebProfileInfo {
     pub is_private: Option<bool>,
     #[serde(default)]
     pub is_verified: Option<bool>,
-    /// Whether the logged-in viewer follows this account. Absent on some
-    /// responses; `None` means unknown and must never block anything.
+    /// `None` means unknown and must never block anything.
     #[serde(default)]
     pub followed_by_viewer: Option<bool>,
-    /// Whether the viewer has a pending follow request to this account.
     #[serde(default)]
     pub requested_by_viewer: Option<bool>,
     #[serde(default)]
     pub profile_pic_url: Option<String>,
-    /// From `web_profile_info`, despite the name, measured at 320x320: the URL
-    /// carries an instruction to the CDN to downscale, and the signature
-    /// covers it, so it cannot be stripped. The full 1080x1080 comes from
-    /// [`UserInfo`] instead. From the profile query ([`web::ProfilePage`]) it
-    /// is the full size.
+    /// From `web_profile_info`, despite the name, 320x320 (measured); the
+    /// full 1080x1080 comes from [`UserInfo`]. From the profile query
+    /// ([`web::ProfilePage`]) it is the full size.
     #[serde(default)]
     pub profile_pic_url_hd: Option<String>,
     #[serde(default, rename = "edge_followed_by")]
     pub followers: Option<CountEdge>,
     #[serde(default, rename = "edge_follow")]
     pub following: Option<CountEdge>,
-    /// Whether this account follows the logged-in viewer. The one fact a
-    /// crossing spends a whole walk to learn, answered for a single account by
-    /// the request every command already makes.
+    /// Whether this account follows the logged-in viewer.
     #[serde(default)]
     pub follows_viewer: Option<bool>,
     /// Whether this account has asked to follow the viewer and is waiting.
@@ -179,26 +155,20 @@ pub struct WebProfileInfo {
     pub biography: Option<String>,
     #[serde(default)]
     pub external_url: Option<String>,
-    /// How many posts are on the grid. Zero is a real answer here, unlike the
-    /// two counters above, because nothing compares a walk against it.
     #[serde(default, rename = "edge_owner_to_timeline_media")]
     pub posts: Option<CountEdge>,
-    /// The accounts the viewer follows that follow this one: the count and the
-    /// first three names, which is exactly the "Followed by a, b and 31 others"
-    /// line the web page opens with. The full list is a page walk of its own,
+    /// The accounts the viewer follows that follow this one: the count and
+    /// the first three names. The full list is
     /// `IgClient::mutual_followers_page`.
     #[serde(default, rename = "edge_mutual_followed_by")]
     pub mutual: Option<MutualEdge>,
-    /// How many highlights sit under the bio. The tray itself is
-    /// `IgClient::highlights_tray`.
     #[serde(default)]
     pub highlight_reel_count: Option<u64>,
     #[serde(default)]
     pub is_business_account: Option<bool>,
     #[serde(default)]
     pub category_name: Option<String>,
-    /// The account keeps the default avatar, which is not worth
-    /// downloading.
+    /// The account keeps the default avatar.
     #[serde(default, rename = "has_anonymous_profile_picture")]
     pub anonymous_picture: Option<bool>,
     /// When the account's newest story was posted, `0` with none up.
@@ -211,13 +181,8 @@ pub struct CountEdge {
     pub count: u64,
 }
 
-/// `edge_mutual_followed_by`: a count and a preview of names.
-///
-/// Verified against the live endpoint in August 2026: three names arrive
-/// however large the count is, which matches what the page shows. The shape
-/// is GraphQL's — an edge list of nodes — on what is otherwise a REST answer,
-/// because `web_profile_info` is the old GraphQL profile query served at a
-/// REST address.
+/// `edge_mutual_followed_by`: a count and a preview of three names, however
+/// large the count (verified live in August 2026).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MutualEdge {
     #[serde(default)]
@@ -227,7 +192,6 @@ pub struct MutualEdge {
 }
 
 impl MutualEdge {
-    /// The names in the preview, in the order the page would show them.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.edges.iter().map(|e| e.node.username.as_str())
     }
@@ -250,17 +214,12 @@ pub struct HighlightsTray {
     pub tray: Vec<Highlight>,
 }
 
-/// One highlight under an account's bio: the tray entry, not its items.
-///
-/// The items are a reel like any other and come from `reels_media` asked with
-/// this `id` — the `highlight:` prefix included, which is how that endpoint
-/// tells a highlight from an account. Verified live in August 2026: the reply
-/// parses as [`Reel`] unchanged, with `expiring_at` absent on every item,
-/// which is why that field is optional.
+/// One highlight under an account's bio: the tray entry. Its items are a
+/// [`Reel`], asked from `reels_media` with this `id`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Highlight {
-    /// `highlight:17900000000000001`. Kept as the string it is, prefix and
-    /// all, because that is the spelling the items are fetched with.
+    /// `highlight:17900000000000001`, prefix and all: the spelling the items
+    /// are fetched with.
     pub id: String,
     #[serde(default)]
     pub title: Option<String>,
@@ -268,7 +227,6 @@ pub struct Highlight {
     pub media_count: Option<u64>,
     #[serde(default)]
     pub created_at: Option<Epoch>,
-    /// When something was last added to it.
     #[serde(default)]
     pub updated_timestamp: Option<Epoch>,
     #[serde(default)]
@@ -281,10 +239,9 @@ pub struct CoverMedia {
     pub cropped_image_version: Option<PictureVersion>,
 }
 
-/// An account's two counters, as one answer declared them.
-///
-/// `None` is a counter the answer did not carry, never zero: a declared zero
-/// would make every walk look complete to `pager::verify_completion`.
+/// An account's two counters, as one answer declared them. `None` is a
+/// counter the answer did not carry, never zero: a declared zero would make
+/// every walk look complete to `pager::verify_completion`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Counters {
     pub followers: Option<u64>,
@@ -316,24 +273,15 @@ impl WebProfileInfo {
         }
     }
 
-    /// Whether this route could have answered with counters at all.
-    ///
-    /// **Not the same question as whether there are any.** `None` from
-    /// `web_profile_info` means Instagram left the field out of an answer that
-    /// carries it for everybody else; `None` from search means the endpoint has
-    /// no such field. The first is worth reporting as odd, the second is
-    /// ordinary — and neither is zero, which is the reading that would turn a
-    /// short walk into a silent truncation nobody was warned about.
+    /// Whether this route could have answered with counters at all. **Not
+    /// whether there are any**: `None` from search is ordinary, `None` from
+    /// the profile is odd, and neither is zero.
     pub fn counters_are_knowable(&self) -> bool {
         matches!(self.via, Via::Profile | Via::Graph)
     }
 
-    /// Builds one from what search knows.
-    ///
-    /// Everything absent stays absent. The counters in particular are **not**
-    /// defaulted to zero: `pager::verify_completion` compares a walk against
-    /// the declared size, and a declared zero would make every walk look
-    /// complete.
+    /// Builds one from what search knows. Everything absent stays absent, the
+    /// counters above all.
     pub fn from_search(user: SearchUser) -> Self {
         Self {
             via: Via::Search,
@@ -342,21 +290,14 @@ impl WebProfileInfo {
             full_name: user.full_name,
             is_private: user.is_private,
             is_verified: user.is_verified,
-            // Search spells the same two facts differently, and they are the
-            // two the private-account refusal in `engine::target` turns on, so
-            // they are worth carrying across rather than dropping.
+            // Search's spelling of the two facts the private-account refusal
+            // in `engine::target` turns on.
             followed_by_viewer: user.friendship_status.as_ref().map(|f| f.following),
             requested_by_viewer: user.friendship_status.as_ref().map(|f| f.outgoing_request),
             profile_pic_url: user.profile_pic_url,
-            // Search has no high-resolution URL. `pfp` does not need one: it
-            // asks `/users/{pk}/info/` for the full size, and that works from
-            // the id alone.
             profile_pic_url_hd: None,
             followers: None,
             following: None,
-            // And none of what the profile page shows. Search is an identity
-            // lookup; a caller wanting the rest has the profile route or
-            // nothing, and says so.
             follows_viewer: user.friendship_status.as_ref().map(|f| f.followed_by),
             has_requested_viewer: None,
             biography: None,
@@ -372,14 +313,12 @@ impl WebProfileInfo {
     }
 }
 
-/// Identity of the account we are authenticated as.
 #[derive(Debug, Clone)]
 pub struct Identity {
     pub pk: Pk,
     pub username: Option<String>,
 }
 
-/// An id as it arrives: a number, or the same digits as text.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum NumberOrText {
@@ -387,8 +326,7 @@ enum NumberOrText {
     Text(String),
 }
 
-/// Instagram returns the id sometimes as a number and sometimes as a string,
-/// depending on the endpoint.
+/// Instagram returns the id as a number or as a string, by endpoint.
 fn flexible_pk<'de, D>(deserializer: D) -> Result<Pk, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -401,8 +339,7 @@ where
     }
 }
 
-/// A field GraphQL may answer `null` for, read as its default: a list
-/// without entries.
+/// A field GraphQL may answer `null` for, read as its default.
 fn nullable<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -411,8 +348,7 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
-/// A list of ids that arrive as numbers or as text, kept as text; `null` is
-/// an empty list.
+/// Ids that arrive as numbers or as text, kept as text; `null` is empty.
 fn flexible_ids<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -427,7 +363,6 @@ where
         .collect())
 }
 
-/// An id that arrives as a number or as text, kept as text.
 fn flexible_id<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -442,37 +377,23 @@ where
 
 /// What Instagram answers to a follow or an unfollow.
 ///
-/// **Three shapes.** The web's mutation answers in the GraphQL envelope under
-/// `data`. The two flatter ones are the REST spellings, which the web does not
-/// serve today (see [`crate::graphql`]): `/web/friendships/{pk}/follow/`
-/// answers with a single word — `"following"`, `"requested"`, `"unfollowed"` —
-/// under `result`, and the mobile `/api/v1/friendships/create/` with the whole
-/// `friendship_status` object. They are read so that a move onto one of them
-/// changes the answer's shape without changing its meaning.
-///
-/// The interesting distinction either way is **requested versus following**.
-/// Following a private account does not follow it — it asks — and reporting a
-/// request as a follow would be the command lying about the one thing it was
-/// run to do.
+/// **Three shapes**: the GraphQL envelope under `data`, which is what
+/// arrives, and the two REST spellings the web does not serve today (see
+/// [`crate::graphql`]), read so that a move onto one changes nothing. What
+/// matters is **requested versus following**: following a private account
+/// only asks.
 #[derive(Debug, Clone, Deserialize)]
 pub struct FriendshipResult {
     #[serde(default)]
     pub friendship_status: Option<FriendshipStatus>,
     #[serde(default)]
     pub result: Option<String>,
-    /// The GraphQL envelope, which is the one that actually arrives.
-    ///
-    /// Misread, a follow that succeeded is reported as not followed, and
-    /// nothing on the request's side shows it. A command that does the thing
-    /// and then reports that it did not is worse than one that fails.
+    /// The GraphQL envelope, which is the one that arrives.
     #[serde(default)]
     pub data: Option<MutationData>,
 }
 
 /// `{"data":{"xdt_create_friendship":{"friendship_status":{…}}}}`.
-///
-/// One field per verb, both optional, because a response carries whichever one
-/// it is answering about.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MutationData {
     #[serde(default)]
@@ -482,15 +403,10 @@ pub struct MutationData {
 }
 
 impl FriendshipResult {
-    /// The relationship as it stands now, whichever shape said so.
-    ///
-    /// The object wins when it is there, because it says more. The word is read
-    /// only as a fallback, and an unrecognized one produces the default — every
-    /// flag false — which the command reports as "Instagram accepted it but
-    /// nothing changed". That is the honest reading of a word nobody here knows:
-    /// better than guessing it meant success.
+    /// The relationship as it stands now, whichever shape said so. An
+    /// unrecognized word gives the default, every flag false, which the
+    /// command reports as "accepted, nothing changed" rather than a success.
     pub fn status(self) -> FriendshipStatus {
-        // The envelope first, because it is the one Instagram actually sends.
         if let Some(inner) = self
             .data
             .and_then(|d| d.xdt_create_friendship.or(d.xdt_destroy_friendship))
@@ -509,21 +425,14 @@ impl FriendshipResult {
                 outgoing_request: true,
                 ..Default::default()
             },
-            // What an unfollow answers, and it is the default: not following,
-            // nothing outstanding.
+            // What an unfollow answers: not following, nothing outstanding.
             _ => FriendshipStatus::default(),
         }
     }
 }
 
-/// The relationship, as two different endpoints describe it.
-///
-/// **One type for both.** The write path reads it out of a mutation's answer;
-/// the search fallback reads it out of a search result, where these two fields
-/// are what `web_profile_info` spells `followed_by_viewer` and
-/// `requested_by_viewer` — so a private account is still refused before a page
-/// is walked when search was the route that answered. Two structures of the
-/// same name would be two spellings of the same fact.
+/// The relationship, as a mutation's answer and as a search result describe
+/// it.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct FriendshipStatus {
     #[serde(default)]
@@ -532,19 +441,14 @@ pub struct FriendshipStatus {
     pub outgoing_request: bool,
     #[serde(default)]
     pub followed_by: bool,
-    /// Whether the other account is private, which is what decides whether a
-    /// follow became a follow or a request.
+    /// Decides whether a follow became a follow or a request.
     #[serde(default)]
     pub is_private: bool,
 }
 
-/// Response of `/api/v1/feed/reels_media/?reel_ids={pk}`.
-///
-/// Two shapes are accepted because Instagram serves both, and which one arrives
-/// has moved between versions: `reels_media` is a list of reels and `reels` is a
-/// map keyed by the account id. They carry the same reel. Reading only the one
-/// that happened to arrive during development is how this breaks silently six
-/// months later, so both are read and [`Self::reel`] is the only way in.
+/// Response of `/api/v1/feed/reels_media/?reel_ids={pk}`. Instagram serves
+/// two shapes, a list and a map keyed by id, and which one arrives has moved
+/// between versions; [`Self::reel`] reads both.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ReelsMedia {
     #[serde(default)]
@@ -554,11 +458,8 @@ pub struct ReelsMedia {
 }
 
 impl ReelsMedia {
-    /// The one reel that was asked for, whichever shape it came back in.
-    ///
-    /// An account with nothing up answers with both collections empty rather
-    /// than with a 404, so `None` here means "no stories", not "no such
-    /// account". The caller has already resolved the account by then.
+    /// The one reel asked for. `None` means "no stories", not "no such
+    /// account": nothing up answers with both collections empty.
     pub fn reel(self) -> Option<Reel> {
         self.reels_media
             .into_iter()
@@ -567,7 +468,6 @@ impl ReelsMedia {
     }
 }
 
-/// One account's stories: the tray entry plus the items themselves.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Reel {
     /// The owner's pk, or `highlight:<id>` for a highlight.
@@ -580,12 +480,7 @@ pub struct Reel {
     pub user: Option<UserSummary>,
 }
 
-/// One story.
-///
-/// `media_type` is Instagram's integer — 1 for a photo, 2 for a video — and it
-/// is kept as the wire integer here and turned into something meaningful at the
-/// boundary, like every other field in this module. Nothing downstream compares
-/// it to a literal.
+/// One story. `media_type` is Instagram's integer: 1 a photo, 2 a video.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReelItem {
     pub pk: String,
@@ -593,9 +488,7 @@ pub struct ReelItem {
     pub media_type: u8,
     #[serde(default)]
     pub taken_at: Epoch,
-    /// When it disappears. Absent on some items, which is why it is optional
-    /// rather than defaulted to zero: "expires at the epoch" would print as an
-    /// expired story rather than as an unknown one.
+    /// Absent on some items, and then unknown, not "expired at the epoch".
     #[serde(default)]
     pub expiring_at: Option<Epoch>,
     #[serde(default)]
@@ -606,15 +499,14 @@ pub struct ReelItem {
     /// The REST answer's mentions.
     #[serde(default, deserialize_with = "nullable")]
     pub reel_mentions: Vec<ReelMention>,
-    /// The GraphQL answer's mentions, which it has no `reel_mentions` for.
+    /// The GraphQL answer's mentions.
     #[serde(default, deserialize_with = "nullable")]
     pub story_bloks_stickers: Vec<BloksSticker>,
 }
 
 impl ReelItem {
-    /// The usernames the story mentions, from whichever answer carried them.
-    /// The stickers are read only when `reel_mentions` names nobody: a REST
-    /// item can carry the same mention in both.
+    /// The usernames the story mentions. The stickers are read only when
+    /// `reel_mentions` names nobody: a REST item can carry both.
     pub fn mentioned(&self) -> impl Iterator<Item = &str> {
         let rest = self
             .reel_mentions
@@ -646,8 +538,8 @@ pub struct Candidates {
     pub candidates: Vec<PictureVersion>,
 }
 
-/// `story_bloks_stickers[]`: `bloks_sticker.sticker_data.ig_mention` is a
-/// mention; other stickers carry other data and are skipped.
+/// `bloks_sticker.sticker_data.ig_mention` is a mention; other stickers are
+/// skipped.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct BloksSticker {
     #[serde(default)]
@@ -678,14 +570,9 @@ pub struct ReelMention {
     pub user: Option<UserSummary>,
 }
 
-/// Picks the largest of the versions Instagram offers.
-///
-/// The web client picks the one that fits the viewport; nothing here draws in a
-/// terminal, so what is wanted is simply the biggest. Missing dimensions sort
-/// last rather than first: an entry that does not say how large it is must not
-/// win by default over one that does. Among equals the first listed wins, so a
-/// list with no sizes at all (GraphQL's videos) keeps Instagram's own first
-/// choice.
+/// The largest of the versions Instagram offers. Missing dimensions sort
+/// last; among equals the first listed wins, so a list with no sizes
+/// (GraphQL's videos) keeps Instagram's own first choice.
 pub fn largest(versions: &[PictureVersion]) -> Option<&PictureVersion> {
     versions
         .iter()

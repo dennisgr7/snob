@@ -1,64 +1,24 @@
-//! The calls snob may send from the page, and the check that refuses the
-//! rest before they leave.
+//! The calls snob may send from the page, and the check that refuses the rest
+//! before they leave. See "Talking to Instagram" in `AGENTS.md`.
 //!
-//! **An allowlist, because the app's own writes cannot be listed.** The web
-//! app sends seen signals, view counts, time spent and search history on its
-//! own, under names and numbers that change. Naming what may go out holds
-//! whatever they are called; `crates/snob-core/tests/no_seen.rs` names the
-//! known ones as a backstop, and is the only file that may.
+//! **An allowlist, because the app's own writes cannot be listed**: its seen
+//! signals, view counts and search history go out under names and numbers
+//! that change. The registry is [`Operation`], [`Rest`], the route
+//! definitions, [`crate::web::NAVIGATION`] and [`crate::web::SHOW_MANY`]; call
+//! sites pass these values, never a path or a name.
 //!
-//! The registry is [`Operation`], [`Rest`], the route definitions and the
-//! two calls a list is opened and read with: the profile, hover card,
-//! highlight and story queries the app reads with, the two writes, the REST
-//! friendship lists, [`crate::web::BULK_ROUTE_DEFINITIONS`],
-//! [`crate::web::NAVIGATION`] and [`crate::web::SHOW_MANY`]. Call sites pass these values,
-//! never a path or a name, and every client's page goes through [`refused`],
-//! which reads the request itself. What a command asks the tab for
-//! ([`crate::web::Ask`]) is held to the same registry by [`refused_ask`],
-//! before it is handed over and again where the request is built.
-//!
-//! **It is written for the calls snob sends, and the tab holds the app's
-//! to it too.** The app keeps running on each document the tab loads (the
-//! home page, a profile) and sends its own calls from it, seen signals among
-//! them. The browser pauses each request its scripts make, whatever its
-//! address, and judges a POST with [`refused`] before it leaves
-//! (`snob-cli`'s `headless::guard`), with one named exception there; its
-//! GETs go on, but for the three paths outside the API where it reports
-//! what was seen, which fail whatever the method.
-//!
-//! What [`refused`] lets out:
-//!
-//! - a POST that is one of the registry's, on its own endpoint, carrying its
-//!   own `doc_id`. A write's `doc_id` rotates and is found beside the write's
-//!   name in the app's code, so for the two writes only the name and the
-//!   endpoint are held;
-//! - the route definitions; the app's navigation to the home page, a
-//!   profile or a profile's mutual followers ([`list_route`]), and no other
-//!   route; and `friendships/show_many` with nothing in its form but the pks
-//!   it asks about and the token, which is a read sent as a POST (see
-//!   [`show_many`]);
-//! - a GET fetch of one of the registry's REST reads: the followers, the
-//!   following or the mutual followers of an account, by its pk. Every
-//!   other read goes out as a query of the registry's, so a GET a command
-//!   was not moved off fails here instead of reaching Instagram;
-//! - a navigation to the home page or to a profile, never to one of the
-//!   app's own screens, some of which mark what they show as seen.
-//!
-//! **A read's `doc_id` is pinned, and follows the app when it moves.** The
-//! number is what picks the query Instagram runs, so a name alone never lets
-//! one out. When the app is seen to send one of the registry's reads under
-//! another number, [`vouched`] checks the call (the name, the endpoint, the
-//! shape of its variables, the root field it names) and [`Rediscovered`]
-//! holds the number as the one to send; [`refused_with`] lets it out and
-//! nothing else. A number never vouched for is refused as it always was.
-//!
-//! **What the app's own traffic may do beyond that** is [`refused_app`]'s:
-//! the reads it sends on every document it loads (`APP_READS`), by name and
-//! number, or by a number the call vouches for where the app moves it, and
-//! nothing it writes. **Not even the registry's two writes**, which
-//! [`refused`] lets out by their name and endpoint alone: from the app they
-//! are refused under any number. snob's own, sent from the same tab, is let
-//! out by the guard as the one request it was told to expect, matched whole.
+//! - [`refused`] reads a request itself: a registry POST on its own endpoint
+//!   under its own `doc_id` (a write by name and endpoint alone, since its
+//!   number rotates); a GET of a [`Rest`] read; a navigation to the home page
+//!   or a profile, never to one of the app's screens.
+//! - [`refused_ask`] holds an intent ([`crate::web::Ask`]) to the same
+//!   registry before it is handed over and again where it is built.
+//! - **A read's `doc_id` is pinned and follows the app when it moves**:
+//!   [`vouched`] checks the app's own call and [`Rediscovered`] holds its
+//!   number, which [`refused_with`] then lets out.
+//! - [`refused_app`] is for the app's own traffic in the tab: the reads of
+//!   `APP_READS` beyond the registry's, and **never a write, under any
+//!   number**.
 
 use std::collections::HashMap;
 
@@ -70,8 +30,7 @@ use crate::graphql::Mutation;
 use crate::shortcode::{CommentPk, MediaPk};
 use crate::web::{Ask, BULK_ROUTE_DEFINITIONS, NAVIGATION, SHOW_MANY};
 
-/// Which Relay endpoint an operation is sent to, which decides two of its
-/// headers.
+/// Which Relay endpoint an operation is sent to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Family {
     /// `POST /api/graphql`.
@@ -93,37 +52,25 @@ pub enum Operation {
     HighlightsPage,
     /// The stories of the reels in a tray.
     ReelGallery,
-    /// More reels of the same tray.
     ReelGalleryPage,
-    /// The stories tray: which reels there are, in the order the gallery
-    /// takes them.
+    /// Which reels there are, in the order the gallery takes them.
     StoriesTray,
-    /// The note over a profile's picture, by pk: one of the reads the app
-    /// sends with every profile it opens, and snob with every one it opens
-    /// (`IgClient::profile_by_pk`). Its answer is not read.
+    /// The note over a profile's picture: sent with every profile opened
+    /// (`IgClient::profile_burst`), its answer not read.
     NoteBubble,
-    /// Whether a profile carries a school's badge, by pk: the other read of
-    /// that burst whose answer is not read.
+    /// The school badge: the other read of that burst.
     SchoolPartnerBadge,
-    /// The first page of a profile's posts, by name: what the app sends with
-    /// every profile it opens, and the grid `snob posts` lists.
+    /// The first page of a profile's grid, by name.
     ProfilePosts,
-    /// The grid's next page, by name and the cursor the page before ended
-    /// at: what the app sends as the grid is scrolled.
     ProfilePostsPage,
-    /// The first page of a profile's reels tab, by pk: what the app sends
-    /// as the tab opens, or a moment before the click that opens it.
+    /// A profile's reels tab, by pk, and its next page.
     ProfileReels,
-    /// The reels tab's next page, from the cursor the page before ended at.
     ProfileReelsPage,
-    /// The first page of the posts a profile is tagged in, by pk.
+    /// The posts a profile is tagged in, by pk, and their next page.
     ProfileTagged,
-    /// The tagged tab's next page, from the pk the page before ended at.
     ProfileTaggedPage,
-    /// The first page of what a profile reposted, by pk.
+    /// What a profile reposted, by pk, and its next page.
     ProfileReposts,
-    /// The reposts tab's next page, from the `max_id` the page before
-    /// handed out.
     ProfileRepostsPage,
     Follow,
     Unfollow,
@@ -152,7 +99,6 @@ impl Operation {
         Self::Unfollow,
     ];
 
-    /// The operation the app calls `name`, if the registry holds it.
     pub fn named(name: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
@@ -183,30 +129,17 @@ impl Operation {
         }
     }
 
-    /// The operation's `doc_id`, as captured on 2026-09-29, and unchanged in
-    /// the capture of 2026-10-01; the note and the badge are from both. A
-    /// write's is the seed its discovery starts from.
+    /// The operation's `doc_id`, as captured: 2026-09-29 (unchanged on
+    /// 2026-10-01), except the profile's header, the stories tray, the
+    /// gallery's two and the grid's two, from 2026-11-13. A write's is the
+    /// seed its discovery starts from.
     ///
-    /// The profile's header, the stories tray, the gallery and its next page,
-    /// and the grid's two are from the capture of 2026-11-13, in which all six
-    /// had moved since 2026-10-01 (the grid's first page had already moved
-    /// once, from 28570182382647478, between 2026-09-29 and 2026-10-01). A
-    /// moved one is sent under the number the app's own call vouches for
-    /// ([`vouched`]), when the tab has seen the app send it: the header and the
-    /// grid's first page go out with every profile the app opens. **The grid's
-    /// next page never does**: the app sends it as its grid is scrolled, and
-    /// snob's tab never scrolls, so it goes out under this number alone and is
-    /// the one to refresh first when a grid stops answering.
-    ///
-    /// **The six of a profile's reels, tagged and reposts tabs are seeds**,
-    /// from the captures of 2026-11-13 and 2026-11-14, which were made on two
-    /// builds of the app and show the same six numbers. The tab never loads a
-    /// tab's document and the app never sends them from a profile's, so none
-    /// is ever vouched for by the app's own call: they go out under these
-    /// numbers alone, as the grid's next page does, and a tab stops answering
-    /// when its number moves, until it is refreshed here. Where the app keeps
-    /// them (its scripts, beside their names, as a write's) is not yet known
-    /// (AGENTS.md, "Open questions").
+    /// A moved one goes out under the number the app's own call vouches for
+    /// ([`vouched`]). **The grid's next page and the six of the reels, tagged
+    /// and reposts tabs never are**: the app does not send them from a
+    /// document the tab loads, so they go out under these numbers alone
+    /// (captures of 2026-11-13 and 2026-11-14) and stop answering when one
+    /// moves (AGENTS.md, "Open questions").
     pub fn doc_id(self) -> &'static str {
         match self {
             Self::ProfilePage => "40158838120366999",
@@ -231,12 +164,9 @@ impl Operation {
         }
     }
 
-    /// The endpoint the app sends it to. It never sends one operation to
-    /// both at once, but it moves one now and then: the grid's two went from
-    /// `/graphql/query` to `/api/graphql` between the captures of 2026-10-01
-    /// and 2026-11-13 (13 calls of 13 in the second, none with a root-field
-    /// header), and a call sent where the app no longer sends it is a call no
-    /// person's browser makes.
+    /// The endpoint the app sends it to. It moves one now and then: the
+    /// grid's two went from `/graphql/query` to `/api/graphql` between the
+    /// captures of 2026-10-01 and 2026-11-13 (13 calls of 13).
     pub fn family(self) -> Family {
         match self {
             Self::HighlightsPage | Self::ReelGallery | Self::ReelGalleryPage => Family::RelayQuery,
@@ -251,12 +181,8 @@ impl Operation {
         }
     }
 
-    /// The field of `data` the answer is under. On `/graphql/query` it is
-    /// also sent, as `X-Root-Field-Name`. Every one is the field the recorded
-    /// app's answers came under and its header named; an answer under another
-    /// field does not decode, and its debug line names the fields it was
-    /// under. The gallery's next page is never sent: one account's reel comes
-    /// whole in the gallery's first answer.
+    /// The field of `data` the answer is under, as the recorded app's answers
+    /// came; on `/graphql/query` it is also sent, as `X-Root-Field-Name`.
     pub fn root_field(self) -> &'static str {
         match self {
             Self::ProfilePage => "user",
@@ -271,10 +197,7 @@ impl Operation {
             Self::ProfilePosts | Self::ProfilePostsPage => {
                 "xdt_api__v1__feed__user_timeline_graphql_connection"
             }
-            // The reels under `clips_connection` and the reposts under
-            // `user_reposts_timeline` of the same account object, the
-            // tagged posts in a connection of their own (captures of
-            // 2026-11-13 and 2026-11-14, every call).
+            // Captures of 2026-11-13 and 2026-11-14, every call.
             Self::ProfileReels
             | Self::ProfileReelsPage
             | Self::ProfileReposts
@@ -287,7 +210,6 @@ impl Operation {
         }
     }
 
-    /// The write this is, if it is one.
     pub fn write(self) -> Option<Mutation> {
         match self {
             Self::Follow => Some(Mutation::Follow),
@@ -296,7 +218,6 @@ impl Operation {
         }
     }
 
-    /// The operation `mutation` is sent as.
     pub fn of_write(mutation: Mutation) -> Self {
         match mutation {
             Mutation::Follow => Self::Follow,
@@ -304,10 +225,8 @@ impl Operation {
         }
     }
 
-    /// The keys of the operation's variables that name what is asked, in the
-    /// order the app sends them, the first of them the one that tells the
-    /// operation's call from another's. A call copies the app's other keys,
-    /// its flags, rather than invent them.
+    /// The keys of the variables that name what is asked, in the app's order;
+    /// the first tells the operation's call from another's.
     pub fn asked_keys(self) -> &'static [&'static str] {
         match self {
             Self::ProfilePage => &["id"],
@@ -328,7 +247,6 @@ impl Operation {
             ],
             Self::StoriesTray => &["data", "suggestedUsersData"],
             Self::ProfilePosts => &["username"],
-            // `after` first: it is what tells the next page from the first.
             Self::ProfilePostsPage => &["after", "before", "first", "last", "username"],
             Self::ProfileReels => &["data", "user_id"],
             Self::ProfileReelsPage => &["after", "data", "first", "id"],
@@ -341,16 +259,11 @@ impl Operation {
     }
 }
 
-/// Whether the app's own call, which sent the registry's read `operation`
-/// under `doc_id`, is one whose number may stand in for the registry's.
-///
-/// What is checked is what a number moved to another query could not
-/// keep: the call is a read of the registry's, on its own endpoint, whose
-/// variables carry the key that names what it asks ([`Operation::asked_keys`])
-/// and whose root field is the operation's where the operation is sent on
-/// `/graphql/query`, in `X-Root-Field-Name`, and absent on `/api/graphql`,
-/// as the app sends it. An answer that is not under the operation's root
-/// field does not decode afterwards, whatever number it was asked under.
+/// Whether the app's own call of the read `operation` under `doc_id` lets
+/// that number stand in for the registry's: a read, on its own endpoint,
+/// whose variables carry the key that names what it asks, and whose
+/// `X-Root-Field-Name` is the operation's on `/graphql/query` and absent on
+/// `/api/graphql`.
 pub fn vouched(
     operation: Operation,
     path: &str,
@@ -369,39 +282,31 @@ pub fn vouched(
     operation.write().is_none() && path == operation.path() && is_doc_id(doc_id) && named && root_ok
 }
 
-/// A `doc_id`: digits, and as many as Instagram's have ever been.
+/// Digits, and as many as Instagram's have ever been.
 fn is_doc_id(doc_id: &str) -> bool {
     (10..=20).contains(&doc_id.len()) && doc_id.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// The numbers the app was seen to send the registry's reads under, when
-/// they are not the registry's: what [`refused_with`] lets a read go out
-/// under besides it.
-///
-/// An entry is made only from a call [`vouched`] held for, by whoever sees
-/// the app's calls; this module holds none of its own, so a request from
-/// nowhere is refused as ever.
+/// The numbers the app was seen to send the registry's reads under, when they
+/// are not the registry's. Filled only from calls [`vouched`] held for.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Rediscovered(HashMap<Operation, String>);
 
 impl Rediscovered {
-    /// Holds `doc_id` for the read `operation`, if that is a number a read
-    /// can have. A write's is found in the app's code instead.
     pub fn of(operation: Operation, doc_id: &str) -> Self {
         let mut found = Self::default();
         found.insert(operation, doc_id);
         found
     }
 
-    /// Holds `doc_id` for `operation` in place of any it held, for a number
-    /// [`vouched`] held for.
+    /// Ignores a write (its number is found in the app's code) and anything
+    /// that is not a `doc_id`.
     pub fn insert(&mut self, operation: Operation, doc_id: &str) {
         if operation.write().is_none() && is_doc_id(doc_id) {
             self.0.insert(operation, doc_id.to_string());
         }
     }
 
-    /// The number held for `operation`.
     pub fn get(&self, operation: Operation) -> Option<&str> {
         self.0.get(&operation).map(String::as_str)
     }
@@ -413,28 +318,18 @@ pub enum Rest {
     Followers(Pk),
     Following(Pk),
     MutualFollowers(Pk),
-    /// A post, by its pk: what the app asks the moment a post or a reel
-    /// opens, from a profile's grid, its reels or a message (about twenty
-    /// times in the captures of 2026-10-01, always beside [`Rest::Comments`]).
+    /// A post, by its pk: asked the moment one opens (about twenty times in
+    /// the captures of 2026-10-01, always beside [`Rest::Comments`]).
     MediaInfo(MediaPk),
-    /// A page of a post's comments, by its pk. The first page is asked with
-    /// the post; the next ones as the comments are scrolled, by the
-    /// `min_id` the page before handed out.
+    /// A page of a post's comments; the next ones by the `min_id` handed out.
     Comments(MediaPk),
-    /// The accounts that liked a post, by its pk: what the app asks when
-    /// "N others" under a post is clicked, with no query, from the post's
-    /// page (twice in the capture of 2026-11-13, once on 2026-11-14). One
-    /// answer, about a hundred accounts (105 to 125) with no cursor, the
-    /// viewer's contacts first: a sample, never the whole list. No second
-    /// page is observed rather than assumed: the list scrolled to its end in
-    /// the capture of 2026-11-14 asked for none.
+    /// The accounts that liked a post: no query, one answer of 105 to 125
+    /// accounts with no cursor, a sample (captures of 2026-11-13 and
+    /// 2026-11-14, where the list scrolled to its end asked for no more).
     Likers(MediaPk),
-    /// The replies under one of a post's comments, by the post's pk and the
-    /// comment's: what the app asks when "View replies" under a comment is
-    /// clicked, from the post's page (7 of 7 over the captures of 2026-11-13
-    /// and 2026-11-14, always with the same three keys). **The first page
-    /// only**: no thread of either capture answered with more to read, so no
-    /// cursor has ever been seen to send back, and `min_id` is held empty.
+    /// The replies under a comment (7 of 7 over the captures of 2026-11-13
+    /// and 2026-11-14, always the same three keys). **The first page only**:
+    /// no cursor has been seen, and `min_id` is held empty.
     Replies(MediaPk, CommentPk),
 }
 
@@ -453,8 +348,7 @@ impl Rest {
         }
     }
 
-    /// The query keys the app sends with the read, and the one value a key
-    /// is held to, where it is.
+    /// The query keys the app sends, and the one value a key is held to.
     fn keys(self) -> &'static [(&'static str, Option<&'static str>)] {
         match self {
             Self::Followers(_) => &[
@@ -465,17 +359,13 @@ impl Rest {
             Self::Following(_) => &[("count", None), ("max_id", None)],
             Self::MutualFollowers(_) => &[("page_size", None), ("max_id", None)],
             Self::MediaInfo(_) | Self::Likers(_) => &[],
-            // The first page carries the first two, the next ones the first,
-            // the cursor and the order, as the app sends them.
             Self::Comments(_) => &[
                 ("can_support_threading", Some("true")),
                 ("permalink_enabled", Some("false")),
                 ("min_id", None),
                 ("sort_order", Some("popular")),
             ],
-            // Each held to the one value the app sent, the cursor empty: a
-            // value no capture shows would be a page nobody has seen asked
-            // for.
+            // Each held to the one value the app sent, the cursor empty.
             Self::Replies(..) => &[
                 ("min_id", Some("")),
                 ("is_chronological", Some("true")),
@@ -484,15 +374,13 @@ impl Rest {
         }
     }
 
-    /// Whether the read goes out with every one of its keys, in their
-    /// order, and no other: a thread's replies, which the app always asks
-    /// with the same three, so a call missing one is a call it never made.
+    /// Whether the read goes out with every one of its keys, in order, and no
+    /// other.
     fn takes_every_key(self) -> bool {
         matches!(self, Self::Replies(..))
     }
 }
 
-/// Whether `request`, a POST to `path`, is one of the registry's.
 fn posted(request: &PageRequest, path: &str, found: &Rediscovered) -> bool {
     match path {
         BULK_ROUTE_DEFINITIONS => true,
@@ -502,24 +390,31 @@ fn posted(request: &PageRequest, path: &str, found: &Rediscovered) -> bool {
     }
 }
 
-/// The fields of a form, in its order.
+/// The fields of a request's form, in its order: none without a body.
 fn form_of(request: &PageRequest) -> Vec<(String, String)> {
     url::form_urlencoded::parse(request.body.as_deref().unwrap_or_default().as_bytes())
         .into_owned()
         .collect()
 }
 
+fn field<'a>(form: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    form.iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, v)| v.as_str())
+}
+
+/// A header of `request`, by name in any case.
+fn header<'a>(request: &'a PageRequest, name: &str) -> Option<&'a str> {
+    request
+        .headers
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_str())
+}
+
 /// Whether `request` is the app's navigation to a route snob may be on: one
-/// `route_url`, and that one a [`list_route`]. The rest of the form is the
-/// app's own envelope, which a navigation shares with the route
-/// definitions.
-///
-/// The app sends it whenever its router moves (the capture of 2026-10-01
-/// holds one for every profile opened and every mutual-followers tab), and
-/// its answer is the route's definition: what the page will show, and
-/// nothing about what was seen. Held to the routes snob reads from, so that
-/// the app's own navigations to its screens, the story viewer among them,
-/// stay refused.
+/// `route_url`, a [`list_route`]. The app's navigations to its own screens,
+/// the story viewer among them, stay refused.
 fn navigation(request: &PageRequest) -> bool {
     let form = form_of(request);
     let mut routes = form.iter().filter(|(name, _)| name == "route_url");
@@ -527,40 +422,25 @@ fn navigation(request: &PageRequest) -> bool {
     routes.next().is_none() && route.is_some_and(|(_, route)| list_route(route))
 }
 
-/// The most accounts a `show_many` may ask about: more than the twelve a
-/// list page is asked for (`pace::ACCOUNTS_PER_PAGE`) and the fifty a list
-/// endpoint serves at most, so a page of either fits.
+/// More than a list page's twelve, and the fifty a list endpoint serves at most.
 pub const MOST_STATUSES: usize = 50;
 
 /// Whether `request` is `friendships/show_many` as the app sends it after a
-/// list page: `user_ids`, a comma-separated list of between one and
-/// [`MOST_STATUSES`] pks, then `jazoest` and `fb_dtsg`, and nothing else.
+/// list page (16 of 16 in the capture of 2026-10-01): `user_ids`, `jazoest`,
+/// `fb_dtsg`, and nothing else.
 ///
-/// **A read, though it is a POST.** It asks how the viewer stands with the
-/// accounts a page just listed (`friendship_statuses`: following, outgoing
-/// request, private, restricted) and changes nothing; the app sends it after
-/// every list page it loads, searches and mutual followers included (16 of
-/// 16 in the capture of 2026-10-01). Being a POST is why it was once kept
-/// out, when POST meant write here; the rule now is that a write is a
-/// [`crate::graphql::Mutation`] and nothing else, which this is not. It is
-/// paid for as a read, out of the read budgets, and can never reach the
-/// write bucket: it is asked as `web::Ask::Statuses`, and only
-/// `web::Ask::Write` pays that one.
+/// **A read, though it is a POST**: it changes nothing, is paid as a read,
+/// and can never reach the write bucket. A write is a
+/// [`crate::graphql::Mutation`] and nothing else.
 fn show_many(request: &PageRequest) -> bool {
     let form = form_of(request);
     let names: Vec<&str> = form.iter().map(|(name, _)| name.as_str()).collect();
-    let field = |name: &str| {
-        form.iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.as_str())
-    };
     names == ["user_ids", "jazoest", "fb_dtsg"]
-        && field("user_ids").is_some_and(|ids| statuses_of(ids).is_some())
-        && field("jazoest").is_some_and(|j| !j.is_empty() && j.bytes().all(|b| b.is_ascii_digit()))
+        && field(&form, "user_ids").is_some_and(|ids| statuses_of(ids).is_some())
+        && field(&form, "jazoest")
+            .is_some_and(|j| !j.is_empty() && j.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// The pks of a `show_many`'s `user_ids`, when it lists between one and
-/// [`MOST_STATUSES`] of them and nothing else.
 fn statuses_of(ids: &str) -> Option<usize> {
     let count = ids.split(',').count();
     let pks = ids
@@ -570,12 +450,9 @@ fn statuses_of(ids: &str) -> Option<usize> {
 }
 
 /// Whether `route` is one snob may navigate the app to: the home page, a
-/// profile ([`document`]), a profile's mutual followers,
-/// `/<name>/followers/mutualOnly`, or one of the three tabs of a profile
-/// snob reads, `/<name>/reels/`, `/<name>/tagged/` and `/<name>/reposts/`
-/// ([`PROFILE_TABS`]): the app navigates to each as its tab is clicked (6
-/// of 6 in the capture of 2026-11-14). Never one of the app's screens, and
-/// never a document the tab loads: `/reels/` alone is a screen.
+/// profile ([`document`]), `/<name>/followers/mutualOnly`, or one of
+/// [`PROFILE_TABS`] (6 of 6 in the capture of 2026-11-14). Never one of the
+/// app's screens: `/reels/` alone is a screen.
 pub fn list_route(route: &str) -> bool {
     if document(route) {
         return true;
@@ -591,44 +468,28 @@ pub fn list_route(route: &str) -> bool {
             .any(|tab| under_a_profile(&format!("{tab}/")))
 }
 
-/// The tabs of a profile snob reads besides its grid, by the segment of
-/// their address: `/<name>/<tab>/`.
+/// The tabs of a profile snob reads besides its grid: `/<name>/<tab>/`.
 pub const PROFILE_TABS: [&str; 3] = ["reels", "tagged", "reposts"];
 
-/// The registry's operation `request` is, if it is one.
 fn operation_posted(request: &PageRequest, path: &str, found: &Rediscovered) -> Option<Operation> {
-    let form: Vec<(String, String)> =
-        url::form_urlencoded::parse(request.body.as_deref()?.as_bytes())
-            .into_owned()
-            .collect();
-    let field = |name: &str| {
-        form.iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.as_str())
-    };
-    let name = field("fb_api_req_friendly_name")?;
+    let form = form_of(request);
+    let name = field(&form, "fb_api_req_friendly_name")?;
     let operation = Operation::named(name)?;
-    let announced = request
-        .headers
-        .iter()
-        .find(|(n, _)| n.eq_ignore_ascii_case("x-fb-friendly-name"))
-        .map(|(_, v)| v.as_str());
-    let doc_id = field("doc_id")?;
+    let doc_id = field(&form, "doc_id")?;
     let holds = operation.path() == path
-        && announced == Some(name)
+        && header(request, "x-fb-friendly-name") == Some(name)
         && (operation.write().is_some()
             || doc_id == operation.doc_id()
             || found.get(operation) == Some(doc_id));
     holds.then_some(operation)
 }
 
-/// The app's own screens, which a profile's name can never be, in any case.
-/// Some mark what they show as seen the moment it is shown.
+/// The app's own screens, which a profile's name can never be. Some mark what
+/// they show as seen the moment it is shown.
 const SCREENS: [&str; 5] = ["stories", "explore", "direct", "reels", "accounts"];
 
-/// Whether `name` can be an account's name: one to thirty ASCII letters,
-/// digits, dots and underscores, which is every name Instagram hands out.
-/// Anything else, a percent-encoded name among it, is no profile's.
+/// One to thirty ASCII letters, digits, dots and underscores: every name
+/// Instagram hands out. A percent-encoded name is no profile's.
 pub fn profile_name(name: &str) -> bool {
     (1..=30).contains(&name.len())
         && name
@@ -636,11 +497,8 @@ pub fn profile_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
 }
 
-/// What `ask` is, when the page must not be asked it. The same question
-/// [`refused`] asks of a request, asked of the intent before anything is
-/// built from it, and again where it is built, whoever sent it.
-///
-/// Only the method and the path; a refused `Pk` does not print its name.
+/// What `ask` is, when the page must not be asked it: only the method and the
+/// path, so a refused `Pk` does not print its name.
 pub fn refused_ask(ask: &Ask) -> Option<String> {
     match ask {
         Ask::Viewer | Ask::Tray => None,
@@ -649,9 +507,7 @@ pub fn refused_ask(ask: &Ask) -> Option<String> {
             .is_some()
             .then(|| format!("POST {}", operation.path())),
         Ask::Write { .. } => None,
-        // Where it may come from needs the site's own address, which the
-        // intent does not carry: [`refused_asset`] asks it where the call
-        // is answered.
+        // The host is [`refused_asset`]'s to judge, where the site is known.
         Ask::Asset { url } => Url::parse(url)
             .map_or(true, |url| !matches!(url.scheme(), "http" | "https"))
             .then(|| "a download from an address that is not a web one".to_string()),
@@ -678,21 +534,14 @@ pub fn refused_ask(ask: &Ask) -> Option<String> {
     }
 }
 
-/// Why the tab must not fetch `url` as an asset of the site at `origin`: it
-/// is neither on Instagram's CDN nor a test's own server, nor served over
-/// HTTPS. The one copy of where a file may come from: the client asks it
-/// before it asks the tab, and the tab asks it again before it fetches,
-/// whoever sent the intent.
+/// Why the tab must not fetch `url` as an asset of the site at `origin`. The
+/// one copy of where a file may come from, asked by the client and again by
+/// the tab.
 ///
 /// **HTTPS, and one of the two hosts Instagram serves media from** (the
-/// leading dot is what stops `evilcdninstagram.com` matching), or exactly the
-/// site's own scheme, host and port when the site is not Instagram, which is
-/// how a test serves a file from its own server. Matched whole, since on host
-/// alone it would let `http://127.0.0.1:9/x` through beside a test on another
-/// port; and never for Instagram itself, where it would make every address on
-/// instagram.com a "download": `snob fetch` takes its address from whoever
-/// typed it, and the site's API is not a file to be read unpaced and outside
-/// the allowlist.
+/// leading dot stops `evilcdninstagram.com`), or exactly the site's own
+/// scheme, host and port when the site is not Instagram (a test's server).
+/// Never Instagram itself: its API is not a file to read unpaced.
 pub fn refused_asset(origin: &str, url: &str) -> Option<String> {
     const CDN_HOSTS: [&str; 2] = ["cdninstagram.com", "fbcdn.net"];
 
@@ -723,15 +572,13 @@ pub fn refused_asset(origin: &str, url: &str) -> Option<String> {
     if cdn { None } else { refusal(&url) }
 }
 
-/// What `request` is, when the page must not send it.
-///
-/// Only the method and the path: the rest can carry tokens.
+/// What `request` is, when the page must not send it. Only the method and the
+/// path: the rest can carry tokens.
 pub fn refused(request: &PageRequest) -> Option<String> {
     refused_with(request, &Rediscovered::default())
 }
 
-/// [`refused`], with the numbers the app was seen to send the registry's
-/// reads under, which a read may go out under as well as the registry's.
+/// [`refused`], also letting a read out under a number in `found`.
 pub fn refused_with(request: &PageRequest, found: &Rediscovered) -> Option<String> {
     let method = match request.method {
         Method::Get if request.navigate => "a navigation to",
@@ -751,69 +598,37 @@ pub fn refused_with(request: &PageRequest, found: &Rediscovered) -> Option<Strin
     (!allowed).then(|| format!("{method} {path}"))
 }
 
-/// A read the app sends on its own as a document loads, which snob never
-/// sends and the tab lets the app send: by name, on its own endpoint, and
-/// under a number that is either pinned or vouched for by the call itself.
+/// A read the app sends on its own as a document loads, which the tab lets
+/// through and snob never sends.
 struct AppRead {
     name: &'static str,
-    /// `/api/graphql` or `/graphql/query`: the app never sends one read to
-    /// both.
     path: &'static str,
     number: Number,
 }
 
-/// How an app read's `doc_id` is held.
 enum Number {
-    /// The one number it was captured under.
     Pinned(&'static str),
-    /// Any number, when the call vouches for it the way [`vouched`] holds a
-    /// registry read's moved number: the key that names what is asked among
-    /// its variables, and `X-Root-Field-Name` as the read's endpoint has it,
-    /// naming `root_field` on `/graphql/query` and absent on `/api/graphql`
-    /// (`root_field` is `None` there).
+    /// Any number the call vouches for as [`vouched`] would: the asked key
+    /// among its variables, and `X-Root-Field-Name` as its endpoint has it.
     Vouched {
         root_field: Option<&'static str>,
         asked_key: &'static str,
     },
 }
 
-/// What the tab lets the app's own boot calls do beyond the registry's, as the
-/// recorded app sends them: the promotions it asks for on every document, the
-/// unread counts of the message badge and jewel, and what a profile asks about
-/// the account it shows, its posts and the accounts it suggests beside it among
-/// them. Every one of them reads and writes nothing, and none carries a field
-/// about what was looked at.
+/// The app's own boot reads the tab lets out beyond the registry's: the
+/// promotions, the two unread counts, and what a profile asks about the
+/// account it shows, its posts and suggestions. None writes or says what was
+/// looked at. (Refused, a profile the tab loaded was one whose app never
+/// asked for its grid, which no person's browser is; decided 2026-10-01.)
 ///
-/// **A profile's posts and suggestions go out as the app sends them.** They
-/// were left out once, as a weight of images nobody asked for; refused, the
-/// profile snob loads was a profile whose app never asked for its grid or its
-/// suggestions, which no person's browser is, and the owner decided that the
-/// requests the app makes for a profile go out (2026-10-01). The suggestions
-/// are a read; the write the app sends about them, a REST POST under
-/// `/api/v1/web/discover/`, stays refused, as every write does.
+/// **Vouched, not pinned, where the number moves**: the posts' moved on
+/// 2026-10-01 and 2026-11-13, the promotions' and the counts' by 2026-11-13
+/// (keys seen on all 29 and 4 calls of that capture).
 ///
-/// **The posts' number is not pinned**: it moved from 28570182382647478 to
-/// 28991540097136703 between the captures of 2026-09-29 and 2026-10-01, and
-/// to 29114630661562380 by 2026-11-13, on another endpoint. It is held as the
-/// registry's reads are when the app moves them ([`vouched`]): by its name,
-/// on `/api/graphql` with no root-field header, and asking by `username`. Not
-/// through [`Rediscovered`], which holds the numbers snob sends the registry's
-/// reads under and learns them from the app's calls; for a read snob never
-/// sends, the call being judged is the only one there is to learn from, so
-/// the call vouches for itself here, with the same checks.
-///
-/// **Nor are the promotions and the two message counts**: pinned at their
-/// numbers of 2026-10-01, all three had moved by 2026-11-13, and a profile
-/// the tab loaded booted without them, which is the state the decision above
-/// set out to end. Each is held by its name and the key its variables were
-/// seen to ask by on every call of that capture (29 of the promotions, 4 of
-/// each count).
-///
-/// **Left out on purpose**: the message inbox and thread reads, the recipients
-/// of the share sheet, the search boxes, and the sync with Facebook. The
-/// beacons (`/ajax/bz`, `/ajax/qm/`) stay out too: their payloads were not
-/// recorded, and the first batches the app's own events, impressions among
-/// them.
+/// **Left out on purpose**: the inbox and thread reads, the share sheet, the
+/// search boxes, the sync with Facebook, and the beacons (`/ajax/bz`,
+/// `/ajax/qm/`), which batch the app's impressions.
 const APP_READS: [AppRead; 7] = [
     AppRead {
         name: "QuickPromotionSupportIGSchemaBatchFetchQuery",
@@ -865,12 +680,9 @@ const APP_READS: [AppRead; 7] = [
     },
 ];
 
-/// What `request`, one the app sent on its own, is when the tab must not let
-/// it out: [`refused_with`]'s, unless it is one of [`APP_READS`], and a
-/// follow or an unfollow whatever its number, which [`refused_with`] lets
-/// out for snob. Nothing snob builds goes through here; its own calls are
-/// held to the registry, and its write is let out by the guard only as the
-/// request it armed.
+/// What a request the app sent on its own is, when the tab must not let it
+/// out: [`refused_with`]'s answer unless it is one of [`APP_READS`], and
+/// **a follow or an unfollow whatever its number**.
 pub fn refused_app(request: &PageRequest, found: &Rediscovered) -> Option<String> {
     if let Some(write) = a_write(request, found) {
         return Some(write);
@@ -879,9 +691,7 @@ pub fn refused_app(request: &PageRequest, found: &Rediscovered) -> Option<String
     (!app_read(request)).then_some(what)
 }
 
-/// `POST <path>` when `request` is one of the registry's two writes as
-/// [`refused_with`] would let it out: its name, its header, its endpoint,
-/// under any number.
+/// `POST <path>` when `request` is one of the registry's two writes.
 fn a_write(request: &PageRequest, found: &Rediscovered) -> Option<String> {
     if request.method != Method::Post || request.navigate {
         return None;
@@ -892,9 +702,6 @@ fn a_write(request: &PageRequest, found: &Rediscovered) -> Option<String> {
     Some(format!("POST {path}"))
 }
 
-/// Whether `request` is one of [`APP_READS`], announced in
-/// `X-FB-Friendly-Name` as the app does, on its own endpoint, under its
-/// number.
 fn app_read(request: &PageRequest) -> bool {
     if request.method != Method::Post || request.navigate {
         return false;
@@ -902,25 +709,11 @@ fn app_read(request: &PageRequest) -> bool {
     let Ok(url) = Url::parse(&request.url) else {
         return false;
     };
-    let Some(body) = request.body.as_deref() else {
-        return false;
-    };
-    let form: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
-        .into_owned()
-        .collect();
-    let field = |name: &str| {
-        form.iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.as_str())
-    };
-    let header = |name: &str| {
-        request
-            .headers
-            .iter()
-            .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.as_str())
-    };
-    let (Some(name), Some(doc_id)) = (field("fb_api_req_friendly_name"), field("doc_id")) else {
+    let form = form_of(request);
+    let (Some(name), Some(doc_id)) = (
+        field(&form, "fb_api_req_friendly_name"),
+        field(&form, "doc_id"),
+    ) else {
         return false;
     };
     let Some(read) = APP_READS.iter().find(|read| read.name == name) else {
@@ -932,31 +725,17 @@ fn app_read(request: &PageRequest) -> bool {
             root_field,
             asked_key,
         } => {
-            let asks = field("variables")
+            let asks = field(&form, "variables")
                 .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
                 .is_some_and(|v| v.get(asked_key).is_some());
-            is_doc_id(doc_id) && header("x-root-field-name") == root_field && asks
+            is_doc_id(doc_id) && header(request, "x-root-field-name") == root_field && asks
         }
     };
-    url.path() == read.path && header("x-fb-friendly-name") == Some(name) && number
+    url.path() == read.path && header(request, "x-fb-friendly-name") == Some(name) && number
 }
 
-/// Whether `path` is one of [`Rest`]'s: a friendship list of an account,
-/// or a post, its comments, its likers or the replies under one of its
-/// comments, by pks of digits. Nothing else under a post: not the link the
-/// app makes for sharing it, which ties a visit to whoever shared it.
-///
-/// **A thread's replies are read since the capture of 2026-11-14**, which
-/// showed "View replies" to be a plain GET under the comment, with the same
-/// three keys every time; a page of them names accounts, so it is charged
-/// to the day's accounts as a page of comments is.
-///
-/// **The likers were kept out on purpose until 2026-11-13**, being a list of
-/// other people's accounts. They are read since, once that capture showed
-/// them to be a plain GET the app sends on a click, as a list is read: asked
-/// first, charged to the day's accounts, and without the `show_many` the app
-/// sends after them, since their answer already says how the viewer stands
-/// with each (`snob_cli::commands::likers`).
+/// Whether `path` is one of [`Rest`]'s, by pks of digits. Nothing else under
+/// a post: not the share link, which ties a visit to whoever shared it.
 fn rest_read(path: &str) -> bool {
     let digits = |pk: &str| !pk.is_empty() && pk.bytes().all(|b| b.is_ascii_digit());
     let under = |prefix: &str, ends: &[&str]| {
@@ -976,7 +755,7 @@ fn rest_read(path: &str) -> bool {
         || replies
 }
 
-/// Whether `path` is the home page or a profile's: where the tab may go.
+/// The home page or a profile's: where the tab may go.
 pub fn document(path: &str) -> bool {
     if path == "/" {
         return true;

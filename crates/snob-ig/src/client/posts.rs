@@ -1,50 +1,25 @@
-//! A profile's posts, one post, and its comments, read the way the recorded
-//! web app reads them.
+//! A profile's posts, one post, its comments, replies and likers, read the way
+//! the recorded web app reads them.
 //!
-//! - **The grid** is the profile's posts query, twelve posts a page, and its
-//!   next page as the grid is scrolled: `PolarisProfilePostsQuery` and
-//!   `PolarisProfilePostsTabContentQuery_connection`, asked by the account's
-//!   name from its page. Each page is one read of the request budget. It is
-//!   not charged to the day's accounts (`budget::accounts_per_day`): what it
-//!   returns is posts, not a list of accounts.
-//! - **A profile's reels, tagged and reposts tabs** ([`ProfileTab`]) are a
-//!   query each and their connection, asked by the account's pk: the first
-//!   page from the profile's page, as the app asks it a moment before its
-//!   tab is clicked, then the app's navigation to the tab
-//!   (`/<name>/<tab>/`), then the next pages from there, on the tab's route
-//!   (captures of 2026-11-13 and 2026-11-14). One read a page, counted in
-//!   the sitting and not charged to the day's accounts, as the grid's.
-//!   **Their numbers are seeds** (`Operation::doc_id`): the app never sends
-//!   them from a profile's document, so none is ever vouched for.
-//! - **A post** is `media/<pk>/info/`, the call the app sends the moment one
-//!   opens, from a grid, a profile's reels or a message alike, made from the
-//!   page it opens on (`/p/<code>/` or `/reel/<code>/`). The page itself is
-//!   never loaded: a reel's link loaded cold lands on the app's reels
-//!   screen, which reports what it plays.
-//! - **Its comments** are `media/<pk>/comments/`, the call sent beside it,
-//!   and the next pages by the `min_id` each page hands out. A page of
-//!   comments is a list of the accounts that wrote them, so it is charged to
-//!   the day's accounts as a list page is.
-//! - **Its likers** are `media/<pk>/likers/`, what the app asks when "N
-//!   others" under a post is clicked, from the post's page, with no query:
-//!   one answer of about a hundred accounts, a sample, charged to the day's
-//!   accounts. The app sends `friendships/show_many` with all of them after
-//!   it; snob does not, since the answer already says how the viewer stands
-//!   with each, and that call is held to fifty accounts
-//!   (`allowlist::MOST_STATUSES`).
+//! - **The grid**: the profile's posts query and its connection, twelve posts
+//!   a page, by name from the profile's page.
+//! - **The reels, tagged and reposts tabs** ([`ProfileTab`]): a query each and
+//!   its connection, by pk; the first page from the profile's page, then the
+//!   app's navigation to `/<name>/<tab>/`, then the next pages from there
+//!   (captures of 2026-11-13 and 2026-11-14). **Their numbers are seeds**
+//!   (`Operation::doc_id`), never vouched for.
+//! - **A post**: `media/<pk>/info/`, made from the page it opens on. The page
+//!   itself is never loaded: a reel's link lands on the reels screen, which
+//!   reports what it plays.
+//! - **Comments, replies and likers**: `media/<pk>/comments/`, `.../<comment_pk>/child_comments/`
+//!   (the first page alone) and `media/<pk>/likers/`, each a list of other
+//!   people's accounts and charged to the day's accounts. The app's
+//!   `show_many` after the likers is not sent.
 //!
-//! - **The replies under a comment** are
-//!   `media/<pk>/comments/<comment_pk>/child_comments/`, what the app asks
-//!   when "View replies" is clicked, from the post's page, with the three
-//!   keys it always sends and an empty cursor: the first page alone, since
-//!   no thread of the captures had a second. Charged to the day's accounts
-//!   and counted in the sitting as a page of comments is.
-//!
-//! **None of it tells anybody what was looked at.** The app reports the
-//! posts and reels it shows through separate calls (view counts, the reels
-//! screen's watched list), which snob has no code to send; the allowlist
-//! refuses them and `crates/snob-core/tests/no_seen.rs` keeps them out of the
-//! source.
+//! A page of a grid or a tab is one read, counted in the sitting and not
+//! charged to the day's accounts. **None of it tells anybody what was looked
+//! at**: the app's view reports are calls the allowlist refuses and
+//! `no_seen.rs` keeps out of the source.
 
 use crate::allowlist::{Operation, Rest};
 use crate::error::IgError;
@@ -59,7 +34,6 @@ use crate::web::{Ask, Told};
 use super::IgClient;
 use super::ask::{answered, profile_path, told_otherwise};
 
-/// One page of a profile's grid: its posts, and where the next one starts.
 #[derive(Debug, Clone)]
 pub struct PostsPage {
     pub posts: Vec<Media>,
@@ -67,11 +41,9 @@ pub struct PostsPage {
     pub next: Option<String>,
 }
 
-/// A tab of a profile besides its grid, as the app shows them under the
-/// profile.
+/// A tab of a profile besides its grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProfileTab {
-    /// Its reels: what it posted as a reel, and the videos of its grid.
     Reels,
     /// The posts other accounts tagged it in, each owned by its author.
     Tagged,
@@ -80,7 +52,6 @@ pub enum ProfileTab {
 }
 
 impl ProfileTab {
-    /// The segment of the tab's address, `/<name>/<segment>/`.
     pub fn segment(self) -> &'static str {
         match self {
             Self::Reels => "reels",
@@ -98,8 +69,7 @@ impl ProfileTab {
         }
     }
 
-    /// Whether `cursor` has the shape of the tab's own, which is all that
-    /// goes back to Instagram.
+    /// Only a cursor of the tab's own shape goes back to Instagram.
     fn takes(self, cursor: &str) -> bool {
         match self {
             Self::Reels | Self::Reposts => reels_cursor_has_its_shape(cursor),
@@ -109,13 +79,10 @@ impl ProfileTab {
 }
 
 impl IgClient {
-    /// A page of `username`'s posts: the first when `after` is `None`, and
-    /// otherwise the one after the cursor the page before ended at. One read,
-    /// made from the profile's page.
+    /// A page of `username`'s posts: the first when `after` is `None`. One read.
     ///
-    /// **From the browser only.** The grid is a Relay query the tab builds
-    /// from the page; without a browser there is no capture of a REST read of
-    /// it to send instead, and none is invented.
+    /// **From the browser only**: there is no capture of a REST read of the
+    /// grid to send without one, and none is invented.
     pub async fn profile_posts(
         &self,
         username: &str,
@@ -151,15 +118,10 @@ impl IgClient {
         Ok(PostsPage { posts, next })
     }
 
-    /// A page of tab `tab` of the account `pk`, named `username`: the first
-    /// when `after` is `None`, made from the profile's page, and otherwise
-    /// the one after the cursor the page before handed out, made from the
-    /// tab's page, which [`Self::open_tab`] navigates the app to before it.
-    /// One read, counted in the sitting.
-    ///
-    /// **From the browser only**, as the grid; and only a cursor of the
-    /// shape the tab hands out goes back, anything else refused with
-    /// nothing sent.
+    /// A page of `tab` of the account `pk`: the first when `after` is `None`,
+    /// made from the profile's page; the next ones from the tab's page, which
+    /// [`Self::open_tab`] navigates to first. One read, from the browser only.
+    /// A cursor not of the tab's shape is refused with nothing sent.
     pub async fn profile_tab(
         &self,
         tab: ProfileTab,
@@ -219,11 +181,9 @@ impl IgClient {
         Ok(PostsPage { posts, next })
     }
 
-    /// What the app sends as tab `tab` of `username`'s profile is clicked,
-    /// before the tab's next pages: its router's navigation to the tab,
-    /// `/<name>/<tab>/` (6 of 6 in the capture of 2026-11-14). One read; a
-    /// failure is made of as a list's opening is (`IgClient::navigation`).
-    /// From the browser only, and only for a name that can be a profile's.
+    /// The app's navigation to `/<name>/<tab>/` as the tab is clicked (6 of 6
+    /// in the capture of 2026-11-14). One read, from the browser only; a
+    /// failure is treated as `IgClient::navigation` treats one.
     pub async fn open_tab(&self, username: &str, tab: ProfileTab) -> Result<(), IgError> {
         if !self.has_page() || !crate::allowlist::profile_name(username) {
             return Ok(());
@@ -231,13 +191,9 @@ impl IgClient {
         self.navigation(&tab_path(username, tab)).await
     }
 
-    /// Counts a page of a grid or of a post's comments in the account's
-    /// sitting, as a page of a list is (`Pacer::page_walked`): pages read one
-    /// after another are a person's reading whatever they list, and a run of
-    /// them is a run of requests all the same. Not paid here: the rest a
-    /// full sitting owes is paid before the next page by whatever reads it
-    /// on its own (`IgClient::rest_before_a_page`), and stays owed, and so
-    /// paid by the next walk, when a person in a view turns the page.
+    /// Counts a page of a grid or of comments in the account's sitting, as a
+    /// list page is (`Pacer::page_walked`). The rest a full sitting owes is
+    /// paid before the next page (`IgClient::rest_before_a_page`), not here.
     async fn count_in_the_sitting(&self) -> Result<(), IgError> {
         self.pacer
             .page_walked(&crate::pace::Pace::default(), snob_core::clock::now_ms())
@@ -245,23 +201,16 @@ impl IgClient {
             .map(|_| ())
     }
 
-    /// The post `pk`, asked from `page`, the page it opens on
-    /// (`shortcode::page_of`). One read. `None` when the answer holds no
-    /// post: one deleted, or not shown to this account.
+    /// The post `pk`, asked from the page it opens on (`shortcode::page_of`).
+    /// `None` when the answer holds no post: deleted, or not shown to this
+    /// account.
     pub async fn media_info(&self, pk: MediaPk, page: &str) -> Result<Option<Media>, IgError> {
-        let read = Rest::MediaInfo(pk);
-        let info: MediaInfo = if self.has_page() {
-            self.rest_read(read, &[], page).await?
-        } else {
-            self.get(&read.path(), &[], relative(page)).await?
-        };
+        let info: MediaInfo = self.rest_read(Rest::MediaInfo(pk), &[], page).await?;
         Ok(info.items.into_iter().next())
     }
 
-    /// A page of the comments of post `pk`, asked from `page`: the first when
-    /// `after` is `None`, and otherwise the one the page before named in its
-    /// `next_min_id`. One read, and its commenters charged to the day's
-    /// accounts.
+    /// A page of the comments of post `pk`: the first when `after` is `None`,
+    /// otherwise the one the page before named in its `next_min_id`.
     pub async fn media_comments(
         &self,
         pk: MediaPk,
@@ -269,15 +218,13 @@ impl IgClient {
         page: &str,
     ) -> Result<CommentsPage, IgError> {
         let read = Rest::Comments(pk);
-        // Only a cursor of the shape Instagram hands out goes back to it:
-        // anything else would be text nobody vouched for in a request.
+        // Only a cursor of the shape Instagram hands out goes back to it.
         if after.is_some_and(|after| !comments_cursor_has_its_shape(after)) {
             return Err(IgError::NotAllowed(
                 "a page of comments after a cursor Instagram never handed out".into(),
             ));
         }
-        // In the app's order: the first page as the post opens, the next
-        // ones as the comments scroll (capture of 2026-10-01).
+        // In the app's order (capture of 2026-10-01).
         let query: Vec<(&str, &str)> = match after {
             None => vec![
                 ("can_support_threading", "true"),
@@ -289,30 +236,21 @@ impl IgClient {
                 ("sort_order", "popular"),
             ],
         };
-        let comments: CommentsPage = if self.has_page() {
-            self.rest_read(read, &query, page).await?
-        } else {
-            self.get(&read.path(), &query, relative(page)).await?
-        };
-        let accounts = u32::try_from(comments.accounts()).unwrap_or(u32::MAX);
-        if let Err(e) = self.pacer.spend_accounts(accounts).await {
-            tracing::warn!(error = %e, "could not record the accounts a page of comments carried");
-        }
+        let comments: CommentsPage = self.rest_read(read, &query, page).await?;
+        self.charge_accounts(comments.accounts()).await;
         self.count_in_the_sitting().await?;
         Ok(comments)
     }
 }
 
 impl IgClient {
-    /// The replies under comment `comment` of post `pk`, asked from `page`,
-    /// the post's own (`/p/<code>/` for a reel too: 3 of 3 in the capture
-    /// of 2026-11-14). One read, its authors charged to the day's accounts
-    /// and the page counted in the sitting, as a page of comments is.
+    /// The replies under `comment` of post `pk`, asked from the post's own
+    /// page (`/p/<code>/` for a reel too: 3 of 3 in the capture of 2026-11-14).
     ///
     /// **The first page only, with an empty cursor**, the three keys in the
     /// app's order (7 calls of 7 over the captures of 2026-11-13 and
-    /// 2026-11-14). Whether the thread holds more is the answer's to say
-    /// ([`RepliesPage::more`]); nothing here asks for it.
+    /// 2026-11-14). Whether the thread holds more is [`RepliesPage::more`]'s
+    /// to say.
     pub async fn comment_replies(
         &self,
         pk: MediaPk,
@@ -325,51 +263,24 @@ impl IgClient {
             ("is_chronological", "true"),
             ("paging_direction", "view_more"),
         ];
-        let replies: RepliesPage = if self.has_page() {
-            self.rest_read(read, &query, page).await?
-        } else {
-            self.get(&read.path(), &query, relative(page)).await?
-        };
-        let accounts = u32::try_from(replies.accounts()).unwrap_or(u32::MAX);
-        if let Err(e) = self.pacer.spend_accounts(accounts).await {
-            tracing::warn!(error = %e, "could not record the accounts a thread of replies carried");
-        }
+        let replies: RepliesPage = self.rest_read(read, &query, page).await?;
+        self.charge_accounts(replies.accounts()).await;
         self.count_in_the_sitting().await?;
         Ok(replies)
     }
 
     /// The accounts that liked post `pk`, as many as the app is shown, asked
-    /// from `page`, the post's own (the app's referrer was `/p/<code>/` both
-    /// times in the capture of 2026-11-13). One read, and the accounts it
-    /// names charged to the day's accounts as a list page's are.
-    ///
-    /// **Only after the caller asked**: a list of other people's accounts,
-    /// which `snob_cli::commands::likers` asks about before anything is
-    /// sent.
+    /// from the post's page (`/p/<code>/` both times in the capture of
+    /// 2026-11-13). **Only after the caller asked for consent.**
     pub async fn media_likers(&self, pk: MediaPk, page: &str) -> Result<LikersPage, IgError> {
-        let read = Rest::Likers(pk);
-        let likers: LikersPage = if self.has_page() {
-            self.rest_read(read, &[], page).await?
-        } else {
-            self.get(&read.path(), &[], relative(page)).await?
-        };
-        let accounts = u32::try_from(likers.users.len()).unwrap_or(u32::MAX);
-        if let Err(e) = self.pacer.spend_accounts(accounts).await {
-            tracing::warn!(error = %e, "could not record the accounts a post's likers carried");
-        }
+        let likers: LikersPage = self.rest_read(Rest::Likers(pk), &[], page).await?;
+        self.charge_accounts(likers.users.len()).await;
         Ok(likers)
     }
 }
 
-/// The page of tab `tab` of the account called `name`, `/<name>/<tab>/`.
 fn tab_path(name: &str, tab: ProfileTab) -> String {
     format!("{}{}/", profile_path(name), tab.segment())
-}
-
-/// `page` as a request sent without a browser names its referrer: with no
-/// leading slash, the site's address before it.
-fn relative(page: &str) -> &str {
-    page.strip_prefix('/').unwrap_or(page)
 }
 
 #[cfg(test)]
