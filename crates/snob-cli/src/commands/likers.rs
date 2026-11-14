@@ -2,9 +2,11 @@
 //! shows the web app.
 //!
 //! **A sample, never the whole list.** The app is shown about a hundred
-//! (105 of 603,328 twice in the capture of 2026-11-13), the viewer's
-//! contacts first, with no cursor to a second page; snob reads what the app
-//! is shown and says so, beside the count when the owner did not hide it.
+//! (105 of 603,328 twice in the capture of 2026-11-13, 125 of 1,796 in the
+//! capture of 2026-11-14), the viewer's contacts first, with no cursor to a
+//! second page (the list scrolled to its end on 2026-11-14 asked for none);
+//! snob reads what the app is shown and says so, beside the count when the
+//! owner did not hide it.
 //!
 //! Two reads, the app's when a post opens and its "others" is clicked: the
 //! post (`posts::fetch_link`), then its likers from the post's page
@@ -35,10 +37,12 @@ use crate::output::Rendered;
 use crate::posts::{self, Post};
 use crate::ui;
 
-/// The most accounts one answer was seen to hold (105, twice), with a
-/// margin: what the day's accounts must still allow before the request is
-/// sent, so a read the day cannot pay for is refused rather than made.
-pub const LIKERS_AT_MOST: u32 = 120;
+/// The most accounts one answer was seen to hold, with a margin: what the
+/// day's accounts must still allow before the request is sent, so a read the
+/// day cannot pay for is refused rather than made. 105 twice in the capture
+/// of 2026-11-13 and 125 in the capture of 2026-11-14, past the 120 this was
+/// until then; 150 leaves a fifth over the largest seen.
+pub const LIKERS_AT_MOST: u32 = 150;
 
 pub async fn run(args: LikersArgs, store: SecretStore, paths: &AccountPaths) -> Result<ExitCode> {
     if args.check_ahead {

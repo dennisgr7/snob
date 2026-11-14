@@ -609,8 +609,9 @@ pub fn comments_cursor_has_its_shape(cursor: &str) -> bool {
 
 /// `media/<pk>/likers/`: the accounts that liked a post, as many as the app
 /// is shown (105 of 603,328 in the capture of 2026-11-13, the same 105 both
-/// times), and how many there are. **No cursor**: the app asked for no
-/// second page, so there is none to read.
+/// times; 125 of 1,796 in the capture of 2026-11-14), and how many there
+/// are. **No cursor**: the app asked for no second page, even with the list
+/// scrolled to its end (2026-11-14), so there is none to read.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LikersPage {
     #[serde(default, deserialize_with = "nullable")]

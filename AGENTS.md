@@ -326,9 +326,9 @@ with a documented reason in the same place.
   viewer's own following. `likers` asks too, for every post, the viewer's own
   included (the question comes before the post is read, so it cannot know
   the owner): a post's likers are other people's accounts, read with
-  `media/<pk>/likers/`, one answer of about a hundred, charged to the day's
-  accounts, and refused before the question when the day has fewer than
-  `commands::likers::LIKERS_AT_MOST` left. The app's `show_many` after it is
+  `media/<pk>/likers/`, one answer of about a hundred (105 to 125 seen),
+  charged to the day's accounts, and refused before the question when the
+  day has fewer than `commands::likers::LIKERS_AT_MOST` (150) left. The app's `show_many` after it is
   not sent.
 - **Identity is the numeric `pk`, never the username.** `snob_core::Pk` is a
   newtype with no `Deref`, no arithmetic and no `ToSql`/`FromSql`; SQLite goes

@@ -364,9 +364,11 @@ pub enum Rest {
     Comments(MediaPk),
     /// The accounts that liked a post, by its pk: what the app asks when
     /// "N others" under a post is clicked, with no query, from the post's
-    /// page (twice in the capture of 2026-11-13). One answer, about a
-    /// hundred accounts with no cursor, the viewer's contacts first: a
-    /// sample, never the whole list.
+    /// page (twice in the capture of 2026-11-13, once on 2026-11-14). One
+    /// answer, about a hundred accounts (105 to 125) with no cursor, the
+    /// viewer's contacts first: a sample, never the whole list. No second
+    /// page is observed rather than assumed: the list scrolled to its end in
+    /// the capture of 2026-11-14 asked for none.
     Likers(MediaPk),
 }
 
