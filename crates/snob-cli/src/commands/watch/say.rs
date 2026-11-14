@@ -188,10 +188,9 @@ pub(super) fn given_up_sentence(given_up: usize) -> String {
 /// to the posts when they were watched and not looked at.
 pub(super) fn describe_tick(tick: &TickReport) -> Vec<String> {
     let posts_skipped = tick.posts_skipped();
-    // A list refused, or the posts: either way this run speaks for less than
-    // it watches. Posts read within the hour are no refusal.
-    let refused = tick.lists.iter().any(|list| list.skipped.is_some())
-        || posts_skipped.is_some_and(|skipped| skipped != PostsSkipped::ReadRecently);
+    let lists_refused = tick.lists.iter().any(|list| list.skipped.is_some());
+    // Posts read within the hour are no refusal.
+    let posts_refused = posts_skipped.is_some_and(|skipped| skipped != PostsSkipped::ReadRecently);
     if tick.lists.is_empty() && posts_skipped == Some(PostsSkipped::ReadRecently) {
         let who = crate::app::label(tick.report.account_pk, tick.report.username.as_deref());
         return vec![format!(
@@ -199,7 +198,18 @@ pub(super) fn describe_tick(tick: &TickReport) -> Vec<String> {
              this time."
         )];
     }
-    describe(&tick.report, refused)
+    // An entry of posts alone that could not look at them looked at nothing.
+    let mut lines = describe(
+        &tick.report,
+        lists_refused || (tick.lists.is_empty() && posts_refused),
+    );
+    // And beside the lists, said in the summary, which is all a chat format
+    // is sent.
+    if posts_refused && !tick.lists.is_empty() {
+        lines.push(String::new());
+        lines.push("Its posts could not be read this time.".to_string());
+    }
+    lines
 }
 
 /// The answer as a person reads it.
@@ -461,6 +471,19 @@ fn describe_lists(report: &WatchReport, refused: bool) -> Vec<String> {
                 printable(&r.to)
             ));
         }
+    }
+
+    // **Said in the summary itself**, the last line of it: the chat formats
+    // send the summary alone, and the refusal's own warning goes to standard
+    // error, which a Slack channel never sees. Without it a report of changes
+    // in one list reads as the whole story of both.
+    if refused {
+        lines.push(String::new());
+        lines.push(
+            "One of the lists could not be read this time, so these are the changes of the \
+             other one alone."
+                .to_string(),
+        );
     }
 
     lines
@@ -933,6 +956,31 @@ mod tests {
         let caption = lines[2].trim_start();
         assert_eq!(caption.chars().count(), CAPTION_CHARS);
         assert!(caption.ends_with('\u{2026}'), "{caption}");
+    }
+
+    /// A report of changes says, in the summary the chat formats send, that a
+    /// list could not be compared, rather than only in a warning on standard
+    /// error.
+    #[test]
+    fn changes_with_a_list_not_compared_say_so_in_the_summary() {
+        let report = report_with(
+            Some(list(
+                Basis::Compare {
+                    before: 1,
+                    after: 2,
+                },
+                ListDiff {
+                    gained: vec![user(Pk::new(7), "newcomer")],
+                    lost: vec![],
+                },
+                Some(snob_core::Epoch::new(1_000)),
+            )),
+            vec![],
+        );
+        let refused = describe(&report, true).join("\n");
+        assert!(refused.contains("could not be read this time"), "{refused}");
+        let whole = describe(&report, false).join("\n");
+        assert!(!whole.contains("could not be read"), "{whole}");
     }
 
     /// Posts read within the hour are said to be, rather than read as an
