@@ -1,26 +1,7 @@
-//! What a list command would cost, worked out from what is stored here and
-//! sent nowhere: `--dry-run`.
+//! What a list command would cost, worked out from what is stored here and sent
+//! nowhere: `--dry-run`.
 //!
-//! An estimate, labeled as one. What it cannot know without asking is said as
-//! a range: a stored list still fresh costs one request if its counter has not
-//! moved and a walk if it has, and only the request that reads the counter can
-//! tell which; a page brings back eight to twelve accounts, so a list is
-//! between two numbers of pages. A list whose size was never read here is said
-//! to be unknown rather than guessed.
-//!
-//! **The time is the pacer's, run forward on paper.** Every request pays the
-//! pace and the day buckets of `rate_budget.rs`, from where they stand now; a
-//! sitting of [`PAGES_PER_SITTING`] pages owes a rest, counted across walks
-//! and runs as `Pacer::page_walked` counts it in the account's database, and
-//! starting from the sitting stored there: the pages already in it, and what
-//! is left of a rest already owed, which comes before the first page. The
-//! steps and dwells are `pace.rs`'s, the shortest for the least time and the
-//! longest for the most. Nothing is a copy of those numbers, so a change to
-//! one moves this with it.
-//!
-//! [`compute`] is the arithmetic, over plain numbers, so every case is a unit
-//! test; [`gather`] reads those numbers out of the store and the budget.
-//! Neither decides how anything looks.
+//! **The time is the pacer's, run forward on paper.**
 
 use std::time::Duration;
 
@@ -85,10 +66,9 @@ impl Bucket {
 /// Everything [`compute`] needs.
 #[derive(Debug, Clone)]
 pub struct Inputs {
-    /// A name was typed, the viewer's own included: the account is found by
-    /// its profile, whose answer carries the counters, so the first list is
-    /// not polled. With none, the viewer's own lists need no finding and the
-    /// first is polled.
+    /// A name was typed, the viewer's own included: the account is found by its
+    /// profile, whose answer carries the counters, so the first list is not
+    /// polled.
     pub typed: bool,
     /// Whether the account's id is known here; finding it costs one more.
     pub pk_known: bool,
@@ -201,10 +181,9 @@ pub fn finding(browser: bool, pk_known: bool) -> u64 {
     }
 }
 
-/// About how many requests walking lists of these `sizes` takes, of an
-/// account found by its name: its finding, then each walk, every list after
-/// the first polled again since the first one's walk began an action. What
-/// the full-screen views offer to spend switching to another account.
+/// About how many requests walking lists of these `sizes` takes, of an account
+/// found by its name: its finding, then each walk, every list after the first
+/// polled again since the first one's walk began an action.
 pub fn rewalk_requests(browser: bool, pk_known: bool, sizes: &[u64]) -> u64 {
     let walks: u64 = sizes
         .iter()
@@ -253,13 +232,10 @@ pub fn compute(inputs: &Inputs) -> Estimate {
     }
 }
 
-/// The time the pace alone gives one walk of `pages`, the fewest and the
-/// most, in seconds: its dwell, its steps and the rests its sitting owes,
-/// from `into_sitting` pages already in the sitting and `rest_owed_ms` left
-/// of a rest already owed. The request budget's waits are not in it.
-///
-/// For what has to say how long a walk under way has left, which knows its
-/// pages and not the buckets' standing at every one of them.
+/// The time the pace alone gives one walk of `pages`, the fewest and the most,
+/// in seconds: its dwell, its steps and the rests its sitting owes, from
+/// `into_sitting` pages already in the sitting and `rest_owed_ms` left of a
+/// rest already owed.
 pub fn walk_seconds(pages: (u64, u64), into_sitting: u64, rest_owed_ms: u64) -> (u64, u64) {
     walks_seconds(&[pages], into_sitting, rest_owed_ms)
 }
@@ -360,8 +336,7 @@ enum Scenario {
 }
 
 /// One bucket of the request budget, run forward: GCRA, as `rate_budget.rs`
-/// decides a request. A request may go at `t` once `tat - burst <= t`, and
-/// moves `tat` on by one emission from whichever is later.
+/// decides a request.
 #[derive(Debug, Clone, Copy)]
 struct Gcra {
     tat: i64,
@@ -506,9 +481,8 @@ impl Run {
 
     /// A walk of `pages`, as the pager makes it: a rest owed paid first, the
     /// dwell, the navigation from the browser, then each page (and its
-    /// `show_many`) a step apart, with the rest a full sitting owes paid
-    /// before the page after it. A walk that ends on a full sitting leaves
-    /// the rest owed to the next one, as the pager does.
+    /// `show_many`) a step apart, with the rest a full sitting owes paid before
+    /// the page after it.
     fn walk(&mut self, pages: u64, browser: bool) {
         if pages == 0 {
             return;

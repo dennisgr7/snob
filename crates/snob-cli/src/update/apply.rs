@@ -1,19 +1,10 @@
 //! Unpacking a release and putting it in place.
 //!
-//! **The archive is unpacked by the system's own `tar`**, as `install.sh`
-//! does: every Linux and macOS has one, and Windows 10 and 11 ship bsdtar as
-//! `System32\tar.exe`, which reads a `.zip`. It is named by its full path on
-//! Windows, where a `tar` first on `PATH` (Git's) reads no zip. What it is
-//! handed was already checked against `SHA256SUMS`, so no Rust archive crate
-//! is built into snob for a file it reads once a release.
+//! **The archive is unpacked by the system's own `tar`**, as `install.sh` does:
+//! every Linux and macOS has one, and Windows 10 and 11 ship bsdtar as
+//! `System32\tar.exe`, which reads a `.zip`.
 //!
-//! **Replacing the binary never leaves half of one.** On Unix the new file is
-//! written beside the old one, synced, and renamed over it, which is atomic:
-//! a process already running keeps the file it started from, and the next
-//! one starts the new. Windows will not remove a running program but lets it
-//! be renamed, so the old one becomes `snob.exe.old`, the new one takes its
-//! name, and the `.old` is removed by a later start ([`sweep_old`]); a copy
-//! that fails puts the old one back.
+//! **Replacing the binary never leaves half of one.**
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

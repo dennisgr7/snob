@@ -3,23 +3,12 @@
 //! with a task in place of a result, then `tasks/get`, `tasks/update` and
 //! `tasks/cancel` on its id.
 //!
-//! **A task is a job and nothing more.** Its id is the job's id, and it is
-//! read and stopped as `snob_job` and `snob_job_cancel` read and stop a job,
-//! through a `snob __job` child (`mod.rs`), so the server still opens no store
-//! and no job's file, and an id of another account's job is that child's "no
-//! such job", which the protocol hears as an unknown task. Nothing is kept in
-//! this process: a task outlives the server as the job does, and another
-//! server of the same account answers for it. **Not rmcp's `TaskManager`**,
-//! which keeps its tasks in memory, aborts one after five minutes and lists
-//! none.
+//! **A task is a job and nothing more.** **Not rmcp's `TaskManager`**, which
+//! keeps its tasks in memory, aborts one after five minutes and lists none.
 //!
 //! **Never asked inside a task**: a call that needs a yes is asked before its
 //! job starts (`mod.rs`, `consent`), so no task is ever `input_required`, and
 //! `tasks/update` has nothing to answer.
-//!
-//! The extension as rmcp 3.10.0 has it has no `tasks/result` and no
-//! `tasks/list`: a finished task carries its result in `tasks/get`, and the
-//! jobs are listed by `snob_jobs`.
 
 use std::time::Duration;
 
@@ -31,17 +20,13 @@ use super::child::Finished;
 use super::job;
 
 /// How long a `tools/call` from a client that takes tasks waits for its walk
-/// before it answers with the task, whatever `wait_seconds` it gave. The
-/// client polls the task by itself and has no reason to be held in the call:
-/// long enough for a list whose counter has not moved, or a short one, to be
-/// answered in the one call, and no longer.
+/// before it answers with the task, whatever `wait_seconds` it gave.
 pub const WAIT_SECONDS: u64 = 5;
 
 /// How long a task is kept from when it was made, which the client is told
 /// (`ttlMs`): as long as the job's directory (`jobs::KEEP_JOB`), which is
 /// counted from when the walk ended and so is at least this long from when it
-/// started. A job swept sooner, past the most kept for an account, is then an
-/// unknown task, which the protocol allows.
+/// started.
 const KEEP: Duration = crate::jobs::KEEP_JOB;
 
 /// The least and the most a client is asked to wait between two polls
@@ -79,9 +64,8 @@ pub fn detailed(doc: &Value, finished: impl FnOnce(Finished) -> CallToolResult) 
             },
             None => failed("the walk's result could not be read", None),
         },
-        // Lost: its supervisor went away with the walk unfinished, or before
-        // it started it. The request failed, and the moment the list is
-        // free again comes along (null when it never held it).
+        // Lost: its supervisor went away with the walk unfinished, or before it
+        // started it.
         _ => failed(
             job::lost_message(doc),
             Some(json!({

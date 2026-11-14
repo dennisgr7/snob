@@ -1,53 +1,17 @@
 //! A list walk that outlives the call that started it: a job.
 //!
-//! An agent's tool call is bounded by its client, a minute or a few, and a
-//! walk of a few thousand accounts takes most of an hour at a human pace. So a
-//! walk can be started as a job ([`start`]), which goes on in a process of its
-//! own after the call has answered, and asked about later by its id
-//! ([`show`]), from this process or another, by an agent or by the person
-//! (`snob jobs`).
+//! **Three processes, and the job's state is files.**
 //!
-//! **Three processes, and the job's state is files.** `snob __job start`
-//! checks the command, writes the job's record and starts the supervisor,
-//! detached (`detach.rs`), then answers with the record, or with the result
-//! when the walk finished in the time it was told to wait. The supervisor,
-//! `snob __job run <id>`, holds the job's lock for its whole life, runs the
-//! walk as a child of its own with the flags every agent's run gets
-//! (`--spend-alone`, `--stop-when-stdin-closes`) and `--progress-json`, and
-//! writes what it came to. Everything else (`show`, `list`, `cancel`,
-//! `snob status`) reads the files and asks the lock, and writes nothing but a
-//! `stop` file, and the sweep of what is past its keeping ([`sweep`]), which a
-//! start makes under the jobs lock and `show`, `list` and `cancel` make when
-//! the lock is free ([`sweep_if_free`]); `snob status` writes nothing.
+//! **One job running per account, and nothing in one runs that was not checked
+//! where it runs** (`argv.rs`): the supervisor runs itself, never a program
+//! named on disk, and checks the stored command line again.
 //!
-//! **One job running per account, and nothing in one runs that was not
-//! checked where it runs** (`argv.rs`): the supervisor runs itself, never a
-//! program named on disk, and checks the stored command line again.
-//!
-//! **Stopping is a file, never a signal.** `cancel`, `purge` and `logout` write
-//! `stop` into the job's directory; the supervisor, which asks for it every
-//! second, closes the walk's standard input, which stops it as Ctrl+C does,
-//! and kills it through its own handle only past [`GRACE`]. No process id read
-//! from a file is ever signaled: a pid outlives its process and is reused.
+//! **Stopping is a file, never a signal.**
 //!
 //! **Everything here is `std` and threads**, called from the async runtime
-//! where waiting is involved, so jobs build without the `mcp` feature and
-//! `snob jobs` and `purge` work in every build (`tokio`'s `process` is the
-//! `mcp` feature's).
-//!
-//! Files in a job's directory, each `0600` on Unix (created so, by
-//! `paths::replace_private`, `supervise::private`, `detach` and
-//! [`private_marker`]) and under the account's user-only directory on
-//! Windows:
-//! - `job.json`, written by `start`, and once more with how it was detached;
-//! - `state.json`, written by the supervisor alone, or by `start` for a
-//!   supervisor that could not be started;
-//! - `lock`, held by the supervisor;
-//! - `stop`, written by whoever asks it to stop;
-//! - `out.json.partial`, the walk's standard output, renamed `out.json` once
-//!   it has ended;
-//! - `err.log`, the walk's standard error, the progress lines among it;
-//! - `supervisor.log`, the supervisor's own errors.
+//! where waiting is involved, so jobs build without the `mcp` feature and `snob
+//! jobs` and `purge` work in every build (`tokio`'s `process` is the `mcp`
+//! feature's).
 
 pub(crate) mod argv;
 mod id;
@@ -64,40 +28,22 @@ use serde_json::Value;
 use snob_core::Pk;
 use snob_store::paths::{self, AccountPaths, JobId};
 
-/// The version of `job.json`'s shape. A record of another one is shown, as
-/// what it is, and never run.
+/// The version of `job.json`'s shape.
 pub const SCHEMA: u32 = 1;
 
-/// How long a walk asked to stop gets before it is killed: the same as for
-/// a call's child (`commands::mcp::child`), for the same reason. A walk stops
-/// between two requests and a request in flight races the stop, so seconds
-/// are plenty; killing it holds its claim on the list until the claim's lease
-/// runs out.
+/// How long a walk asked to stop gets before it is killed: the same as for a
+/// call's child (`commands::mcp::child`), for the same reason.
 pub const GRACE: Duration = Duration::from_secs(30);
 
 /// Environment variables an agent's run never inherits: a call's child
 /// (`commands::mcp::child`) and a job's walk (`supervise`).
-///
-/// `SNOB_IGNORE_COOLDOWN` is the escape hatch that exists so a bug of ours
-/// cannot lock a person out; set in the environment the client was started
-/// from, it would hand every agent's call a way past the hard stop.
-/// `SNOB_MCP_KEY` and `SNOB_MCP_TOKEN` are the key of `snob mcp` served
-/// over the network, the server's and a client's copy (`commands::mcp::key`):
-/// no command a call runs reads either, and every process it starts would
-/// carry them on, the browser owner and its browsers among them, which keep
-/// the environment they were started with; `detach` and `pipe` leave them out
-/// of those too, whoever starts them. The rest of the environment is
-/// the person's own machine (`SNOB_NO_BROWSER`, the proxy, the locale) and
-/// is passed on.
 pub const NEVER_INHERITED: &[&str] = &["SNOB_IGNORE_COOLDOWN", "SNOB_MCP_KEY", "SNOB_MCP_TOKEN"];
 
 /// How long a job may wait for its supervisor before it counts as lost: it
 /// is started at once, so a job still queued after this never will be.
 pub const LOST_AFTER: Duration = Duration::from_secs(30);
 
-/// How often a running supervisor says it is still there (`updated_at`). A
-/// job found lost is taken to have held its claim on the list until at most
-/// this long after, which [`Seen::claim_frees_at`] counts on.
+/// How often a running supervisor says it is still there (`updated_at`).
 pub(crate) const HEARTBEAT: Duration = Duration::from_secs(30);
 
 /// How long a finished job's result is kept: a day, which is longer than
@@ -177,9 +123,8 @@ pub struct State {
     pub failure: Option<String>,
     /// For showing only: nothing signals a pid read from a file.
     pub supervisor_pid: Option<u32>,
-    /// The walk's, once it was started: shown, and what tells a lost job
-    /// that walked from one that never did (`Seen::walked`). Never
-    /// signaled either.
+    /// The walk's, once it was started: shown, and what tells a lost job that
+    /// walked from one that never did (`Seen::walked`).
     pub child_pid: Option<u32>,
 }
 
@@ -231,20 +176,15 @@ impl Status {
     }
 }
 
-/// The status a job is read as, from its state read before its lock was
-/// asked about, whether the lock was held, its state read again after, when
-/// it was made and the time now.
+/// The status a job is read as, from its state read before its lock was asked
+/// about, whether the lock was held, its state read again after, when it was
+/// made and the time now.
 ///
-/// **Read twice, around the lock**, because a supervisor writes its ending
-/// and then lets go of the lock, microseconds apart: a reader that read the
-/// state once, before, could find it still running and the lock already
-/// free, and call a job that had just succeeded `lost`, a status every waiter
-/// stops on for good. An ending read after is the answer. Asking the lock
-/// first and reading once after would not do either: a job just starting has
-/// its lock free while queued, and then its supervisor takes the lock and
-/// writes `running` between the two, which would read as lost the same way.
-/// So `before` decides whether a supervisor had written anything while its
-/// lock was seen free.
+/// **Read twice, around the lock**, because a supervisor writes its ending and
+/// then lets go of the lock, microseconds apart: a reader that read the state
+/// once, before, could find it still running and the lock already free, and
+/// call a job that had just succeeded `lost`, a status every waiter stops on
+/// for good.
 pub fn derive_around(
     before: Option<&State>,
     held: bool,
@@ -260,13 +200,8 @@ pub fn derive_around(
     derive(before, held, created_at, now)
 }
 
-/// The status a job is read as, from its state, whether its lock is held,
-/// when it was made and the time now.
-///
-/// An ending its supervisor wrote is the answer, even while it still holds
-/// the lock on its way out. Otherwise a held lock is a running job. A
-/// supervisor that wrote it was running and holds nothing is gone; so is one
-/// that never came, after [`LOST_AFTER`].
+/// The status a job is read as, from its state, whether its lock is held, when
+/// it was made and the time now.
 pub fn derive(state: Option<&State>, held: bool, created_at: i64, now: i64) -> Status {
     if let Some(state) = state
         && state.status.is_over()
@@ -315,13 +250,10 @@ impl Seen {
 
     /// For a lost job: the moment its walk's claim on the list frees at the
     /// latest, which is how long another walk of that list is refused
-    /// (`report::walked_elsewhere`). A walk refreshes its claim with every
-    /// page, and the supervisor said it was there until [`HEARTBEAT`] before
-    /// it was not, so the claim was last refreshed before then. **`None`
-    /// for a job that is not lost, and for a lost one that never started a
-    /// walk** ([`Seen::walked`]), which holds nothing: refusing its lists
-    /// for the claim's 45 minutes would refuse them over a walk that never
-    /// was.
+    /// (`report::walked_elsewhere`). **`None` for a job that is not lost, and
+    /// for a lost one that never started a walk** ([`Seen::walked`]), which
+    /// holds nothing: refusing its lists for the claim's 45 minutes would
+    /// refuse them over a walk that never was.
     pub fn claim_frees_at(&self) -> Option<i64> {
         (self.status == Status::Lost && self.walked()).then(|| {
             let ttl = snob_store::store::snapshots::CLAIM_TTL_SECS * 1000;
@@ -329,12 +261,7 @@ impl Seen {
         })
     }
 
-    /// Whether a walk was ever started for it. A supervisor writes the
-    /// walk's pid (`child_pid`) once it has started it, and a late one that
-    /// runs nothing keeps the pid an earlier one wrote
-    /// (`supervise::run`), so no pid is no walk: a job whose supervisor
-    /// never came (no `state.json`), came too late, or went before it
-    /// started the walk.
+    /// Whether a walk was ever started for it.
     pub fn walked(&self) -> bool {
         self.state.as_ref().is_some_and(|s| s.child_pid.is_some())
     }
@@ -403,8 +330,7 @@ pub fn look(account: &AccountPaths, id: &JobId, now: i64) -> io::Result<Option<S
     }))
 }
 
-/// Every job of `account`'s, oldest first. A directory whose name is not a
-/// job's is not one of ours and is left out, and alone.
+/// Every job of `account`'s, oldest first.
 pub fn all(account: &AccountPaths, now: i64) -> io::Result<Vec<Seen>> {
     let mut seen = Vec::new();
     for id in ids(account)? {
@@ -433,14 +359,13 @@ fn ids(account: &AccountPaths) -> io::Result<Vec<JobId>> {
 }
 
 /// Takes the lock every start and every sweep of `account`'s jobs holds
-/// (`jobs/.lock`), creating the jobs directory, private, when it is not
-/// there. Held until the file is dropped.
+/// (`jobs/.lock`), creating the jobs directory, private, when it is not there.
 ///
-/// `None` when the account's own directory is gone: **never made again
-/// here** (`AccountPaths::create_jobs_dir`), since a start that waited on
-/// the lock of an account a purge was removing would otherwise put it back,
-/// and with no list of who is signed in, which sends as every session (an
-/// account with a session stored has its directory, which `login` makes).
+/// `None` when the account's own directory is gone: **never made again here**
+/// (`AccountPaths::create_jobs_dir`), since a start that waited on the lock of
+/// an account a purge was removing would otherwise put it back, and with no
+/// list of who is signed in, which sends as every session (an account with a
+/// session stored has its directory, which `login` makes).
 pub(crate) fn lock_jobs(account: &AccountPaths) -> io::Result<Option<std::fs::File>> {
     if !account.create_jobs_dir().map_err(io::Error::other)? {
         return Ok(None);
@@ -463,8 +388,7 @@ pub(crate) fn sweep_if_free(account: &AccountPaths, now: i64) {
     }
 }
 
-/// Asks a job to stop. Nothing else is touched: its supervisor reads the
-/// file.
+/// Asks a job to stop.
 pub(crate) fn ask_to_stop(seen: &Seen) -> io::Result<()> {
     private_marker(&file(&seen.dir, "stop"))
 }
@@ -525,28 +449,24 @@ pub struct Stopping {
 }
 
 impl Stopping {
-    /// Asks every job of `account`'s that is not over to stop, holding the
-    /// jobs lock, **taken whether or not the account has run a job yet**
-    /// (its jobs directory is made for it), so no job starts until this is
-    /// dropped: a start waiting on the lock then finds the session gone and
-    /// makes nothing (`start::make`). An account with no directory of its
-    /// own has no jobs and gets none.
+    /// Asks every job of `account`'s that is not over to stop, holding the jobs
+    /// lock, **taken whether or not the account has run a job yet** (its jobs
+    /// directory is made for it), so no job starts until this is dropped: a
+    /// start waiting on the lock then finds the session gone and makes nothing
+    /// (`start::make`).
     ///
     /// **Never a reason to keep a session**: `purge` and `logout` call this
-    /// before they delete anything, and bookkeeping for jobs that may not
-    /// exist must not keep a credential from going. So it does not fail. A
-    /// jobs directory or `.lock` that cannot be made or taken (a stray file
-    /// in its place, a full disk, an ACL that refuses) is warned about, and
-    /// **the jobs are asked to stop all the same**, without the lock: no new
-    /// job can start while it cannot be taken (`start::make` takes the same
-    /// one), but a running one does not hold it (each holds its own `lock`)
-    /// and would otherwise go on with the session it holds in memory after
-    /// the session is deleted. Asking needs no lock: it is a `stop` file in
-    /// the job's directory. **Each job is read on its own**: one that cannot
-    /// be read (its `lock` cannot be opened, say) is warned about, still
-    /// sent a `stop` in case it is running, and not waited for, and every
-    /// other is asked to stop as usual. A job that cannot be told to stop is
-    /// warned about and not waited for either.
+    /// before they delete anything, and bookkeeping for jobs that may not exist
+    /// must not keep a credential from going. A jobs directory or `.lock` that
+    /// cannot be made or taken (a stray file in its place, a full disk, an ACL
+    /// that refuses) is warned about, and **the jobs are asked to stop all the
+    /// same**, without the lock: no new job can start while it cannot be taken
+    /// (`start::make` takes the same one), but a running one does not hold it
+    /// (each holds its own `lock`) and would otherwise go on with the session
+    /// it holds in memory after the session is deleted. **Each job is read on
+    /// its own**: one that cannot be read (its `lock` cannot be opened, say) is
+    /// warned about, still sent a `stop` in case it is running, and not waited
+    /// for, and every other is asked to stop as usual.
     pub fn every_job_of(account: &AccountPaths) -> Self {
         let lock = match lock_jobs(account) {
             Ok(Some(lock)) => Some(lock),
@@ -572,9 +492,8 @@ impl Stopping {
         }
     }
 
-    /// Waits, at most `within`, for every job asked to stop to be over and
-    /// let go of its lock. Blocks the thread: a caller on the runtime runs
-    /// it off it.
+    /// Waits, at most `within`, for every job asked to stop to be over and let
+    /// go of its lock.
     pub fn wait(&self, within: Duration) -> bool {
         let deadline = std::time::Instant::now() + within;
         loop {
@@ -597,10 +516,8 @@ impl Stopping {
     }
 }
 
-/// Asks every job of `account`'s that is not over to stop, each read on its
-/// own ([`Stopping::every_job_of`]), and answers the ones asked, to be
-/// waited for. Takes no lock: a `stop` in a job that is over changes
-/// nothing.
+/// Asks every job of `account`'s that is not over to stop, each read on its own
+/// ([`Stopping::every_job_of`]), and answers the ones asked, to be waited for.
 fn ask_every_job_to_stop(account: &AccountPaths) -> Vec<JobId> {
     let now = snob_core::clock::now_ms().get();
     let every = ids(account).unwrap_or_else(|e| {
@@ -681,10 +598,6 @@ pub async fn stop_before_leaving(accounts: Vec<AccountPaths>) -> anyhow::Result<
 
 /// Runs `snob __job …` and `snob jobs …`, as the account this run acts as and
 /// on that account's jobs alone.
-///
-/// Called by `main` after the layout is settled and before the owner of the
-/// browsers is installed: nothing here sends a request, and the walk a
-/// supervisor runs is a process of its own, which installs its own.
 pub async fn dispatch(
     cli: &crate::cli::Cli,
     store: &snob_store::secrets::SecretStore,

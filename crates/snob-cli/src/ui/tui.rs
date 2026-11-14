@@ -1,34 +1,13 @@
 //! The terminal guard every interactive view draws through.
 //!
-//! One `Tui` is one claim on the terminal: raw mode so keys arrive one at a
-//! time, bracketed paste so a pasted `q` is text and not a command, the cursor
-//! hidden, and -- for the browsers -- the alternate screen. The claim is made
-//! in the constructor and undone in `Drop`, so an early `return` cannot leave
-//! a shell in raw mode with no cursor. The two exits that run no destructors,
-//! the panic hook and the forced quit, go through `ui::restore_terminal`,
-//! which undoes the same four things unconditionally.
-//!
-//! Everything is drawn on **standard error**. Standard output belongs to the
-//! listing: `snob stories someone -i > out.txt` must leave the file empty, the
-//! same contract every printed form keeps.
+//! Everything is drawn on **standard error**.
 //!
 //! The browsers take the **alternate screen**, so leaving one takes the last
 //! frame with it. What the user came for must therefore be said again on the
 //! way out: each browser collects receipt lines -- `Saved ./someone-3.jpg`,
-//! `Opened https://...` -- and hands them to [`print_receipts`] after its
-//! guard has dropped, which puts them on the real screen where the shell
-//! prompt lands. The menu stays inline instead ([`Tui::inline`]): it lives in
-//! the middle of a wizard's questions, and three rows of alternate screen
-//! around a two-entry choice would be theater.
-//!
-//! There is never more than one `Tui`. The profile card reaches the people
-//! browser by lending its own guard (`people::browse_in` takes `&mut Tui`)
-//! rather than letting a second one be built, and [`Tui::suspend`] /
-//! [`Tui::resume`] are how the card steps aside for indicatif's progress bars:
-//! the walk draws on the real screen, its finished bars stay in the user's
-//! scrollback where receipts belong, and `resume` repaints from nothing --
-//! after somebody else has written to the terminal, a renderer's belief about
-//! what is on screen is wrong, and `Terminal::clear` is how it says so.
+//! `Opened https://...` -- and hands them to [`print_receipts`] after its guard
+//! has dropped, which puts them on the real screen where the shell prompt
+//! lands.
 
 use std::borrow::Cow;
 use std::io::{Stderr, Write, stderr};
@@ -59,10 +38,8 @@ use crate::app::Viewer;
 use crate::ui::graphics;
 use crate::ui::theme::Role;
 
-/// DEC private mode 2026, "synchronized output": between the two the
-/// terminal holds what it is sent and paints it in one go. A terminal that
-/// does not know the mode ignores both, as it does any private mode it does
-/// not know.
+/// DEC private mode 2026, "synchronized output": between the two the terminal
+/// holds what it is sent and paints it in one go.
 const BEGIN_UPDATE: &[u8] = b"\x1b[?2026h";
 const END_UPDATE: &[u8] = b"\x1b[?2026l";
 const HIDE_CURSOR: &[u8] = b"\x1b[?25l";
@@ -71,54 +48,30 @@ const SHOW_CURSOR: &[u8] = b"\x1b[?25h";
 /// What a frame in which no cell changed still asks to have written: the
 /// backend ends every frame by resetting the foreground, the background, the
 /// underline's color and the attributes (`ratatui-crossterm` 0.1.2,
-/// `Backend::draw`, with its `underline-color` feature, which is on), and
-/// the terminal then hides the cursor (`ratatui-core` 0.1.2,
-/// `apply_buffer_with_cursor`). Two tests below hold these bytes: one to
-/// what crossterm writes for those five commands, one to what the renderer
-/// in the tree really sends for a frame it already drew. Were they to drift,
-/// the frame would be written as it always was, and that test would say so.
+/// `Backend::draw`, with its `underline-color` feature, which is on), and the
+/// terminal then hides the cursor (`ratatui-core` 0.1.2,
+/// `apply_buffer_with_cursor`).
 const UNCHANGED_FRAME: &[u8] = b"\x1b[39m\x1b[49m\x1b[59m\x1b[0m\x1b[?25l";
 
-/// The same frame where `NO_COLOR` is set: crossterm then writes no color
-/// at all, the reset of one included, and what is left of each of the three
-/// is an SGR with no parameter (crossterm 0.29.0, `Colored`'s `Display`,
-/// which reads the variable once). Held by the same two tests, with
-/// crossterm's switch thrown both ways.
+/// The same frame where `NO_COLOR` is set: crossterm then writes no color at
+/// all, the reset of one included, and what is left of each of the three is an
+/// SGR with no parameter (crossterm 0.29.0, `Colored`'s `Display`, which reads
+/// the variable once).
 const UNCHANGED_FRAME_NO_COLOR: &[u8] = b"\x1b[m\x1b[m\x1b[m\x1b[0m\x1b[?25l";
 
-/// Whether these bytes are all of a frame in which no cell changed. Either
-/// spelling counts whatever the environment says: each only resets what the
-/// frame before it left reset.
+/// Whether these bytes are all of a frame in which no cell changed.
 fn says_nothing(frame: &[u8]) -> bool {
     frame == UNCHANGED_FRAME || frame == UNCHANGED_FRAME_NO_COLOR
 }
 
 /// Where the frames are written: standard error, a whole frame at a time.
 ///
-/// Standard error has no buffer, so written to directly a frame is a write
-/// per escape sequence, a few hundred of them, and a terminal that paints
-/// between two of them shows half of the old frame under half of the new
-/// one: the tearing seen while a window is dragged to a new size, or as a
-/// modal goes up over a dimmed view. Here a frame is collected and leaves in
-/// **one write, inside one synchronized update**, so it is painted whole or
-/// not yet.
-///
-/// **An unchanged frame writes nothing.** Every view draws on each tick so
-/// that a resize nobody reported is still noticed (`browser::input::TICK`),
-/// and the renderer finds no cell to send; what it still sends is in
-/// [`UNCHANGED_FRAME`], seven times a second. It is dropped here, and only
-/// when the cursor was left hidden: a frame that says nothing but "hide the
-/// cursor" after one that showed it is not unchanged.
-///
-/// On a console with no escape sequences crossterm draws through the
-/// console's own calls and nothing is ever collected here, so nothing is
-/// written here either, the two markers included.
+/// Here a frame is collected and leaves in **one write, inside one synchronized
+/// update**, so it is painted whole or not yet.
 pub struct Screen<W: Write = Stderr> {
     out: W,
     pending: Vec<u8>,
-    /// Whether the last thing written about the cursor hid it. Shared with
-    /// the guard, which clears it when somebody else has had the terminal
-    /// ([`Tui::resume`]): the backend lends its writer to nobody.
+    /// Whether the last thing written about the cursor hid it.
     cursor_hidden: Arc<AtomicBool>,
     /// The pictures a frame placed over its cells, which go out after the
     /// frame's own bytes, in the same update (`ui::graphics`).
@@ -136,10 +89,8 @@ impl<W: Write> Screen<W> {
     }
 }
 
-/// What every frame carries and nothing else a view writes does: the reset
-/// of the attributes the backend ends a frame's cells with. It is how the
-/// screen tells a frame, whose pictures are to be drawn, from a clear or
-/// the way out, after which there are none.
+/// What every frame carries and nothing else a view writes does: the reset of
+/// the attributes the backend ends a frame's cells with.
 const FRAME_END: &[u8] = b"\x1b[0m";
 
 fn is_a_frame(bytes: &[u8]) -> bool {
@@ -203,13 +154,8 @@ pub struct Tui {
 }
 
 impl Tui {
-    /// Raw mode, the alternate screen, bracketed paste, focus reporting,
-    /// cursor hidden. For the browsers.
-    ///
-    /// Focus reporting is what tells a view whether anybody is looking
-    /// (`browser::input::focused`), and it is handed back with the rest on
-    /// [`Tui::suspend`]: left on under a cooked terminal, the terminal's
-    /// reports would be typed into the shell.
+    /// Raw mode, the alternate screen, bracketed paste, focus reporting, cursor
+    /// hidden.
     pub fn fullscreen() -> std::io::Result<Self> {
         Self::enter(true, Viewport::Fullscreen)
     }
@@ -255,15 +201,7 @@ impl Tui {
     }
 
     /// Hands the terminal back -- cooked, real screen, cursor shown -- so
-    /// somebody else may write to it. Idempotent.
-    ///
-    /// `active` moves only on success: cleared first, an escape write that
-    /// failed would return before `disable_raw_mode` with the flag already
-    /// saying "nothing to undo", and `Drop`'s own `suspend` would then take
-    /// the early exit, handing the shell back still in raw mode.
-    /// Raw mode is also dropped whatever became of the escape writes: it is
-    /// the one mode that makes the shell unusable, and a write that failed
-    /// is no reason to keep it.
+    /// somebody else may write to it.
     pub fn suspend(&mut self) -> std::io::Result<()> {
         if !self.active {
             return Ok(());
@@ -308,9 +246,7 @@ impl Tui {
             crossterm::execute!(stderr(), EnableBracketedPaste, EnableFocusChange, Hide)
         };
         if let Err(e) = modes {
-            // Raw mode is on and half the modes may be too. `active` is still
-            // false, so `Drop` would undo nothing: hand the whole terminal
-            // back now, the same recovery `enter` runs.
+            // Raw mode is on and half the modes may be too.
             crate::ui::restore_terminal();
             return Err(e);
         }
@@ -327,13 +263,9 @@ impl Drop for Tui {
     }
 }
 
-/// The whole entry, shared by every browser: the terminal check and the
-/// claim, each refusal carrying the view's own hint about the flags that
-/// work without one.
-///
-/// The check reads standard error, like everything the views draw; standard
-/// output is deliberately not consulted, because the listing it would
-/// protect is exactly what the browser withholds.
+/// The whole entry, shared by every browser: the terminal check and the claim,
+/// each refusal carrying the view's own hint about the flags that work without
+/// one.
 pub fn claim_fullscreen(hint: &str) -> anyhow::Result<Tui> {
     use crate::exit::{ExitCode, ExitError};
 
@@ -364,9 +296,7 @@ pub fn paint(colors: bool, style: Style) -> Style {
     if colors { style } else { Style::new() }
 }
 
-/// A line in `style`, or the plain text. The plain form is `Line::raw`,
-/// which splits at newlines -- a note built from an error's text may carry
-/// one -- so it is kept apart from one span with an empty style.
+/// A line in `style`, or the plain text.
 pub fn styled_line<'a>(text: impl Into<Cow<'a, str>>, style: Style, colors: bool) -> Line<'a> {
     if colors {
         Line::from(Span::styled(text, style))
@@ -375,25 +305,12 @@ pub fn styled_line<'a>(text: impl Into<Cow<'a, str>>, style: Style, colors: bool
     }
 }
 
-/// Whether the views may style at all. `console` decides -- `NO_COLOR`,
-/// `TERM`, whether anyone is attending -- so the browsers agree with every
-/// other line this program prints. When it says no, the textual markers
-/// (`> `, `‹`, `›`) are the whole interface.
+/// Whether the views may style at all.
 pub fn colors_enabled() -> bool {
     console::Term::stderr().features().colors_supported()
 }
 
 /// Says on the real screen what the alternate screen took away.
-///
-/// Called after the guard has dropped, never before: printed under a live
-/// viewport these would land inside the frame, and printed inside the
-/// alternate screen they would vanish with it. Stderr, like everything the
-/// views draw, and tolerant of it being gone.
-///
-/// Each view runs its loop inside a block so that every way out -- a draw
-/// that fails included -- passes through the guard's drop and then here: an
-/// error returned straight through `?` would take every `Saved ...` line
-/// down with the alternate screen.
 pub fn print_receipts(lines: &[String]) {
     let term = console::Term::stderr();
     for line in lines {
@@ -403,13 +320,6 @@ pub fn print_receipts(lines: &[String]) {
 
 /// The frame every view sits in: rounded corners, the view's name bold on the
 /// top edge, and the breathing room its content asked for.
-///
-/// No color is ever named for selection or for the border -- the selected row
-/// is reverse video and the chrome is dim/bold, so the user's own palette
-/// decides what everything looks like. Every color that is named is a role
-/// of `ui::theme`, for the same reason. And no italics anywhere: several
-/// terminals -- conhost among them -- render italic as reverse video, which
-/// would collide with the one meaning reverse video has here.
 pub fn view_block(title: String, colors: bool, padding: Padding) -> Block<'static> {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -422,9 +332,6 @@ pub fn view_block(title: String, colors: bool, padding: Padding) -> Block<'stati
 }
 
 /// A view's title as it is styled: bold, and what it is about in the accent.
-/// That is whatever comes before the first ` · ` or ` — `, the view's name
-/// or the list's, since every title is written name first: `Stories ·
-/// @someone · 3 up`, `followers of @someone — 120 accounts`.
 fn title_line(title: &str) -> Line<'static> {
     let cut = [" · ", " — "]
         .iter()
@@ -443,9 +350,8 @@ pub fn accent_bold() -> Style {
     Role::Accent.style().add_modifier(Modifier::BOLD)
 }
 
-/// The breathing room a list gets: one blank row under the border, one cell
-/// on the left so rows do not touch the frame. Waived on a terminal too
-/// short to give rows away to air.
+/// The breathing room a list gets: one blank row under the border, one cell on
+/// the left so rows do not touch the frame.
 pub fn list_padding(area: Rect) -> Padding {
     if area.height < 10 {
         Padding::ZERO
@@ -461,8 +367,7 @@ pub fn card_padding() -> Padding {
 }
 
 /// Where the selection sits in a list that does not fit, for the top-right of
-/// the border. A list that fits gets nothing: a counter on it is one more
-/// thing to read that says nothing.
+/// the border.
 pub fn position_line(selected: usize, total: usize, colors: bool) -> Line<'static> {
     styled_line(format!(" {}/{total} ", selected + 1), DIM, colors).right_aligned()
 }
@@ -490,8 +395,7 @@ pub fn hint_line(text: String, colors: bool) -> Line<'static> {
 }
 
 /// Something worth a look -- `Nothing walked`, `No more comments` -- in the
-/// hints' place. The warning's yellow, because it must win against a row of
-/// dim text, and it is a color every theme has already decided how to show.
+/// hints' place.
 pub fn note_line(text: String, colors: bool) -> Line<'static> {
     styled_line(format!(" {text} "), Role::Warn.style(), colors)
 }
@@ -503,17 +407,13 @@ pub fn done_line(text: String, colors: bool) -> Line<'static> {
     styled_line(format!(" {text} "), Role::Ok.style(), colors)
 }
 
-/// What went wrong -- `Could not open it: ...` -- in the hints' place. Red,
-/// because a failure and a receipt are two different sentences.
+/// What went wrong -- `Could not open it: ...` -- in the hints' place.
 pub fn problem_line(text: String, colors: bool) -> Line<'static> {
     styled_line(format!(" {text} "), Role::Error.style(), colors)
 }
 
-/// The right line for what a verb reported: a failure is a problem, a
-/// receipt is done, the rest are notes. The views build their messages with
-/// `Could not` in front of a failure and `Saved` or `Opened` in front of a
-/// receipt ([`saved_note`], [`opened_note`], [`web_note`]), so the first
-/// word is the seam.
+/// The right line for what a verb reported: a failure is a problem, a receipt
+/// is done, the rest are notes.
 pub fn outcome_line(text: String, colors: bool) -> Line<'static> {
     if text.starts_with("Could not") {
         problem_line(text, colors)
@@ -533,8 +433,7 @@ pub fn footer(note: &str, hint: &str, colors: bool) -> Line<'static> {
     }
 }
 
-/// The note for a file handed to the system viewer. Failures start with
-/// `Could not`, the prefix [`outcome_line`] keys on.
+/// The note for a file handed to the system viewer.
 pub fn opened_note(result: anyhow::Result<PathBuf>) -> String {
     match result {
         Ok(path) => format!("Opened {}", path.display()),
@@ -542,10 +441,7 @@ pub fn opened_note(result: anyhow::Result<PathBuf>) -> String {
     }
 }
 
-/// The note for a file saved where the user works, and its receipt. Twice on
-/// purpose: the note is for now, the receipt is for after the alternate
-/// screen has taken the note away. Failures start with `Could not`, as in
-/// [`opened_note`], and leave no receipt.
+/// The note for a file saved where the user works, and its receipt.
 pub fn saved_note(result: anyhow::Result<PathBuf>, receipts: &mut Vec<String>) -> String {
     match result {
         Ok(path) => {
@@ -558,11 +454,6 @@ pub fn saved_note(result: anyhow::Result<PathBuf>, receipts: &mut Vec<String>) -
 }
 
 /// The public page of an account: what `w` hands to the system's browser.
-/// Encoded and never filtered, like every name that goes into a path.
-///
-/// `snob_core::model::User::profile_url`, for the views that hold a name
-/// and no `User`: the stories, the highlights, the picture, the card. A test
-/// below holds the two to the same address.
 pub fn page_of(username: &str) -> String {
     format!(
         "https://www.instagram.com/{}/",
@@ -570,10 +461,8 @@ pub fn page_of(username: &str) -> String {
     )
 }
 
-/// Hands `url` to whatever the system opens addresses with, and says so: a
-/// note and a receipt, for [`saved_note`]'s reason. An address of a page, of
-/// snob's own making; never a CDN address, which is somebody's signed link
-/// and belongs in no browser history.
+/// Hands `url` to whatever the system opens addresses with, and says so: a note
+/// and a receipt, for [`saved_note`]'s reason.
 pub fn web_note(url: &str, receipts: &mut Vec<String>) -> String {
     match opener::open(url) {
         Ok(()) => {
@@ -585,10 +474,7 @@ pub fn web_note(url: &str, receipts: &mut Vec<String>) -> String {
     }
 }
 
-/// The scroll position, drawn over the right border. Only called when the
-/// list overflows; a scrollbar on a list that fits is furniture. The thumb
-/// is sized against the viewport, and the arrow caps are dropped: they would
-/// be drawn over the frame's corners.
+/// The scroll position, drawn over the right border.
 pub fn scrollbar(frame: &mut Frame<'_>, outer: Rect, total: usize, selected: usize, viewport: u16) {
     let mut state = ScrollbarState::new(total)
         .position(selected)
@@ -606,19 +492,14 @@ pub fn scrollbar(frame: &mut Frame<'_>, outer: Rect, total: usize, selected: usi
     );
 }
 
-/// The one selection style: reverse video, never a color. There is no color
-/// that is legible on every background; the user already told their terminal
-/// what its foreground and background are, and this borrows them.
+/// The one selection style: reverse video, never a color.
 pub fn selection() -> Style {
     Style::new().add_modifier(Modifier::REVERSED)
 }
 
-/// A table's header row: dim and underlined, no color and no blank row after
-/// it -- the underline already separates, and a spare blank row on a list of
-/// a hundred accounts is a row of data lost.
-///
-/// Only for tables whose columns do not explain themselves: a number and a
-/// date need naming, a username and a badge do not.
+/// A table's header row: dim and underlined, no color and no blank row after it
+/// -- the underline already separates, and a spare blank row on a list of a
+/// hundred accounts is a row of data lost.
 pub fn header_row(labels: &[&str], colors: bool) -> Row<'static> {
     Row::new(
         labels
@@ -646,10 +527,8 @@ where
         .highlight_spacing(HighlightSpacing::Always)
 }
 
-/// Where a modal lands: the optical center, one third from the top rather
-/// than the geometric middle. The eye rests above center, and a question
-/// dropped into the exact middle of a fifty-row screen sits below where
-/// anyone was looking.
+/// Where a modal lands: the optical center, one third from the top rather than
+/// the geometric middle.
 pub fn modal_area(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);
@@ -663,10 +542,6 @@ pub fn modal_area(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 /// Dims everything drawn so far, so the modal on top of it reads as on top.
-/// `Buffer::set_style` patches -- it adds DIM without touching a single
-/// color, so the theme still decides what the background looks like. The
-/// modal itself is rendered over a `Clear`, which resets its cells, so the
-/// veil never reaches it.
 pub fn veil(frame: &mut Frame<'_>, colors: bool) {
     // A picture the terminal draws itself is not a cell to dim, and would
     // stand bright over the box: it is taken back, and returns with the
@@ -679,8 +554,6 @@ pub fn veil(frame: &mut Frame<'_>, colors: bool) {
 }
 
 /// Clears the modal's cells and draws its frame, handing back the interior.
-/// The order is ratatui's own recipe: `Clear` first, so no style or symbol
-/// underneath leaks through.
 pub fn open_modal(frame: &mut Frame<'_>, area: Rect, block: Block<'_>) -> Rect {
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
@@ -688,15 +561,8 @@ pub fn open_modal(frame: &mut Frame<'_>, area: Rect, block: Block<'_>) -> Rect {
     inner
 }
 
-/// The lines `text` takes at `width` display columns: its own line breaks
-/// kept, an empty one included, and each line wrapped greedily at the
-/// blanks. A word wider than the line is cut at the edge rather than left to
-/// run past it, since what is wrapped here is what people wrote: an address,
-/// a row of emoji with no blank in it.
-///
-/// Pure, and that is the point of it: a view counts the rows a text needs
-/// before it draws, to size a card or to bound a scroll, which `Paragraph`'s
-/// own wrap never says.
+/// The lines `text` takes at `width` display columns: its own line breaks kept,
+/// an empty one included, and each line wrapped greedily at the blanks.
 pub fn wrapped(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut lines = Vec::new();
@@ -735,11 +601,8 @@ pub fn wrapped(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// What `List::scroll_padding` does and `Table` does not: keep `padding`
-/// rows visible on each side of the selection. `Table` only ever scrolls
-/// just enough, so the selection rides the edge; this recomputes the offset
-/// the way ratatui's own `apply_scroll_padding_to_selected_index` does,
-/// including clamping the padding to what a small viewport can honor.
+/// What `List::scroll_padding` does and `Table` does not: keep `padding` rows
+/// visible on each side of the selection.
 pub fn scrolled_offset(
     offset: usize,
     selected: usize,

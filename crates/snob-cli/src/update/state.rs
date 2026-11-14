@@ -2,16 +2,9 @@
 //! files it keeps beside it.
 //!
 //! **One file, for snob and for anything that shows snob's state** (an app
-//! around it, `snob status --json`, `snob update --status --json`): whether
-//! a version is out, whether it is downloaded and how it will be applied,
-//! what was applied last and what went wrong. Written whole and renamed into
-//! place (`paths::replace_private`), so a reader sees one version or the
-//! next; every change is a read, an edit and a write under `update.lock`
-//! ([`change`]), since the background download and a command noting what it
-//! told the person write it from two processes.
-//!
-//! A file that will not read is no state: the updater starts again from
-//! nothing, which costs one check.
+//! around it, `snob status --json`, `snob update --status --json`): whether a
+//! version is out, whether it is downloaded and how it will be applied, what
+//! was applied last and what went wrong.
 
 use std::path::{Path, PathBuf};
 
@@ -89,8 +82,7 @@ pub(crate) struct State {
     /// GitHub's tag for the answer it gave, so an unchanged one costs it
     /// nothing to give again.
     pub(crate) etag: Option<String>,
-    /// The newest version GitHub has named. Never moves back, so an older
-    /// release named later is no version to move to.
+    /// The newest version GitHub has named.
     pub(crate) latest: Option<String>,
     pub(crate) staged: Option<Staged>,
     pub(crate) applied: Option<Applied>,

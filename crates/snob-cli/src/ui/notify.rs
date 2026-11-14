@@ -1,30 +1,12 @@
-//! Telling somebody who is not looking that something finished, and showing
-//! a walk's progress where the terminal can show it outside its window.
-//!
-//! Two things a terminal can do on request, neither of which is drawing:
+//! Telling somebody who is not looking that something finished, and showing a
+//! walk's progress where the terminal can show it outside its window.
 //!
 //! - **A desktop notification** when a long walk or a download finishes, for
-//!   somebody who went to another window while it ran. The full-screen views
-//!   know whether the terminal has the focus (`browser::input::focused`) and
-//!   say it only when it does not; a plain command does not know, and says it
-//!   when what finished took longer than [`LONG`].
+//!   somebody who went to another window while it ran.
 //! - **The walk's progress on the taskbar or the tab** (`OSC 9;4`), where a
 //!   walk of an hour can be glanced at without switching to it.
 //!
-//! **Sent only to terminals known to understand them.** These are escape
-//! sequences, and a terminal that does not know one may act on part of it:
-//! iTerm2 shows `OSC 9;4;1;40` as a notification reading "4;1;40", kitty
-//! discards the progress form and shows the rest. So each form goes to the
-//! terminals documented to implement it (vtdn.dev's survey of each
-//! terminal's source, October 2026), recognized by what they put in the
-//! environment, and to nothing else. Inside tmux nothing is sent but the bell,
-//! which tmux passes on as an alert; the sequences would need its passthrough
-//! wrapper and a setting turned on to get through.
-//!
-//! What the full-screen views fall back to is the bell, which every terminal
-//! has some answer to: a sound, a flash, a mark on the tab or the taskbar.
-//! A plain command never rings it: an unknown focus is no reason to beep at
-//! somebody who may be watching.
+//! **Sent only to terminals known to understand them.**
 
 use std::io::Write;
 use std::time::Duration;
@@ -47,8 +29,7 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    /// What the environment says about the terminal. `var` is
-    /// `std::env::var` outside the tests.
+    /// What the environment says about the terminal.
     pub fn from_env(var: impl Fn(&str) -> Option<String>) -> Self {
         if var("TMUX").is_some() || var("STY").is_some() {
             return Self::default();
@@ -127,8 +108,7 @@ fn printable(text: &str) -> String {
 
 /// Says that `what` finished, to somebody who may not be looking: a
 /// notification where the terminal shows one, and otherwise the bell when
-/// `ring` asks for it. Written to standard error, where the views draw, and
-/// only when it is a terminal.
+/// `ring` asks for it.
 pub fn finished(what: &str, ring: bool) {
     if !stderr_is_a_terminal() {
         return;

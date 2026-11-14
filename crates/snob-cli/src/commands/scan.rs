@@ -1,13 +1,4 @@
 //! `snob scan`: the whole-account summary.
-//!
-//! Walks both lists and prints the five counts. Unlike the set commands it
-//! returns no account list, so it takes no `--limit` — `cli::ScanArgs` is the
-//! list options without it — the machine formats emit a counts object, and the
-//! row formats come out one row wide.
-//!
-//! On somebody else's account it opens with the people you both know, which is
-//! the line you actually read first — and it costs nothing, because the answer
-//! is already in the database.
 
 use std::collections::HashSet;
 
@@ -43,10 +34,6 @@ struct ScanCounts {
 
 impl ScanCounts {
     /// The five counts in the order every format prints them.
-    ///
-    /// One order for the column widths, the csv row and the spreadsheet cells:
-    /// the counts are all the same type, so a swapped pair would compile and
-    /// be quietly wrong.
     fn values(self) -> [usize; 5] {
         [
             self.followers,
@@ -63,19 +50,12 @@ impl ScanCounts {
 struct Summary<'a> {
     counts: ScanCounts,
     target: &'a str,
-    /// Whether the target was named on the command line. When it was, the
-    /// hints repeat it: a bare `snob fans` would answer about your account,
-    /// not the one this summary describes.
+    /// Whether the target was named on the command line.
     explicit_target: bool,
     filtered: bool,
-    /// The accounts you follow who also follow this one. `None` on your own
-    /// account, where the question is what `snob friends` answers, when nothing
-    /// is stored to answer it with, and when what is stored is older than
-    /// `--max-age`.
+    /// The accounts you follow who also follow this one.
     followed_by: Option<&'a [User]>,
-    /// When the capture behind `followed_by` was taken. Carried beside it so
-    /// this answer dates itself the way every other stored figure in the same
-    /// object does.
+    /// When the capture behind `followed_by` was taken.
     followed_by_at: Option<Epoch>,
     followers: &'a ListOutcome,
     following: &'a ListOutcome,
@@ -109,12 +89,8 @@ pub async fn run(args: ScanArgs, store: SecretStore, paths: &AccountPaths) -> Re
         ..
     } = &scanned;
 
-    // Your own account is excluded rather than unsupported: "who you both
-    // know" about yourself is the whole of `snob friends`.
-    //
-    // Decided from the id the engine reported rather than by comparing what
-    // was typed against the stored username: that name can be absent, can be
-    // spelled differently, and on a fresh session is not known at all.
+    // Your own account is excluded rather than unsupported: "who you both know"
+    // about yourself is the whole of `snob friends`.
     let is_self = followers_outcome.is_own(&viewer);
     let found = if is_self {
         None
@@ -123,10 +99,6 @@ pub async fn run(args: ScanArgs, store: SecretStore, paths: &AccountPaths) -> Re
     };
 
     // Held to the same age bound as every other stored answer in this object.
-    // Nothing refreshes this one — no flag walks it, and `check_same_moment`
-    // covers only the two lists that were walked — so without the bound the
-    // opening line could name accounts unfollowed months ago while reading
-    // exactly like one worked out this minute.
     let now = snob_core::clock::now();
     let stale = found
         .as_ref()
@@ -219,13 +191,8 @@ async fn scan(app: &mut App, query: engine::ListQuery) -> Result<Scanned> {
     })
 }
 
-/// The scan in the browser, as the account the command runs as and then as
-/// each account it is scanned again as. Each account's closing line is said
-/// as its view is left.
-///
-/// A scan browses as a tray of the five lists the summary counts
-/// ([`ui::people::scan_sets`]); Enter walks into one and shows the accounts
-/// the counts stand for.
+/// The scan in the browser, as the account the command runs as and then as each
+/// account it is scanned again as.
 async fn browse(
     app: Box<App>,
     scanned: Scanned,
@@ -306,16 +273,6 @@ fn closing_line(scanned: &Scanned, filtered: bool, whom: Option<&Viewer>) {
 }
 
 /// How this summary names the account it is about.
-///
-/// Filtered on both paths, for the reason `target::label` gives about the one
-/// that came off a keyboard: it is drawn, and `clean` only strips the at sign.
-/// Where a name came from decides whether it can be *trusted*, not whether a
-/// control character in it reaches a terminal — and this value reaches four of
-/// them: the `@{target}` heading in the markdown, the closing line on the
-/// terminal, a csv field, and an xlsx cell, where a character below 0x20 is not
-/// merely ugly but illegal XML.
-///
-/// A function of its own so both arms can be tested.
 fn summary_target(typed: Option<&str>, viewer: &crate::app::Viewer) -> String {
     match typed {
         Some(raw) => printable(engine::target::clean(raw)),
@@ -326,24 +283,11 @@ fn summary_target(typed: Option<&str>, viewer: &crate::app::Viewer) -> String {
 }
 
 /// What an account missing from either list would be made to look like.
-///
-/// Both lists have to be complete. The set commands only need the crossed-
-/// against list whole; here every one of the five counts leans on both lists,
-/// so a single missing account bends all of them at once from partial to
-/// wrong, and there is no single misreading to name.
 const NOT_THERE: &str = "they were not there at all";
 
 /// The counts go through the same pipeline as the set commands — cross by pk
 /// first, then filter — so each derived count is exactly what the matching
-/// command prints with the same flags. The displayed totals are the sums of
-/// their regions, which keeps the identity true even if an account's
-/// attributes changed between the two walks.
-///
-/// Counted rather than collected. `sets::intersection` and `sets::difference`
-/// build a `Vec<User>`, and going through them here cloned both lists three times
-/// over — twelve thousand accounts on a six-thousand-follower run — to read three
-/// lengths off the results and drop them. The rule is unchanged: cross on the pk,
-/// then ask the filter, which is what `Filter::apply` does one account at a time.
+/// command prints with the same flags.
 fn summarize(followers: &[User], following: &[User], filter: &Filter) -> ScanCounts {
     let in_following: HashSet<Pk> = following.iter().map(|u| u.pk).collect();
     let in_followers: HashSet<Pk> = followers.iter().map(|u| u.pk).collect();
@@ -438,17 +382,10 @@ fn render(summary: &Summary<'_>, format: Format, hints: bool) -> Result<Rendered
 }
 
 /// "Followed by @ana, @luis, @eva and 2 others, as of Aug 3 at 14:12".
-///
-/// `None` when there is nobody to name, which includes both "you follow nobody
-/// who follows them" and "we have no stored list to check against". The
-/// difference between those two is reported on standard error, not here: a
-/// summary is not the place to explain what is missing from it.
 fn followed_by_line(summary: &Summary<'_>) -> Option<String> {
     let people = summary.followed_by?;
     let names = report::name_a_few(people, NAMES_SHOWN)?;
-    // Dated, like the two walked lists below it. This one comes entirely out of
-    // storage and no flag walks it again, so the date is the only thing that
-    // tells a line worked out this minute from one built on last month's list.
+    // Dated, like the two walked lists below it.
     Some(match summary.followed_by_at {
         Some(taken_at) => format!("Followed by {names}, as of {}", report::stored_on(taken_at)),
         None => format!("Followed by {names}"),
@@ -467,9 +404,7 @@ fn text_table(summary: &Summary<'_>, hints: bool) -> String {
     // to be typed back. AGENTS.md settles what happens next: `@` is
     // PowerShell's splatting operator, so an unquoted `@someone` is gone before
     // `main` runs and the tool cheerfully answers about the user's own account,
-    // with exit 0 and nothing to suggest a different question was asked. A name
-    // is accepted either way, so leaving it off is a hint that works in every
-    // shell rather than one that needs quoting explained next to it.
+    // with exit 0 and nothing to suggest a different question was asked.
     let suffix = if summary.explicit_target {
         format!(" {}", summary.target)
     } else {
@@ -498,10 +433,9 @@ fn text_table(summary: &Summary<'_>, hints: bool) -> String {
         rows.push(row);
     }
 
-    // When the two lists came out of storage, say so and say from when, as
-    // csv, xlsx and json do: the format somebody actually reads must tell a
-    // scan of five minutes ago from one of last month. `lists::print_summary`
-    // says it for a single list; this is the same sentence for a crossing.
+    // When the two lists came out of storage, say so and say from when, as csv,
+    // xlsx and json do: the format somebody actually reads must tell a scan of
+    // five minutes ago from one of last month.
     if summary.followers.is_stored() || summary.following.is_stored() {
         rows.push(String::new());
         rows.push(format!(
@@ -519,21 +453,7 @@ fn text_table(summary: &Summary<'_>, hints: bool) -> String {
     s
 }
 
-/// The column names for the row formats. The five counts are the same stable
-/// tokens the JSON object uses, so a spreadsheet and a script name them alike.
-///
-/// `followed_by` is the count alone: a cell holding a list of names is a cell
-/// the next tool has to parse, and the JSON output is where the names live.
-///
-/// The last four are `scan` earning an exception rather than csv being fixed.
-/// This is the one command whose entire output is derived numbers with no
-/// account list to sanity-check them against, and its rows get appended to a
-/// tracking spreadsheet over time — where two rows taken from one snapshot are
-/// indistinguishable from two taken a month apart without a date beside them.
-///
-/// `requests` is deliberately not among them, for the same reason `followed_by`
-/// is only a count: it is a cost of the run rather than a fact about the data,
-/// and it is already on standard error.
+/// The column names for the row formats.
 const ROW_HEADER: [&str; 12] = [
     "target",
     "filtered",
@@ -550,8 +470,7 @@ const ROW_HEADER: [&str; 12] = [
 ];
 
 /// The count of people in common, or an empty cell when the question could not
-/// be answered. Never a zero: "nobody" and "we did not look" are different
-/// answers, and the empty cell is how the rest of the tool spells the second.
+/// be answered.
 fn followed_by_count(summary: &Summary<'_>) -> Option<usize> {
     summary.followed_by.map(<[User]>::len)
 }
@@ -592,8 +511,7 @@ fn row_cells(summary: &Summary<'_>) -> Vec<Cell> {
     for outcome in [summary.followers, summary.following] {
         cells.push(Cell::Text(source_token(outcome).to_string()));
         // A spreadsheet can hold a real date, and a column of epoch integers in
-        // one is unreadable. This is the one place the row formats diverge, and
-        // `xlsx.rs`'s claim that the two answer alike says so.
+        // one is unreadable.
         cells.push(Cell::DateTime(outcome.taken_at));
     }
     cells

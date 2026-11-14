@@ -1,8 +1,7 @@
 //! `snob login`.
 //!
-//! Two ways in, and the order of what each one asks is deliberate. Everything
-//! that can fail on its own — the store being writable, a browser being
-//! installed, which browser — is settled **before** the user is asked for
+//! Everything that can fail on its own — the store being writable, a browser
+//! being installed, which browser — is settled **before** the user is asked for
 //! anything, so nobody completes a two-factor login only to be told afterwards
 //! that there was nowhere to put the result.
 
@@ -23,10 +22,7 @@ use crate::ui::{self, LoginMethod};
 use crate::{browser, cdp, interrupt};
 
 /// Logs in again as `renewing`, the account resolved for this run, or as
-/// another account. `named` says the account was named rather than taken
-/// from the registry, and is then not asked about. `renewing` picks the
-/// browser profile a browser login opens; a paste is whichever account its
-/// sessionid is.
+/// another account.
 pub async fn run(
     args: LoginArgs,
     store: SecretStore,
@@ -46,8 +42,7 @@ pub async fn run(
         ),
     };
 
-    // Falling back is fine. Falling back quietly is not: a session stored
-    // somewhere less protected than the user expected should say so.
+    // Falling back is fine.
     if wanted == Backend::Keyring && usable == Backend::File {
         ui::warn(
             "no system keyring is available here, so the session goes to a \
@@ -60,12 +55,7 @@ pub async fn run(
 
     // Before anything is asked for, and this is the half the probe above does
     // not cover: `probe_writable` returns as soon as the keyring answers, so it
-    // never touches the data directory at all on a machine that has one. The
-    // account's database is opened for the first time inside `finish`, *after*
-    // the browser login or the paste, once the login says whose it is — so a
-    // full or read-only data directory would throw away a login the user had
-    // already completed. With `--paste` that means fetching and pasting the
-    // sessionid again; with `--browser`, relaunching.
+    // never touches the data directory at all on a machine that has one.
     writable(paths)?;
 
     let Some(method) = choose_method(&args)? else {
@@ -103,9 +93,8 @@ pub async fn run(
 }
 
 /// Adds an account through a browser login, as `snob login --add --browser`
-/// does, for the interactive views' account picker, which has no command
-/// line to take the flags from. Over SSH, where a window would not be seen,
-/// it is `--remote`'s login instead (`crate::seat`).
+/// does, for the interactive views' account picker, which has no command line
+/// to take the flags from.
 pub async fn add_by_browser(store: SecretStore, paths: &AppPaths) -> Result<ExitCode> {
     let remote = crate::seat::Seat::here().prefers_remote();
     let args = LoginArgs {
@@ -133,11 +122,6 @@ fn renew_or_add(account: &Viewer) -> Result<Option<bool>> {
 }
 
 /// Says whose session is about to be replaced.
-///
-/// Logging in over an existing session is usually deliberate, so this does not
-/// ask — but running it by accident and silently losing the account you were
-/// on is a surprise worth one line. Only a login as that same account
-/// replaces it; one as another is added beside it.
 fn announce_replacement(stored: &Session) {
     let who = who(stored);
     ui::info(&format!(
@@ -166,8 +150,7 @@ fn writable(paths: &AppPaths) -> Result<()> {
 }
 
 /// Works out the method: whatever the flags say, or whatever the user picks
-/// from the menu. With no interactive terminal there is no menu, so the method
-/// has to be given explicitly.
+/// from the menu.
 fn choose_method(args: &LoginArgs) -> Result<Option<LoginMethod>> {
     choose_method_at(args, crate::seat::Seat::here())
 }
@@ -217,22 +200,6 @@ fn no_window_here(seat: &crate::seat::Seat) -> String {
 }
 
 /// Which browser this login is about.
-///
-/// With one installed there is nothing to ask. With several there is, and it
-/// matters both ways: for `--browser` it decides which one opens, and for
-/// `--paste` it decides the User-Agent the session will be tied to. Guessing
-/// gets it wrong about half the time on a machine with Chrome and Edge.
-///
-/// The list is passed in rather than detected here. Off Windows, detecting
-/// means launching every installed browser to ask its version, so detecting
-/// again after `resolve_user_agent`'s own `detect_all` would spawn six
-/// processes to answer a question worth three. It would also take the count
-/// that decides whether to ask "is that the right browser?" from a different
-/// snapshot than the browser actually chosen.
-///
-/// Esc and Ctrl+C end the command, with 130: a question the person declined is
-/// not one to answer for them. Only a menu that could not be drawn falls back
-/// on the preferred browser.
 fn choose_browser(
     purpose: &str,
     installed: &[browser::Browser],
@@ -263,10 +230,6 @@ fn choose_browser(
 }
 
 /// Opens a browser, waits for the login, and takes the session from it.
-///
-/// Nothing is read out of the user's own browser profile. This one is ours,
-/// under our data directory, and the browser hands the cookies over itself
-/// through its debugging protocol. `snob logout` deletes it.
 async fn by_browser(
     args: LoginArgs,
     store: SecretStore,
@@ -296,26 +259,7 @@ async fn by_browser(
         );
     };
 
-    // The profile the login happens in. Logging an account in again, it is
-    // that account's own: a profile still signed in is taken as it is, and a
-    // new login there comes from the device Instagram already knows. Adding
-    // one, it is a fresh one. Either becomes the profile of whoever signs in
-    // once the login says who that is — somebody signing in as another account
-    // on this one's profile takes that profile with them, and is told.
-    //
-    // Whether it was already there is asked before anything creates it. A
-    // profile that was already here is the device every request is sent from,
-    // and it may be in use right now by another snob — a failed or abandoned
-    // login below is no reason to take it away. Only one this login created
-    // is.
-    //
-    // The account's browser is closed first: a window on a profile one has
-    // open would hand the login over to it and close, and the profile the
-    // login ends up in replaces the account's. Closed, not held closed: a
-    // command still connected to the owner — a monitor, an open view —
-    // starts the account's browser again at its next request, and a window
-    // opened then is handed over to it. A fresh profile has no browser on it,
-    // and every other account's is left to the commands using it.
+    // The profile the login happens in.
     let (profile, existed) = match &renewing {
         Some(previous) => {
             crate::owner::release(paths, Some(previous.pk)).await;
@@ -363,12 +307,9 @@ async fn by_browser(
     // Whatever `capture` came back with, and before either exit below: the
     // profile holds a live session from the moment the form was submitted.
     //
-    // **Kept when the login worked.** The profile is the device every request
-    // is sent from (`headless/`): removing it would make each login a new,
-    // never-seen browser. It goes when the login did not happen and this
-    // login is what created it. **Never when it was already here**: the
-    // commonest way for this launch to fail is another snob holding that very
-    // profile, and it is not deleted under that snob's browser.
+    // **Never when it was already here**: the commonest way for this launch to
+    // fail is another snob holding that very profile, and it is not deleted
+    // under that snob's browser.
     if !existed && (captured.is_err() || cancel.is_canceled()) {
         // Off the worker: the removal retries with sleeps adding up to five
         // seconds, and this runtime has two workers, one of which has to stay
@@ -403,8 +344,6 @@ async fn by_browser(
 
     // A browser the owner started on the account's profile since this command
     // began, for another command, is closed before the profile is replaced.
-    // So is the renewed account's when someone else signed in on its profile:
-    // the swap moves that profile away.
     crate::owner::release(paths, Some(session.ds_user_id)).await;
     if let Some(previous) = &renewing
         && previous.pk != session.ds_user_id
@@ -414,9 +353,7 @@ async fn by_browser(
 
     // The login happened in this profile, so it is the device Instagram just
     // saw sign in, and it becomes the account's before anything is sent: the
-    // check below goes out from the account's profile. A profile the account
-    // had before is set aside until the session is stored. A move that will
-    // not happen costs a warning, not the login.
+    // check below goes out from the account's profile.
     let swap =
         match crate::headless::profile::ProfileSwap::replace(paths, &profile, session.ds_user_id) {
             Ok(swap) => Some(swap),
@@ -449,17 +386,7 @@ async fn by_browser(
 
 /// Removes a profile a login created and did not finish.
 ///
-/// **About 90 MB, and possibly a half-finished session.** A login that worked
-/// keeps its profile, because every request is sent from it (`headless/`);
-/// one that failed or was abandoned has nothing to keep it for, and was the
-/// only thing that made it. `by_browser` says which.
-///
-/// Guarded by `is_safe_to_remove` like every other recursive delete here, and
-/// retried briefly: the browser has just been told to close and Windows holds
-/// a directory until the last handle in it goes. A failure is a warning rather
-/// than an error, because the session has already been captured and losing the
-/// login over housekeeping would be the worse outcome — and the sentence names
-/// the path, so it can be removed by hand.
+/// **About 90 MB, and possibly a half-finished session.**
 fn discard_profile(profile: &std::path::Path) {
     if !profile.exists() {
         return;
@@ -483,10 +410,6 @@ fn discard_profile(profile: &std::path::Path) {
 }
 
 /// Drives the browser from launch to captured session, and always closes it.
-///
-/// A browser that is never connected to is killed by its own `Drop`, so only
-/// the connected case needs closing by hand — which is why the result is held
-/// rather than propagated until after `close`.
 async fn capture(
     found: &browser::Browser,
     requested_user_agent: Option<String>,
@@ -506,8 +429,7 @@ async fn collect(
     cancel: &CancelToken,
 ) -> Result<(login::BrowserCookies, String)> {
     // Asked for rather than reconstructed: this is the browser the cookie will
-    // belong to, and Instagram checks that the two agree. An explicit
-    // --user-agent still wins, since it is there to override exactly this.
+    // belong to, and Instagram checks that the two agree.
     let user_agent = match requested_user_agent {
         Some(ua) => ua,
         None => cdp.user_agent().await.unwrap_or_else(|e| {
@@ -517,8 +439,7 @@ async fn collect(
     };
 
     // The profile keeps whatever was logged in last time, and Instagram sends a
-    // browser that still has a session straight past the login page. Saying so
-    // beats announcing an account nobody chose here.
+    // browser that still has a session straight past the login page.
     let cookies = match cdp.instagram_cookies().await? {
         Some(existing) => {
             ui::info(
@@ -532,18 +453,6 @@ async fn collect(
             // Ten minutes with nothing on screen reads as a hang, and this is
             // the one stretch where the user is in another window typing a
             // password and a code and comes back to check.
-            //
-            // Started inside this branch rather than before `capture()`: the
-            // sibling branch above prints with a plain `eprintln!`, which would
-            // be overdrawn by a bar already running. The countdown is
-            // deadline-driven, so one call covers the whole wait.
-            //
-            // `true` means "a bar was wanted", which is all this flag says.
-            // Whether one can be drawn is `Progress`'s own question, and it
-            // already asks it: the bar hides itself when standard error is not a
-            // terminal, and `quiet` is read back off the bar rather than off the
-            // flag. Probing stderr here as well would be a second answer to a
-            // question that has one.
             let progress = Progress::new(true);
             progress.waiting("waiting for you to log in", cdp::LOGIN_TIMEOUT);
             let captured = cdp::wait_for_login(cdp, cancel).await;
@@ -557,12 +466,9 @@ async fn collect(
     Ok((cookies, user_agent))
 }
 
-/// [`capture`], for a login watched from another machine: the browser runs
-/// here without a window, and its tab is relayed through a tunnel to a page
-/// in the person's own browser (`crate::relay`), until the session is in it.
-///
-/// The relay listens before the browser starts, so that one that cannot
-/// costs no browser start.
+/// [`capture`], for a login watched from another machine: the browser runs here
+/// without a window, and its tab is relayed through a tunnel to a page in the
+/// person's own browser (`crate::relay`), until the session is in it.
 async fn capture_remotely(
     found: &browser::Browser,
     requested_user_agent: Option<String>,
@@ -576,9 +482,7 @@ async fn capture_remotely(
         tab,
         user_agent,
     } = crate::headless::for_a_remote_login(found, profile, paths, cancel).await?;
-    // An explicit --user-agent still wins, as in a windowed login. Otherwise
-    // the one the tab sends, which is the running build's: the browser's own
-    // report would say `HeadlessChrome`.
+    // An explicit --user-agent still wins, as in a windowed login.
     let user_agent = requested_user_agent.unwrap_or(user_agent);
     let outcome = relayed(&cdp, &tab, relay, cancel).await;
     cdp.close().await;
@@ -650,8 +554,7 @@ fn remote_instructions(relay: &crate::relay::Relay, ssh: Option<&crate::seat::Ss
 
 async fn by_paste(args: LoginArgs, store: SecretStore, paths: &AppPaths) -> Result<ExitCode> {
     // The User-Agent is settled first because it is the half that can still ask
-    // questions. Sorting it out after a seventy-character paste means answering
-    // a menu with the credential already sitting on screen.
+    // questions.
     let chosen = match args.user_agent {
         // The flag is the user saying it outright.
         Some(ua) => ChosenAgent::pinned(ua),
@@ -688,15 +591,7 @@ async fn by_paste(args: LoginArgs, store: SecretStore, paths: &AppPaths) -> Resu
     // in the sense the sessionid is — it is the CSRF double-submit token, which
     // is worth nothing without the cookie — and because prompting for a second
     // secret nobody needs would put a question in front of every paste login to
-    // serve the two commands that write. It still goes into a `Secret`: it is
-    // part of the session record, and everything in that record is handled the
-    // same way regardless of what it is worth on its own.
-    //
-    // Trimmed, and an empty value is left unset rather than stored blank.
-    // `cookie_header` skips an empty optional cookie, so a blank one would be
-    // silently absent while `IgClient::post`'s guard saw `Some` and let the
-    // request go — a refusal moved from before the request to after it, for
-    // no reason.
+    // serve the two commands that write.
     session.csrftoken = args
         .csrftoken
         .as_deref()
@@ -710,9 +605,7 @@ async fn by_paste(args: LoginArgs, store: SecretStore, paths: &AppPaths) -> Resu
     finish(session, store, LoginMethod::Paste, paths, None).await
 }
 
-/// Validates, stores and reports. Shared by both methods so a session obtained
-/// either way is checked and announced identically. `renewing` is the account
-/// a browser login was for, whose replacement was said before it began.
+/// Validates, stores and reports.
 async fn finish(
     mut session: Session,
     secrets: SecretStore,
@@ -724,8 +617,7 @@ async fn finish(
     let account = paths.account(pk);
     let existed = account.dir().exists();
     // Before anything is written to the account's own database, which would
-    // then be the one it keeps. Housekeeping: a failure costs a warning, not
-    // the login.
+    // then be the one it keeps.
     let adopted = match snob_store::layout::adopt(paths, pk) {
         Ok(adopted) => adopted,
         Err(e) => {
@@ -747,14 +639,7 @@ async fn finish(
     {
         announce_replacement(previous);
     }
-    // Neither method hands over a username. From the browser `validate`
-    // reads it off the tab's document for nothing; without one it asks
-    // `/api/v1/users/{pk}/info/` — a second request right after the check,
-    // which is where a 429 and a two-hour cooldown land. Logging the stored
-    // account in again already knows its name: the commonest login, after a
-    // session expired, then costs the one request the check needs. So a
-    // renamed account keeps its old name through a login, until
-    // `snob whoami` reads the new one off the browser's document.
+    // Neither method hands over a username.
     let kept = previous.as_ref().map(|previous| previous.created_at);
     if session.username.is_none() {
         session.username = previous.and_then(|previous| previous.username);
@@ -763,13 +648,9 @@ async fn finish(
     // Checking a session is a request like any other, charged to the budget
     // of the account that signed in: repeated logins spend.
     let pacer = crate::app::pacer_saying_a_line(&account)?;
-    // Let in before the check, which goes out as any request does: a logout
-    // or purge of the account signed out every session it had then, and this
-    // one is a login's own (`owner::signed_out`). Pasting the very sessionid
-    // a logout signed out of makes a session of its own, let in here; the
-    // one a walk still holds from before stays refused. The session stored
-    // before is let in with it on a directory from before the list, so a
-    // check that fails leaves that one working (`admit_login`).
+    // Let in before the check, which goes out as any request does: a logout or
+    // purge of the account signed out every session it had then, and this one
+    // is a login's own (`owner::signed_out`).
     account.admit_login(session.created_at, kept)?;
     ui::info("Checking the session against Instagram...");
     let validated = login::validate(&mut session, pacer).await;
@@ -780,10 +661,7 @@ async fn finish(
     let stored = match validated {
         Ok(outcome) => store.save(&session).map(|()| outcome).map_err(Into::into),
         // A rejection during login means different things depending on where
-        // the session came from. Telling someone to check what they pasted is
-        // useless advice when the browser handed it over itself. Signed out
-        // on this computer while it was checked (a logout or a purge in
-        // another terminal) is not Instagram's doing, and says so itself.
+        // the session came from.
         Err(e) => Err(match &e {
             login::LoginError::Instagram(snob_ig::error::IgError::SignedOutHere) => {
                 anyhow::anyhow!(e)
@@ -809,9 +687,7 @@ async fn finish(
             // The browser the check went out from holds this session now, as
             // the account's newest, and would go on sending it in place of the
             // one still stored; and a browser login's profile is about to be
-            // put back under it. It is closed, and its mark forgets the
-            // session, so the next command starts one that takes the stored
-            // session whenever that was made.
+            // put back under it.
             crate::owner::release(paths, Some(pk)).await;
             crate::headless::ProfileMark::forget_session(&paths.browser_profile_for(pk));
             forget_the_attempt(&account, adopted, !existed && rejected);
@@ -825,8 +701,7 @@ async fn finish(
         ));
     }
 
-    // The account that signed in is the one commands act as from now on. A
-    // login that did not learn the name keeps the one it had.
+    // The account that signed in is the one commands act as from now on.
     let username = session.username.clone();
     let mut previous = None;
     let registry = Registry::update(paths, |registry| {
@@ -905,11 +780,9 @@ async fn finish(
     Ok(ExitCode::Ok)
 }
 
-/// Undoes what a login that did not happen left for an account nothing
-/// signs in as, so the id stays nobody's: the data it adopted goes back to
-/// waiting, and a directory it made for a session Instagram rejected goes.
-/// Only while the registry does not list the account, and a failure costs a
-/// warning: the login's own error is the one to report.
+/// Undoes what a login that did not happen left for an account nothing signs in
+/// as, so the id stays nobody's: the data it adopted goes back to waiting, and
+/// a directory it made for a session Instagram rejected goes.
 fn forget_the_attempt(account: &AccountPaths, adopted: bool, made_for_nothing: bool) {
     let listed =
         Registry::load(account).map_or(true, |registry| registry.get(account.pk()).is_some());
@@ -939,8 +812,7 @@ struct ChosenAgent {
     user_agent: String,
     /// The user gave it outright, so nothing may rewrite it later.
     pinned: bool,
-    /// Which browser it describes, when one was picked. This is what lets the
-    /// daily refresh follow the right browser on a machine with several.
+    /// Which browser it describes, when one was picked.
     browser: Option<String>,
 }
 
@@ -955,12 +827,6 @@ impl ChosenAgent {
 }
 
 /// Gets the User-Agent without sending the user to the browser console.
-///
-/// Instagram shows a warning in that console saying that anyone asking you to
-/// paste something there is scamming you, and copying from it easily drags in
-/// dozens of log lines that end up running as commands in the terminal. It is
-/// rebuilt from the installed browser's version, which is the only part of
-/// Chrome's User-Agent that varies since Google reduced it.
 fn resolve_user_agent() -> Result<ChosenAgent> {
     let installed = browser::detect_all();
 
@@ -972,12 +838,7 @@ fn resolve_user_agent() -> Result<ChosenAgent> {
         ));
 
         // With one browser installed nothing was asked, so the confirmation is
-        // the only chance to say it guessed wrong. No second gate on there
-        // being somebody to ask: `confirm` decides that itself, and a second
-        // predicate for the same question can disagree with it, and a stricter
-        // one would accept the guess in silence on a run with its output
-        // redirected. That guess becomes the stored User-Agent, and a wrong one
-        // is an `IgError::UserAgentMismatch` several commands later.
+        // the only chance to say it guessed wrong.
         if installed.len() == 1 && !ui::confirm("Is that the browser your session is in?", true)? {
             return prompt_user_agent();
         }
@@ -993,8 +854,7 @@ fn resolve_user_agent() -> Result<ChosenAgent> {
 }
 
 /// Asks for it outright, which is the last resort and also the most explicit
-/// thing the user can do — so what comes back is pinned. Following a browser's
-/// updates makes no sense for a string we could not have produced ourselves.
+/// thing the user can do — so what comes back is pinned.
 fn prompt_user_agent() -> Result<ChosenAgent> {
     // Guarded, or `echo "$SESSIONID" | snob login --paste` on a server with no
     // browser installed would feed the piped sessionid in as the User-Agent,

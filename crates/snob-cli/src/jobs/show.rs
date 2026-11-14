@@ -2,18 +2,8 @@
 //!
 //! **Only the account's own jobs**, the account this run acts as: an id is
 //! looked for in that account's jobs directory and nowhere else, so an agent
-//! served for one account cannot read, or stop, a walk of another's
-//! (AGENTS.md, "The MCP server", the jobs). An id of another account's, or
-//! one that is not an id, is "no such job".
-//!
-//! Nothing here writes but `cancel`'s `stop` file, so `snob jobs` and
-//! `snob status` keep the promise that reading costs nothing.
-//!
-//! The record is one JSON object, the same one `start` answers with, and the
-//! walk's own answer, once there is one, under `finished`: its exit, its
-//! output as it printed it, and the JSON error line it ended with
-//! (`main::wording_for`), which is how the MCP server reads a walk it ran
-//! itself (`commands::mcp::child`).
+//! served for one account cannot read, or stop, a walk of another's (AGENTS.md,
+//! "The MCP server", the jobs).
 
 use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -65,12 +55,9 @@ fn seconds(ms: i64) -> Epoch {
     EpochMs::new(ms).to_epoch()
 }
 
-/// Whether `line` is a record of the log, as `main::init_tracing` writes
-/// one (an optional time, a level, the spans and the module it came from,
-/// each ending in a colon), and not a sentence a command wrote for its
-/// reader. Such a record may carry what Instagram answered, and is no
-/// answer to hand an agent or a person reading a job's failure. Colors, when
-/// the log has them, are left out first.
+/// Whether `line` is a record of the log, as `main::init_tracing` writes one
+/// (an optional time, a level, the spans and the module it came from, each
+/// ending in a colon), and not a sentence a command wrote for its reader.
 pub(crate) fn is_log_record(line: &str) -> bool {
     let plain = without_colors(line);
     let mut words = plain.split_whitespace();
@@ -116,9 +103,7 @@ fn without_colors(line: &str) -> String {
 }
 
 /// What a command said, less the records of the log among it
-/// ([`is_log_record`]): the lines its reader is meant to read. All of them
-/// when nothing else is left, so a failure that said nothing else is not
-/// told as having said nothing.
+/// ([`is_log_record`]): the lines its reader is meant to read.
 pub(crate) fn sentences(lines: Vec<&str>) -> Vec<&str> {
     let kept: Vec<&str> = lines
         .iter()
@@ -129,9 +114,7 @@ pub(crate) fn sentences(lines: Vec<&str>) -> Vec<&str> {
 }
 
 /// The newest progress line a walk wrote (`--progress-json`), from the end of
-/// its log: the object under `progress`. Not a `served` line, which says
-/// where a list came from once it is done with (`finished` reads those), and
-/// nothing of how far the walk is.
+/// its log: the object under `progress`.
 pub fn newest_progress(dir: &Path) -> Option<Value> {
     let tail = tail_of(&file(dir, "err.log"), TAIL)?;
     tail.lines()
@@ -164,11 +147,10 @@ pub fn served_lists(dir: &Path) -> Vec<String> {
 
 /// Every `served` line of the walk's log, oldest first, the object under
 /// `progress` (`Progress::served`). **Read through the whole log, not its
-/// tail**: a crossing's first list says it before the second list's pages,
-/// a line each, which a walk that waits out the day's accounts may write
-/// by the thousand, and a tail would then lose the first list, which the
-/// time left would count again and `finished` would not say was stored. A
-/// line at a time, keeping only those, so what is held is what they are.
+/// tail**: a crossing's first list says it before the second list's pages, a
+/// line each, which a walk that waits out the day's accounts may write by the
+/// thousand, and a tail would then lose the first list, which the time left
+/// would count again and `finished` would not say was stored.
 fn served_lines(dir: &Path) -> Vec<Value> {
     let Ok(log) = std::fs::File::open(file(dir, "err.log")) else {
         return Vec::new();
@@ -197,25 +179,20 @@ fn served_lines(dir: &Path) -> Vec<Value> {
     served
 }
 
-/// How long the walk has left, the fewest and the most seconds, from where
-/// its newest progress line puts it, timed by the pace alone
+/// How long the walk has left, the fewest and the most seconds, from where its
+/// newest progress line puts it, timed by the pace alone
 /// (`engine::estimate::walks_seconds`):
 ///
-/// - the pages left of the list it is on, **no more than its `--max-pages`
-///   and `HARD_PAGE_CAP` let it read**, and **of the lists of a crossing it
-///   has not reached**, from the estimate it was started with (a list that
-///   may be reused counts none at least; one of a size not known when it
-///   started, at least a page, and at most as many as the list under way),
-///   each with its dwell;
+/// - the pages left of the list it is on, **no more than its `--max-pages` and
+///   `HARD_PAGE_CAP` let it read**, and **of the lists of a crossing it has not
+///   reached**, from the estimate it was started with (a list that may be
+///   reused counts none at least; one of a size not known when it started, at
+///   least a page, and at most as many as the list under way), each with its
+///   dwell;
 /// - **from where the account's sitting is**, as the newest line says it
 ///   (`sitting`, `rest_until`), not from where the walk began: a walk that
 ///   starts on a sitting earlier work left part full rests sooner;
 /// - and what is left of a wait it is in.
-///
-/// Before its first line, and before its first page while the lines do not
-/// yet say where the sitting is, the estimate it was started with, which
-/// read the sitting, less the time since. `None` when there is nothing to
-/// tell it by. `served` names the lists it is done with ([`served_lists`]).
 pub fn eta(
     seen: &Seen,
     progress: Option<&Value>,
@@ -259,9 +236,8 @@ pub fn eta(
         .as_u64()
         .map_or(0, |of| of.div_ceil(per_page).min(cap));
     let current = progress["list"].as_str();
-    // The lists of the estimate not yet reached: neither answered with nor
-    // the one under way. A crossing's estimate names both, in the order they
-    // are read.
+    // The lists of the estimate not yet reached: neither answered with nor the
+    // one under way.
     let to_come: Vec<(u64, u64)> = estimate
         .and_then(|estimate| estimate["lists"].as_array())
         .into_iter()
@@ -308,9 +284,8 @@ pub fn eta(
         0
     };
     let full = u64::from(snob_ig::pace::PAGES_PER_SITTING);
-    // A rest is what the walk owes before its next page, which the pace
-    // already counts; any other wait is on top of it. A rest the sitting
-    // owes and the walk has not begun to wait is the sitting's own.
+    // A rest is what the walk owes before its next page, which the pace already
+    // counts; any other wait is on top of it.
     let owed = progress["rest_until"].as_i64().map_or(0, |until| {
         u64::try_from(until.saturating_sub(now)).unwrap_or(0)
     });
@@ -319,12 +294,10 @@ pub fn eta(
     } else {
         (owed, wait_left.div_ceil(1000))
     };
-    // Where the account's sitting is, a line first says once a page has
-    // left it (`Event::Page`): before the walk's first page, `started` and
-    // the waits before it say nothing, and a sitting earlier work left part
-    // full would be timed as a fresh one. The estimate read the sitting, so
-    // it is what tells, with a wait for the budget on top, which it leaves
-    // out (a rest owed is in it).
+    // Where the account's sitting is, a line first says once a page has left it
+    // (`Event::Page`): before the walk's first page, `started` and the waits
+    // before it say nothing, and a sitting earlier work left part full would be
+    // timed as a fresh one.
     if progress["sitting"].is_null()
         && page == 0
         && progress["event"] != "finished"
@@ -333,8 +306,7 @@ pub fn eta(
         return Some((least + other, most + other));
     }
     // The account's sitting, as the newest page left it; an older line that
-    // does not say it is read as the walk's own pages. A full one whose rest
-    // is over is a new sitting.
+    // does not say it is read as the walk's own pages.
     let into_sitting = match progress["sitting"].as_u64() {
         Some(pages) if pages >= full && rest == 0 => 0,
         Some(pages) => pages,
@@ -379,12 +351,11 @@ pub fn record(seen: &Seen, now: i64) -> Value {
     })
 }
 
-/// What the walk answered, once it has ended: its exit, what it printed and
-/// the JSON error line it ended with, as a call's child is read
+/// What the walk answered, once it has ended: its exit, what it printed and the
+/// JSON error line it ended with, as a call's child is read
 /// (`commands::mcp::child`), and `served`, where each list it answered with
-/// came from (`Progress::served`: a walk, or what is stored, and when that
-/// was read). `output` is `null` a day after the walk ended, swept or not
-/// (`jobs::sweep`).
+/// came from (`Progress::served`: a walk, or what is stored, and when that was
+/// read).
 pub fn finished(seen: &Seen) -> Option<Value> {
     if !seen.status.finished() {
         return None;
@@ -488,8 +459,7 @@ pub async fn show(
 }
 
 /// How a finished job ended, for a person: its exit, and, when it left a
-/// result, how many entries it holds and where to read it. "It exited ok."
-/// alone left nobody knowing there was a list to be had.
+/// result, how many entries it holds and where to read it.
 fn ended(finished: &Value, id: &str) -> String {
     let exit = finished["exit"].as_str().unwrap_or("error");
     match finished.get("output") {

@@ -1,58 +1,24 @@
 //! Keys for the interactive views, read through `crossterm` rather than
 //! `console::Term::read_key`.
 //!
-//! Reading is its own module because it is its own problem: `ratatui` only
-//! writes, and `console` -- which still asks the capability questions and
-//! prints everything outside the views -- reads keys badly. Two of the
-//! reasons are defects rather than conveniences.
+//! Every modified arrow is `ESC [ 1 ; <mod> <letter>`, so Shift+Left arrives as
+//! `ESC[1;2D` and is read as: an unrecognized sequence (ignored), then `2`
+//! (ignored), then **`D`**, the download key.
 //!
-//! **Under `console`, Shift+Left downloads a story.** Its escape parser
-//! understands `ESC [ <letter>` and `ESC [ <digit> ~`, and nothing else -- it
-//! has no notion of parameters. Every modified arrow is `ESC [ 1 ; <mod>
-//! <letter>`, so Shift+Left arrives as `ESC[1;2D` and is read as: an
-//! unrecognized sequence (ignored), then `2` (ignored), then **`D`**, the
-//! download key. Three passes of the loop, all instant. Ctrl+Left is the
-//! same. Here a modified arrow is a `KeyEvent` carrying `KeyModifiers`, and
-//! [`action_of`] refuses anything that is not plain or plain-with-shift.
-//!
-//! **Without DEC private mode 2004, pasted text runs as commands.** A
-//! terminal then sends pasted text as its characters, so a paste containing a
-//! `d` downloads and one containing a `q` quits. There is no fix for this
-//! without the mode: with no wrapper there is nothing to tell a paste from
-//! somebody typing quickly. `EnableBracketedPaste` plus crossterm's parser
-//! turns the whole paste into one `Event::Paste` to drop on the floor, and that
-//! is the single strongest argument for reading keys here.
-//!
-//! Three more things follow, each of which `console` cannot do at all:
+//! **Without DEC private mode 2004, pasted text runs as commands.**
 //!
 //! - **A wait that ends by itself.** `read_key` blocks with no timeout and
-//!   there is no `poll` beside it. [`next`] takes a timeout, which is what lets
-//!   the browser wake up, re-read the terminal size and redraw.
+//!   there is no `poll` beside it.
 //! - **Resize.** On Unix it is `SIGWINCH`, folded into the same `mio` poll
-//!   tokio already runs. On Windows there is no such signal; it arrives as a
-//!   `WINDOW_BUFFER_SIZE_EVENT`, which `console` does not merely fail to report
-//!   -- its `read_key_event` loop skips every record that is not a `KEY_EVENT`,
-//!   so it consumes and discards it.
-//! - **Raw mode that lasts.** `read_single_key` calls `tcsetattr` twice
-//!   around every keypress, so between two keys the terminal is back in
-//!   canonical mode with `ECHO` on: anything typed while a browser is off
-//!   fetching megabytes from the CDN would echo into the frame. The raw mode
-//!   these views hold for the whole session lives on [`crate::ui::tui::Tui`],
-//!   with the rest of the terminal claim.
+//!   tokio already runs.
+//! - **Raw mode that lasts.** `read_single_key` calls `tcsetattr` twice around
+//!   every keypress, so between two keys the terminal is back in canonical mode
+//!   with `ECHO` on: anything typed while a browser is off fetching megabytes
+//!   from the CDN would echo into the frame.
 //!
-//! **Focus is taken, and only to do less.** With focus reporting on, the
-//! terminal says when its window gains and loses the focus, and a view that
-//! is not being looked at wakes every [`UNFOCUSED_TICK`] rather than every
-//! [`TICK`]. It still draws what changes, the next screen, a load that
-//! finished, as it happens: a terminal without the focus is often still on
-//! screen, beside the window that has it. A terminal that never reports focus
-//! is taken as focused for good, which is how every view behaved before.
+//! **Focus is taken, and only to do less.**
 //!
 //! What is **not** taken: mouse tracking and the kitty keyboard protocol.
-//! Mouse capture breaks the terminal's own text selection, which is the
-//! loudest complaint against every full-screen tool that turns it on, and four
-//! keys do not need it. The kitty protocol exists to disambiguate Shift+Enter
-//! and Ctrl+Enter, which nothing here binds.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,28 +28,13 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use snob_ig::pace::CancelToken;
 
 /// How long the browser waits before waking up to look at the terminal size.
-///
-/// An unchanged frame writes nothing (`ui::tui::Screen` is what holds the
-/// renderer to that), so the cost of a wake-up is one
-/// `GetConsoleScreenBufferInfo` or `TIOCGWINSZ` and a cell-buffer diff that
-/// finds nothing to send. Short enough that a resize looks immediate, long
-/// enough that an idle browser is not a spin.
-///
-/// The raw mode these reads depend on is the guard's — `ui::tui::Tui` turns
-/// it on for the whole session, which is also what makes Ctrl+C answerable:
-/// under crossterm's raw mode it is a `KeyEvent` carrying `CONTROL`, on both
-/// platforms, which is something a program can decide about.
 pub const TICK: Duration = Duration::from_millis(150);
 
-/// How long a view whose terminal has lost the focus waits before waking up
-/// on its own: seven times in a second become one every two. Not longer,
-/// because the wake-up is also where a stop the system asked for is noticed
-/// ([`read`]), and Windows gives a closing console a few seconds.
+/// How long a view whose terminal has lost the focus waits before waking up on
+/// its own: seven times in a second become one every two.
 pub const UNFOCUSED_TICK: Duration = Duration::from_secs(2);
 
-/// Whether the terminal has the focus, as it last said. Written by [`read`],
-/// the one place every view and the fetch watcher read through, so a change
-/// that arrives while a fetch runs is not lost with the keys it drops.
+/// Whether the terminal has the focus, as it last said.
 static FOCUSED: AtomicBool = AtomicBool::new(true);
 
 /// Whether the terminal has the focus, as far as anybody can tell: `true`
@@ -106,10 +57,6 @@ pub fn tick() -> Duration {
 }
 
 /// What the browser understands, resolved from a key.
-///
-/// Separated from the key so that the binding can be tested without a terminal,
-/// which is the only way to hold on to the two defects above: there are tests
-/// below asserting that Shift+Left and Ctrl+D are not downloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Up,
@@ -119,19 +66,15 @@ pub enum Action {
     First,
     Last,
     Open,
-    /// One level up, in a view that has levels: from a folder back to the
-    /// tray in the highlights browser and the account list, from a sub-view
-    /// back to the card in the profile, and out of the account picker. The
-    /// flat views ignore it. Not `Quit`: leaving a folder and leaving the
-    /// program are different intentions. Esc is `Quit` here; the views that
-    /// give it a gentler meaning bind it before asking this.
+    /// One level up, in a view that has levels: from a folder back to the tray
+    /// in the highlights browser and the account list, from a sub-view back to
+    /// the card in the profile, and out of the account picker.
     Back,
     Download,
     /// The account picker: which account this view acts as.
     Accounts,
-    /// The page of what is under the cursor, on instagram.com, in the
-    /// browser the system opens addresses with. `w` and not `o`: in the posts
-    /// browser `o` already opens the item in the viewer.
+    /// The page of what is under the cursor, on instagram.com, in the browser
+    /// the system opens addresses with.
     Web,
     /// The picture under the cursor, drawn in the terminal (`ui::preview`),
     /// in a build that draws them; nothing in one that does not.
@@ -145,19 +88,10 @@ pub enum Action {
 }
 
 /// What came back from the terminal, before any binding is applied.
-///
-/// For the one browser that has a text mode: while the account list is being
-/// filtered, a `q` is a letter of somebody's name and not a way out, so the
-/// binding cannot be decided here. Everything else keeps reading through
-/// [`next`], which applies [`action_of`] and swallows pastes — a browser with
-/// no text mode has nowhere safe to put one.
 pub enum Raw {
-    /// A key going down. Releases are already filtered out — on Windows the
-    /// console reports both, and without the filter every keystroke would
-    /// count twice.
+    /// A key going down.
     Key(KeyEvent),
-    /// A paste, whole, thanks to bracketed paste. The caller decides whether
-    /// it is text to keep or noise to drop.
+    /// A paste, whole, thanks to bracketed paste.
     Paste(String),
     Resized,
     Tick,
@@ -165,12 +99,7 @@ pub enum Raw {
 
 /// Waits up to `timeout` for something to happen, and hands it over unbound.
 ///
-/// **A stop the system asked for arrives as a Ctrl+C.** Raw mode keeps the
-/// signal from being one, and the browsers decide about the key, so a
-/// `SIGTERM` or a closing console would cancel the token and leave an idle
-/// browser waiting for a key nobody will press. Every browser reads through
-/// here, between keys and while a fetch runs (`watching_cancel_keys`), so each
-/// one leaves by the road it already has for Ctrl+C.
+/// **A stop the system asked for arrives as a Ctrl+C.**
 pub fn read(timeout: Duration) -> std::io::Result<Raw> {
     if crate::interrupt::asked_by_the_system() {
         return Ok(Raw::Key(system_stop()));
@@ -182,8 +111,6 @@ pub fn read(timeout: Duration) -> std::io::Result<Raw> {
         Event::Resize(..) => Raw::Resized,
         // Read as a resize, which every view answers by drawing: what changed
         // while nobody looked is put on screen as they come back.
-        // And the browsers this view reads through run at the normal pace
-        // while somebody looks at it, efficiently while not (`power::qos`).
         Event::FocusGained => {
             FOCUSED.store(true, Ordering::Relaxed);
             crate::owner::attended(true);
@@ -196,8 +123,7 @@ pub fn read(timeout: Duration) -> std::io::Result<Raw> {
         }
         Event::Paste(text) => Raw::Paste(text),
         // `KeyEventKind` matters on Windows, where the console reports the
-        // release of a key as well as the press. Without this filter every
-        // keystroke moves the selection twice.
+        // release of a key as well as the press.
         Event::Key(key) if key.kind == KeyEventKind::Press => Raw::Key(key),
         _ => Raw::Tick,
     })
@@ -209,11 +135,6 @@ fn system_stop() -> KeyEvent {
 }
 
 /// Waits up to `timeout` for a key, and binds it.
-///
-/// `None` when the wait ended with nothing in it or the terminal changed
-/// size, which mean the same to a view: go round and draw. No size travels
-/// with a resize -- the view re-reads it when it paints -- and an unchanged
-/// frame writes nothing, so an idle view waiting for one sends no bytes.
 pub fn next(timeout: Duration) -> std::io::Result<Option<Action>> {
     Ok(bound(read(timeout)?))
 }
@@ -224,16 +145,13 @@ pub fn next(timeout: Duration) -> std::io::Result<Option<Action>> {
 pub fn bound(raw: Raw) -> Option<Action> {
     match raw {
         Raw::Tick | Raw::Resized => None,
-        // Swallowed whole, and that is the entire fix. Without mode 2004 the
-        // same paste arrives as its characters and some of them are commands.
+        // Swallowed whole, and that is the entire fix.
         Raw::Paste(_) => Some(Action::None),
         Raw::Key(key) => Some(action_of(key)),
     }
 }
 
-/// The error a view leaves with when the keyboard cannot be read. Said on
-/// the way out rather than written into the note line, which the next redraw
-/// would show, and there is no next redraw.
+/// The error a view leaves with when the keyboard cannot be read.
 pub fn unreadable(e: std::io::Error) -> anyhow::Error {
     crate::exit::ExitError::new(
         crate::exit::ExitCode::Error,
@@ -243,20 +161,12 @@ pub fn unreadable(e: std::io::Error) -> anyhow::Error {
 }
 
 /// Binds one key.
-///
-/// Plain, or plain with shift, and nothing else. A modified arrow is somebody
-/// reaching for a binding of their terminal, their multiplexer or their window
-/// manager, and answering it would take a key that belongs to somebody else.
-/// Under `console` the same bytes, `ESC[1;5D` for Ctrl+Left, reach a view as a
-/// `D` that downloads (see the module header).
 pub fn action_of(key: KeyEvent) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let plain = !ctrl && !key.modifiers.contains(KeyModifiers::ALT);
     match key.code {
         KeyCode::Char('c') if ctrl => Action::Interrupt,
-        // The universal "what is on screen is wrong, draw it again". Worth
-        // binding in any program that keeps a belief about the screen, and
-        // worth it twice on Windows, where ConPTY coalesces positioned writes.
+        // The universal "what is on screen is wrong, draw it again".
         KeyCode::Char('l') if ctrl => Action::Redraw,
         KeyCode::Up | KeyCode::Char('k') if plain => Action::Up,
         KeyCode::Down | KeyCode::Char('j') if plain => Action::Down,
@@ -265,14 +175,9 @@ pub fn action_of(key: KeyEvent) -> Action {
         KeyCode::Home | KeyCode::Char('g') if plain => Action::First,
         KeyCode::End | KeyCode::Char('G') if plain => Action::Last,
         KeyCode::Enter => Action::Open,
-        // Right alongside Enter and Left alongside Backspace: in a browser
-        // with levels the arrows walk into and out of a folder, the way every
-        // two-pane file view binds them. In the flat story list Right opens,
-        // which is what Enter does, and Left does nothing.
-        //
-        // `l` and `h` are the same two arrows for a hand that stays on the
-        // home row, as `j` and `k` are the other two. Ctrl+L is matched
-        // above, so it stays the redraw.
+        // Right alongside Enter and Left alongside Backspace: in a browser with
+        // levels the arrows walk into and out of a folder, the way every
+        // two-pane file view binds them.
         KeyCode::Right | KeyCode::Char('l') if plain => Action::Open,
         KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') if plain => Action::Back,
         KeyCode::Char('d') | KeyCode::Char('D') if plain => Action::Download,
@@ -291,12 +196,6 @@ pub enum Stopped {
     /// The future ran to its own end.
     No,
     /// `q`: stop what is in flight and leave the browser cleanly.
-    ///
-    /// Esc is deliberately not a stop. In a browser with levels it means "up
-    /// one level", and a canceled pacer token stays canceled — a browser
-    /// that stayed open after one would refuse every fetch it has left.
-    /// Leaving is the only thing a cancellation can be followed by, and `q`
-    /// and Ctrl+C are the two keys that already mean leaving everywhere.
     Quit,
     /// Ctrl+C: stop and leave saying so.
     Interrupt,
@@ -313,25 +212,10 @@ impl Stopped {
     }
 }
 
-/// How often the fetch watcher wakes to look for a stop key. Shorter than
-/// [`TICK`]: it is also the longest a finished fetch waits for the watcher
-/// to notice it can stand down.
+/// How often the fetch watcher wakes to look for a stop key.
 const WATCH: Duration = Duration::from_millis(50);
 
 /// Runs a fetch with the keyboard still alive.
-///
-/// Raw mode delivers Ctrl+C as a key event, never as a signal — so during an
-/// `.await` inside a browser loop *neither* cancellation route exists by
-/// itself: the `interrupt::install` task never fires, and the key loop is not
-/// running, so a story that stalls against its 60-second timeout would hold
-/// the whole terminal hostage. This watches the keyboard on a blocking thread
-/// while the future runs; Ctrl+C and `q` cancel `cancel` — the token every
-/// request and CDN download already races — so the future resolves promptly
-/// with a canceled error and the caller leaves through [`Stopped::leave`].
-///
-/// Keys that are not a stop are deliberately consumed and dropped: type-ahead
-/// against a busy browser replays against whatever frame comes next, and a
-/// buffered `d` is a download nobody watched themselves ask for.
 pub async fn watching_cancel_keys<T>(
     cancel: &CancelToken,
     fut: impl std::future::Future<Output = T>,
@@ -374,10 +258,6 @@ pub async fn watching_cancel_keys<T>(
 }
 
 /// How far Page Up and Page Down move, given how many rows the list has.
-///
-/// What is on screen less one row, so that the row the selection was on stays
-/// visible after the jump and there is something to read the new position
-/// against. Not input, but it belongs beside the two keys that ask for it.
 pub fn page(height: usize) -> usize {
     height.saturating_sub(1).max(1)
 }

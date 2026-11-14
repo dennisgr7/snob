@@ -1,16 +1,6 @@
 //! `snob watch deliver`: send what the queue owes the webhook, now.
 //!
-//! **No request to Instagram, and no session.** A report is queued with its
-//! bytes in the same transaction that moves the monitor on
-//! (`store::watch::commit_report`), so delivering it needs the account's
-//! database and the webhook and nothing else: no client is built, no
-//! session is read, and the budget is not touched. It is the queue drain a
-//! run ends with (`run::drain_all`), without the run.
-//!
-//! The two differences are the person: the reports still waiting out their
-//! backoff go too, since somebody asked for them now (`deliveries::owed_now`),
-//! and what came of it is the answer, with exit 1 (`not_delivered`) when a
-//! report it tried did not arrive, as `watch once` has.
+//! **No request to Instagram, and no session.**
 
 use anyhow::Result;
 use snob_store::config;

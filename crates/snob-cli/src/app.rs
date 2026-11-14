@@ -1,14 +1,4 @@
 //! What every command hangs off.
-//!
-//! One place assembles the four things the tool is made of — who we are talking
-//! as, where the data is kept, what the requests cost, and how the run reports
-//! itself — and hands them out already wired together. Commands take an `App`
-//! and orchestrate; they never build a client or open a database themselves.
-//!
-//! The order below is not arbitrary. The progress bar has to exist before the
-//! pacer, because the pacer is what announces a wait and the bar is where that
-//! announcement goes; and the pacer has to exist before the client, because a
-//! client without one cannot be built at all.
 
 use std::sync::{Arc, OnceLock};
 
@@ -36,11 +26,6 @@ pub struct Viewer {
 
 impl Viewer {
     /// The name, filtered for anything that is going to draw it.
-    ///
-    /// It came from Instagram — `resolve_username`, or the browser handing the
-    /// session over — not from the person running the tool, so it is treated
-    /// like any other name off the wire, as `engine::target::label` treats the
-    /// name that was typed.
     pub fn safe_username(&self) -> Option<String> {
         self.username.as_deref().map(snob_core::model::printable)
     }
@@ -59,9 +44,6 @@ impl Viewer {
 
 /// How to name any account to a person: `@someone`, or the id when the name has
 /// not been learned yet.
-///
-/// A free function because the monitor names accounts it never has a `Viewer`
-/// for, and one spelling of the rule is one place to remember `printable`.
 pub fn label(pk: Pk, username: Option<&str>) -> String {
     match username {
         Some(name) => format!("@{}", snob_core::model::printable(name)),
@@ -71,12 +53,6 @@ pub fn label(pk: Pk, username: Option<&str>) -> String {
 
 /// The same rule where the absent case means the viewer rather than an account
 /// whose name is not known yet.
-///
-/// [`label`] answers "which account is this" and falls back to an id; this
-/// answers "whose lists are we talking about" and falls back to "your account".
-/// Two different questions, which is why they are two functions. This one names
-/// the target in the banner a scheduled run opens with, the line `watch check`
-/// prints per account, and the context on a failed walk.
 pub fn target_label(target: Option<&str>) -> String {
     match target {
         Some(name) => format!("@{}", snob_core::model::printable(name)),
@@ -85,17 +61,6 @@ pub fn target_label(target: Option<&str>) -> String {
 }
 
 /// The one place a [`Pacer`] is assembled.
-///
-/// Three things have to be true of every one of them: the store is opened
-/// first, because it creates the schema the budget then opens its own
-/// connection to; the process's cancellation token is attached, so Ctrl+C
-/// reaches a request waiting on the budget; and somebody is told when a wait is
-/// imposed, because a command that stops dead for twenty minutes with no
-/// explanation reads as a hang.
-///
-/// `announce` stays with the caller: what a wait looks like is presentation, and
-/// a progress bar is right for a walk while a line on standard error is right
-/// for a single request. The wiring is what is shared.
 fn pacer(
     paths: &AccountPaths,
     announce: Arc<dyn Fn(std::time::Duration) + Send + Sync>,
@@ -110,14 +75,9 @@ fn pacer(
 }
 
 /// `--max-wait`, set once by `main` before any command runs.
-///
-/// Process-wide, like the cancellation token beside it: it is a property of
-/// the run, and every pacer the run builds has to obey it, including the ones
-/// built deep inside the monitor.
 static MAX_WAIT: OnceLock<Option<std::time::Duration>> = OnceLock::new();
 
-/// Sets `--max-wait` for every pacer this run builds. A second call changes
-/// nothing.
+/// Sets `--max-wait` for every pacer this run builds.
 pub fn wait_at_most(limit: Option<std::time::Duration>) {
     let _ = MAX_WAIT.set(limit);
 }
@@ -148,11 +108,8 @@ static SPEND_ALONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 ///
 /// **For runs an agent started** (`snob mcp` gives it to every child that may
 /// reach Instagram): an agent makes its calls in parallel by habit, and two
-/// processes walking one account interleave their requests. The persistent
-/// budget still bounds the average across processes, but the pause between
-/// two pages and the dwell before a list are waited per process, and the
-/// budget's burst would drain at once. A command a person types does not take
-/// it (AGENTS.md, "The MCP server").
+/// processes walking one account interleave their requests. A command a person
+/// types does not take it (AGENTS.md, "The MCP server").
 pub fn spend_alone() {
     SPEND_ALONE.store(true, std::sync::atomic::Ordering::SeqCst);
 }
@@ -189,15 +146,11 @@ pub fn pacer_saying_a_line(paths: &AccountPaths) -> Result<Pacer> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Held {
     pub until_ms: EpochMs,
-    /// The accounts whose push-backs stopped every account, named. Empty when
-    /// what holds this account is its own cooldown.
+    /// The accounts whose push-backs stopped every account, named.
     pub braked: Vec<String>,
 }
 
 /// [`Pacer::cooldown`], and whether it is the brake on every account.
-///
-/// `paths` is where the braked accounts' names are looked up; without it, or
-/// with the registry unreadable, they are named by id.
 pub fn held(pacer: &Pacer, paths: Option<&AppPaths>) -> Result<Option<Held>> {
     let Some(until_ms) = pacer.cooldown()? else {
         return Ok(None);
@@ -207,9 +160,6 @@ pub fn held(pacer: &Pacer, paths: Option<&AppPaths>) -> Result<Option<Held>> {
 
 /// A cooldown until `until_ms`, named as [`held`] names it: by the accounts
 /// whose push-backs braked every account when `brake` is what lasts longest.
-/// For a reader that has the budget's state rather than a pacer
-/// (`rate_budget::state`, which `--dry-run` and the checks made before an
-/// agent's call is asked about read, writing nothing).
 pub fn held_by(
     until_ms: EpochMs,
     brake: Option<&snob_core::budget::Brake>,
@@ -232,13 +182,6 @@ pub fn held_by(
 }
 
 /// How a run could have been given consent before it started.
-///
-/// The refusal printed when nobody is at a terminal names the way *this*
-/// command takes an answer in advance, and the two commands do not take it the
-/// same way. The list commands have `-y`. `snob watch once` deliberately does
-/// not — the reasoning is written at `WatchOnceArgs` in `cli.rs`, and it is
-/// that consent handed over on a command line is consent from whoever wrote
-/// the cron entry — so advice naming `-y` there would fail to parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConsentInAdvance {
     /// `-y` on the command line.
@@ -257,36 +200,19 @@ pub struct App {
     progress: Progress,
     consent_in_advance: ConsentInAdvance,
     viewer: Viewer,
-    /// Where the other accounts are named, for [`App::held`]. `None` in a test
-    /// app, which names them by id.
+    /// Where the other accounts are named, for [`App::held`].
     app_paths: Option<AppPaths>,
     consented: Option<String>,
     /// What was asked for, what it resolved to, and the action it was resolved
     /// in.
     ///
-    /// A crossing calls `engine::list` twice, and without this each call would
-    /// resolve from scratch: two identical `web_profile_info` requests about the
-    /// same account seconds apart, or four on a session whose username has never
-    /// been resolved, because resolving the name and polling the counters are
-    /// separate requests there.
-    ///
     /// **The question is part of the key, not just the answer**, because `snob
-    /// watch` walks several configured accounts through a single `App`: keyed
-    /// on the target alone, the second account would be handed the first one's
+    /// watch` walks several configured accounts through a single `App`: keyed on
+    /// the target alone, the second account would be handed the first one's
     /// target, and its changes committed under the first account's marks.
-    /// Keying on what was asked makes reuse mean "the same question".
-    ///
-    /// The action is what makes reuse safe in time. Requests are paced per
-    /// user action (`snob_ig::pace`): the requests that open a profile, its
-    /// hover card among them, go out within seconds of each other, while a
-    /// walk takes minutes in which the account may have changed. So the
-    /// counters are only good while `Pacer::actions()` has not moved, which a
-    /// walk, each sitting of one and a monitor tick move. "N requests" and the
-    /// JSON `requests` still read `Pacer::spent()`, the truth about requests.
     resolved: Option<Memo>,
-    /// Asked between every two pages of a walk: `true` stops it there, kept
-    /// for the next run. Set by the monitor alone, to the battery being
-    /// critical ([`App::stops_on_a_critical_battery`]).
+    /// Asked between every two pages of a walk: `true` stops it there, kept for
+    /// the next run.
     stop_between_pages: Option<fn() -> bool>,
     /// The account's `spend.lock`, held for as long as the run, under
     /// `--spend-alone` ([`spend_alone`]). Never read: holding it is the point.
@@ -295,8 +221,7 @@ pub struct App {
 
 /// One resolution, and the question it answers.
 struct Memo {
-    /// The `--target` this was resolved for, exactly as it was given. `None` is
-    /// the viewer's own account, which is a different question from any name.
+    /// The `--target` this was resolved for, exactly as it was given.
     asked: Option<String>,
     target: target::Target,
     /// `Pacer::actions()` when it was resolved, or its counters were read.
@@ -306,18 +231,11 @@ struct Memo {
 impl App {
     /// Opens everything for a run that acts as the account `paths` is.
     ///
-    /// `None` means there is no session stored, which every command turns into
-    /// the same message and the same exit code. A session that is another
-    /// account's is refused: its requests would be paid for, and recorded, in
-    /// this account's database.
-    ///
-    /// **A session this computer no longer sends as is refused here**, with
-    /// the no-session exit and a sentence that says so
+    /// **A session this computer no longer sends as is refused here**, with the
+    /// no-session exit and a sentence that says so
     /// (`commands::common::signed_out_here`): its account was signed out of
     /// here since it was stored, which `owner::signed_out` asks again before
-    /// every request, the backstop for one signed out of while the run goes
-    /// on. Refused at the start, it opens nothing and makes no directory, and
-    /// is not blamed on Instagram.
+    /// every request, the backstop for one signed out of while the run goes on.
     pub fn open(
         secrets: &SessionStore,
         paths: &AccountPaths,
@@ -339,8 +257,7 @@ impl App {
         }
 
         // Before anything that could send a request: a run refused here has
-        // spent nothing. After the session is read, so a sandbox or a machine
-        // with no session still answers "log in" rather than "busy".
+        // spent nothing.
         let alone = if SPEND_ALONE.load(std::sync::atomic::Ordering::SeqCst) {
             paths.ensure_dirs()?;
             Some(
@@ -353,8 +270,7 @@ impl App {
 
         // Done here rather than at login because a browser updates long after
         // the session was created, and this is the only moment every command
-        // passes through. Failing to store the fresher one is not worth an
-        // error: the session still works, and the next run tries again.
+        // passes through.
         if crate::browser::refresh_user_agent(&mut session)
             && let Err(e) = secrets.save(&session)
         {
@@ -368,9 +284,7 @@ impl App {
         crate::report::act_as(viewer.clone());
 
         let db = Store::open(paths)?;
-        // Retention, for the commands that are not the monitor. At most once a
-        // day, and here because this is the only moment every command passes
-        // through -- the same reason the User-Agent refresh above is here.
+        // Retention, for the commands that are not the monitor.
         crate::engine::watch::settle_daily(&db);
         let progress = Progress::new(with_progress);
         // Armed before the pacer opens the store and the budget, so a Ctrl+C
@@ -402,11 +316,6 @@ impl App {
     }
 
     /// An app wired by hand, so the engine can be driven against a mock server.
-    ///
-    /// **Tests only.** It skips the signal handler and the progress bar, which
-    /// are the two things a test has no use for and one of which would spawn a
-    /// task per test. Its cancellation is the client's pacer token, as in
-    /// [`App::open`], so canceling a test app reaches its requests.
     #[doc(hidden)]
     pub fn for_test(client: IgClient, db: Store, viewer: Viewer) -> Self {
         Self {
@@ -428,18 +337,12 @@ impl App {
     }
 
     /// The client, to be held by a task.
-    ///
-    /// `JoinSet` wants `'static`, and `IgClient` is deliberately not `Clone`
-    /// -- it owns the pacer and the cancel token, and two of it would be two
-    /// budgets. One `Arc` is what lets several story downloads share the one
-    /// client and its one CDN connection pool; nothing else needs this.
     pub fn client_shared(&self) -> Arc<IgClient> {
         Arc::clone(&self.client)
     }
 
     /// The three pieces a walk needs at once: it reads through the client and
-    /// writes through the store while both are borrowed. Handing them out
-    /// together is what lets the compiler see they are different fields.
+    /// writes through the store while both are borrowed.
     pub fn parts(&mut self) -> (&IgClient, &mut Store, &Progress) {
         (&self.client, &mut self.db, &self.progress)
     }
@@ -468,8 +371,7 @@ impl App {
         held(self.client.pacer(), self.app_paths.as_ref())
     }
 
-    /// The account this run acts as. There is always one: an `App` cannot be
-    /// built without a session.
+    /// The account this run acts as.
     pub fn viewer(&self) -> &Viewer {
         &self.viewer
     }
@@ -477,23 +379,10 @@ impl App {
     /// Whether the user has already agreed, in this run, to enumerate somebody
     /// else's account.
     ///
-    /// It lives here rather than in the arguments because a crossing asks the
-    /// engine for two lists and a summary for two more, and being asked the
-    /// same question twice about the same account reads as the tool not having
-    /// listened. Consent is a property of the run, so it belongs to the thing
-    /// that *is* the run.
-    ///
-    /// Only a real answer sets it. The cooldown path never asks, so it can
-    /// never vouch for one.
-    ///
     /// **The account is part of the key, not just the answer**, as in the
     /// `resolved` memo: `run_accounts` walks every account one viewer reads
     /// through one `App`, on purpose, and a yes about @alice must not let @bob's
     /// lists be enumerated with no question printed.
-    ///
-    /// Compared case-insensitively, because Instagram treats two spellings that
-    /// differ only in case as one account, and one `Option` is enough because
-    /// the accounts of a run are ticked one after another.
     pub fn has_consent(&self, asked: &str) -> bool {
         self.consented
             .as_deref()
@@ -505,27 +394,18 @@ impl App {
     }
 
     /// How this run could have been given consent before it started.
-    ///
-    /// Read only by the refusal in `engine::ask_consent_with`, which is shared
-    /// by every command that enumerates somebody else and therefore cannot know
-    /// on its own which of the two answers applies.
     pub fn consent_in_advance(&self) -> ConsentInAdvance {
         self.consent_in_advance
     }
 
     /// Said by the monitor's two walking entry points, and nothing else.
-    ///
-    /// One process is one command, so this is a property of the run rather
-    /// than of a call.
     pub fn consent_comes_from_the_config(&mut self) {
         self.consent_in_advance = ConsentInAdvance::WatchConfig;
     }
 
-    /// Said by the monitor: a walk stops between two pages once `critical`
-    /// says the battery is, rather than being cut off by the system
-    /// hibernating under it, and the next run picks it up. A person's own
-    /// command is not stopped for it; the monitor is, because nobody is there
-    /// to decide (`power::battery`).
+    /// Said by the monitor: a walk stops between two pages once `critical` says
+    /// the battery is, rather than being cut off by the system hibernating
+    /// under it, and the next run picks it up.
     pub fn stops_on_a_critical_battery(&mut self, critical: fn() -> bool) {
         self.stop_between_pages = Some(critical);
     }
@@ -539,27 +419,9 @@ impl App {
     /// What `asked` resolved to earlier in this run, if it was the same
     /// question.
     ///
-    /// Compared raw, on the string that was given. Two spellings of one account
-    /// simply miss the memo and resolve again, which costs a request; a memo
-    /// handed to the wrong account costs correctness, and that is not a trade.
-    ///
-    /// Who the account is does not go stale inside one run: the id is stable,
-    /// and a rename mid-run would not change which account was meant. So the
-    /// identity comes back whatever has happened since.
-    ///
-    /// **The counters do go stale**, and they are handed back only while no
-    /// new action has begun — which is to say, only while no time has passed
-    /// that the account could have moved in. A walk takes minutes. Reusing a
-    /// number read before it, to decide a stored list is still current, would
-    /// serve a snapshot that missed everything those minutes contained and call
-    /// it counter-verified: the exact shape of failure `Provenance` exists to
-    /// stop. Cheaper is not worth wrong.
-    ///
-    /// One consequence worth naming: the private-account refusal in
-    /// `target::resolve` runs once per run rather than once per list. That is
-    /// fine — the first list already passed it, and the account cannot have
-    /// become private in between in a way that matters — but it is a skip, not
-    /// an oversight.
+    /// **The counters do go stale**, and they are handed back only while no new
+    /// action has begun — which is to say, only while no time has passed that
+    /// the account could have moved in.
     pub fn resolved_target(&self, asked: Option<&str>) -> Option<target::Target> {
         let memo = self.resolved.as_ref()?;
         if memo.asked.as_deref() != asked {
@@ -584,12 +446,9 @@ impl App {
 
     /// Adds the counters a poll just obtained, and re-stamps.
     ///
-    /// Re-stamping is the point. A memo resolved in an earlier action has had
-    /// its counters dropped; the poll reads them anew, in this one, and the
-    /// second list of a crossing must not poll all over again. What must
-    /// invalidate them is an action begun **after** they were read — a walk,
-    /// a sitting, a monitor tick — because that is time in which the account
-    /// can have moved.
+    /// What must invalidate them is an action begun **after** they were read —
+    /// a walk, a sitting, a monitor tick — because that is time in which the
+    /// account can have moved.
     pub fn remember_counters(&mut self, counters: target::Counters) {
         let action = self.client.pacer().actions();
         if let Some(memo) = &mut self.resolved {

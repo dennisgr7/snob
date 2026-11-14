@@ -1,8 +1,4 @@
 //! `snob followers` and `snob following`.
-//!
-//! Both are the same command with the list named differently. What they do is
-//! ask [`crate::engine`] for a list and print it; the deciding — cache, walk,
-//! cooldown — happens there.
 
 use anyhow::Result;
 use snob_core::filters::Filter;
@@ -56,16 +52,14 @@ pub async fn run(
     .await?;
 
     // The browser instead of the listing — the default at a terminal, the
-    // decision made above. An empty result is not browsed: there is nothing
-    // to move over, and the summary line already says the count.
+    // decision made above.
     if browses && !walked.shown.is_empty() {
         return browse(app, walked, &args, kind, &filter, &store, paths).await;
     }
     destination.write(&walked.shown)?;
     print_summary(&walked, kind, None);
     // A plain list is the one place a partial answer is still worth having:
-    // every account in it really is in the list, only some are missing. So it
-    // prints, says so, and exits with what stopped it.
+    // every account in it really is in the list, only some are missing.
     Ok(walked.outcome.exit_code_for_a_printed_result())
 }
 
@@ -126,9 +120,8 @@ async fn walk_as(
     walk(app, query, kind, filter, args.limit).await
 }
 
-/// The list in the browser, as the account the command runs as and then as
-/// each account it is walked again as. Each account's summary is said as its
-/// view is left.
+/// The list in the browser, as the account the command runs as and then as each
+/// account it is walked again as.
 async fn browse(
     app: Box<App>,
     walked: Walked,
@@ -187,9 +180,7 @@ async fn browse(
     .await
 }
 
-/// The singular of a list's name. `Display` gives the plural, and for
-/// `Following` the two differ by more than a letter. It lives here rather than
-/// on `ListKind` because wording belongs in the commands, not in the domain.
+/// The singular of a list's name.
 fn one_of(kind: ListKind) -> &'static str {
     match kind {
         ListKind::Followers => "follower",

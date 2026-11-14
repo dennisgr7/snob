@@ -1,33 +1,20 @@
-//! How much of the processor the browser gets: the system's normal judgment,
-//! or the efficient end of it while nobody is waiting on the browser.
+//! How much of the processor the browser gets: the system's normal judgment, or
+//! the efficient end of it while nobody is waiting on the browser.
 //!
-//! **What a browser is doing when nobody waits on it.** It lingers five
-//! minutes after its last request with the site's app still running in it
-//! (`owner::server`), it serves the monitor in the middle of the night, it
-//! answers a script with no terminal. None of that is anybody's wait, and on
-//! a machine with efficiency cores, or one that can run a core slower, it is
-//! the work they exist for. A command typed in a terminal, or a full-screen
-//! view somebody is looking at, gets the system's normal treatment: the
-//! person decides how they spend their machine's time (`owner::attended`).
+//! **What a browser is doing when nobody waits on it.**
 //!
 //! **What each system is asked**, chosen for being reversible, since the same
 //! browser goes from one to the other as commands come and go:
 //!
 //! - **Windows**: EcoQoS (`SetProcessInformation`, `ProcessPowerThrottling`,
-//!   execution speed throttled) on every process of the browser's job, and
-//!   back to the system's own choice. It is what Task Manager's efficiency mode
-//!   sets beside a lower priority: Windows runs such a process at the most
-//!   efficient frequency and on efficiency cores, always, on battery or not.
+//!   execution speed throttled) on every process of the browser's job, and back
+//!   to the system's own choice.
 //! - **Linux**: `SCHED_BATCH`, and a utilization clamp (`uclamp_max`) where the
 //!   kernel has one, on every thread of the browser's process group; and back
-//!   to `SCHED_OTHER` and no clamp. The clamp is what steers work to the
-//!   little cores and the low frequencies, on the machines whose scheduler
-//!   places work by energy (ARM, and recent Intel parts without
-//!   hyper-threading). **Not `nice`**: an unprivileged process can raise its
-//!   niceness and never lower it again, and the browser has to come back.
-//! - **macOS**: nothing yet. The background policy, the one a running process
-//!   can be put under, throttles disk and network too, and left a browser
-//!   unable to answer in time (see `macos::in_group`).
+//!   to `SCHED_OTHER` and no clamp. **Not `nice`**: an unprivileged process can
+//!   raise its niceness and never lower it again, and the browser has to come
+//!   back.
+//! - **macOS**: nothing yet.
 //!
 //! **Whatever the system refuses is left alone**, and logged: the browser is
 //! then as it was before any of this existed.
@@ -322,16 +309,9 @@ mod macos {
 
     /// Left as it is, on macOS.
     ///
-    /// The one policy a running process can be put under from outside is the
-    /// background one (`PRIO_DARWIN_BG`, what `taskpolicy -b -p` sets), and it
-    /// is not a lower gear: it throttles the process's disk and network as
-    /// well as its processor. Measured on the macOS CI runner, a browser
-    /// started under it stopped answering the debugging protocol within the
-    /// twenty seconds a command is given, before it had loaded a page. The
-    /// level that would fit, a utility clamp, can only be set as a process is
-    /// spawned (`posix_spawnattr_set_qos_class_np`), which `std` does not
-    /// offer; until the browser is started that way, the browser runs as any
-    /// program does.
+    /// Measured on the macOS CI runner, a browser started under it stopped
+    /// answering the debugging protocol within the twenty seconds a command is
+    /// given, before it had loaded a page.
     pub(crate) fn in_group(_group: i32, _mode: Mode) {}
 
     /// This process: left as it is, for the same reason, and because all the

@@ -1,28 +1,5 @@
 //! `snob post LINK` (and `snob reel LINK`): one post or reel by its address,
 //! and how to keep a copy.
-//!
-//! The link is read for its code alone ([`snob_ig::shortcode`]): the code is
-//! the post's pk, so nothing is looked up, and nothing else the address
-//! carries -- where it was shared from, and the token that ties the visit
-//! to whoever shared it -- is read or sent. The post is asked for the way
-//! the app asks for one it opens, its info from the page it opens on, which
-//! is never loaded, and its first page of comments with it, as the app
-//! always asks the two together when a post opens: two reads, printed,
-//! saved or browsed alike. `--comments N` reads on to N pages of comments
-//! in the printed form, each a comment step after the page before
-//! ([`posts::comment_pages`]). `--replies N` then reads the replies under
-//! the first N of those comments that have more than the page showed, and
-//! `--replies-of <id>` those under a comment named by its id, one read a
-//! thread and ten threads at most ([`posts::read_threads`]). What a thread
-//! handed out is said as it is: Instagram counts more replies than it hands
-//! out on every thread seen, so nothing is said to be left by a subtraction.
-//!
-//! `-d --json` saves and then says what it saved, as one JSON document on
-//! standard output ([`posts::save_telling`]), for a caller that reads an
-//! answer rather than a directory.
-//!
-//! What it prints and saves is `snob posts someone 3`'s, for the same
-//! post: the same lines, the same numbers, the same file names.
 
 use std::path::Path;
 
@@ -45,8 +22,7 @@ use crate::ui;
 
 pub async fn run(args: PostArgs, store: SecretStore, paths: &AccountPaths) -> Result<ExitCode> {
     // Before anything is opened or asked: a link that names no post costs
-    // nothing. The link is not repeated in the sentence, as it can carry the
-    // share token of whoever sent it.
+    // nothing.
     let link = Shortcode::parse(&args.link).map_err(|e| {
         ExitError::new(
             ExitCode::Error,
@@ -132,8 +108,7 @@ pub async fn run(args: PostArgs, store: SecretStore, paths: &AccountPaths) -> Re
 
 /// `-d --json`: the items `selection` names saved into `destination`, a
 /// directory (the working one when none is given), and what became of each
-/// printed as one document. Exit 1 when one could not be fetched, after the
-/// document, so what was saved is still told.
+/// printed as one document.
 async fn save_telling(
     app: &crate::app::App,
     post: &Post,

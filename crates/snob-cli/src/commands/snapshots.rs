@@ -2,13 +2,7 @@
 //!
 //! **Sends nothing and writes nothing**, for the reasons `snob status` gives:
 //! it reads the account's database with `Store::read_existing`, which neither
-//! creates nor migrates it. So it is one of the listed exceptions to
-//! "commands take an App", and so is `snob changes`, which shares
-//! [`stored_account`].
-//!
-//! Every capture is listed, a walk that stopped short included: this is where
-//! somebody finds out one did, and why, and which ids `snob changes --from`
-//! may take (only whole ones).
+//! creates nor migrates it.
 
 use anyhow::Result;
 use snob_core::Pk;
@@ -21,10 +15,9 @@ use crate::exit::{ExitCode, ExitError};
 use crate::output::grid::{Grid, Value};
 use crate::output::{self, Presentation};
 
-/// The account's database, read without writing, and the account a command
-/// is about in it: the viewer's own, or the one `target` names, found by
-/// the name the store has for it. Refused when nothing is stored, since
-/// nothing could be answered.
+/// The account's database, read without writing, and the account a command is
+/// about in it: the viewer's own, or the one `target` names, found by the name
+/// the store has for it.
 pub(crate) fn stored_account(
     account: &AccountPaths,
     target: Option<&str>,

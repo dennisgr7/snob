@@ -1,42 +1,18 @@
 //! `snob import dyi`: reads the archive Instagram hands over under "Download
 //! your information" and works out the same relationships the live commands do.
 //!
-//! It costs nothing and risks nothing: no session, no network, no request. That
-//! is the whole point — it is the answer for anyone who would rather not have a
-//! tool talk to Instagram on their behalf at all. It reads, crosses and prints,
-//! and two things it deliberately does not do are rules rather than gaps:
-//!
 //! - **It stores nothing.** The export names accounts by username, and
 //!   everything in the database is keyed by the numeric id, which an export
-//!   never carries. Rather than guess at that mapping, the stored snapshots
-//!   keep meaning "walked live", and the monitor can never diff against a
-//!   file somebody dropped in.
+//!   never carries.
 //! - **It crosses nothing live.** Both lists here come out of one export,
-//!   written at one instant, which is what makes the username arithmetic
-//!   below sound. A username crossed against a list walked at another moment
-//!   is not sound — a name can change hands in between — and a crossing that
-//!   silently mixed the two would be a wrong answer dressed as a partial one.
+//!   written at one instant, which is what makes the username arithmetic below
+//!   sound.
 //!
-//! # What an export looks like
-//!
-//! Instagram offers the export in two forms, HTML and JSON, and both are read
-//! here; either arrives as a zip, and a person who has already extracted it can
-//! point at the folder instead. The two lists live under
-//! `connections/followers_and_following/`: `following` as one file, and
-//! `followers` split over `followers_1`, `followers_2` and so on. **The file
-//! names are English whatever language the account is set to; the contents of
-//! the HTML form are not** — headings and dates come out in the account's
-//! language (a Spanish account gets a Spanish heading, and dates its rows
-//! `sept. 03, 2026 9:33 pm`), which is why nothing below reads a
-//! heading or a date, and every name is taken from the profile link instead.
-//! An empty section is not an empty file: Instagram writes a `no-data.txt`
-//! where the file would have been.
-//!
-//! The rest of the folder — the other relationship lists, blocked accounts,
-//! close friends, pending requests — is left alone. Each is a different
-//! relationship, and they render differently too (a name in a table cell
-//! rather than a link), so a reader that swept them in would either miscount
-//! or read nothing.
+//! **The file names are English whatever language the account is set to; the
+//! contents of the HTML form are not** — headings and dates come out in the
+//! account's language (a Spanish account gets a Spanish heading, and dates its
+//! rows `sept. 03, 2026 9:33 pm`), which is why nothing below reads a heading
+//! or a date, and every name is taken from the profile link instead.
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -364,9 +340,6 @@ fn read_archive(path: &Path, intake: &mut Intake) -> Result<()> {
             continue;
         }
         // Since zip 9 a name that is neither UTF-8 nor CP437 is an error.
-        // Every list file is named in ASCII, so such an entry is not one of
-        // them, and it is skipped like any other file the import does not
-        // want, rather than failing the whole export.
         let Ok(name) = entry.name().map(std::borrow::Cow::into_owned) else {
             continue;
         };
@@ -492,9 +465,7 @@ fn usernames_from_json(text: &str, which: Which) -> Result<Vec<String>> {
     let names: Vec<String> = items.iter().filter_map(username_in_entry).collect();
 
     // A list with entries in it that yields no names at all means the shape
-    // moved again. Returning an empty list would be worse than failing: every
-    // account on the other side would be reported as an unfollower, confidently
-    // and wrongly.
+    // moved again.
     if names.is_empty() && !items.is_empty() {
         bail!(
             "it holds {} entries but no usernames, so the export's shape is not the one \

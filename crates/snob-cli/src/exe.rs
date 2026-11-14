@@ -1,11 +1,4 @@
 //! The path to the running binary that a configuration should name.
-//!
-//! `snob mcp config` prints a command for a client to start, and `snob watch
-//! unit` one for a scheduler: both outlive the binary they were printed by
-//! when a package manager upgrades it into a new directory, so both print
-//! a path that leads to the upgraded one where the installer keeps such a
-//! path ([`stable_exe`]), and warn when what they print is in a directory
-//! named after a version ([`names_a_version`]).
 
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
@@ -30,28 +23,13 @@ pub(crate) fn to_print(consequence: &str) -> std::io::Result<PathBuf> {
 }
 
 /// The path to print for the running binary `current`: one that leads to the
-/// same file today and to the upgraded one after an upgrade, when the
-/// installer keeps such a path.
+/// same file today and to the upgraded one after an upgrade, when the installer
+/// keeps such a path.
 ///
-/// `lookup` is `std::fs::canonicalize` outside the tests: where a path really
-/// leads, or `None` when it leads nowhere. **A candidate is taken only when it
-/// leads to the running binary itself**, so a guess about a layout that turns
-/// out wrong (another prefix, a link to another version, a shim that is a
-/// program and not a link) is never printed: the next rule is tried, and in
-/// the end `current` is printed as it is. In order:
-///
-/// 1. Homebrew and Linuxbrew run `<prefix>/Cellar/snob/<version>/bin/snob`
-///    and link `<prefix>/bin/snob` and `<prefix>/opt/snob/bin/snob` to it;
-///    both links move on an upgrade.
-/// 2. Scoop runs `<root>/apps/snob/<version>/snob.exe` and keeps the junction
-///    `<root>/apps/snob/current` on the newest version. Its shim on `PATH` is
-///    a program of its own, so rule 3 would never find it.
-/// 3. Anything else: the first `snob` on `PATH` that leads to this binary
-///    (WinGet's link, `~/.local/bin`, `/usr/bin`). A relative entry on `PATH`
-///    is skipped, since a client would read it from wherever it starts.
-///
-/// The rules match the path `current` leads to, not `current` itself: macOS
-/// reports the path a program was started by, which may be the link.
+/// **A candidate is taken only when it leads to the running binary itself**, so
+/// a guess about a layout that turns out wrong (another prefix, a link to
+/// another version, a shim that is a program and not a link) is never printed:
+/// the next rule is tried, and in the end `current` is printed as it is.
 pub(crate) fn stable_exe(
     current: &Path,
     lookup: impl Fn(&Path) -> Option<PathBuf>,
@@ -112,9 +90,7 @@ fn ancestor(path: &Path, levels: usize) -> Option<&Path> {
 }
 
 /// A path without the `\\?\` that `canonicalize` puts in front of one on
-/// Windows, when what follows is a drive. `C:\...` is what a person would
-/// write in a configuration, and what every client can start. A path on a
-/// share (`\\?\UNC\...`) keeps it: dropping it there takes more than a cut.
+/// Windows, when what follows is a drive.
 fn without_verbatim(path: PathBuf) -> PathBuf {
     let Some(rest) = path.to_str().and_then(|text| text.strip_prefix(r"\\?\")) else {
         return path;

@@ -1,17 +1,11 @@
 //! Terminal input and output.
-//!
-//! Everything here has to degrade gracefully when there is no interactive
-//! terminal: the most common failure is not an old emulator, it is a pipe into
-//! another process.
 
 use std::io::{BufRead, IsTerminal, Write};
 
 use anyhow::{Context, Result, bail};
 use zeroize::Zeroizing;
 
-/// Room reserved for a typed secret, so the buffer never has to grow. A
-/// `sessionid` runs to about seventy characters; this is well past anything
-/// anyone will paste.
+/// Room reserved for a typed secret, so the buffer never has to grow.
 const SECRET_CAPACITY: usize = 256;
 
 /// How many characters at the end are left visible.
@@ -21,21 +15,6 @@ const VISIBLE_TAIL_CHARS: usize = 4;
 const MAX_ASTERISKS: usize = 40;
 
 /// Asks for a secret value, masking what is typed.
-///
-/// Hiding it entirely leaves the user unsure whether the paste worked, which
-/// with a seventy-character `sessionid` is a reasonable doubt. One asterisk per
-/// character is drawn, the last four are left visible, and the total is shown,
-/// which is what lets you confirm at a glance that the whole thing went in.
-///
-/// With no terminal a plain line is read, so scripting keeps working.
-///
-/// The buffer is reserved up front and wrapped so it clears itself. Both
-/// halves are needed and the first is the one that is easy to miss: a `String`
-/// that grows one keystroke at a time leaves every outgrown buffer behind
-/// untouched, so a seventy-character `sessionid` typed into an empty `String`
-/// scatters half a dozen plaintext prefixes of the cookie through freed memory
-/// that nothing will ever clear. `Zeroizing` can only wipe the buffer it still
-/// owns.
 pub fn prompt_secret(prompt: &str) -> Result<Zeroizing<String>> {
     // Asked of the very terminal the keys are read from, so nothing sits
     // between the question and the answer.
@@ -72,12 +51,7 @@ pub fn prompt_secret(prompt: &str) -> Result<Zeroizing<String>> {
                 bail!("input canceled");
             }
             // Arrows, function keys and the like: ignored, `Key::Unknown`
-            // included. On Windows `console` reports every virtual key it has
-            // no name for that way — Caps Lock, the function keys, Page Up —
-            // so treating it as a failure would abort a paste because somebody
-            // brushed a key. On a stream that is no terminal the same answer
-            // comes at once and forever; the gate above keeps the loop off
-            // such streams, which is where that spin can be closed exactly.
+            // included.
             _ => continue,
         }
 
@@ -90,11 +64,6 @@ pub fn prompt_secret(prompt: &str) -> Result<Zeroizing<String>> {
 }
 
 /// A question with room after it for the answer.
-///
-/// The answer is typed on the question's own line, so a question that ends
-/// in its last letter -- `How often? (for example 6h)`, as most of the
-/// wizard's do -- would have the answer written against it: `...6h)6h`. One
-/// space is added where the question did not leave one.
 fn spaced(prompt: &str) -> std::borrow::Cow<'_, str> {
     if prompt.is_empty() || prompt.ends_with(char::is_whitespace) {
         std::borrow::Cow::Borrowed(prompt)
@@ -104,18 +73,6 @@ fn spaced(prompt: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// Whether the masked prompt can run, from the two facts it depends on.
-///
-/// **Both streams, not one.** It reads keys from the terminal and draws to
-/// standard error. `console` answers `read_key` with `Key::Unknown`
-/// *immediately* when the stream its `Term` was built on is not a tty — not an
-/// error, not a block — and the loop's arm for an unrecognized key is
-/// `continue`. So with standard error redirected, as in
-/// `snob login --paste 2> log`, which is what capturing a session looks like,
-/// the loop would peg a core forever with nothing on screen and never read
-/// what was pasted.
-///
-/// Standard input has to be a terminal too: without it the bytes are arriving
-/// from a pipe and there is nobody to draw asterisks for.
 fn can_mask(stdin_is_terminal: bool, stderr_is_attended: bool) -> bool {
     stdin_is_terminal && stderr_is_attended
 }
@@ -138,64 +95,30 @@ fn mask(value: &str) -> String {
 }
 
 /// Whether there is somebody at the keyboard to answer a question.
-///
-/// Standard input alone, because that is the only stream a question needs: it
-/// is asked on standard error by [`prompt_line`] and answered on standard
-/// input, so redirecting the *results* has nothing to do with it.
-/// [`prompt_secret`] draws the line the same way, and the two questions
-/// `login --paste` asks must not disagree about whether anyone is there.
 pub fn can_be_asked() -> bool {
     std::io::stdin().is_terminal()
 }
 
 /// Whether an arrow-key menu can be shown.
 ///
-/// Stricter than [`can_be_asked`]. A menu is not a line of text: it needs
-/// keys, which arrive on standard input, and it redraws itself with cursor
-/// movement on **standard error**, which is where `ui::menu` draws — it
-/// writes through a `Term::stderr()`, as the story browser does. Standard
-/// output is the one stream a menu never touches.
-///
-/// So `snob login | tee log` can show a menu, and `snob login 2>log` cannot:
-/// it would draw one into the file and then wait for arrow keys with nothing
-/// on screen — the failure [`prompt_line`] documents, from the other side.
-///
-/// Standard input is required even though `console` would fall back to the
-/// controlling terminal when it is redirected. Whether somebody is there is one
-/// question with one answer: [`prompt_secret`] reads piped bytes when standard
-/// input is not a terminal, and a menu that still worked in the same run would
-/// be asking a person something while the credential arrived from a file.
+/// A menu is not a line of text: it needs keys, which arrive on standard input,
+/// and it redraws itself with cursor movement on **standard error**, which is
+/// where `ui::menu` draws — it writes through a `Term::stderr()`, as the story
+/// browser does.
 pub fn can_show_a_menu() -> bool {
     std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
 }
 
 /// Whether a media browser may open *instead of* the printed listing.
 ///
-/// Stricter than [`can_show_a_menu`] by exactly one stream, and the third
-/// stream is the point. A browser needs what a menu needs — keys from
-/// standard input, drawing on standard error — but opening one also means
-/// **not printing the listing**, and the listing's stream is standard output.
-/// With stdout redirected, `snob stories someone > list.txt` is somebody
-/// collecting the listing while watching the terminal: both other streams are
-/// attended, a menu could be drawn, and drawing one would fill the file with
-/// nothing while a browser waited on keys. The listing wins wherever it was
-/// asked for; the browser replaces it only where it would have scrolled by.
-///
-/// This is the predicate behind defaulting to the browser at all. The
-/// explicit flags (`-i`, `--no-interactive`, and every flag that asks for the
-/// printed form) win over it, in the order `cli::browse_decision` gives, which
-/// every group's `browses` (`MediaActionArgs::browses` among them) applies.
+/// A browser needs what a menu needs — keys from standard input, drawing on
+/// standard error — but opening one also means **not printing the listing**,
+/// and the listing's stream is standard output.
 pub fn a_human_would_watch_the_listing_scroll_by() -> bool {
     can_show_a_menu() && std::io::stdout().is_terminal()
 }
 
 /// Asks a question and reads one line back.
-///
-/// The prompt goes to standard error because it is not the result. On stdout a
-/// redirect would swallow it: `snob login --paste > out.txt` on a machine with
-/// no Chromium browser installed reaches `prompt_user_agent`, which would write
-/// "User-Agent: " into the file and then block on stdin with nothing on
-/// screen. That reads as a hang.
 pub fn prompt_line(prompt: &str) -> Result<String> {
     eprint!("{}", spaced(prompt));
     std::io::stderr().flush().ok();
@@ -210,23 +133,8 @@ pub fn prompt_line(prompt: &str) -> Result<String> {
     Ok(line.trim().to_string())
 }
 
-/// A yes or no question, asked without holding an async worker while the
-/// person thinks about it.
-///
-/// Waiting on a human is the longest block in the program — unbounded, by
-/// definition — and the runtime has exactly two workers. Doing it on one of
-/// them leaves one for everything else, including the task that owns Ctrl+C
-/// once `tokio::signal` has taken it from the operating system.
-///
-/// Only for the prompts that are asked while a run is under way. `purge` asks
-/// before there is anything else to schedule, so it calls [`confirm`] directly
-/// and this indirection would buy it nothing.
-///
-/// That is also why it takes the progress bar: being asked while a run is under
-/// way means being asked while something is drawing. The bar writes to standard
-/// error and so does the prompt, so with the bar running the question would
-/// land on the line the animation owns and the next tick would wipe it —
-/// leaving somebody watching a spinner and not knowing it was waiting for them.
+/// A yes or no question, asked without holding an async worker while the person
+/// thinks about it.
 pub async fn confirm_off_thread(
     progress: &crate::progress::Progress,
     question: String,
@@ -238,13 +146,7 @@ pub async fn confirm_off_thread(
         .context("the question could not be asked")?
 }
 
-/// A yes or no question. With nobody at the keyboard it keeps the default.
-///
-/// The gate is [`can_be_asked`], not both standard streams. The question goes
-/// to standard error through [`prompt_line`] and the answer comes off standard
-/// input, so `snob unfollowers someone | jq` can be asked and answered like any
-/// other run. Standard output has nothing to do with it, and asking about it
-/// would turn every redirect and every pipe into a machine with nobody at it.
+/// A yes or no question.
 pub fn confirm(question: &str, default: bool) -> Result<bool> {
     if !can_be_asked() {
         return Ok(default);
@@ -313,33 +215,8 @@ pub fn choose_login_method(seat: &crate::seat::Seat) -> Result<Option<LoginMetho
     Ok(chosen.and_then(|i| methods.get(i).map(|(method, _)| *method)))
 }
 
-/// Undoes what a menu or a browser did to the terminal, for an exit that
-/// runs no destructors.
-///
-/// All of them hide the cursor and put the terminal in raw mode to read keys;
-/// the browsers additionally take the alternate screen and turn bracketed
-/// paste on. Every one restores itself on the way out through a guard — but
-/// the release profile is `panic = "abort"` and the forced-quit path calls
-/// `exit(130)`, so no guard runs on those ways out, and none of those modes is
-/// scoped to this program. A shell left on the alternate screen in raw mode
-/// with no cursor stays that way long after the user has forgotten what they
-/// pressed.
-///
-/// The alternate screen is left before raw mode, so the shell's next prompt is
-/// drawn on the real screen in a cooked terminal rather than flashing inside
-/// the buffer that is about to vanish.
-///
-/// Idempotent and safe with no terminal: `?1049l` outside the alternate screen
-/// and `?2004l` with paste already off are defined no-ops, writing to a
-/// non-terminal stderr fails silently, and leaving raw mode a terminal was
-/// never in is a no-op.
-///
-/// Focus reporting goes off with them (`?1004l`, a no-op when it is), and a
-/// walk's progress comes off the taskbar where the terminal showed one.
-///
-/// A synchronized update is ended first (`?2026l`, a no-op outside one): a
-/// frame leaves in one write with both ends in it (`tui::Screen`), but a
-/// write cut short would leave the terminal holding everything after it.
+/// Undoes what a menu or a browser did to the terminal, for an exit that runs
+/// no destructors.
 pub fn restore_terminal() {
     use crossterm::cursor::Show;
     use crossterm::event::{DisableBracketedPaste, DisableFocusChange};
@@ -368,14 +245,6 @@ pub fn warn(message: &str) {
 
 /// A line of the result, on standard output -- `println!` that survives the
 /// reader leaving.
-///
-/// `println!` panics on a closed pipe, and Rust ignores `SIGPIPE`, so with it
-/// `snob watch status | head -1` and `snob whoami --json | jq -r .username`
-/// would end with a panic message and an undocumented exit status the moment
-/// the far end had read enough. `output::write_rendered` tolerates a broken
-/// pipe for the lists; this does the same for the prose. A closed pipe is the
-/// reader saying it has seen what it wanted, which is not an error of this
-/// program's.
 pub fn say_line(line: std::fmt::Arguments<'_>) {
     let stdout = std::io::stdout();
     let mut locked = stdout.lock();
@@ -406,9 +275,6 @@ pub fn info(message: &str) {
 }
 
 /// Instructions for the paste method.
-///
-/// The `sessionid` is marked `HttpOnly`, so it cannot be pulled from the
-/// console with `document.cookie`: the storage panel is the only place.
 pub fn paste_instructions() {
     eprintln!(
         "\n\
@@ -428,19 +294,6 @@ pub fn paste_instructions() {
 
 /// Detects whether what was pasted looks like a dump of the browser console
 /// rather than the value being asked for.
-///
-/// Copying from the developer tools console drags in dozens of log lines, and
-/// pasting them into a terminal runs each one as a command. Spotting it lets
-/// us explain what happened instead of leaving the user thinking their
-/// machine was broken into.
-///
-/// **The needles are deliberately language-independent.** Chrome and Instagram
-/// print that text in the user's own language, so matching on the words would
-/// narrow this check to one language's browsers instead of widening it.
-///
-/// This is not the barrier, either. The real one is the User-Agent validator,
-/// which requires the `Mozilla/5.0` prefix and does not care about language.
-/// This only exists to give a better error message.
 pub fn looks_like_console_dump(text: &str) -> bool {
     const LANGUAGE_INDEPENDENT_NEEDLES: [&str; 4] =
         ["selfxss", ".js:", "net::ERR_", "chrome-extension://"];

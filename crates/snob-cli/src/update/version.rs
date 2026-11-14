@@ -1,9 +1,4 @@
 //! Versions as releases are tagged: `X.Y.Z`, with or without a leading `v`.
-//!
-//! Three numbers and nothing else. A pre-release (`0.10.0-rc.1`) is not a
-//! version an update moves to, and GitHub's "latest release" never names one;
-//! a build whose own version is one never updates, rather than guess where it
-//! stands.
 
 use std::fmt;
 

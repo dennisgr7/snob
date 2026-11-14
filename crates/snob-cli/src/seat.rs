@@ -1,31 +1,14 @@
 //! Where the person running snob sits: at this machine, or at another one
-//! connected to it over SSH, and whether a window opened here is one they
-//! would see.
+//! connected to it over SSH, and whether a window opened here is one they would
+//! see.
 //!
-//! It decides one thing, which login to offer first. A window opened by a
-//! process in an SSH session goes nowhere on a Linux machine with no display —
-//! Chromium exits 1 before it reads its pipe — and onto the machine's own
-//! screen on a Mac or a Windows PC, where the person typing at the other end
-//! of the connection never sees it. Either way `snob login --browser` would
-//! fail, or sit for ten minutes waiting for a login in a window nobody can
-//! reach, and the login that works from there is `snob login --remote`: the
-//! same browser on this machine, without a window, shown in the browser of the
-//! machine the person is at through a tunnel (`crate::relay`).
-//!
-//! **Read from the environment, which can be stale.** A `tmux` or `screen`
-//! session started over SSH and attached later at the desk keeps the SSH
-//! variables of the connection it was started from; the reverse case keeps
-//! none. That is why the answer only orders the menu and words the advice:
-//! `--browser` and `--remote` are always there to say outright, and are taken
-//! as said. The one refusal is a window asked for on a Linux machine with no
-//! display at all, which cannot open whatever the environment got wrong.
+//! **Read from the environment, which can be stale.**
 
 /// The SSH connection this process runs in, as `SSH_CONNECTION` describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ssh {
-    /// The address of this machine the client connected to, and its port:
-    /// what to give `ssh` from the other end. `None` when the variable is not
-    /// there to read, which a `mosh` session or an older server can leave.
+    /// The address of this machine the client connected to, and its port: what
+    /// to give `ssh` from the other end.
     pub server: Option<(String, u16)>,
     /// The account logged in, as `ssh` would be told it.
     pub user: Option<String>,

@@ -1,55 +1,27 @@
-//! Pictures drawn in the terminal: the one under the cursor at its full
-//! size on `p`, and a small one beside the text of the views that have one.
+//! Pictures drawn in the terminal: the one under the cursor at its full size on
+//! `p`, and a small one beside the text of the views that have one.
 //!
 //! **The one exception to "Stories are handed to the system viewer"**
-//! (`AGENTS.md`), and a narrow one: still pictures, for knowing which
-//! picture a row is before opening it. Enter still hands the file to the
-//! viewer the person already uses.
+//! (`AGENTS.md`), and a narrow one: still pictures, for knowing which picture a
+//! row is before opening it.
 //!
-//! **On `p`, the picture itself**, in a box over the view. It is the very
-//! read Enter makes: the file is fetched from the CDN into the session's
-//! scratch directory, where Enter and `d` find it afterwards, and is
-//! fetched once. Only when its key is pressed: it is the full file, some
-//! megabytes of it for a post.
+//! **On `p`, the picture itself**, in a box over the view.
 //!
-//! **Beside the text, a small one, without a key** ([`Gallery`]): the
-//! thumbnail of the post or the item the cursor is on, the avatar on a
-//! profile card. These are the small copies an answer already names next to
-//! the large one, the ones the app loads for every tile of a grid. What
-//! keeps them from being a download per keystroke is that the cursor has to
-//! rest first ([`REST`]), that one is fetched at a time, and that each is
-//! fetched once a session. Nothing marks anything as seen, here or there:
-//! looking is a download, not the call that says "seen".
+//! **Beside the text, a small one, without a key** ([`Gallery`]): the thumbnail
+//! of the post or the item the cursor is on, the avatar on a profile card.
 //!
-//! **In the terminal's own pixels where it has any, and two to a cell where
-//! it has not.** A terminal known to draw pictures is sent the picture
-//! through its protocol, kitty's, iTerm2's or sixel (`ui::graphics`, which
-//! says which terminal gets which, and that none of them is ever asked).
-//! Anywhere else each cell is an upper half block, its foreground the pixel
-//! above and its background the pixel below; a cell is about twice as tall
-//! as it is wide, so the halves come out square. That is 24-bit color, the
-//! one place a view names a color that is not a role of `ui/theme.rs`: the
-//! colors are the picture's.
+//! **In the terminal's own pixels where it has any, and two to a cell where it
+//! has not.**
 //!
-//! **Behind the `preview` feature**, a default one whose cost is in
-//! `AGENTS.md` ("Costs worth knowing"). A build without it binds `p` to
-//! nothing, names it in no help and lays its views out with no place for a
-//! picture ([`AVAILABLE`], [`Gallery::draws`]); everything here still
-//! compiles, less the decoder, so the drawing is tested in every build.
+//! **Behind the `preview` feature**, a default one whose cost is in `AGENTS.md`
+//! ("Costs worth knowing").
 //!
-//! **What is said instead of drawn**, in the note line and before anything
-//! is fetched: a run that draws no colors, a terminal that does not say it
-//! shows 24-bit color (`theme::truecolor`), a video. And after: a file that
-//! is no JPEG, which is what the decoder reads and what Instagram serves
-//! almost everywhere (`media::extension_of`).
+//! **What is said instead of drawn**, in the note line and before anything is
+//! fetched: a run that draws no colors, a terminal that does not say it shows
+//! 24-bit color (`theme::truecolor`), a video.
 //!
 //! **The bytes are somebody else's**, and the release profile aborts on a
-//! panic. So: at most [`MAX_BYTES`] in, at most [`MAX_SIDE`] pixels a side,
-//! refused from the header before a pixel is decoded, and a picture that
-//! will not decode is a note. The decoder is built without its SIMD, which
-//! is the whole of its `unsafe` (`zune-jpeg` 0.5.15 forbids `unsafe_code`
-//! with neither `x86` nor `neon` on): one picture is decoded at a time, a
-//! small one in a few milliseconds, and nobody waits on it.
+//! panic.
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
@@ -77,9 +49,8 @@ use crate::ui::tui::{self, Tui};
 /// Whether this build draws previews at all.
 pub const AVAILABLE: bool = cfg!(feature = "preview");
 
-/// The most bytes of a file that are decoded: the cap the CDN client puts on
-/// a picture it downloads (`snob_ig::client::cdn`, `MAX_ASSET_BYTES`). A
-/// story's video may be larger, and is not a picture.
+/// The most bytes of a file that are decoded: the cap the CDN client puts on a
+/// picture it downloads (`snob_ig::client::cdn`, `MAX_ASSET_BYTES`).
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 
 /// The most pixels a side. A bound on memory and not a claim about what
@@ -106,9 +77,7 @@ pub fn with_key(keys: &[help::Key]) -> Vec<help::Key> {
 }
 
 /// Why `p` draws nothing here, when it does not, decided before anything is
-/// fetched; `None` is go on. `kind` is what the row is said to be, for the
-/// rows that say. In a build without previews the reason is empty: a note
-/// with nothing in it, which is `p` doing nothing.
+/// fetched; `None` is go on.
 pub fn refused(kind: Option<Kind>) -> Option<String> {
     refusal(AVAILABLE, tui::colors_enabled(), shows_pictures(), kind).map(str::to_string)
 }
@@ -140,9 +109,6 @@ fn refusal(
 }
 
 /// A decoded picture: `width * height` pixels of red, green and blue.
-///
-/// Cheap to clone, the pixels being shared: a frame hands the pictures it
-/// places to the screen (`graphics::place`), every frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pixels {
     width: usize,
@@ -230,8 +196,7 @@ impl Pixels {
     }
 
     /// From what a decoder handed over: one, three or four samples a pixel,
-    /// gray, RGB, or RGB and something after it. Anything else is not a
-    /// picture this draws.
+    /// gray, RGB, or RGB and something after it.
     fn of(width: usize, height: usize, samples: Vec<u8>) -> Option<Self> {
         let pixels = width.checked_mul(height).filter(|n| *n > 0)?;
         let rgb = match samples.len() / pixels {
@@ -257,9 +222,8 @@ impl Pixels {
         }
     }
 
-    /// The picture at `width` by `height`, each pixel the mean of the ones
-    /// it stands for. A mean and not the nearest one: a photograph taken
-    /// down to a hundred columns by dropping pixels is noise.
+    /// The picture at `width` by `height`, each pixel the mean of the ones it
+    /// stands for.
     fn scaled(&self, width: usize, height: usize) -> Pixels {
         let width = width.clamp(1, self.width);
         let height = height.clamp(1, self.height);
@@ -363,8 +327,7 @@ fn modal(frame: &mut Frame<'_>, title: &str, pixels: &Pixels, colors: bool) {
 
 /// Draws the picture in `bytes` over the view `under` draws, until a key is
 /// pressed, and hands back the note to leave: empty when it was drawn, the
-/// reason when it could not be. `title` is the picture's name, already safe
-/// to print. The key that closes the box is spent closing it.
+/// reason when it could not be.
 pub fn show(
     tui: &mut Tui,
     title: &str,
@@ -481,9 +444,8 @@ pub struct Beside<'a> {
 }
 
 impl Beside<'_> {
-    /// Draws the picture in `area`, from its top, with a row under a
-    /// video's that says it is the cover. An `area` kept for a picture that
-    /// has not arrived stays empty.
+    /// Draws the picture in `area`, from its top, with a row under a video's
+    /// that says it is the cover.
     pub fn draw_in(self, frame: &mut Frame<'_>, area: Rect, colors: bool) {
         let Some(pixels) = self.picture else {
             return;
@@ -504,10 +466,7 @@ impl Beside<'_> {
     }
 }
 
-/// How long the cursor rests on something before its small picture is
-/// fetched. Long enough that holding an arrow down fetches nothing on the
-/// way, two of a view's ticks; short enough that stopping on a row feels
-/// answered.
+/// How long the cursor rests on something before its small picture is fetched.
 const REST: Duration = Duration::from_millis(300);
 
 /// How often the keyboard is looked at while a small picture is on its way:
@@ -525,19 +484,12 @@ const KEPT: usize = 32;
 /// had.
 pub type Fetching<'a> = Pin<Box<dyn Future<Output = Option<Vec<u8>>> + 'a>>;
 
-/// The small pictures a view draws beside its text: the one for what the
-/// cursor rests on, fetched while the keys stay alive, and the ones before
-/// it, kept for the session.
+/// The small pictures a view draws beside its text: the one for what the cursor
+/// rests on, fetched while the keys stay alive, and the ones before it, kept
+/// for the session.
 ///
-/// **A view draws these without being asked**, which the picture on `p` is
-/// not: a thumbnail beside the selected post, the avatar on a profile card.
-/// What keeps that from being a download per keystroke is the rest: nothing
-/// is fetched for a row the cursor only passes ([`REST`]), one picture is
-/// fetched at a time, and moving on drops the one in flight. They are the
-/// small files the app itself loads for every tile of a grid as it opens
-/// one, from the CDN and no request to Instagram, and nothing is marked as
-/// seen. An address that fails is not asked for again: these are signed
-/// links that expire, and a view is no place for a retry.
+/// **A view draws these without being asked**, which the picture on `p` is not:
+/// a thumbnail beside the selected post, the avatar on a profile card.
 pub struct Gallery<'a> {
     /// What the view wants on screen, and since when.
     wanted: Option<(String, Instant)>,
@@ -564,16 +516,14 @@ impl<'a> Gallery<'a> {
         }
     }
 
-    /// Whether a view should make room for small pictures at all: a build
-    /// that draws them, on a terminal that says it can. Read once a session;
-    /// a view that gets `false` is laid out as it was before there were any.
+    /// Whether a view should make room for small pictures at all: a build that
+    /// draws them, on a terminal that says it can.
     pub fn draws() -> bool {
         refusal(AVAILABLE, tui::colors_enabled(), shows_pictures(), None).is_none()
     }
 
-    /// Says what the view wants beside the cursor now: the address of a
-    /// small picture, or nothing. Called on every turn of a view's loop; a
-    /// change restarts the rest and drops the fetch of the one before.
+    /// Says what the view wants beside the cursor now: the address of a small
+    /// picture, or nothing.
     pub fn want(&mut self, address: Option<&str>) {
         self.want_at(address, Instant::now());
     }
@@ -621,12 +571,6 @@ impl<'a> Gallery<'a> {
 
     /// Waits for the next key as `input::read(input::tick())` does, and
     /// meanwhile fetches the wanted picture once the cursor has rested.
-    /// `fetch` makes the download of an address; it is called at most once
-    /// a turn. A picture that arrives ends the wait as a tick does, so the
-    /// view draws again and it is on screen.
-    ///
-    /// With nothing to fetch this is exactly the read it replaces: one
-    /// blocking wait, no timer.
     pub async fn read(
         &mut self,
         fetch: impl FnOnce(String) -> Fetching<'a>,
@@ -679,9 +623,8 @@ impl<'a> Gallery<'a> {
 }
 
 impl Pixels {
-    /// Draws the picture as large as fits in `area`, in its own shape, from
-    /// the area's top and in the middle of its width. Hands back the cells
-    /// it took, which are no more than `area`.
+    /// Draws the picture as large as fits in `area`, in its own shape, from the
+    /// area's top and in the middle of its width.
     pub fn draw_in(&self, frame: &mut Frame<'_>, area: Rect) -> Rect {
         let (width, height) = fitted(
             self.width,

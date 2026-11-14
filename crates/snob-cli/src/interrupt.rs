@@ -14,20 +14,10 @@ static BY_THE_SYSTEM: AtomicBool = AtomicBool::new(false);
 /// Set by [`stop_when_stdin_closes`].
 static ON_STDIN_EOF: AtomicBool = AtomicBool::new(false);
 
-/// Makes standard input reaching its end one more way of asking the process
-/// to stop, taken as the system's requests are (no message, exit 130). Called
-/// by `main` for `--stop-when-stdin-closes`, before anything installs the
-/// handler.
+/// Makes standard input reaching its end one more way of asking the process to
+/// stop, taken as the system's requests are (no message, exit 130).
 ///
-/// **For a parent that cannot send a signal.** Windows has no way for one
-/// process to send another the Ctrl+C its handler hears, short of sharing a
-/// console, so a parent such as `snob mcp` that wants a walk stopped in order
-/// (its page saved, its claim given back) and not killed where it stands
-/// closes the pipe instead, which every platform can do. A parent that dies
-/// closes it too, so its child does not walk on for nobody.
-///
-/// Standard input is read for nothing else afterwards: nothing can be typed
-/// in answer to a question, so the command has to be told its answers (`-y`).
+/// **For a parent that cannot send a signal.**
 pub fn stop_when_stdin_closes() {
     ON_STDIN_EOF.store(true, Ordering::SeqCst);
 }
@@ -35,17 +25,10 @@ pub fn stop_when_stdin_closes() {
 /// The parent [`stop_when_parent_exits`] opened, until the handler takes it.
 static PARENT: std::sync::Mutex<Option<crate::parent::Parent>> = std::sync::Mutex::new(None);
 
-/// Makes the parent process going one more way of asking the process to
-/// stop, taken as the system's requests are (no message, exit 130), **when
-/// it is worth watching** (`parent::worth_watching`: a program drives this
-/// process, and nobody detached it on purpose). `detached_command` is
-/// whether the command is one snob starts to outlive its starter. Called by
-/// `main` for every command, before anything installs the handler.
-///
-/// The parent is opened now, while it is known to be this process's, and
-/// waited for once the handler is installed; one that has gone meanwhile is
-/// heard at once then. A command that never installs the handler ends on its
-/// own, soon, and never waits for it.
+/// Makes the parent process going one more way of asking the process to stop,
+/// taken as the system's requests are (no message, exit 130), **when it is
+/// worth watching** (`parent::worth_watching`: a program drives this process,
+/// and nobody detached it on purpose).
 pub fn stop_when_parent_exits(detached_command: bool) {
     if !crate::parent::worth_watching(crate::parent::situation(detached_command)) {
         return;
@@ -55,8 +38,6 @@ pub fn stop_when_parent_exits(detached_command: bool) {
 }
 
 /// Says so, once, when the parent [`stop_when_parent_exits`] opened is gone.
-/// A thread of its own, as for standard input: waiting on a process cannot
-/// be canceled either.
 fn parent_gone() -> Option<tokio::sync::mpsc::Receiver<()>> {
     let parent = PARENT.lock().unwrap_or_else(|e| e.into_inner()).take()?;
     let (gone, heard) = tokio::sync::mpsc::channel(1);
@@ -68,11 +49,6 @@ fn parent_gone() -> Option<tokio::sync::mpsc::Receiver<()>> {
 }
 
 /// Says so, once, when standard input has reached its end.
-///
-/// A thread of its own rather than a blocking task: a read of a pipe cannot be
-/// canceled, and a blocking task still in one would hold up the runtime's
-/// shutdown for as long as the parent keeps the pipe open. What it reads is
-/// thrown away.
 fn stdin_closed() -> tokio::sync::mpsc::Receiver<()> {
     let (closed, heard) = tokio::sync::mpsc::channel(1);
     std::thread::spawn(move || {
@@ -93,15 +69,6 @@ fn wait_for_the_end_of_stdin() {
 }
 
 /// The same on Windows, **without a read left waiting**.
-///
-/// A synchronous read pending on a pipe holds the handle, and every other call
-/// on it waits behind the read: `is_terminal` asks the handle its file name
-/// (the MSYS check), so the first `stdin().is_terminal()` anywhere in the run
-/// would hang until the parent wrote or closed. So the pipe is peeked at, which
-/// returns at once, and read only for what it already holds; closed, the peek
-/// fails with `ERROR_BROKEN_PIPE`. A standard input that is not a pipe (a file,
-/// `NUL`, a console) fails the peek too and counts as ended, as the end of a
-/// file does on Unix.
 #[cfg(windows)]
 fn wait_for_the_end_of_stdin() {
     use std::os::windows::io::AsRawHandle;
@@ -166,12 +133,6 @@ pub fn interrupted() -> bool {
 
 /// Whether the system asked the process to stop: a service manager, the
 /// terminal going away, the session ending.
-///
-/// For the full-screen browsers, which read Ctrl+C as a key and never look at
-/// the token between two keys: `ui::browser::input::read` hands them a Ctrl+C
-/// when this is set, so each leaves the way it leaves for the key. Not for a
-/// token canceled by a stop key, which the browser that read it already acts
-/// on, and which must not reach a browser it returns to.
 pub fn asked_by_the_system() -> bool {
     BY_THE_SYSTEM.load(Ordering::SeqCst)
 }
@@ -190,30 +151,11 @@ enum Asked {
 ///
 /// The double-press pattern is required because `tokio::signal::ctrl_c()`
 /// **permanently** disables the process default: from the first call onwards, a
-/// Ctrl+C no longer kills the program. If the orderly stop ever got stuck, the
-/// user would have no way out.
+/// Ctrl+C no longer kills the program.
 ///
-/// **The system's requests to stop take the same road as Ctrl+C.** On Unix
-/// that is `SIGTERM`, which `systemctl stop`, `kill` and a shutdown send, and
-/// `SIGHUP`, which a closed terminal sends (unless `nohup` left it ignored,
-/// which is kept); on Windows it is the console closing, the user signing
-/// out and the machine shutting down. And everywhere, standard input closing
-/// and the parent going, where `main` asked for them. Left to their
-/// defaults these ended the process where it stood: a walk lost the page in
-/// flight and skipped the orderly stop a Ctrl+C gets. Now each cancels the
-/// same token, so the walk stops the way it stops for a person, and a second
-/// request of either kind ends the process at once. Nothing is printed for
-/// them: there may be no terminal left to print to, and the "again" advice is
-/// for a person. The exit code is 130, the one an interrupted run has, whoever
-/// interrupted it. Windows gives a process a few seconds after the console
-/// closes, which is time enough for a walk to stop between two requests.
+/// **The system's requests to stop take the same road as Ctrl+C.**
 ///
-/// **Installed once per process, not once per call.** Interrupting is a
-/// property of the process. `snob watch` opens an `App` per tick — so that
-/// each tick picks up a rotated session and holds no SQLite connection while it
-/// sleeps — and a listener and a token per call would leave one listener per
-/// tick alive, thousands of them after a week, with the signal going to
-/// whichever won the race and canceling a token that nothing is watching.
+/// **Installed once per process, not once per call.**
 pub fn install() -> CancelToken {
     TOKEN
         .get_or_init(|| {
@@ -240,9 +182,7 @@ pub fn install() -> CancelToken {
                     }
                     // Nothing below this runs a destructor, so a cursor hidden
                     // by the login menu would stay hidden for the rest of the
-                    // user's shell session. A browser this process started
-                    // closes as its pipe does, when the process is gone, and
-                    // on Windows its job ends it.
+                    // user's shell session.
                     crate::ui::restore_terminal();
                     std::process::exit(130);
                 }
@@ -253,9 +193,7 @@ pub fn install() -> CancelToken {
         .clone()
 }
 
-/// Every way the process is asked to stop, listened to once for its whole
-/// life. A request the system would not let this listen for is `None`, and
-/// keeps its default; Ctrl+C is listened for whatever happens to the others.
+/// Every way the process is asked to stop, listened to once for its whole life.
 struct Requests {
     /// Standard input closing, when [`stop_when_stdin_closes`] asked for it.
     stdin: Option<tokio::sync::mpsc::Receiver<()>>,
@@ -297,9 +235,8 @@ impl Requests {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{SignalKind, signal};
-            // `nohup` left `SIGHUP` ignored: somebody asked for this process
-            // to outlive its terminal, and listening would undo it. Asked
-            // before the listener replaces the disposition.
+            // `nohup` left `SIGHUP` ignored: somebody asked for this process to
+            // outlive its terminal, and listening would undo it.
             let hangup = if crate::parent::hangup_ignored() {
                 None
             } else {

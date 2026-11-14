@@ -1,9 +1,4 @@
 //! The scheduled mode: `snob watch` with no subcommand.
-//!
-//! The loop, and what it starts its clock from. One turn of it is
-//! `super::run::run_viewers`, which is the same run `once` makes; what is left
-//! here is the waiting, the seed the waiting measures from, and the two
-//! sentences a loop no test can drive still has to get right.
 
 use anyhow::Result;
 use snob_core::model::printable;
@@ -25,45 +20,28 @@ use super::schedule::{describe_schedule, schedule_from, when_from};
 use super::watched::{watched_from, watching_label};
 
 /// Stays up and runs on a schedule until it is stopped.
-///
-/// The loop is deliberately thin. Everything with a rule in it — when the next
-/// run is due, how many were missed, how far jitter may push one — is
-/// `snob_core::watch::schedule`, which reads no clock and is tested with
-/// literal timestamps. What is left here is sleeping and asking again, which
-/// is the part no test can usefully drive.
-///
-/// An entry that names no viewer is read as `in_use`, the account this
-/// command resolved.
 pub(super) async fn scheduled(
     args: WatchRunArgs,
     secrets: SecretStore,
     paths: &AppPaths,
     in_use: Pk,
 ) -> Result<ExitCode> {
-    // Before anything that can refuse to start. Reading the file, building the
-    // schedule and checking the address can each end this process, and a
-    // service that dies at startup on a hand-edited file would otherwise expire
-    // nothing for as long as nobody notices.
+    // Before anything that can refuse to start.
     settle_all(paths);
 
-    // Read first, so the flags can override it. A flag beats the file because
-    // somebody typing one is saying something about this run in particular.
+    // Read first, so the flags can override it.
     let configured = config::load(paths)?;
 
     let schedule = schedule_from(&args, configured.as_ref())?;
     let watched = watched_from(args.target.clone(), configured.as_ref(), Some(in_use));
     // Built once and reused, so a service that runs for months holds one
-    // connection pool rather than building a TLS stack every few hours. Checked
-    // here for the same reason the schedule is: a bad address should stop this
-    // at the moment somebody is watching it start.
+    // connection pool rather than building a TLS stack every few hours.
     let delivery = delivery_from(&args.delivery, configured.as_ref(), &secrets)?;
     // An entry that keeps its videos at their best on a machine with no
     // ffmpeg, refused for the same reason and in the same place.
     super::posts::refuse_what_cannot_be_saved(&watched)?;
 
-    // Refused here rather than at the first tick. A service that starts, waits
-    // six hours and then exits because it was never allowed to read that
-    // account is a service that looked healthy all afternoon.
+    // Refused here rather than at the first tick.
     if let Some(unallowed) = watched.iter().find(|w| !w.may_run_unattended()) {
         return Err(refuse_unattended(unallowed.name().unwrap_or_default()));
     }
@@ -95,10 +73,7 @@ pub(super) async fn scheduled(
     if args.now {
         // Run one, here, rather than by pretending nothing has ever run:
         // `last_run = None` means "due immediately" only for an interval, and a
-        // calendar would answer with its next moment on the grid. It also means
-        // the run happens with no jitter, which is right — jitter exists so a
-        // *schedule* does not land on the same second every day, and delaying a
-        // run somebody just asked for would only look broken.
+        // calendar would answer with its next moment on the grid.
         last_run = Some(snob_core::clock::now());
         // Asked for at start, by hand: due for nothing.
         let timing = crate::engine::watch::RunTiming::by_hand(snob_core::clock::now());
@@ -109,13 +84,6 @@ pub(super) async fn scheduled(
 
     // The moment being waited for, the number of runs it stands for, and the
     // jitter roll that shifted it.
-    //
-    // Held across iterations rather than recomputed: `next_after` searches from
-    // `max(floor, now)`, so once `now` has passed the grid minute it would
-    // answer with the *next* one and the wake-up would creep forward instead of
-    // arriving. Recomputed when the clock stops ticking and starts jumping —
-    // see `CLOCK_JUMP_SECS`.
-    // And the moment it is due for, before the jitter, which a run records.
     let mut waiting_for: Option<(Epoch, u32, Option<Epoch>)> = None;
     // The previous time round's clock reading, which is how a clock that jumped
     // is told from one that ticked.
@@ -128,10 +96,7 @@ pub(super) async fn scheduled(
         let now = snob_core::clock::now();
 
         // A clock that moved by more than a nap did not tick: it was corrected,
-        // or the machine was suspended. Either way the moment being waited for
-        // was computed against a reading that no longer applies, and `due` is
-        // asked again. A machine that booted a year ahead and then had its clock
-        // corrected inwards would otherwise park the monitor for the whole year.
+        // or the machine was suspended.
         if let Some(before) = clock_was
             && !(0..=CLOCK_JUMP_SECS).contains(&(now - before))
         {
@@ -143,11 +108,7 @@ pub(super) async fn scheduled(
             Some(pending) => pending,
             None => {
                 let pending = match schedule::due(&schedule, last_run, now, &chrono::Local) {
-                    // Already owed, so it goes now. Jitter is not applied to a
-                    // run that is already late: it is off the grid by however
-                    // late it is, and shifting it further would move the target
-                    // every time round the loop, since the target would be
-                    // computed from a `now` that keeps advancing.
+                    // Already owed, so it goes now.
                     Due::Now { missed } => (
                         now,
                         missed,
@@ -161,17 +122,12 @@ pub(super) async fn scheduled(
                             "this schedule can never come round: nothing matches it"
                         ));
                     }
-                    // Rolled once per due moment. The roll is made here rather
-                    // than inside `wake_at` so that function reads no randomness
-                    // and its bounds stay testable.
+                    // Rolled once per due moment.
                     //
                     // `wake_at` and not `jittered`: the jitter the banner
                     // printed is measured against the grid, in seconds-of-day,
                     // and a day a zone springs forward through is an hour
-                    // shorter than that. `wake_at` asks the calendar in the zone
-                    // from the moment actually due, so the roll cannot reach
-                    // past the next moment or spill onto a day the calendar
-                    // forbids. It only ever narrows, so the banner stays true.
+                    // shorter than that.
                     Due::At(at) => (
                         schedule::wake_at(&schedule, at, fastrand::f64(), &chrono::Local),
                         0,
@@ -185,12 +141,7 @@ pub(super) async fn scheduled(
 
         if now >= wake_at {
             // **A critical battery holds the run back**, and only that: a run
-            // started now would be cut off by the system hibernating under
-            // it. The moment waited for is kept, so the run goes as soon as
-            // the machine is on power or charged again, as an overdue run, with
-            // no jitter. Looked at again at the near nap, which is soon enough
-            // for a charger plugged in and rare enough for a battery that
-            // stays empty.
+            // started now would be cut off by the system hibernating under it.
             if super::run::waits_for_power(paths, now) {
                 if !waiting_for_power {
                     ui::warn(report::BATTERY_CRITICAL_HOLD);
@@ -221,10 +172,7 @@ pub(super) async fn scheduled(
             // The jitter rolled is the schedule's own lateness, not the run's.
             let timing = crate::engine::watch::RunTiming::due(due_at, now, schedule.jitter());
 
-            // A scheduled service does not exit because one run failed. A
-            // cooldown lifts, a network comes back, and a session that is gone
-            // gets reported every time until somebody fixes it — which is the
-            // point of something that watches.
+            // A scheduled service does not exit because one run failed.
             if let Err(e) = run(timing).await.into_result() {
                 report::print_error(&e, printing.wording());
             }
@@ -237,10 +185,7 @@ pub(super) async fn scheduled(
         }
 
         // Slept in bounded stretches and re-checked against the wall clock each
-        // time round, rather than in one long sleep. A laptop that suspends for
-        // eight hours makes a single long timer wrong by eight hours, and
-        // asking "is it time yet?" costs nothing -- asking it every minute
-        // for six hours costs a little, which is what `nap_for` is about.
+        // time round, rather than in one long sleep.
         let nap = nap_for(wake_at - now);
         if cancel
             .sleep_or_cancel(std::time::Duration::from_secs(nap))
@@ -253,11 +198,6 @@ pub(super) async fn scheduled(
 }
 
 /// The refusal a scheduled run raises for an account nobody confirmed.
-///
-/// Its own function so a test can read it. The name lands in two slots of one
-/// sentence — the account being refused, and the command that answers for it —
-/// and both are filtered: it comes from `watch.toml`, where nothing validates a
-/// username.
 fn refuse_unattended(name: &str) -> anyhow::Error {
     let shown = printable(name);
     ExitError::new(
@@ -277,9 +217,6 @@ fn refuse_unattended(name: &str) -> anyhow::Error {
 /// off for a day on a daily schedule misses exactly one, and `missed_since`
 /// takes one off the end because the moment being served is itself in the past,
 /// so one is what a laptop that was shut overnight produces.
-///
-/// Its own function so a test can read it, like [`refuse_unattended`]. The
-/// sentence is only ever printed from inside the loop, which no test can drive.
 fn missed_warning(missed: u32) -> String {
     if missed == 1 {
         "1 scheduled run was missed while this was not running. It is not replayed: there is \
@@ -293,22 +230,8 @@ fn missed_warning(missed: u32) -> String {
     }
 }
 
-/// How long to sleep before looking at the clock again, given how far the
-/// next run is.
-///
-/// Short near the moment and longer far from it. Each wake-up is cheap in CPU
-/// but a timer the operating system cannot coalesce, on a laptop where that is
-/// the thing that costs battery: a one-minute nap wakes three hundred and sixty
-/// times between two runs on `--every 6h`, five minutes about seventy. The last
-/// ten minutes are walked in one-minute steps so the run still lands within a
-/// minute of its moment.
-///
-/// What detects a suspend does not depend on this: it is the jump in the wall
-/// clock between two turns, read against [`CLOCK_JUMP_SECS`], not how often
-/// the clock is read. A laptop shut for eight hours is noticed on the first
-/// turn after it wakes, whichever nap it was in. And a nap can never run past
-/// the moment: it is bounded by the distance, so the wake-up for a run ten
-/// minutes out is never later than the run.
+/// How long to sleep before looking at the clock again, given how far the next
+/// run is.
 fn nap_for(remaining: i64) -> u64 {
     const FAR: i64 = 10 * 60;
     let ceiling = if remaining > FAR {
@@ -319,20 +242,12 @@ fn nap_for(remaining: i64) -> u64 {
     remaining.clamp(1, ceiling) as u64
 }
 
-/// The two nap ceilings [`nap_for`] chooses between. Both stay under the
-/// fifteen-minute floor between runs, so neither can nap through one.
+/// The two nap ceilings [`nap_for`] chooses between.
 const NAP_NEAR_SECS: i64 = 60;
 const NAP_FAR_SECS: i64 = 5 * 60;
 
 /// How far the clock may move between two turns of the loop and still be
 /// ticking.
-///
-/// Twice the longest nap: a turn that took longer than that did not sleep
-/// and wake, it was corrected, suspended, or resumed -- none of which the
-/// moment being waited for was computed against. Tied to [`NAP_FAR_SECS`]
-/// rather than written as a number, because the two have to move together: a
-/// five-minute nap against a two-minute jump would call every ordinary turn a
-/// suspend.
 const CLOCK_JUMP_SECS: i64 = 2 * NAP_FAR_SECS;
 
 // The two orderings the loop leans on, held where they cannot be argued
@@ -342,15 +257,10 @@ const CLOCK_JUMP_SECS: i64 = 2 * NAP_FAR_SECS;
 const _: () = assert!(CLOCK_JUMP_SECS > NAP_FAR_SECS);
 const _: () = assert!(NAP_FAR_SECS < snob_core::watch::schedule::MIN_GAP_SECS);
 
-/// When the monitor last started a run, for any account: the latest across
-/// every account's database, and the start every run writes in `shared.db`
-/// before its work (`run::started`), which is there even when no account got
-/// as far as its row.
-///
-/// Opened and closed here rather than held: the loop deliberately keeps no
-/// SQLite connection while it sleeps, so `snob purge` in another terminal is not
-/// blocked by a file this has open. `shared.db` is only read, so `watch status`
-/// stays a reader.
+/// When the monitor last started a run, for any account: the latest across every
+/// account's database, and the start every run writes in `shared.db` before its
+/// work (`run::started`), which is there even when no account got as far as its
+/// row.
 pub(super) fn last_started(paths: &AppPaths) -> Result<Option<Epoch>> {
     let mut latest = Shared::read_existing(paths)?
         .map(|shared| shared.monitor_last_started())
@@ -371,45 +281,17 @@ pub(super) fn last_started(paths: &AppPaths) -> Result<Option<Epoch>> {
 /// because the answer depends on what kind of schedule it is:
 ///
 /// - **An interval** has no moments of its own, so `None` means "due now" and a
-///   fresh install would walk the second it was set up. `Some(now)` is what
-///   makes it wait one interval, and `--now` is how somebody asks for the walk
-///   at start.
+///   fresh install would walk the second it was set up.
 /// - **A calendar** has its own moments, and inventing a run for it is harmful.
-///   The invented value is a claim that a run happened this second, and
-///   `next_after` believes it: the floor becomes `now + MIN_GAP_SECS`, stepping
-///   over every moment in the next quarter of an hour, so `snob watch --at
-///   09:00` started at 08:50 would sleep for a day and ten minutes. `None` is
-///   what the schedule module's own contract asks for here — there is no past
-///   to wait from, and no run to be too close to.
 fn seed_last_run(schedule: &Schedule, now: Epoch) -> Option<Epoch> {
     (!schedule.is_on_a_calendar()).then_some(now)
 }
 
 /// What the loop starts its clock from.
 ///
-/// Seeded from the run log rather than from this process's start. A clock that
-/// began again on every start would never reach the first run of `--every 24h`
-/// on a machine powered on from eight to six, or under a supervisor with
-/// `Restart=always` restarting more often than the interval — while
-/// `snob watch status`, reading the very same table, said "It has not run yet."
-///
-/// With nothing in the log it is [`seed_last_run`]'s answer, remembered across
-/// process starts. `last_started` reads `watch_runs`, whose only writer is a
-/// tick that finished, so an invented `now` held only in a variable would,
-/// while that log stays empty, **measure every start's interval from that
-/// start**. `snob watch` in a login item with `--every 1d` (the wizard's own
-/// suggestion) on a laptop up eight hours a day would be due at hour
-/// twenty-four and shut down at hour eight, every day, for ever.
-///
-/// A calendar seeds nothing, for the reason [`seed_last_run`] gives: inventing
-/// a run for it steps over every moment in the next quarter of an hour.
-///
-/// Kept in `shared.db`, because the monitor is one for every account. A seed an
-/// account's own database kept from before is copied there once, the earliest
-/// if several did.
-/// What [`seed_for`] would start from, read and never written: for `watch
-/// status`, which writes nothing. `None` on an interval that never started
-/// is a clock not yet started, which [`seed_for`] would start now.
+/// `last_started` reads `watch_runs`, whose only writer is a tick that
+/// finished, so an invented `now` held only in a variable would, while that log
+/// stays empty, **measure every start's interval from that start**.
 pub(super) fn seed_as_stored(paths: &AppPaths, schedule: &Schedule) -> Result<Option<Epoch>> {
     if let Some(recorded) = last_started(paths)? {
         return Ok(Some(recorded));

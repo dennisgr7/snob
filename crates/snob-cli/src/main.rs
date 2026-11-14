@@ -12,24 +12,8 @@ use snob_store::secrets::SecretStore;
 
 /// Two workers, always two, whatever the machine has.
 ///
-/// The default is one per core, which is both too many and — on the machines
-/// this project explicitly supports — too few. Too many because the program
-/// makes one request at a time and spends most of its life asleep between them,
-/// so thirty-two worker threads on a thirty-two core desktop are thirty-one
-/// doing nothing. Too few because on a one-vCPU server or container the default
-/// is **one**, and that is the case that breaks something.
-///
-/// It breaks Ctrl+C. `tokio::signal::ctrl_c()` permanently disables the process
-/// default handler from the first call onwards, so the only thing that can stop
-/// a run is the task waiting on that signal. Give it a single worker and let
-/// anything block that worker — the consent prompt waiting on a human, a
-/// request budget waiting out the busy timeout — and the signal task cannot be
-/// scheduled at all. Ctrl+C then does nothing, twice, and the run cannot be
-/// stopped. A homelab is a first-class place to run this, and a one-vCPU box is
-/// what a homelab is.
-///
-/// The second worker is what guarantees there is always somewhere for that task
-/// to go.
+/// Too few because on a one-vCPU server or container the default is **one**,
+/// and that is the case that breaks something.
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> std::process::ExitCode {
     let cli = match Cli::try_parse() {
@@ -59,37 +43,19 @@ async fn main() -> std::process::ExitCode {
     std::process::ExitCode::from(snob_cli::exit::code(code))
 }
 
-/// Makes a future in a frame of its own and hands it back on the heap, so
-/// that whoever awaits it holds a pointer.
+/// Makes a future in a frame of its own and hands it back on the heap.
 ///
 /// **Every future `main`, `run` and `dispatch` await is made through this,
-/// and a new command's must be.** `dispatch` awaits a different command in
-/// each arm of one `match`, and a build that does not optimize gives every
-/// one of those futures a place of its own in `dispatch`'s frame, all of
-/// them at once, whichever arm runs. That frame was about 290 KiB, on a main
-/// thread Windows gives 1 MiB, and it grew with any command's future: the
-/// interactive views' waits adding 9 KiB to ten commands at once was enough
-/// for `snob status --jobs --json`, which draws nothing, to end in "thread
-/// 'main' has overflowed its stack".
+/// and a new command's must be** (AGENTS.md, "Code conventions"): a debug
+/// build gives every arm's future a place in `dispatch`'s frame at once, on a
+/// main thread Windows gives 1 MiB. Measured on `snob status --jobs --json`
+/// with a job running, a debug build with `testing` on Windows, November
+/// 2026: 402 KiB down with only `run`'s future boxed, 60 KiB with every one;
+/// to spare, 96 to 112 KiB with nothing boxed, 480 to 512 now.
 ///
-/// Measured on that command with a job running, the deepest found, in a
-/// debug build with `testing` on Windows, November 2026. Where it starts to
-/// read the job's command line back (`jobs::argv::check`) it stood 402 KiB
-/// down with only `run`'s future boxed, and stands 60 KiB down with every
-/// future made here. What it has to spare, found by eating the stack ahead
-/// of `main` until the sandbox test
-/// `a_job_polled_to_its_end_gives_the_walks_answer` overflowed: between 96
-/// and 112 KiB with nothing boxed, between 160 and 176 with `run`'s alone,
-/// between 480 and 512 now.
-///
-/// **A closure and not the future**, because an argument is made in the
-/// caller's frame before the call, wherever it ends up: `boxed(run(cli))`
-/// would leave the place for it exactly where it was. `#[inline(never)]`
-/// says the same to a build that does optimize.
-///
-/// What is left is not a frame of these three. From that point the command
-/// needs between 440 and 472 KiB more, and the first thing it does there is
-/// have clap read a command line; nothing here changes what that costs.
+/// **A closure and not the future**: an argument is made in the caller's
+/// frame before the call, so `boxed(run(cli))` would leave its place where it
+/// was. `#[inline(never)]` says the same to a build that does optimize.
 #[inline(never)]
 fn boxed<F: Future>(make: impl FnOnce() -> F) -> std::pin::Pin<Box<F>> {
     Box::pin(make())
@@ -109,16 +75,6 @@ fn in_the_background(command: &Command) -> Option<(&'static str, &snob_cli::cli:
 }
 
 /// `snob` typed with no command.
-///
-/// On a terminal, where to start (`commands::start`). Anywhere else, the
-/// error and exit 2 of any other mistake on the command line, but with
-/// clap's list of commands left out: clap lists every one, the hidden
-/// plumbing included, and `snob --help` lists those a person types.
-///
-/// The global flags typed are read by parsing the same line again with a
-/// command that takes no argument of its own, so the screen finds the
-/// sandbox and the account a real command would. A line that does not parse
-/// even then is reported as clap reports it.
 fn no_command() -> std::process::ExitCode {
     use clap::CommandFactory;
     use std::io::IsTerminal;
@@ -144,12 +100,6 @@ fn no_command() -> std::process::ExitCode {
 }
 
 /// Whether a failure is told in JSON: when the answer was going to be.
-///
-/// The same decision the command makes about its result, made once more
-/// here for its failure -- `--format json`, `--json`, an extension that
-/// means JSON, or standard output not being a terminal, which is what turns
-/// a list into JSON on its own. A program reading one stream should not
-/// have to read the other in English.
 fn wording_for(cli: &Cli) -> snob_cli::report::Wording {
     use snob_cli::cli::{AccountCommand, Format, JobsCommand, WatchCommand};
     use snob_cli::output::effective_format;
@@ -235,12 +185,7 @@ fn wording_for(cli: &Cli) -> snob_cli::report::Wording {
 /// Whether a file really holds PEM certificates.
 ///
 /// **Emptiness is the case that matters**, and it is why this is not a bare
-/// `is_err()`. `from_pem_bundle` scans for BEGIN/END blocks and answers `Ok`
-/// with an empty list when there are none, so a text file, a DER file or a
-/// mistyped path that happened to exist would pass in silence — and
-/// `tls_certs_only` would then be handed Mozilla's roots and nothing of the
-/// user's, which is the one outcome `--tls-extra-root` exists to prevent. It
-/// would fail at the handshake, hours later, against Instagram and nowhere else.
+/// `is_err()`.
 fn holds_a_certificate(pem: &[u8]) -> anyhow::Result<()> {
     match snob_ig::http::reqwest::Certificate::from_pem_bundle(pem) {
         Ok(found) if !found.is_empty() => Ok(()),
@@ -280,36 +225,10 @@ fn trust_from(cli: &Cli) -> anyhow::Result<snob_ig::http::Trust> {
 /// Where this run keeps its files, whether the keyring is off, and — for a
 /// sandbox — the keyring namespace it is confined to.
 ///
-/// One place, so the sandbox seam is one `cfg` block rather than a condition at
-/// every site that opens something. In a release build it is
-/// `AppPaths::discover()` and the flag the user typed, and nothing else exists.
-///
-/// A sandbox forces the file backend as well as the directory. Not a
-/// convenience: the keyring is per user and not per directory, so a sandbox run
-/// that used it would read, overwrite and — through `purge` — delete the real
-/// stored session of whoever is running the tests. The same rule
-/// `crates/snob-core/tests/keyring.rs` holds the test suite to, applied to the
-/// binary.
-///
-/// **Forcing the backend is not enough on its own.** `SecretStore` keeps
-/// talking to the keyring whatever backend it is on, and it must: `save`
-/// deletes the keyring entry so that `load`, which reads the keyring first,
-/// cannot go on serving a session the file has replaced, and the two watch
-/// secrets have no file form at all, so they never consult the backend. Every
-/// one of those entries is named by the service, so on the real service a
-/// sandbox `login` would delete the developer's session, a sandbox `purge`
-/// would take the webhook secrets with it, and a sandbox that had not logged in
-/// yet would load the real cookie and carry it to the redirected server, which
-/// the flag pairing is documented to make impossible. So the third element
-/// gives the sandbox a keyring namespace of its own, and every one of those
-/// operations lands on entries nothing outside the sandbox can see.
+/// **Forcing the backend is not enough on its own.**
 fn wiring(cli: &Cli) -> anyhow::Result<(AppPaths, bool, Option<String>)> {
     // Before any client exists, which is what `use_trust` requires: a run
-    // cannot change what it trusts halfway through. A second answer is an
-    // error and not a shrug: `http.rs` says a security option that silently
-    // does nothing is worse than one that is not offered. The same value twice
-    // is accepted, because the tests below call this more than once in one
-    // process and a repeat of the same answer changes nothing.
+    // cannot change what it trusts halfway through.
     let trust = trust_from(cli)?;
     if let Err(already) = snob_ig::http::use_trust(trust.clone())
         && already != trust
@@ -320,15 +239,12 @@ fn wiring(cli: &Cli) -> anyhow::Result<(AppPaths, bool, Option<String>)> {
     #[cfg(feature = "testing")]
     if let Some(root) = &cli.sandbox_root {
         if let Some(base) = cli.ig_base_url.clone() {
-            // Before any client is built, and once. Clap has already refused
-            // this flag without a sandbox root, so a redirected client can only
-            // carry a session out of the store inside `root`.
+            // Before any client is built, and once.
             snob_ig::client::point_every_client_at(base)
                 .map_err(|already| anyhow::anyhow!("already pointed at {already}"))?;
         }
-        // The browser path against the fake server too, so it can be driven
-        // end to end. Off by default: the rest of the suite reaches its mock
-        // servers directly, with no browser on the machine required.
+        // The browser path against the fake server too, so it can be driven end
+        // to end.
         if cli.through_the_browser {
             snob_ig::client::page::use_the_page_off_instagram();
         }
@@ -342,17 +258,6 @@ fn wiring(cli: &Cli) -> anyhow::Result<(AppPaths, bool, Option<String>)> {
 }
 
 /// The keyring service name a sandbox run is confined to.
-///
-/// Derived from the root rather than one shared constant, so two sandboxes
-/// running at the same time — which is the normal case, the suite runs in
-/// parallel — cannot delete each other's entries.
-///
-/// FNV-1a rather than `DefaultHasher`: the name has to come out the same on the
-/// *next* invocation, because one process writes the entry and another reads it
-/// back, and `DefaultHasher`'s output is explicitly not promised to be stable
-/// between Rust releases. It is not a security boundary and does not need to be
-/// one — the isolation comes from the name being different, not from it being
-/// hard to guess.
 #[cfg(feature = "testing")]
 fn sandbox_keyring_namespace(root: &std::path::Path) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -369,10 +274,8 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let sandboxed = keyring_namespace.is_some();
 
     // The updater: its own processes, `snob update`, and every other command
-    // taking part (`update::at_start`), first, since applying a version may
-    // run this command again from the new binary. `snob mcp` and the owner
-    // of the browsers do not count as running (`update::running`); a job's
-    // supervisor counts and does nothing more.
+    // taking part (`update::at_start`), first, since applying a version may run
+    // this command again from the new binary.
     match &cli.command {
         Command::Updater(snob_cli::cli::UpdaterCommand::Fetch) => {
             boxed(|| snob_cli::update::fetch(&paths)).await?;
@@ -423,8 +326,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         snob_cli::app::progress_json();
     }
     // Before the layout, the owner and the session: the server spends nothing
-    // and stores nothing itself. Each tool call is a child `snob`, which does
-    // all of that for itself.
+    // and stores nothing itself.
     #[cfg(feature = "mcp")]
     if let Command::Mcp(args) = &cli.command {
         return match &args.command {
@@ -513,8 +415,6 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 
     // The single-account layout moves under its account before anything reads
     // it, with no browser of an older layout's owner still writing into it.
-    // Not for `purge`, which removes it whole and must work when the move
-    // cannot, nor for `import` and `fetch`, which store nothing.
     if !matches!(
         cli.command,
         Command::Purge(_) | Command::Import(_) | Command::Fetch(_)
@@ -545,10 +445,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     }
 
     // Every request to Instagram goes out from a browser from here on, unless
-    // this run was told not to — see `headless/`. The switch is for a
-    // machine with no Chromium browser on it, and for comparing the two. The
-    // browsers are the owner's (`owner`), shared with every other command,
-    // unless this run was told to keep its own.
+    // this run was told not to — see `headless/`.
     if !snob_cli::headless::env_flag("SNOB_NO_BROWSER") {
         let start = if snob_cli::headless::env_flag("SNOB_NO_OWNER") {
             None
@@ -578,10 +475,6 @@ fn somebody_waits(cli: &Cli) -> bool {
 }
 
 /// Runs the command, as the account it resolves to when it acts as one.
-///
-/// Every command that acts as an account is handed that account's paths and
-/// session, and nothing else of any account's: `account::resolve` is the one
-/// place that decides which.
 async fn dispatch(
     cli: Cli,
     store: SecretStore,
@@ -647,10 +540,8 @@ async fn dispatch(
         Command::Status(args) => commands::status::run(args, &store, paths, resolved()?, sandboxed),
         Command::Logout(args) => {
             let account = if args.all { None } else { resolved()? };
-            // `--only` (`snob_logout`): the account this run resolved has to
-            // be the one named, or nothing is signed out. With none resolved
-            // `logout` signs every account out, and with another resolved it
-            // would sign out an account nobody was asked about.
+            // `--only` (`snob_logout`): the account this run resolved has to be
+            // the one named, or nothing is signed out.
             if let Some(only) = &args.only {
                 let registry = Registry::load(paths)?;
                 let named = snob_cli::account::named(only, &registry)
@@ -753,11 +644,8 @@ async fn dispatch(
         }
         Command::Watch(args) => {
             use snob_cli::cli::WatchCommand;
-            // `status`, `deliver` and `unit` act as no account: they read
-            // every account's database, or none. With several signed in and
-            // none active, the account they would be handed cannot be
-            // settled, which is no reason to refuse them; an account named
-            // with --account or SNOB_ACCOUNT that is not here still is.
+            // `status`, `deliver` and `unit` act as no account: they read every
+            // account's database, or none.
             let needs_none = matches!(
                 args.command,
                 Some(WatchCommand::Status(_) | WatchCommand::Deliver(_) | WatchCommand::Unit(_))
@@ -773,9 +661,7 @@ async fn dispatch(
         Command::Fetch(args) => {
             // Only the User-Agent is read off the account, and only when one
             // was not given; a registry or session that will not read is no
-            // reason not to fetch a public file. An account named with
-            // --account or SNOB_ACCOUNT that is not signed in here is a
-            // mistake to say, though, not one to pass over.
+            // reason not to fetch a public file.
             let account_ua = || -> anyhow::Result<Option<String>> {
                 let account = match resolved() {
                     Ok(Some(account)) => account,
@@ -803,12 +689,9 @@ async fn dispatch(
     }
 }
 
-/// What the owner of the browsers is started with: the global flags that
-/// decide where its files are, so that it lands on the same ones, and the
-/// hidden command. A sandbox root is made absolute, since the owner does not
-/// run from here (`owner::spawn`). `--verbose` too, which then holds for
-/// every command that owner serves, and for none it serves when the command
-/// that started it did not ask.
+/// What the owner of the browsers is started with: the global flags that decide
+/// where its files are, so that it lands on the same ones, and the hidden
+/// command.
 fn owner_args(cli: &Cli) -> anyhow::Result<Vec<std::ffi::OsString>> {
     let mut args = detached_globals(cli)?;
     args.push(snob_cli::owner::COMMAND.into());
@@ -832,16 +715,10 @@ fn detached_globals(cli: &Cli) -> anyhow::Result<Vec<std::ffi::OsString>> {
     Ok(args)
 }
 
-/// What every command `snob mcp` runs for a tool call is started with, ahead
-/// of its own arguments: the global flags the server was given, so the child
-/// lands on the same files, account and trust, and `--max-wait` when
-/// `max_wait` is given.
-///
-/// `snob mcp config` prints the same flags in front of `mcp`, so the server
-/// a client starts is the one this command line describes, `--max-wait`
-/// among them when it was given. The server itself passes none here: it
-/// hands each child the wait that child's kind of run allows
-/// (`commands::mcp::Waits`), and clap refuses the flag twice.
+/// What every command `snob mcp` runs for a tool call is started with, ahead of
+/// its own arguments: the global flags the server was given, so the child lands
+/// on the same files, account and trust, and `--max-wait` when `max_wait` is
+/// given.
 #[cfg(feature = "mcp")]
 fn mcp_globals(
     cli: &Cli,
@@ -885,16 +762,6 @@ fn mcp_globals(
 }
 
 /// Gives the cursor back if the process dies with a menu on screen.
-///
-/// The release profile is `panic = "abort"`, so nothing runs on the way out —
-/// and `ui::menu` hides the cursor and takes the terminal raw while a menu
-/// is up, as the story browser does. A panic during the login menu would
-/// otherwise leave the user with an invisible cursor for the rest of their
-/// shell session, which reads as the terminal being broken rather than as this
-/// program having failed.
-///
-/// The hook still runs under an aborting runtime: `set_hook` is documented to
-/// run with both runtimes.
 fn restore_terminal_on_panic() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -904,21 +771,6 @@ fn restore_terminal_on_panic() {
 }
 
 /// What is logged, and at which level.
-///
-/// `--verbose` turns on `debug` for this workspace's crates and nothing else;
-/// without it, `SNOB_LOG` is read as a list of `target=level` directives --
-/// `snob_ig=debug,warn` -- and `warn` is the answer when it is unset or does not
-/// parse. A directive that does not parse is said so, once, rather than
-/// silently read as `warn`: somebody who set the variable is debugging and is
-/// the one person who needs to know it was ignored.
-///
-/// The owner of the browsers says, besides, when it starts: one owner after
-/// another appends to the same log.
-///
-/// `Targets` rather than `EnvFilter`, which is the obvious type: `EnvFilter`
-/// understands span and field matchers, and to do so it links a
-/// regular-expression engine. Nothing here logs a span. The manifest says what
-/// that costs.
 fn log_filter(
     verbose: bool,
     spec: Option<&str>,
@@ -953,9 +805,7 @@ fn log_filter(
 }
 
 /// A command's lines are read as it runs; the owner's, in its log, later, so
-/// they say when. So do a command's under `--verbose`, which is for reading
-/// the pacing back: the wait before a list and between its pages is only
-/// visible in the gaps between the lines.
+/// they say when.
 fn init_tracing(verbose: bool, owner: bool) {
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
@@ -964,9 +814,7 @@ fn init_tracing(verbose: bool, owner: bool) {
     let filter = log_filter(verbose, spec.as_deref(), owner);
     let lines = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        // **The filter decides, and nothing before it.** The builder's own
-        // ceiling, INFO by default, would drop every debug event before
-        // `log_filter` sees it.
+        // **The filter decides, and nothing before it.**
         .with_max_level(tracing::Level::TRACE);
     if owner || verbose {
         lines.finish().with(filter).init();

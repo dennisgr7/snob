@@ -1,18 +1,4 @@
 //! `snob status`: where the account stands, read from what is stored here.
-//!
-//! **Sends nothing and writes nothing.** It is the question somebody asks
-//! before a heavy walk, and it must not cost what it reports on: no request,
-//! no budget, no browser, no database brought into being for an account that
-//! has none yet, and nothing in one that has changed. The one move it shares
-//! with every command is `main`'s, of a data directory a much older snob left
-//! in its single-account layout; without it there is no account here to
-//! report on.
-//!
-//! One of the listed exceptions to "commands take an App": an `App` would
-//! create the database, refresh the User-Agent and settle the day's retention,
-//! each a write. It reads the account's database with
-//! [`Store::read_existing`], and `shared.db` the same way, which neither
-//! migrates the file nor checkpoints its log.
 
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -30,10 +16,9 @@ use crate::cli::{StatusArgs, StatusSections};
 use crate::exit::ExitCode;
 use crate::report;
 
-/// Reports on `account`, the account resolved for this run, and with
-/// `--json` and no section named on the updater as well (`update::report`,
-/// read from its file), `sandboxed` saying whether this run is a sandbox's.
-/// A section named narrows the report to it, as it always has.
+/// Reports on `account`, the account resolved for this run, and with `--json`
+/// and no section named on the updater as well (`update::report`, read from its
+/// file), `sandboxed` saying whether this run is a sandbox's.
 pub fn run(
     args: StatusArgs,
     secrets: &SecretStore,
@@ -282,10 +267,8 @@ struct Found<'a> {
 }
 
 impl Found<'_> {
-    /// Every value a stable token or a number; moments in seconds, as
-    /// `whoami` gives them. A moment something may happen again (`until`,
-    /// `free_at`, `next_*_at`) is rounded up to its second, so a script that
-    /// waits until it is not a second early.
+    /// Every value a stable token or a number; moments in seconds, as `whoami`
+    /// gives them.
     fn json(&self) -> Value {
         let mut out = serde_json::Map::new();
         if self.sections.session {

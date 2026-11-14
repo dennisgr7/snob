@@ -1,37 +1,17 @@
 //! Posts and reels once they are read: what a listing and a view show of
-//! them, how they are fetched, and how their files are kept. `posts`,
-//! `post` and their views share it, as `stories` and `highlights` share
+//! them, how they are fetched, and how their files are kept. `posts`, `post`
+//! and their views share it, as `stories` and `highlights` share
 //! [`crate::media`].
 //!
-//! **What is read, and what it costs** (`snob_ig::client::IgClient`'s
-//! `profile_posts`, `media_info` and `media_comments` say why each is the
-//! app's call):
+//! What is read: a grid is its profile and one read per page of twelve, a
+//! step apart; opening a post is its info and its first page of comments; a
+//! thread of replies is one read ([`read_threads`], at most
+//! [`MOST_THREADS`]); a tab is as the grid, with the app's navigation before
+//! its second page ([`read_tab`]). The files come from the CDN, which is not
+//! paced.
 //!
-//! - a profile's grid is its profile (the three or four reads `profile`
-//!   spends) and then one read per page of twelve posts, a step apart as the
-//!   pages of any action are ([`snob_ig::pace::STEP_MS`]). A page of posts is
-//!   not a list of accounts and is not charged to the day's accounts;
-//! - opening a post in a view is the pair the app sends as one opens, its
-//!   info and its first page of comments: two reads, the comments' authors
-//!   charged to the day's accounts as a list page's are. More comments are
-//!   one read a page, asked for one at a time;
-//! - the replies under a comment are one read a thread, the first page of
-//!   it, a comment step after the read before ([`read_threads`]), at most
-//!   [`MOST_THREADS`] a run, their authors charged to the day's accounts;
-//! - a profile's reels, tagged or reposts tab is its profile and then one
-//!   read per page, a step apart, as the grid's, and the app's navigation to
-//!   the tab before its second page ([`read_tab`]). Its posts carry no date
-//!   and no video's address, so a post of a tab looked into or saved costs
-//!   its info first ([`filled`]);
-//! - a link is the post's info alone, and its comments only when they are
-//!   shown;
-//! - the files come from the CDN, which is not paced
-//!   (`CdnClient::download_capped` says why), photos fetched by the tab and
-//!   videos directly, as a play would count.
-//!
-//! **Nothing here tells anybody what was looked at**: the app reports what it
-//! shows through calls of its own, which snob has no code to send, and the
-//! allowlist and `crates/snob-core/tests/no_seen.rs` keep it that way.
+//! **Nothing here tells anybody what was looked at**: the allowlist and
+//! `crates/snob-core/tests/no_seen.rs` keep it that way.
 
 use std::path::{Path, PathBuf};
 
@@ -58,16 +38,13 @@ use crate::ui;
 
 /// Ceiling on one downloaded file of a post: 128 MiB.
 ///
-/// Far above [`crate::media::MAX_STORY_BYTES`], and it has to be: a reel runs
-/// for minutes where a story runs for seconds, and a video post for longer
-/// still, though a 720-pixel reel rarely passes 100 MiB. Nothing of it is held in memory -- every file streams to disk
-/// (`IgClient::download_to`) -- so the ceiling is only there so that a
-/// redirect to something endless cannot fill the disk.
+/// Far above [`crate::media::MAX_STORY_BYTES`], and it has to be: a reel runs for minutes where a
+/// story runs for seconds, and a video post for longer still, though a 720-pixel reel rarely passes
+/// 100 MiB.
 pub const MAX_POST_BYTES: usize = 128 * 1024 * 1024;
 
-/// The most pages of a grid one run reads: one sitting
-/// ([`PAGES_PER_SITTING`]), about 480 posts. A grid past that is what a
-/// person scrolling stops somewhere in.
+/// The most pages of a grid one run reads: one sitting ([`PAGES_PER_SITTING`]),
+/// about 480 posts.
 pub const MOST_PAGES: u32 = PAGES_PER_SITTING;
 
 /// The site, for the address a listing prints for each post.
@@ -110,8 +87,7 @@ impl PostKind {
 #[derive(Debug, Clone)]
 pub struct Item {
     pub kind: Kind,
-    /// Where the best copy is. Absent when Instagram described the item and
-    /// offered no version of it.
+    /// Where the best copy is.
     pub url: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -130,8 +106,6 @@ pub struct Item {
 }
 
 /// One post or reel, reduced to what a listing, a view and a download need.
-/// Every text in it came off somebody else's account and is filtered for a
-/// terminal ([`printable`]).
 #[derive(Debug, Clone)]
 pub struct Post {
     pub pk: MediaPk,
@@ -344,9 +318,8 @@ impl Post {
         self.caption.first().map_or("", String::as_str)
     }
 
-    /// "Liked by <name> and N others", as the app writes it under a post, or
-    /// "N likes" when nobody the viewer knows liked it. Nothing when the
-    /// owner hid the count and nobody is named.
+    /// "Liked by <name> and N others", as the app writes it under a post, or "N
+    /// likes" when nobody the viewer knows liked it.
     pub fn liked_line(&self) -> Option<String> {
         let names: Vec<&str> = self
             .likers_known
@@ -477,9 +450,8 @@ impl Videos {
         Self::resolve(None, None).unwrap_or(Self::Compat { say_how: false })
     }
 
-    /// `files` made ready to save as this says: each video's best tracks
-    /// kept, with the ffmpeg that joins them, or dropped. Without ffmpeg, a
-    /// run that would have saved a better video says once how to get it.
+    /// `files` made ready to save as this says: each video's best tracks kept,
+    /// with the ffmpeg that joins them, or dropped.
     pub(crate) fn prepare(&self, files: Vec<Named>) -> Vec<Named> {
         if matches!(self, Self::Compat { say_how: true }) && files.iter().any(|f| f.best.is_some())
         {
@@ -558,8 +530,7 @@ pub struct CommentLine {
     pub pk: Option<String>,
     pub author_pk: Option<String>,
     /// `None` until its thread is read ([`read_threads`]): `replies` are the
-    /// page's previews. Then whether Instagram said it holds replies it did
-    /// not hand out.
+    /// page's previews.
     pub more_replies: Option<bool>,
 }
 
@@ -650,12 +621,11 @@ impl Thread {
 
 /// The replies under `comment` of `post`: one read, from the post's page.
 ///
-/// **A thread Instagram answers nothing for is not a failure of the run**:
-/// an answer that names another post's comment, or none, and a refusal of
-/// the request itself (a 4xx that is no push-back, or "not found") are a
-/// thread `found: false`, since a comment named by a person may be gone or
-/// on another post. A push-back, a session gone and a cooldown still stop
-/// the run, as they stop every read.
+/// **A thread Instagram answers nothing for is not a failure of the run**: an
+/// answer that names another post's comment, or none, and a refusal of the
+/// request itself (a 4xx that is no push-back, or "not found") are a thread
+/// `found: false`, since a comment named by a person may be gone or on another
+/// post.
 pub async fn read_thread(client: &IgClient, post: &Post, comment: CommentPk) -> Result<Thread> {
     let page = match client.comment_replies(post.pk, comment, &post.page()).await {
         Ok(page) => page,
@@ -679,8 +649,7 @@ pub async fn read_thread(client: &IgClient, post: &Post, comment: CommentPk) -> 
 
 /// The comments of `comments` whose threads `--replies <first>` reads: the
 /// first `first` that hold replies the page did not show, in the order they
-/// were read. A comment whose previews are its whole thread is never asked
-/// for.
+/// were read.
 pub fn threads_to_read(comments: &Comments, first: usize) -> Vec<CommentPk> {
     comments
         .lines
@@ -691,14 +660,10 @@ pub fn threads_to_read(comments: &Comments, first: usize) -> Vec<CommentPk> {
         .collect()
 }
 
-/// Reads the threads `--replies` and `--replies-of` ask for, once each and
-/// at most [`MOST_THREADS`] in all: those of the first `first` comments
-/// read with replies missing ([`threads_to_read`]), put under their
-/// comments, then each of `of` not read already, which need not be among
-/// the comments read. Each a comment step after the read before
-/// ([`Pace::for_comments`]), past any rest the account's sitting owes, and
-/// counted in the sitting (`IgClient::comment_replies`). The threads of
-/// `of`, in their order; `None` when Ctrl+C stopped a wait.
+/// Reads the threads `--replies` and `--replies-of` ask for, once each and at
+/// most [`MOST_THREADS`] in all: those of the first `first` comments read with
+/// replies missing ([`threads_to_read`]), put under their comments, then each
+/// of `of` not read already, which need not be among the comments read.
 pub async fn read_threads(
     client: &IgClient,
     post: &Post,
@@ -838,9 +803,8 @@ pub enum Fetched {
     },
 }
 
-/// The profile `typed` names and the first `pages` pages of its grid, more
-/// if `at_least` posts take more, up to [`MOST_PAGES`]. `known` is the
-/// account's pk when this machine has seen it.
+/// The profile `typed` names and the first `pages` pages of its grid, more if
+/// `at_least` posts take more, up to [`MOST_PAGES`].
 pub async fn fetch_grid(
     client: &IgClient,
     typed: &str,
@@ -853,18 +817,15 @@ pub async fn fetch_grid(
     Ok(fetched)
 }
 
-/// How many pages a grid read with `--until` reads at most when `--pages`
-/// does not say: three, 36 posts, which is days of most accounts' posting.
-/// A reader that keeps the posts it has seen comes back for the new ones,
-/// and those are on the first page as a rule.
+/// How many pages a grid read with `--until` reads at most when `--pages` does
+/// not say: three, 36 posts, which is days of most accounts' posting.
 pub const UNTIL_PAGES: u32 = 3;
 
 /// How a grid's read went: what it cost, and whether it reached a post the
 /// reader already had.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GridRead {
-    /// How many pages of the grid were asked for, one request each. The
-    /// profile read before them is not counted here.
+    /// How many pages of the grid were asked for, one request each.
     pub pages: u32,
     /// The first of the posts named to stop at that the pages read hold,
     /// when one was named and found.
@@ -873,11 +834,7 @@ pub struct GridRead {
 
 /// The first post of `posts` that is one of `until` and is not pinned.
 ///
-/// **A pinned post never stops a read.** The grid runs from the newest post
-/// to the oldest, except for the posts its owner pinned, up to three, which
-/// come first however old they are: one of those the reader already has
-/// says nothing about the posts after it, and stopping there would hide
-/// every new post under it.
+/// **A pinned post never stops a read.**
 pub fn reached(posts: &[Post], until: &[MediaPk]) -> Option<MediaPk> {
     posts
         .iter()
@@ -885,10 +842,9 @@ pub fn reached(posts: &[Post], until: &[MediaPk]) -> Option<MediaPk> {
         .map(|post| post.pk)
 }
 
-/// [`fetch_grid`], stopping early at a post the reader already has: no page
-/// is asked for once the pages read hold one of `until` ([`reached`]), so a
-/// reader that comes back each day pays for the new posts and not for the
-/// grid. `pages` is then the most it reads. With how the read went.
+/// [`fetch_grid`], stopping early at a post the reader already has: no page is
+/// asked for once the pages read hold one of `until` ([`reached`]), so a reader
+/// that comes back each day pays for the new posts and not for the grid.
 pub async fn read_grid(
     client: &IgClient,
     typed: &str,
@@ -924,14 +880,11 @@ pub async fn read_grid(
     Ok((Fetched::Grid(grid), how))
 }
 
-/// The pages of `username`'s grid, once its profile is open: the first,
-/// then each next one a step after the page before and past any rest the
-/// account's sitting owes, while fewer than `at_least` posts are held, or
-/// while fewer than `pages` were read and none of `until` has come
-/// ([`reached`]); at most [`MOST_PAGES`]. What [`read_grid`] reads after the
-/// profile, and what the monitor reads of an account whose profile it has
-/// open (`engine::watch_posts`). The grid's declared count is left to the
-/// caller, who read the profile.
+/// The pages of `username`'s grid, once its profile is open: the first, then
+/// each next one a step after the page before and past any rest the account's
+/// sitting owes, while fewer than `at_least` posts are held, or while fewer
+/// than `pages` were read and none of `until` has come ([`reached`]); at most
+/// [`MOST_PAGES`].
 pub async fn read_pages(
     client: &IgClient,
     username: &str,
@@ -946,15 +899,13 @@ pub async fn read_pages(
     Ok((grid, how))
 }
 
-/// Tab `tab` of the profile `typed` names, as [`read_grid`] reads its grid:
-/// the profile, then the tab's first page, and its next ones as far as
-/// `pages`, `at_least` and `until` say.
+/// Tab `tab` of the profile `typed` names, as [`read_grid`] reads its grid: the
+/// profile, then the tab's first page, and its next ones as far as `pages`,
+/// `at_least` and `until` say.
 ///
-/// **No shortcut on a profile that says it has no posts**: its header
-/// counts the grid alone, and an account with none had a reel, reposts and
-/// tagged posts over more than a page in the capture of 2026-11-14. A
-/// private account the viewer does not follow is answered from its profile,
-/// as its grid is, and no tab of it is asked for.
+/// **No shortcut on a profile that says it has no posts**: its header counts
+/// the grid alone, and an account with none had a reel, reposts and tagged
+/// posts over more than a page in the capture of 2026-11-14.
 #[expect(clippy::too_many_arguments, reason = "read_grid's, and the tab")]
 pub async fn read_tab(
     client: &IgClient,
@@ -1063,11 +1014,9 @@ pub async fn more(client: &IgClient, grid: &mut Grid) -> Result<bool> {
     Ok(true)
 }
 
-/// `posts`, each read again by its info, a step apart: what a tab's posts
-/// take before they are looked into or saved, since a tab hands out no
-/// video's address and a carousel's items as covers alone. One read a post;
-/// a post the info does not hold stays as the tab described it. `None` when
-/// Ctrl+C stopped a wait.
+/// `posts`, each read again by its info, a step apart: what a tab's posts take
+/// before they are looked into or saved, since a tab hands out no video's
+/// address and a carousel's items as covers alone.
 pub async fn filled(client: &IgClient, posts: Vec<Post>) -> Result<Option<Vec<Post>>> {
     let mut filled = Vec::with_capacity(posts.len());
     for post in posts {
@@ -1089,10 +1038,8 @@ pub async fn filled(client: &IgClient, posts: Vec<Post>) -> Result<Option<Vec<Po
     Ok(Some(filled))
 }
 
-/// A post opened the way the app opens one: its info read again and its
-/// first page of comments, the pair the app sends. Two reads. The post comes
-/// back as the info describes it, which is the fresher; the grid's stands
-/// when the info names nothing.
+/// A post opened the way the app opens one: its info read again and its first
+/// page of comments, the pair the app sends.
 pub async fn open(client: &IgClient, post: &Post) -> Result<(Post, Comments)> {
     let page = post.page();
     let fresh = client.media_info(post.pk, &page).await?;
@@ -1110,8 +1057,7 @@ pub async fn open(client: &IgClient, post: &Post) -> Result<(Post, Comments)> {
     Ok((post, comments))
 }
 
-/// The next page of `post`'s comments, one read. `false` when there was
-/// none to read.
+/// The next page of `post`'s comments, one read.
 pub async fn more_comments(
     client: &IgClient,
     post: &Post,
@@ -1128,8 +1074,7 @@ pub async fn more_comments(
 }
 
 /// The post `link` names, read the way the app reads one it opens: its info,
-/// from the page it opens on. One read. A post the answer does not hold is
-/// not found.
+/// from the page it opens on.
 pub async fn fetch_link(client: &IgClient, link: &Shortcode) -> Result<Post> {
     let media = client.media_info(link.pk(), &link.page()).await?;
     let media = media.ok_or_else(|| {
@@ -1162,11 +1107,10 @@ pub async fn first_comments(client: &IgClient, post: &Post) -> Result<Comments> 
 /// list's worth of reading.
 pub const MOST_COMMENT_PAGES: u32 = 20;
 
-/// `post`'s comments, `pages` pages of them, or fewer when they end: the
-/// first, then each next one a comment step after the page before
+/// `post`'s comments, `pages` pages of them, or fewer when they end: the first,
+/// then each next one a comment step after the page before
 /// ([`Pace::for_comments`]), as "load more" is clicked, past any rest the
-/// account's sitting owes. At most [`MOST_COMMENT_PAGES`]. `None` when
-/// Ctrl+C stopped a wait.
+/// account's sitting owes.
 pub async fn comment_pages(client: &IgClient, post: &Post, pages: u32) -> Result<Option<Comments>> {
     let mut comments = first_comments(client, post).await?;
     let pace = Pace::for_comments();
@@ -1182,10 +1126,9 @@ pub async fn comment_pages(client: &IgClient, post: &Post, pages: u32) -> Result
     Ok(Some(comments))
 }
 
-/// Pays a rest the account's sitting owes before a page of `of` that a
-/// command reads on its own, saying so on standard error, since nothing
-/// else would say why it went quiet for minutes. `true` when it was
-/// canceled.
+/// Pays a rest the account's sitting owes before a page of `of` that a command
+/// reads on its own, saying so on standard error, since nothing else would say
+/// why it went quiet for minutes.
 async fn rest_before_a_page(client: &IgClient, of: &str) -> Result<bool> {
     Ok(client
         .rest_before_a_page(&Pace::default(), |left| {
@@ -1290,39 +1233,36 @@ pub(crate) async fn download(
     download_named(client, files, destination, "files").await
 }
 
-/// What a download told as a document stops at ([`save_telling`]): the
-/// bytes it may fetch and the time it may take before it starts no further
-/// file. `None` is no bound.
+/// What a download told as a document stops at ([`save_telling`]): the bytes it
+/// may fetch and the time it may take before it starts no further file.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Bounds {
     pub bytes: Option<u64>,
     pub within: Option<std::time::Duration>,
 }
 
-/// Saves `files`, items of `post`, into the directory `dir`, one after
-/// another, and answers with what became of each as one JSON document, and
-/// with how many failed:
+/// Saves `files`, items of `post`, into the directory `dir`, one after another,
+/// and answers with what became of each as one JSON document, and with how many
+/// failed:
 ///
 /// - `post`: what tells the post from every other (`pk`, `code`, `url`,
 ///   `owner`, `kind`, `taken_at`);
 /// - `directory`: where the files are, absolute;
 /// - `saved`: each file there, by its item's number: its `file` name, its
-///   `bytes`, its `kind` and the item's `pk`, `already` when an earlier run
-///   had saved it and nothing was fetched, and a `note` when a video was
-///   saved as the app's smaller file;
+///   `bytes`, its `kind` and the item's `pk`, `already` when an earlier run had
+///   saved it and nothing was fetched, and a `note` when a video was saved as
+///   the app's smaller file;
 /// - `failed`: the items that could not be fetched, each with `why`;
 /// - `left`: the items not started because a bound of `bounds` was reached,
-///   each with `why` (`bytes` or `time`): asking again saves them, since
-///   those already there are not fetched twice;
+///   each with `why` (`bytes` or `time`): asking again saves them, since those
+///   already there are not fetched twice;
 /// - `bytes`: what this run fetched.
 ///
 /// **For a caller that reads the answer rather than a directory** (`post -d
-/// --json`, which `snob mcp` runs for an agent): `dir` is always a
-/// directory, made when it is not there, so one file is never written over
-/// a name, and nothing is, since every file goes in under a name of its own
-/// (`media::save_named`). One after another, not three at a time, so the
-/// bounds are judged between two files. Ctrl+C stops it as it stops any
-/// download.
+/// --json`, which `snob mcp` runs for an agent): `dir` is always a directory,
+/// made when it is not there, so one file is never written over a name, and
+/// nothing is, since every file goes in under a name of its own
+/// (`media::save_named`).
 pub(crate) async fn save_telling(
     client: &IgClient,
     post: &Post,
@@ -1547,10 +1487,9 @@ pub fn comment_json(comment: &CommentLine) -> Value {
 /// download.
 pub type Opened = Vec<Option<PathBuf>>;
 
-/// Item `index` of `post`, fetched into `scratch` as the view opens one,
-/// the app's own file, and not opened: once per item, so asking twice is
-/// one download. What [`open_item`] hands the system viewer, and what a
-/// preview drawn in the view reads.
+/// Item `index` of `post`, fetched into `scratch` as the view opens one, the
+/// app's own file, and not opened: once per item, so asking twice is one
+/// download.
 pub async fn fetched_item(
     client: &IgClient,
     post: &Post,
@@ -1588,10 +1527,9 @@ pub async fn open_item(
     Ok(path)
 }
 
-/// Saves item `index` of `post` where the user works: the copy already
-/// fetched to look at, when there is one and it is what would be saved, and
-/// otherwise the CDN's. A video to be saved at its best is not the copy the
-/// view opened, which is the app's file.
+/// Saves item `index` of `post` where the user works: the copy already fetched
+/// to look at, when there is one and it is what would be saved, and otherwise
+/// the CDN's.
 pub async fn keep_item(
     client: &IgClient,
     post: &Post,
@@ -1619,8 +1557,7 @@ pub async fn keep_item(
     }
 }
 
-/// Saves every item of `post` where the user works, one at a time. The
-/// sentence for the note line, and whether anything was saved.
+/// Saves every item of `post` where the user works, one at a time.
 pub async fn keep_post(client: &IgClient, post: &Post) -> (String, bool) {
     let total = post.items.len();
     let (mut kept, mut failed, mut smaller) = (0usize, 0usize, 0usize);

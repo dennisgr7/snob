@@ -3,29 +3,19 @@
 //! ahead of time, and applying it when snob next starts with no other snob
 //! running ([`running`]), or when the person runs `snob update`.
 //!
-//! **Nothing here talks to Instagram or reads an account.** It talks to
-//! GitHub with a client that cannot carry a credential, and keeps its files
-//! in the data directory ([`state::Files`]), where `snob purge` finds them.
-//! What the commands promise about the network ("nothing is sent to
-//! Instagram") holds, since this sends nothing there.
+//! **Nothing here talks to Instagram or reads an account.**
 //!
-//! **Every command a person or a program runs takes part** ([`at_start`]):
-//! it applies a version waiting to be applied when it is alone, says once
-//! what was applied or is waiting, and starts the day's check, detached
-//! (`detach`), when one is due, so no command waits on GitHub. The check is
-//! the hidden `snob __update fetch` ([`fetch`]); a package manager's
-//! upgrade, which must wait for the command that started it to end, is
-//! `snob __update apply` ([`apply_detached`]).
+//! **Every command a person or a program runs takes part** ([`at_start`]): it
+//! applies a version waiting to be applied when it is alone, says once what was
+//! applied or is waiting, and starts the day's check, detached (`detach`), when
+//! one is due, so no command waits on GitHub.
 //!
 //! **Never here**: a developer's build (`how::a_build`), a sandbox, a build
-//! whose own version is a pre-release, a machine snob has no release for,
-//! `CI` set, or `SNOB_NO_UPDATE_CHECK` set ([`enabled`]). Tests never reach
-//! GitHub: they run builds from `target`, in sandboxes.
+//! whose own version is a pre-release, a machine snob has no release for, `CI`
+//! set, or `SNOB_NO_UPDATE_CHECK` set ([`enabled`]).
 //!
 //! **One integrity check: the release's `SHA256SUMS`**, the same one the
-//! install scripts make, over HTTPS to GitHub's hosts only. It proves the
-//! file is the one the release lists, not who built it; the release
-//! workflow's build provenance answers that, and only `gh` reads it.
+//! install scripts make, over HTTPS to GitHub's hosts only.
 
 pub(crate) mod apply;
 pub(crate) mod github;
@@ -50,8 +40,7 @@ pub(crate) const REPO: &str = "dennisgr7/snob-cli";
 /// The hidden command: `snob __update fetch|apply`.
 pub const COMMAND: &str = "__update";
 
-/// How long after a check the next one is due. Once a day: a release is
-/// rarer than that, and GitHub's anonymous API allows sixty an hour.
+/// How long after a check the next one is due.
 const CHECK_EVERY_SECS: i64 = 24 * 60 * 60;
 
 /// The release target this build is, whose archive it updates from.
@@ -160,13 +149,8 @@ pub enum Role {
 pub struct Taking(#[allow(dead_code)] Option<std::fs::File>);
 
 /// What `main` does at the start of every command that takes part (all but
-/// `snob mcp`, the owner of the browsers, the plumbing of a job, `snob
-/// update` and this module's own processes). `program` and `globals` are
-/// what a detached process is started with: this binary and the global
-/// flags that put it on the same files.
-///
-/// Never fails a command: whatever goes wrong is written to the state for
-/// `snob update --status` to show, and the command goes on.
+/// `snob mcp`, the owner of the browsers, the plumbing of a job, `snob update`
+/// and this module's own processes).
 pub fn at_start(paths: &AppPaths, sandboxed: bool, role: Role, globals: &[OsString]) -> Taking {
     if !enabled(sandboxed) {
         return Taking(None);
@@ -238,10 +222,6 @@ fn applier(files: &Files, applying: bool) -> anyhow::Result<PathBuf> {
 }
 
 /// Applies the version waiting, this process being the only snob running.
-/// A script install's is put in place here, and this command runs again
-/// from it (on Unix; on Windows the next start runs it). A package
-/// manager's is left to a detached `snob __update apply`, which waits for
-/// this command to end.
 fn apply_when_alone(files: &Files, state: &State, globals: &[OsString]) {
     let Some(staged) = &state.staged else {
         return;
@@ -393,8 +373,7 @@ fn tell(files: &Files) {
 }
 
 /// `snob __update fetch`: the day's check, and the download when a newer
-/// version is out and the setting allows it. Started detached; one at a
-/// time (`update-fetch.lock`).
+/// version is out and the setting allows it.
 pub async fn fetch(paths: &AppPaths) -> anyhow::Result<()> {
     let files = Files::of(paths);
     std::fs::create_dir_all(files.dir())?;
@@ -519,8 +498,7 @@ pub(crate) async fn stage(
 }
 
 /// `snob __update apply`: a package manager's upgrade to the staged version,
-/// once no snob runs. Started detached by the command that found it was
-/// alone, and so waits for that command to end, for half an hour at most.
+/// once no snob runs.
 pub fn apply_detached(paths: &AppPaths, exe: &Path) -> anyhow::Result<()> {
     let files = Files::of(paths);
     let Some(_once) = snob_store::paths::try_lock_file(&files.dir().join("apply.lock"))? else {

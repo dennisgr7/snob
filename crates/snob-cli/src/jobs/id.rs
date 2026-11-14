@@ -1,12 +1,4 @@
 //! Making a job's name: `j`, the moment it was made, and chance.
-//!
-//! Forty-eight bits of milliseconds and eighty random bits, in Crockford's
-//! base32, the layout of a ULID: the names of one account's jobs sort in the
-//! order they were made, which is the order `snob jobs` lists them in, and
-//! two made in the same millisecond still differ. The randomness is the
-//! operating system's (`relay::fill_random`), so an id cannot be guessed from
-//! another one, which matters because an id is all `snob jobs cancel` asks
-//! for. `snob_store::paths::JobId` checks the shape this makes.
 
 use snob_store::paths::JobId;
 

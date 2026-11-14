@@ -1,50 +1,19 @@
 //! The tools `snob mcp` offers, and the command line each call becomes.
 //!
-//! **A tool is a command a person could type, and nothing more.** Each call is
-//! turned into the arguments of one `snob` command, run as a child
-//! (`child.rs`), so a tool can do exactly what that command does with those
-//! flags and no more. What is not here cannot be reached: `login` (a password
-//! and a browser window are the person's), `purge`, the monitor,
-//! `--same-day`, and every flag that writes a file but one: a post's
-//! download, offered only when the person who started the server named the
-//! directory its files go to (`--downloads-dir`, [`Offer::downloads`]). **No
-//! path is ever an argument of a call**: where a file goes and what it is
-//! called are the server's and the command's to say.
-//!
-//! **Which account a call acts as is the person's to allow** ([`Offer`]): a
-//! server started with `--account` acts as that one and no other; one
-//! started with `--any-account` lists the accounts signed in on the machine
-//! (`snob_accounts`) and takes `as_account` on every call, which reaches the
-//! child as its own `--account` ([`Plan::globals`]) and is part of what a
-//! yes is bound to ([`Plan::binding`]): a yes given for one account is no
-//! yes for another. **Signing an account out** (`snob_logout`) names the
-//! account, always, and runs only after a yes to a question that names it.
-//!
-//! **What reaches someone else needs a yes first.** Walking another account's
-//! lists needs the consent `-y` gives, and a follow or an unfollow reaches
-//! another person. For those the call carries a question, put to the person
-//! before the command runs: in the client, when it can show a form, or else
-//! by the agent in the chat, which hands the yes back as the `confirmation`
-//! argument (`mod.rs`, `consent`). The command is then run with `-y`, as a
-//! person who had answered would run it. **snob cannot tell who gave the
-//! yes**: the client says it can or cannot ask, and an agent can type a yes
-//! itself, so what holds an agent back from a write is the client's own
-//! prompt before a tool runs.
-//!
-//! **The question is composed here, of our words and the validated username,
-//! and nothing else**: it is relayed to the person word for word, so a
-//! display name, a bio or any other string another person wrote would be an
-//! instruction read out in snob's voice.
-//!
-//! **A list that may be walked runs as a job** (`jobs/`, [`Run::Job`]): a
-//! walk takes most of an hour for a few thousand accounts, and a client gives
-//! up on a call in a minute or a few. The call starts it with `snob __job
-//! start`, answers with the walk's result when it ends within `wait_seconds`,
-//! and otherwise with the job's id, which `snob_job` asks about, `snob_jobs`
-//! lists and `snob_job_cancel` stops. Those three are `snob __job` commands
-//! too, so the server reads no job's file itself. **The writes are never
-//! jobs**: a follow or an unfollow is one request, asked about and answered
-//! in the one call.
+//! - **A tool is a command a person could type, and nothing more.** **No path
+//!   is ever an argument of a call.**
+//! - **Which account a call acts as is the person's to allow** ([`Offer`]);
+//!   `as_account` reaches the child as its own `--account`
+//!   ([`Plan::globals`]) and is part of what a yes is bound to
+//!   ([`Plan::binding`]).
+//! - **What reaches someone else needs a yes first**, and snob cannot tell who
+//!   gave it: what holds an agent back from a write is the client's own
+//!   prompt.
+//! - **The question is composed here, of our words and the validated
+//!   username, and nothing else**: it is relayed word for word, so a string
+//!   another person wrote would be an instruction in snob's voice.
+//! - A list that may be walked runs as a job ([`Run::Job`]); **the writes are
+//!   never jobs**.
 
 use serde_json::{Map, Value, json};
 use snob_store::paths::JobId;
@@ -65,8 +34,7 @@ pub const WAIT_SECONDS: u64 = 20;
 pub const MOST_WAIT_SECONDS: u64 = 50;
 
 /// How long `snob_job_cancel` waits for the walk to have stopped before it
-/// answers. A walk stops between two requests, which is seconds; one that
-/// takes longer is still stopping, and `snob_job` tells when it has.
+/// answers.
 pub const CANCEL_WAIT_SECONDS: u64 = 10;
 
 /// The arguments that shape how a call is answered rather than what it runs:
@@ -89,10 +57,7 @@ pub struct Spec {
     pub destructive: bool,
     /// Asking twice changes nothing more than asking once.
     pub idempotent: bool,
-    /// It may reach Instagram, the open world (`openWorldHint`). Per tool,
-    /// not per call: `snob_list` spends nothing for a stored list or a later
-    /// page and may walk otherwise, so it is open; a tool whose every plan
-    /// is [`Spends::Nothing`] is not.
+    /// It may reach Instagram, the open world (`openWorldHint`).
     pub open_world: bool,
 }
 
@@ -146,9 +111,7 @@ pub const MOST_UNTIL: usize = 24;
 /// The most bytes one `snob_post_download` call fetches before it starts no
 /// further file (`post --save-at-most`): 1 GiB, two of the largest videos a
 /// download saves at its best (`media::MAX_BEST_BYTES`), and far past any
-/// carousel of photos. The request budget does not count what comes from
-/// the CDN, so this is what bounds a call; the files left are said, and the
-/// same call again saves them.
+/// carousel of photos.
 pub const SAVE_AT_MOST: u64 = 1 << 30;
 
 /// How long one `snob_post_download` call downloads before it starts no
@@ -300,11 +263,7 @@ pub fn specs(offer: Offer<'_>) -> Vec<Spec> {
                     "list": {
                         "type": "string",
                         "enum": ["followers", "following", "unfollowers", "fans", "friends"],
-                        // One sentence per value, each saying who follows whom. The
-                        // earlier wording, "unfollowers (followed but not following
-                        // back), fans (following but not followed back)", left out
-                        // who does the following, and a model read fans as the
-                        // accounts the person follows, the opposite of what it is.
+                        // One sentence per value, each saying who follows whom.
                         "description": "Which list. followers: the accounts that follow \
                                         the account. following: the accounts the account \
                                         follows. unfollowers: accounts the account follows \
@@ -1016,22 +975,18 @@ pub fn specs(offer: Offer<'_>) -> Vec<Spec> {
 pub struct Plan {
     /// The command's arguments, after the server's global flags.
     ///
-    /// **What a yes is bound to** ([`Plan::binding`]), so they hold the
-    /// command and nothing about how the call is delivered: an argument that
-    /// only shapes the answer's delivery (a confirmation handed back, how
-    /// long to wait inline, which page of a result) stays out of them, and
-    /// the flags the server adds to every child (`child::Launch`) are added
-    /// after the binding is taken. A yes for one command is then good for
-    /// that command however the call is spelled (`@name` or `name`), and for
-    /// no other.
+    /// **What a yes is bound to** ([`Plan::binding`]), so they hold the command
+    /// and nothing about how the call is delivered: an argument that only
+    /// shapes the answer's delivery (a confirmation handed back, how long to
+    /// wait inline, which page of a result) stays out of them, and the flags
+    /// the server adds to every child (`child::Launch`) are added after the
+    /// binding is taken.
     pub args: Vec<String>,
     /// The question the person has to answer yes to first, if any.
     pub ask: Option<Question>,
-    /// The exit codes that are an answer rather than a failure: `status`
-    /// exits 5 while the account cools down and 3 with no session stored,
-    /// and a dry run 5 in a cooldown, and each is what it was asked. An exit
-    /// other than 0 is one only with a document on standard output
-    /// (`answer::from`): a refusal before anything was printed is a failure.
+    /// The exit codes that are an answer rather than a failure: `status` exits
+    /// 5 while the account cools down and 3 with no session stored, and a dry
+    /// run 5 in a cooldown, and each is what it was asked.
     pub answers: &'static [ExitCode],
     /// What the command may send to Instagram, which decides the permits the
     /// call takes (`limits.rs`) and whether its child holds the
@@ -1045,9 +1000,8 @@ pub struct Plan {
     /// the account `snob_logout` signs out): its child's `--account`
     /// ([`Plan::globals`]), and part of what a yes is bound to.
     pub acting_as: Option<String>,
-    /// Whether the command takes how its yes was given (`cli::AgentArgs`)
-    /// and records the act. `logout` does not: it has no such flags, and
-    /// what it removes is the session the record would be read with.
+    /// Whether the command takes how its yes was given (`cli::AgentArgs`) and
+    /// records the act.
     pub records: bool,
 }
 
@@ -1071,12 +1025,10 @@ pub enum Run {
 
 /// Which page of a list a call hands back.
 ///
-/// **A page past the first never walks**: the call is planned as the same
-/// list read from the store (`--offline`), which asks nothing and sends
-/// nothing, and is handed back from the whole list the server holds from
-/// the first call (`pages.rs`) when it still does. `offset`, like the other
-/// arguments of delivery, stays out of `Plan.args`, so a yes to the first
-/// page is bound to the list and not to a page of it.
+/// **A page past the first never walks**: the call is planned as the same list
+/// read from the store (`--offline`), which asks nothing and sends nothing, and
+/// is handed back from the whole list the server holds from the first call
+/// (`pages.rs`) when it still does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
     /// The first item handed back, counted from 0.
@@ -1084,10 +1036,9 @@ pub struct Page {
     /// The call the whole list is held under: the binding of the same call
     /// with no offset, the one that read it ([`Plan::binding`]).
     pub of: String,
-    /// The call was given `max_pages`, so the walk that read the list may
-    /// have stopped short, and what it read is not stored as a whole list:
-    /// `--offline` would serve another one. A later page is then handed back
-    /// only while the server holds the list, and refused once it does not.
+    /// The call was given `max_pages`, so the walk that read the list may have
+    /// stopped short, and what it read is not stored as a whole list:
+    /// `--offline` would serve another one.
     pub held_only: bool,
     /// The call's `limit`: the most accounts handed back across its pages.
     /// **Applied by the server, never passed to the command** (whose
@@ -1112,7 +1063,6 @@ impl Plan {
     ///
     /// **And the account the call acts as, when it names one**: a yes to an
     /// unfollow as one account is no yes to the same unfollow as another.
-    /// A call that names none is bound as it always was.
     pub fn binding(&self, tool: &str) -> String {
         match &self.acting_as {
             None => json!([tool, self.args]),
@@ -1121,9 +1071,8 @@ impl Plan {
         .to_string()
     }
 
-    /// The global flags this call's child gets ahead of its command, beside
-    /// the server's own: the account it acts as, when the call named one.
-    /// `=`, so the name can never be read as a flag of its own.
+    /// The global flags this call's child gets ahead of its command, beside the
+    /// server's own: the account it acts as, when the call named one.
     pub fn globals(&self) -> Vec<String> {
         self.acting_as
             .iter()
@@ -1146,14 +1095,11 @@ impl Plan {
         self
     }
 
-    /// What the child is run with, after the server's global flags: the
-    /// command and, for one that may reach Instagram, `--spend-alone`, so it
-    /// refuses while another child, of this server or of another, holds the
-    /// account. For a call run on a yes, `confirmed` adds how the yes was
-    /// given and through which client, which the child records before its
-    /// first request (`cli::AgentArgs`), and for a write the day's cap on
-    /// them. **Added here, after the binding is taken** (see `args`): it is
-    /// how the call runs and what it is recorded as, not what it does.
+    /// What the child is run with, after the server's global flags: the command
+    /// and, for one that may reach Instagram, `--spend-alone`, so it refuses
+    /// while another child, of this server or of another, holds the account.
+    /// **Added here, after the binding is taken** (see `args`): it is how the
+    /// call runs and what it is recorded as, not what it does.
     pub fn command_line(&self, confirmed: Option<&Confirmed<'_>>) -> Vec<String> {
         let mut line = Vec::with_capacity(self.args.len() + 4);
         if self.spends != Spends::Nothing {
@@ -1164,14 +1110,13 @@ impl Plan {
     }
 
     /// What starts this call's walk as a job (`snob __job start`), for a plan
-    /// that runs as one: the call's tool and its [`recorded`] arguments,
-    /// which the job keeps so that its result can be read back as this call
-    /// would have answered it, the client that started it, and after `--`
-    /// the command with how its yes was given ([`Plan::command`]).
+    /// that runs as one: the call's tool and its [`recorded`] arguments, which
+    /// the job keeps so that its result can be read back as this call would
+    /// have answered it, the client that started it, and after `--` the command
+    /// with how its yes was given ([`Plan::command`]).
     ///
-    /// **No `--spend-alone` here**: the start sends nothing, and its
-    /// supervisor gives the walk the flag (`jobs::argv::walk`). Every value
-    /// is in `--flag=value` form, so none can be read as a flag of its own.
+    /// **No `--spend-alone` here**: the start sends nothing, and its supervisor
+    /// gives the walk the flag (`jobs::argv::walk`).
     pub fn start_line(
         &self,
         tool: &str,
@@ -1198,13 +1143,10 @@ impl Plan {
         line
     }
 
-    /// What asks, before the person is asked for a yes, whether the walk
-    /// this call starts as a job would start now (`snob __job start
-    /// --check`): it makes nothing and sends nothing, and fails with the
-    /// refusal a start would meet (`too_many_jobs`, `job_stopping`,
-    /// `walked_elsewhere`). The command as it is before a yes, which the
-    /// start compares with the running job's leaving out how a yes was
-    /// given (`jobs::start::same_walk`).
+    /// What asks, before the person is asked for a yes, whether the walk this
+    /// call starts as a job would start now (`snob __job start --check`): it
+    /// makes nothing and sends nothing, and fails with the refusal a start
+    /// would meet (`too_many_jobs`, `job_stopping`, `walked_elsewhere`).
     pub fn check_line(&self) -> Vec<String> {
         let mut line = vec![
             crate::jobs::start::COMMAND.to_string(),
@@ -1216,14 +1158,11 @@ impl Plan {
         line
     }
 
-    /// What asks, before the person is asked for a yes, what would refuse
-    /// this write now (`snob follow --check-ahead`, `follow::check_ahead`):
-    /// it sends nothing and writes nothing, and fails with the refusal the
-    /// write would meet (`busy`, the cooldown, `mcp_write_cap` against this
-    /// server's `writes_a_day`, `budget_wait`). For a post's likers, the one
-    /// read run inline that asks, what would refuse it (`busy`, the
-    /// cooldown, the day's accounts). The command as it is before a yes.
-    /// `None` for any other plan.
+    /// What asks, before the person is asked for a yes, what would refuse this
+    /// write now (`snob follow --check-ahead`, `follow::check_ahead`): it sends
+    /// nothing and writes nothing, and fails with the refusal the write would
+    /// meet (`busy`, the cooldown, `mcp_write_cap` against this server's
+    /// `writes_a_day`, `budget_wait`).
     pub fn ahead_line(&self, writes_a_day: u32) -> Option<Vec<String>> {
         let mut line = self.command(None);
         match self.spends {
@@ -1327,8 +1266,7 @@ pub enum Unplannable {
     /// JSON-RPC's invalid params (-32602), and a client reads that as a
     /// mistake in the call rather than as something the tool said.
     NoSuchTool(String),
-    /// The tool exists and the arguments are not ones it takes. A tool
-    /// result (`isError`), so the model reads why and can call again.
+    /// The tool exists and the arguments are not ones it takes.
     Invalid(String),
 }
 
@@ -1339,10 +1277,6 @@ impl From<String> for Unplannable {
 }
 
 /// Turns a call into the command it stands for, or says why it cannot be one.
-///
-/// `offer` is what the server offers beyond the reads: a client that calls a
-/// tool it was never listed is told there is no such tool, as for any other
-/// name it made up.
 pub fn plan(name: &str, args: &Map<String, Value>, offer: Offer<'_>) -> Result<Plan, Unplannable> {
     // Which account the call acts as is no part of any command: taken out
     // first, and put back as the child's own `--account` ([`Plan::globals`]).
@@ -1712,10 +1646,6 @@ fn list(tool: &str, args: &Map<String, Value>) -> Result<Plan, String> {
             command.extend(["--max-pages".into(), pages.to_string()]);
         }
         // An estimate reads what is stored and the budget, and sends nothing.
-        // In a cooldown it still prints, with `sends_now: false` and when the
-        // cooldown lifts, and exits 5, as `snob status` does: the estimate
-        // is the answer asked for, not a failure (`answer::from` counts exit
-        // 5 as one only with a document).
         return Ok(Plan {
             args: command,
             ask: None,
@@ -1743,8 +1673,7 @@ fn list(tool: &str, args: &Map<String, Value>) -> Result<Plan, String> {
             // `--progress-json` (which wins over `--no-progress`) for the
             // `served` line alone: where the list came from and when it was
             // stored, which a person reads in the summary and an agent would
-            // otherwise never be told (`answer::not_read_now`). A job's walk
-            // gets it from its supervisor.
+            // otherwise never be told (`answer::not_read_now`).
             command.extend(["--offline", "--progress-json"].map(String::from));
         }
         "refresh" => command.push("--refresh".into()),
@@ -1755,11 +1684,7 @@ fn list(tool: &str, args: &Map<String, Value>) -> Result<Plan, String> {
     }
     // Another account's lists need consent, and a stored answer does not: it
     // enumerates nothing new (`engine/mod.rs`, `decide`: "`--offline` is not
-    // asked about, because there is nothing to agree to"). The question is
-    // asked whenever an account is named, the person's own included, because
-    // which name is theirs is not known here without a request.
-    // Of our words, the list's name and the username as checked: never
-    // anything another person wrote.
+    // asked about, because there is nothing to agree to").
     let ask = match (&whose, mode) {
         (Some(who), "auto" | "refresh") => {
             command.push("-y".into());
@@ -1821,11 +1746,10 @@ fn list(tool: &str, args: &Map<String, Value>) -> Result<Plan, String> {
         return Ok(first);
     }
 
-    // A later page: the same list, from the store, when the server no
-    // longer holds what the first call read (`pages.rs`). **Nothing is
-    // walked, polled or resolved, and nothing asked**: the list was read
-    // already, with a yes when it needed one, and stored data is not asked
-    // about (see above). The limit is the page's, as on the first call.
+    // A later page: the same list, from the store, when the server no longer
+    // holds what the first call read (`pages.rs`). **Nothing is walked, polled
+    // or resolved, and nothing asked**: the list was read already, with a yes
+    // when it needed one, and stored data is not asked about (see above).
     stored.extend(delivery);
     // As for mode "stored": the `served` line says when what is stored was
     // read, which the page then says too.
@@ -1982,9 +1906,8 @@ fn threads(args: &Map<String, Value>) -> Result<Vec<String>, String> {
 
 /// The `until` argument: the posts a grid's read stops at, each as its code
 /// (`Shortcode::parse`, which reads a link for its code alone), without
-/// repeats, at most [`MOST_UNTIL`]. One string is taken as a list of one.
-/// **Nothing given is repeated in a refusal**: a link can carry the share
-/// token of whoever sent it.
+/// repeats, at most [`MOST_UNTIL`]. **Nothing given is repeated in a refusal**:
+/// a link can carry the share token of whoever sent it.
 fn until(args: &Map<String, Value>) -> Result<Vec<String>, String> {
     let refused = || {
         "\"until\" is a list of posts, each by its code or its link (url), as snob_posts \
@@ -2046,19 +1969,18 @@ fn flag(args: &Map<String, Value>, key: &str) -> Result<bool, String> {
     }
 }
 
-/// `snob_logout`: `snob logout` as the account named, after a yes to a
-/// question that names it.
+/// `snob_logout`: `snob logout` as the account named, after a yes to a question
+/// that names it.
 ///
 /// **The account is always named, by the call**, and reaches the child as
 /// `--only`, which refuses, with nothing signed out, unless the account the
-/// child resolved is that one: `logout` with no account resolved signs
-/// every one out, which no call may come to, by leaving a name out or by
-/// naming one while the registry is empty. **Which account a server may
-/// sign out is which it may act as** ([`Offer`]): started for one account
-/// it has to be that one, as it was spelled to the server; started with
-/// `--any-account`, any, as the child's own `--account`; started with
-/// neither, the one its children act as, and a call that names another is
-/// refused by its child (`not_this_account`). `--all` is not offered.
+/// child resolved is that one: `logout` with no account resolved signs every
+/// one out, which no call may come to, by leaving a name out or by naming one
+/// while the registry is empty. **Which account a server may sign out is which
+/// it may act as** ([`Offer`]): started for one account it has to be that one,
+/// as it was spelled to the server; started with `--any-account`, any, as the
+/// child's own `--account`; started with neither, the one its children act as,
+/// and a call that names another is refused by its child (`not_this_account`).
 fn logout(args: &Map<String, Value>, offer: Offer<'_>) -> Result<Plan, String> {
     no_more(args, &["account"])?;
     let account = match args.get("account") {
@@ -2167,10 +2089,8 @@ fn download(args: &Map<String, Value>, directory: &str) -> Result<Plan, String> 
 }
 
 /// The `link` argument, read as `snob post` reads one: for its code alone.
-/// The post's address with nothing of the link's own (where it was shared
-/// from, the share token), which is what the child is handed, and the code,
-/// for a question. **The link is not repeated in a refusal**: it can carry
-/// the share token of whoever sent it.
+/// **The link is not repeated in a refusal**: it can carry the share token of
+/// whoever sent it.
 fn link(args: &Map<String, Value>) -> Result<(String, String), String> {
     let refused = || "\"link\" is not a post's or a reel's link, nor the code in one".to_string();
     let given = match args.get("link") {
@@ -2275,11 +2195,6 @@ fn wait_seconds(args: &Map<String, Value>) -> Result<u64, String> {
 }
 
 /// The `account` argument, as a username a command can take and nothing else.
-///
-/// **Checked, not passed through.** It becomes an argument of a command line,
-/// and a value starting with `-` would be read as a flag; anything outside the
-/// alphabet Instagram allows names nobody, so refusing it costs nothing. The
-/// leading at sign is accepted, as the commands accept it, and taken off.
 fn account(args: &Map<String, Value>, required: bool) -> Result<Option<String>, String> {
     let name = match args.get("account") {
         None | Some(Value::Null) if required => return Err("\"account\" is required".into()),
@@ -2306,9 +2221,7 @@ fn count(args: &Map<String, Value>, key: &str) -> Result<Option<u64>, String> {
     }
 }
 
-/// The `offset` argument: 0 when not given. One at or past the end of what
-/// the call hands back is refused once the list is known
-/// (`answer::past_the_end`), not here, where it is not.
+/// The `offset` argument: 0 when not given.
 fn offset(args: &Map<String, Value>) -> Result<usize, String> {
     match args.get("offset") {
         None | Some(Value::Null) => Ok(0),

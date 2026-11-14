@@ -1,13 +1,6 @@
 //! Who you both know.
 //!
-//! When the account being looked at is not yours, the useful first line is not
-//! a number — it is a name you recognize. Instagram itself leads with it
-//! ("Followed by so-and-so and 4 others"), and the tool can work it out with no
-//! request at all: the answer is the accounts you follow that also follow them.
-//!
-//! Strictly from storage, and strictly from a **complete** snapshot. A partial
-//! list of your own following would leave people out of the overlap, and naming
-//! two mutual acquaintances when there are nine is worse than naming none.
+//! Strictly from storage, and strictly from a **complete** snapshot.
 
 use anyhow::Result;
 use snob_core::Epoch;
@@ -18,12 +11,6 @@ use snob_store::store::snapshots;
 use crate::app::App;
 
 /// The overlap, and when the list it was worked out from was captured.
-///
-/// The date is not decoration. Every other figure `snob scan` prints dates
-/// itself, and without one the opening line could name accounts you
-/// unfollowed months ago and read exactly like one worked out this minute.
-/// `check_same_moment` does not cover it: that rule is about the two walked
-/// lists, and no flag refreshes this one.
 #[derive(Debug)]
 pub struct InCommon {
     pub people: Vec<User>,
@@ -33,22 +20,12 @@ pub struct InCommon {
 
 impl InCommon {
     /// Whether this is recent enough to stand beside lists walked this minute.
-    ///
-    /// The same `--max-age` that decides whether a stored list may be reused,
-    /// applied to the one stored answer no flag refreshes: `--refresh` walks
-    /// the two lists of the account being scanned, not your own following, and
-    /// `check_same_moment` compares only those two.
     pub fn is_current(&self, max_age: std::time::Duration, now: Epoch) -> bool {
         self.taken_at + max_age >= now
     }
 }
 
 /// The accounts you follow that are among `followers`.
-///
-/// `None` means the question could not be answered — no stored list of your own
-/// following — which reads differently from `Some(people: vec![])`, "nobody you
-/// follow is in there". The caller has to keep them apart: one is silence, the
-/// other is an answer.
 pub fn in_common(app: &App, followers: &[User]) -> Result<Option<InCommon>> {
     let viewer = app.viewer();
     let Some(snapshot) =

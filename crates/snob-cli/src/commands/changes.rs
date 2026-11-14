@@ -1,17 +1,13 @@
-//! `snob changes`: who joined, left or was renamed between two stored
-//! captures of a list.
+//! `snob changes`: who joined, left or was renamed between two stored captures
+//! of a list.
 //!
 //! **Sends nothing and writes nothing**, as `snob snapshots`, whose
-//! `stored_account` it reads through: no request, so it answers in a
-//! cooldown too, and no mark moved, so it is not the monitor and asking
-//! twice gets one answer. The comparison is the monitor's own
-//! (`snob_core::watch::ListDiff`, by pk, so a rename is no departure and
-//! arrival), and the renames come from `username_history` for the window
-//! between the two captures (`store::watch::renames_between`).
+//! `stored_account` it reads through: no request, so it answers in a cooldown
+//! too, and no mark moved, so it is not the monitor and asking twice gets one
+//! answer.
 //!
 //! **Only whole captures are compared** (`usable_snapshots`): the accounts a
-//! walk stopped short of would read as departures. An id given that is not
-//! one is refused, not stepped over.
+//! walk stopped short of would read as departures.
 
 use anyhow::{Result, bail};
 use serde_json::{Value as Json, json};

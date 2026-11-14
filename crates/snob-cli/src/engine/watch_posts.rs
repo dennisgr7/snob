@@ -5,32 +5,25 @@
 //!
 //! 1. An entry that does not watch posts reads nothing.
 //! 2. A canceled run, or a critical battery, reads nothing.
-//! 3. In a cooldown, or under the brake on every account, nothing is sent,
-//!    not even the profile (`App::held`).
-//! 4. Without a browser nothing is sent: the grid is a Relay query only the
-//!    tab builds (`IgClient::profile_posts`), and the lists go on without it.
+//! 3. In a cooldown, or under the brake on every account, nothing is sent, not
+//!    even the profile (`App::held`).
+//! 4. Without a browser nothing is sent: the grid is a Relay query only the tab
+//!    builds (`IgClient::profile_posts`), and the lists go on without it.
 //! 5. An account whose posts were read less than [`READ_AT_MOST_EVERY`] ago is
 //!    not read again.
-//! 6. The profile, as the app opens one with the grid: reused when the lists
-//!    of this run already opened it (`target::resolve`, through the memo
-//!    `App::resolved_target`), a step after their last request; otherwise
-//!    read here (`profile_named`). A private account the viewer does not
-//!    follow is said hidden, and its grid is not asked for.
+//! 6. The profile, as the app opens one with the grid: reused when the lists of
+//!    this run already opened it (`target::resolve`, through the memo
+//!    `App::resolved_target`), a step after their last request; otherwise read
+//!    here (`profile_named`).
 //! 7. The grid: one page to lay a baseline; afterwards up to
-//!    [`posts::UNTIL_PAGES`], stopping at the first page that holds a post
-//!    seen before and not pinned (`posts::reached`), each page a step after
-//!    the one before and past any rest the account's sitting owes, as
-//!    `snob posts --until` reads.
+//!    [`posts::UNTIL_PAGES`], stopping at the first page that holds a post seen
+//!    before and not pinned (`posts::reached`), each page a step after the one
+//!    before and past any rest the account's sitting owes, as `snob posts
+//!    --until` reads.
 //! 8. The comparison (`snob_core::watch::posts::compare`).
 //!
-//! A push-back on the way ends the posts of this run as incomplete, with the
-//! cooldown the transport wrote; no retry. Anything else is the run's error.
-//! What is concluded is written by `engine::watch::commit`, with the report,
-//! and nothing here writes but the account's own row, which every read of an
-//! account writes.
-//!
-//! Reading somebody's posts asks no consent (AGENTS.md, "Consent"): the
-//! consent covers walking their followers or following.
+//! Reading somebody's posts asks no consent (AGENTS.md, "Consent"): the consent
+//! covers walking their followers or following.
 
 use std::time::Duration;
 
@@ -56,9 +49,8 @@ use crate::posts::{self, Post};
 /// reader. Conservative and not measured: slower is always acceptable here.
 pub const READ_AT_MOST_EVERY: Duration = Duration::from_secs(60 * 60);
 
-/// How many of the posts seen before a read may stop at: the newest twelve,
-/// one page. The owner would have to delete all twelve for a read to find
-/// none of them, and then the floor still tells the old from the new.
+/// How many of the posts seen before a read may stop at: the newest twelve, one
+/// page.
 pub const KNOWN_TO_STOP_AT: usize = 12;
 
 /// Why a run drew no conclusion about an account's posts.
@@ -153,8 +145,7 @@ impl PostsLook {
 }
 
 /// Looks at `watched`'s posts, if it watches them, in the order the module
-/// header gives. `after_lists` says the lists of this tick sent requests, so a
-/// step is owed before the next one.
+/// header gives.
 pub async fn look(
     app: &mut App,
     watched: &Watched,
@@ -283,8 +274,7 @@ async fn read(
             .collect(),
         None => Vec::new(),
     };
-    // One page lays a baseline; nothing to compare it with makes more a
-    // waste. Afterwards the rule `snob posts --until` keeps.
+    // One page lays a baseline; nothing to compare it with makes more a waste.
     let pages = if mark.is_some() {
         posts::UNTIL_PAGES
     } else {

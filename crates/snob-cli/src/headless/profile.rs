@@ -11,41 +11,17 @@ use snob_store::paths::AppPaths;
 
 use super::{COMMAND_TIMEOUT, Live};
 
-/// Makes sure the browser carries this session, and only this account, and
-/// says whether it does: `false` when it keeps a later login of the account
-/// instead.
+/// Makes sure the browser carries this session, and only this account, and says
+/// whether it does: `false` when it keeps a later login of the account instead.
 ///
-/// **A login is authoritative; after it, the browser is.** The browser's cookie
-/// jar is fresher than anything stored — it is where `csrftoken` and `rur`
-/// rotate — so a session it already carries is left alone. What tells "the
-/// session it already carries" apart from "a new login's" is the profile mark
-/// ([`ProfileMark`]): the fingerprint of the session last handed to this
-/// profile, and when that session was made. A session whose fingerprint is
-/// not the mark's came from a login since, and its cookies are written in over
-/// whatever the browser had. Holding *a* session of the account is not
-/// enough: a fresh session pasted over a dead one has to reach the browser, or
-/// every retry checks the dead one again.
+/// **A login is authoritative; after it, the browser is.**
 ///
-/// **Unless it was made before the mark's.** A command started before a login
-/// in another terminal still holds the older session, and a browser started
-/// for it — after the owner closed the one before, idle or for the login —
-/// keeps the login's instead. Which is later is the wall clock's answer when
-/// each was made, as in [`super::newer_login`]. A login's own check never
-/// depends on that answer: a pasted login forgets the mark's session first
-/// ([`ProfileMark::forget_session`]), and a browser login's mark names its
-/// own.
+/// **Unless it was made before the mark's.**
 ///
 /// **A browser already holding exactly the session is left alone** too,
-/// whatever its mark says, and the mark is brought up to date. The mark is
-/// written after the session is stored when the browser's own copy is written
-/// back at the end of a run, so a run that stopped between the two leaves a
-/// mark one session behind; the cookie itself is what says they agree.
+/// whatever its mark says, and the mark is brought up to date.
 ///
-/// **Another account's cookies are emptied out first.** Cookies and site data
-/// both: `mid`, `ig_did` and `datr` name the device, and carrying one
-/// account's into another's session is how two accounts come to look like one
-/// person's. With a profile per account this should not happen at all, so it
-/// is said when it does.
+/// **Another account's cookies are emptied out first.**
 pub(super) async fn sync_cookies(
     live: &mut Live,
     session: &Session,
@@ -161,12 +137,7 @@ const DEVICE_COOKIES: [&str; 5] = ["datr", "ig_did", "mid", "wd", "rur"];
 /// does not: names only.
 ///
 /// **A pasted session brings `sessionid` and not always the rest**, and a
-/// profile that was handed none starts without them. They are not made up:
-/// the first document the tab loads sets `datr`, `ig_did` and `mid`, its own
-/// script sets `wd`, and the first logged-in answer sets `rur`, all in the
-/// profile, which keeps them for the runs after; `write_back` stores the
-/// three the session has a place for. What is left to do is to say whether
-/// they came, which this does.
+/// profile that was handed none starts without them.
 pub(super) fn device_cookies(jar: &[Value], host: &str) -> (Vec<&'static str>, Vec<&'static str>) {
     let held = |name: &str| {
         jar.iter().any(|c| {
@@ -227,13 +198,11 @@ fn needs(held: &[&str], mark: &ProfileMark, session: &Session) -> Needs {
 /// What snob writes down beside the browser's profile, in the profile's own
 /// directory so that it goes wherever the profile goes.
 ///
-/// Two facts the profile cannot tell about itself. **Which browser made it**:
-/// Chrome, Chromium and Edge each seal their cookies with a key of their own,
-/// so a profile opened by the wrong one looks logged out at best, and a newer
-/// profile opened by an older browser can be damaged — and "the first browser
-/// found" changes the day somebody installs another. **Which session it was
-/// given**: see [`sync_cookies`]. Neither is a secret; the session is named by
-/// [`Session::fingerprint`], which cannot be turned back into the cookie.
+/// **Which browser made it**: Chrome, Chromium and Edge each seal their cookies
+/// with a key of their own, so a profile opened by the wrong one looks logged
+/// out at best, and a newer profile opened by an older browser can be damaged —
+/// and "the first browser found" changes the day somebody installs another.
+/// **Which session it was given**: see [`sync_cookies`].
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProfileMark {
     /// The executable that created the profile.
@@ -263,10 +232,8 @@ impl ProfileMark {
             .unwrap_or_default()
     }
 
-    /// Written whole and moved into place, so that a reader never finds half
-    /// of it. A mark lost all the same reads as empty: the next browser on the
-    /// profile writes the session it is handed over the one it holds, and the
-    /// browser that made the profile is found by detection again.
+    /// Written whole and moved into place, so that a reader never finds half of
+    /// it.
     pub fn write(&self, profile: &Path) {
         let path = profile.join(Self::FILE);
         let temporary = profile.join(format!(".{}.{}.tmp", Self::FILE, std::process::id()));
@@ -298,12 +265,8 @@ impl ProfileMark {
         mark.write(profile);
     }
 
-    /// Forgets which session the profile at `profile` was handed, and keeps
-    /// the rest: the next browser on it takes the session it is handed. For a
-    /// pasted login about to be checked, which has to reach the browser
-    /// whatever the clock said when the session before it was made, and for a
-    /// login that was not stored, whose session must not keep the stored one
-    /// out.
+    /// Forgets which session the profile at `profile` was handed, and keeps the
+    /// rest: the next browser on it takes the session it is handed.
     pub fn forget_session(profile: &Path) {
         let mut mark = Self::read(profile);
         if mark.session.is_none() && mark.made.is_none() {
@@ -315,13 +278,11 @@ impl ProfileMark {
     }
 }
 
-/// The profile an account's requests are sent from, created if it is not
-/// there yet, and whether it was already there.
+/// The profile an account's requests are sent from, created if it is not there
+/// yet, and whether it was already there.
 ///
-/// **One per account** ([`AppPaths::browser_profile_for`]): one account is
-/// only ever sent from one browser, and two accounts never share a profile.
-/// A profile from before that rule is moved under the account it holds first
-/// ([`settle_the_layout`]).
+/// **One per account** ([`AppPaths::browser_profile_for`]): one account is only
+/// ever sent from one browser, and two accounts never share a profile.
 pub fn for_account(paths: &AppPaths, pk: Pk) -> Result<(PathBuf, bool)> {
     settle_the_layout(paths, Some(pk))?;
     let profile = paths.browser_profile_for(pk);
@@ -332,11 +293,6 @@ pub fn for_account(paths: &AppPaths, pk: Pk) -> Result<(PathBuf, bool)> {
 }
 
 /// A fresh profile for a login whose account is not known yet.
-///
-/// Named after this process, under the directory only this user can enter, and
-/// made anew whatever was left at the name: a login that did not finish is the
-/// only thing that leaves one. [`ProfileSwap`] puts it under its account once
-/// the login says whose it is.
 pub fn for_a_login(paths: &AppPaths) -> Result<PathBuf> {
     settle_the_layout(paths, None)?;
     create_private(&paths.browser_profile())?;
@@ -360,7 +316,6 @@ const REPLACED: &str = ".replaced-";
 const UNCLAIMED: &str = "unclaimed";
 
 /// Where a profile from before per-account profiles waits while it is moved.
-/// Beside the directory, since it cannot be moved into itself in one step.
 fn moving(paths: &AppPaths) -> PathBuf {
     paths.data_dir().join("browser-profile.moving")
 }
@@ -371,31 +326,10 @@ pub fn every_profile(paths: &AppPaths) -> Vec<PathBuf> {
     vec![paths.browser_profile(), moving(paths)]
 }
 
-/// Moves a profile from before profiles were kept per account under the
-/// account it holds.
+/// Moves a profile from before profiles were kept per account under the account
+/// it holds.
 ///
-/// That profile is the directory itself: Chromium's `Local State` and
-/// `Default` at the top, and the mark beside them. It is renamed aside, the
-/// directory is made again, and it goes back in under the account its mark
-/// names — or, with no mark, the account asking for it, which is who it has
-/// been sending as — and `unclaimed` when neither is known, where `snob
-/// logout` still finds it. A move that stopped halfway is finished by the next
-/// run, which finds it aside. What its mark said about the machine goes to
-/// [`super::identity::KnownHints`].
-///
-/// **Never while a browser has it open.** Renamed under a running browser, the
-/// profile would be written to where it no longer is: an older snob mid-run is
-/// told to finish first.
-///
-/// **Never over profiles kept per account.** A directory that is one profile
-/// and holds accounts' profiles too is an older snob still running after the
-/// move, which made the one profile again; moving the whole directory would
-/// bury every account's profile inside one of them. That is refused, and the
-/// person told what to do.
-///
-/// **Never over one already there.** Two runs making this move at once meet
-/// here: the one that finds the account's profile in place and nothing aside
-/// finds the other's move finished.
+/// **Never while a browser has it open.**
 fn settle_the_layout(paths: &AppPaths, asking: Option<Pk>) -> Result<()> {
     paths.ensure_dirs()?;
     let root = paths.browser_profile();
@@ -498,17 +432,6 @@ fn holds_account_profiles(dir: &Path) -> bool {
 }
 
 /// Whether a browser on this machine has the profile at `dir` open.
-///
-/// Chromium locks a profile with a link naming the host and the process that
-/// holds it. A lock left by a process that is gone, or by another host, is no
-/// browser of this machine's. On Windows there is no such link: Chromium
-/// holds the profile's `lockfile` open instead, shared for reading only and
-/// deleted when it closes (`process_singleton_win.cc`), so opening it shared
-/// with nobody fails while a browser runs, and finds nothing, or a file
-/// nobody holds, once it has gone. Held for that instant only: a browser
-/// starting on the profile in it would find the profile taken, and both
-/// callers ask of a profile no browser is to start on, one being moved
-/// ([`settle_the_layout`]) and the others being removed (`owner::let_go_of`).
 pub(crate) fn in_use(dir: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -578,12 +501,6 @@ fn create_private(dir: &Path) -> Result<()> {
 }
 
 /// A login's profile, put under the account the login turned out to be.
-///
-/// The login happened in that profile, so it is the device Instagram just saw
-/// sign in, and it takes the account's place: the account's older profile is
-/// set aside rather than deleted until the session is known to be good, and
-/// comes back if it is not. Nothing is moved when the login was made in the
-/// account's own profile already.
 pub struct ProfileSwap {
     /// Where the login's profile now is: the account's.
     pub profile: PathBuf,
@@ -636,10 +553,9 @@ impl ProfileSwap {
         }
     }
 
-    /// The session was not stored — refused, or the check or the store
-    /// failed: the login's profile goes, holding a session nothing stored
-    /// names, and the older one comes back. Only once no browser has the
-    /// account's profile open (`owner::release`).
+    /// The session was not stored — refused, or the check or the store failed:
+    /// the login's profile goes, holding a session nothing stored names, and
+    /// the older one comes back.
     pub fn undo(self) {
         if !self.moved {
             return;

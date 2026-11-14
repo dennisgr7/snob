@@ -1,34 +1,14 @@
 //! One owner of the browsers for every command of this user's.
 //!
-//! **Why.** A browser profile is Chromium's, and a second browser on it hands
-//! over to the first and exits: two commands on one account, each with a
-//! browser of its own, could not both send, the second finding the browser
-//! held by another snob. Each would also pay a browser's cold start — seconds,
-//! and hundreds of megabytes — however little it asked. So the browsers belong
-//! to one process, the owner, started by the first command that needs one and
-//! gone once it has nothing to do ([`server`]); the commands are its clients.
-//! Two views of one account share its browser, their requests taking turns on
-//! its tab and paced by the budget they already share through the database; a
-//! terminal on another account gets that account's browser; and a command that
-//! follows another finds the browser warm.
-//!
-//! **How.** A command sends snob's own requests over a socket only this user
-//! can reach ([`socket`]) and never the browser's protocol ([`wire`]). The
-//! pacing, the budget and everything else about a request stay in the
-//! command; the owner only sends. A push-back one browser hears is told to
-//! every command the moment it is heard. When a command ends it reads the
-//! cookies of each browser it used and writes back what they rotated
-//! (`headless::write_back`), then leaves them to the owner.
-//!
 //! **When it cannot be reached** — it would not start, a socket path too long
-//! for the platform, a pipe another user took first, an owner of a newer
-//! build, or of an older one still serving other commands — the command runs
-//! its browser itself until it leaves; a monitor tries the owner again at its
-//! next run. `SNOB_NO_OWNER=1` asks for that outright, for good.
+//! for the platform, a pipe another user took first, an owner of a newer build,
+//! or of an older one still serving other commands — the command runs its
+//! browser itself until it leaves; a monitor tries the owner again at its next
+//! run.
 //!
 //! **What the browsers log goes to the owner's log**, `browser-owner.log` in
-//! the data directory, at the level of the command that started the owner:
-//! the app's calls the listener heard refused, among them.
+//! the data directory, at the level of the command that started the owner: the
+//! app's calls the listener heard refused, among them.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -74,12 +54,9 @@ const ALLOWANCE: Duration = Duration::from_secs(120);
 /// the browsers first.
 const LEAVING: Duration = Duration::from_secs(30);
 
-/// How often a command that runs its browsers itself looks whether an
-/// account it sent as was signed out of ([`sign_out`]), to close that
-/// account's browser: nobody else can reach it to. Only while the command
-/// has sent as one that way, which is rare (`SNOB_NO_OWNER`, or an owner out
-/// of reach), and short beside the [`LEAVING`] that `logout` and `purge`
-/// wait for its browser to let go of the profile ([`let_go_of`]).
+/// How often a command that runs its browsers itself looks whether an account
+/// it sent as was signed out of ([`sign_out`]), to close that account's
+/// browser: nobody else can reach it to.
 const SIGN_OUT_LOOK: Duration = Duration::from_secs(2);
 
 /// This process's way to the owner, once something has asked for a page.
@@ -91,14 +68,7 @@ static ATTENDED: AtomicBool = AtomicBool::new(true);
 /// Says whether somebody is waiting on this command now, so the browsers it
 /// uses run at the system's normal pace or efficiently (`power::qos`).
 ///
-/// **Waiting means a person at a terminal.** A command typed in one is
-/// waited on; the monitor, and anything run with no terminal (a timer, a
-/// script, an agent), is not; a full-screen view is waited on while its
-/// terminal has the focus and not while it does not. `main` says it once for
-/// the command, and the views say it again as the focus comes and goes.
-///
-/// Told to the owner when it changes, and to every connection made later; a
-/// process that runs its browsers itself applies it to them.
+/// **Waiting means a person at a terminal.**
 pub fn attended(attended: bool) {
     if ATTENDED.swap(attended, Ordering::SeqCst) == attended {
         return;
@@ -119,12 +89,8 @@ pub(crate) fn is_attended() -> bool {
     ATTENDED.load(Ordering::SeqCst)
 }
 
-/// Sends every request of every client built from now on through the owner
-/// of the browsers. `start` is what the owner is started with: the global
-/// flags that decide where it keeps its files, then [`COMMAND`]; `None` has
-/// this process run its browsers itself, which is what `SNOB_NO_OWNER` asks.
-///
-/// Called once from `main`, before any client exists.
+/// Sends every request of every client built from now on through the owner of
+/// the browsers.
 pub fn install(paths: &AppPaths, start: Option<Vec<OsString>>) {
     // Which binary this is, fixed now rather than at the first request.
     wire::build();
@@ -154,14 +120,7 @@ pub async fn finish(secrets: &SecretStore, paths: &AppPaths) {
 
 /// Closes the account's browser, or every one, and waits for it to close:
 /// before something removes or replaces the profiles they are on, or when a
-/// browser holds a session that is not to be sent again. The owner's, of
-/// whichever build, when one is running, and this process's own, when it
-/// runs any (`SNOB_NO_OWNER`, or an owner it could not reach). Starts no
-/// owner.
-///
-/// Closed, not held closed: a command still connected to the owner starts
-/// the browser again at its next request, unless the account was signed
-/// out first ([`sign_out`]), which `logout` and `purge` do.
+/// browser holds a session that is not to be sent again.
 pub async fn release(paths: &AppPaths, pk: Option<Pk>) {
     if let Ok(link) = Link::open(paths, None, Arc::default()).await
         && let Err(e) = link
@@ -173,20 +132,12 @@ pub async fn release(paths: &AppPaths, pk: Option<Pk>) {
     crate::headless::release_own(pk).await;
 }
 
-/// Signs the accounts out for every process on this machine, before their
-/// sessions and profiles go: a command still running as one of them, typed,
-/// the monitor's or an agent's, holds its session in memory, and would start
-/// the browser again on the profile being removed and write that session
-/// into it. From now on its next request is refused, as the no-session
-/// failure (exit 3) that says it was signed out here
-/// (`PageError::SignedOutHere`), by the command itself and by the owner, and
-/// no browser is started for it ([`signed_out`]); a command started later
-/// is refused before it opens anything (`App::open`). **Every session the account has now**,
-/// the one stored and any a login replaced while a walk still held it: only
-/// a later login's own is let in again (`AccountPaths::admit_session`).
-///
-/// A list that cannot be written is said, and the leaving goes on: the
-/// session and the profile going matter more.
+/// Signs the accounts out for every process on this machine, before their sessions and
+/// profiles go: a command still running as one of them, typed, the monitor's or an agent's,
+/// holds its session in memory, and would start the browser again on the profile being
+/// removed and write that session into it. **Every session the account has now**, the one
+/// stored and any a login replaced while a walk still held it: only a later login's own is
+/// let in again (`AccountPaths::admit_session`).
 pub(crate) fn sign_out(paths: &AppPaths, leaving: &[Pk]) {
     for pk in leaving {
         if let Err(e) = paths.account(*pk).sign_out() {
@@ -199,29 +150,21 @@ pub(crate) fn sign_out(paths: &AppPaths, leaving: &[Pk]) {
 }
 
 /// Whether `session` may no longer be sent as, by anybody: its account was
-/// signed out of here ([`sign_out`]) and no login since let this session in,
-/// or the account's directory is gone, as `purge` leaves it, or was made
-/// again since and no login let this session in there
-/// (`AccountPaths::refuses_session`). The session is known by when it was
-/// made, compared for equality only, so no clock set back refuses a login.
-/// Asked before every request, by the command, by the owner, and by the
-/// browser's holder once it holds the account's browser
-/// (`headless::Headless`): it is a look at one small file.
+/// signed out of here ([`sign_out`]) and no login since let this session in, or
+/// the account's directory is gone, as `purge` leaves it, or was made again
+/// since and no login let this session in there
+/// (`AccountPaths::refuses_session`).
 pub(crate) fn signed_out(paths: &AppPaths, session: &Session) -> bool {
     paths
         .account(session.ds_user_id)
         .refuses_session(session.created_at)
 }
 
-/// Waits, up to [`LEAVING`], for the browsers another snob runs itself on
-/// these profiles to close, before they are removed: told their account was
-/// signed out, such a process closes its own within [`SIGN_OUT_LOOK`] and
-/// the request it has in flight, and a browser closing writes into its
-/// profile, which would make a removed one again. A browser's hold is seen
-/// as Chromium itself sees it (`headless::profile::in_use`: the profile's
-/// lock on Unix, its `lockfile` held open on Windows). Past [`LEAVING`] the
-/// removal goes ahead and says what it could not remove. A path may be a
-/// profile or the directory every profile is kept in.
+/// Waits, up to [`LEAVING`], for the browsers another snob runs itself on these
+/// profiles to close, before they are removed: told their account was signed
+/// out, such a process closes its own within [`SIGN_OUT_LOOK`] and the request
+/// it has in flight, and a browser closing writes into its profile, which would
+/// make a removed one again.
 pub(crate) async fn let_go_of(profiles: &[PathBuf]) {
     use crate::headless::profile::in_use;
     let held = |path: &PathBuf| {
@@ -243,9 +186,8 @@ pub(crate) async fn let_go_of(profiles: &[PathBuf]) {
 }
 
 /// Closes every browser the owner runs, of whichever build, and has it leave,
-/// and waits for it to be gone: before the data directory it keeps its log
-/// in is removed, which Windows refuses while the file is open. Starts no
-/// owner.
+/// and waits for it to be gone: before the data directory it keeps its log in
+/// is removed, which Windows refuses while the file is open.
 pub async fn quit(paths: &AppPaths) {
     let Ok(mut link) = Link::open(paths, None, Arc::default()).await else {
         return;
@@ -287,9 +229,8 @@ struct Remote {
     /// it handed: what the owner hands back cookies for only while the
     /// browser holds that very session.
     used: Mutex<HashMap<Pk, String>>,
-    /// Set once the owner could not be reached: the browsers are this
-    /// process's own until this command leaves. A monitor's next run tries
-    /// the owner again, since what kept this one from it may have passed.
+    /// Set once the owner could not be reached: the browsers are this process's
+    /// own until this command leaves.
     alone: AtomicBool,
     /// The accounts this command sent as from browsers of its own, with when
     /// the session it handed was made (what names it, [`signed_out`]), until
@@ -319,13 +260,10 @@ impl Remote {
     }
 
     /// Notes that this command sends as `session` from a browser of its own,
-    /// and looks, every [`SIGN_OUT_LOOK`] until it leaves, whether the
-    /// account was signed out of since ([`sign_out`]): if so the browser is
-    /// closed at once, rather than at this command's next request, which a
-    /// walk resting between sittings sends a quarter of an hour later. The
-    /// site's app would go on calling as the account in it meanwhile, and the
-    /// leaving command waits for it to let go of the profile
-    /// ([`let_go_of`]).
+    /// and looks, every [`SIGN_OUT_LOOK`] until it leaves, whether the account
+    /// was signed out of since ([`sign_out`]): if so the browser is closed at
+    /// once, rather than at this command's next request, which a walk resting
+    /// between sittings sends a quarter of an hour later.
     fn mind(&self, session: &Session) {
         lock(&self.own).insert(session.ds_user_id, session.created_at);
         self.minding.notify_one();
@@ -458,13 +396,11 @@ impl Remote {
         }
     }
 
-    /// Refuses a request as `session` once its account was signed out of
-    /// and no login let it in again ([`signed_out`]), as a session Instagram
-    /// no longer takes: nothing is sent, nothing retries it, and the command
-    /// ends with the no-session exit, saying the session was signed out on
-    /// this computer (`IgError::SignedOutHere`), not that Instagram expired
-    /// it. A browser this process runs itself for
-    /// the account is closed, since nobody else can reach it to.
+    /// Refuses a request as `session` once its account was signed out of and no
+    /// login let it in again ([`signed_out`]), as a session Instagram no longer
+    /// takes: nothing is sent, nothing retries it, and the command ends with
+    /// the no-session exit, saying the session was signed out on this computer
+    /// (`IgError::SignedOutHere`), not that Instagram expired it.
     async fn still_signed_in(&self, session: &Session) -> Result<(), PageError> {
         if !signed_out(&self.paths, session) {
             return Ok(());
@@ -493,9 +429,8 @@ impl Remote {
             return Vec::new();
         };
         // A command stopped by Ctrl+C, or a stop key in the interactive
-        // browser, does not wait for the cookies: they wait for the request
-        // it gave up, which the owner may still be sending. What the browser
-        // rotated stays in its profile.
+        // browser, does not wait for the cookies: they wait for the request it
+        // gave up, which the owner may still be sending.
         let used = if crate::interrupt::interrupted() {
             Vec::new()
         } else {
@@ -585,8 +520,7 @@ impl Page for AsSession {
 /// Requests waiting for their answers, by id.
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<wire::FromOwner>>>>;
 
-/// One connection to the owner. To an owner of another build, only for what
-/// every build reads: `Release` and `Retire`.
+/// One connection to the owner.
 struct Link {
     /// Whole frames, for the one task that writes them: a request given up
     /// half-way through being written would leave the rest of the stream
@@ -622,13 +556,8 @@ impl Drop for Forget<'_> {
 }
 
 impl Link {
-    /// Connects, starting the owner when nobody is listening and `start`
-    /// says how, and checks it is an owner of this build. An owner of an
-    /// older build serving nobody else is asked to leave and one of this
-    /// build started in its place; one still serving other commands is left
-    /// to them, as is one of a newer build, and this command runs its browser
-    /// itself. With no `start`, an owner of any build will do, for
-    /// [`release`] and [`quit`].
+    /// Connects, starting the owner when nobody is listening and `start` says
+    /// how, and checks it is an owner of this build.
     async fn open(
         paths: &AppPaths,
         start: Option<&[OsString]>,
@@ -780,9 +709,7 @@ impl Link {
         self.alive.load(Ordering::SeqCst)
     }
 
-    /// Sends `message`, which has no answer, and does not wait. A link that
-    /// is gone takes it nowhere, which is what a message nobody answers can
-    /// afford.
+    /// Sends `message`, which has no answer, and does not wait.
     fn tell(&self, message: &wire::ToOwner) {
         if let Ok(frame) = wire::frame(message) {
             let _ = self.outgoing.send(frame);

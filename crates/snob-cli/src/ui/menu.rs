@@ -1,21 +1,6 @@
 //! A short list to pick one line of with the arrow keys.
 //!
-//! The one interactive view that does **not** take the alternate screen. It
-//! lives in the middle of a wizard's questions — `snob login`, `snob watch
-//! setup` — so it draws in an inline viewport exactly as tall as itself
-//! ([`Tui::inline`]), and on the way out it clears that viewport and leaves
-//! the prompt with the answer beside it, where the list was, in the flow of
-//! questions around it.
-//!
-//! A pointer on the selected line and the prompt above; Enter chooses, Esc
-//! declines, and the selection stops at the ends rather than wrapping -- a
-//! list of three that wraps is one where Down on the last line lands on the
-//! first, which reads as a mistake.
-//!
-//! Keys are read through [`input`], which is what closes the two defects that
-//! module's header describes, and a paste is swallowed whole here for the
-//! same reason it is in the browser: without mode 2004 it arrives as its
-//! characters and some of them are commands.
+//! The one interactive view that does **not** take the alternate screen.
 
 use anyhow::{Context, Result};
 use console::Term;
@@ -28,13 +13,6 @@ use super::theme::Role;
 use super::tui::{self, Tui};
 
 /// Draws the list of `labels` under `prompt` and waits for a choice.
-///
-/// `Some(index)` on Enter, `None` on Esc or `q`. Ctrl+C is an `ExitError`
-/// carrying 130, so the caller's `?` ends the command the way every other
-/// interrupt does, and nothing can read it as a draw failure to fall back
-/// from. The caller decides whether a menu can be shown at all -- `ui::can_show_a_menu`
-/// is the gate, asked before this is reached -- so this assumes a terminal on
-/// both standard input and standard error.
 pub fn choose(prompt: &str, labels: &[&str]) -> Result<Option<usize>> {
     let rows = u16::try_from(labels.len() + 1).unwrap_or(u16::MAX);
     let mut tui = Tui::inline(rows).context("could not read the terminal")?;
@@ -65,9 +43,6 @@ pub fn choose(prompt: &str, labels: &[&str]) -> Result<Option<usize>> {
     };
 
     // What stays on screen: the question and its answer, where the list was.
-    // `clear` empties the viewport and leaves the cursor at its first row;
-    // the guard drops before anything is printed, so the line below lands in
-    // a cooked terminal.
     tui.terminal.clear()?;
     drop(tui);
     let answer = match outcome {
@@ -86,9 +61,6 @@ pub fn choose(prompt: &str, labels: &[&str]) -> Result<Option<usize>> {
 }
 
 /// Draws the prompt and one row per label into the inline viewport.
-///
-/// A long label is clipped at the viewport's edge by the renderer itself: the
-/// cell buffer has nowhere to wrap to.
 fn draw(frame: &mut Frame<'_>, prompt: &str, labels: &[&str], selected: usize, colors: bool) {
     let mut lines = Vec::with_capacity(labels.len() + 1);
     // While it is being asked the mark is the prompt, and the prompt is the

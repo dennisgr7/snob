@@ -1,45 +1,10 @@
 //! Starting a process apart from the command that needed it, to outlive it.
 //!
-//! The owner of the browsers is started this way (`owner/spawn.rs`), and
-//! anything else that must go on after the command that started it ends is
-//! started here too, so there is one home for what such a process may take
-//! from the command and what it must leave behind.
-//!
-//! **It takes nothing of the command's output with it.** Its input is the
-//! null device, and its output and errors go to the files it is given (its
-//! output to the null device when none is): a program reading a command's
-//! output — a pipe, a `$(…)`, the test suite — waits for every holder of that
-//! output to close it, and a process still holding it would keep that
-//! program waiting for as long as it runs. On Unix every descriptor this
-//! program opens is close-on-exec, so the three it sets are the only ones of
-//! its own the process gets; one snob itself inherited open across `exec` — a
-//! `3>file`, a make jobserver's pipe — passes on as it would to any child. On
-//! Windows the handles it inherits are listed one by one, as for the browser
-//! (`pipe.rs`), because `std::process::Command` would hand it every
-//! inheritable handle in this process.
-//!
-//! **Nor the command's terminal.** A session of its own on Unix, a detached
-//! process in a group of its own on Windows: a Ctrl+C typed at the command,
-//! or its terminal closing, is not the process's to hear. It leaves the job
-//! the command may be in when that job allows it ([`Started::left_job`]), so
-//! the job closing does not take it along; where the job does not allow it,
-//! the process goes with the job. A cgroup is not left either: a process
-//! started from a systemd unit ends with the unit.
+//! **It takes nothing of the command's output with it.**
 //!
 //! **It keeps the command's environment, for its whole life**, but for
 //! `jobs::NEVER_INHERITED`: the key of `snob mcp` served over the network, a
-//! client's copy of it, and the cooldown's escape hatch. Whatever else the
-//! command was started with, a bare one from a cron job or a systemd unit
-//! included, is what the process has until it leaves. The browsers are
-//! started without the same three (`pipe`), so the owner of the browsers and
-//! every browser it starts hold none of them, whichever command started it.
-//!
-//! It runs from the root of the system drive, so it holds no directory
-//! anybody may want to remove or unmount — the data directory included, which
-//! `snob purge` removes and Windows will not while a process runs in it.
-//!
-//! Only `std`, `libc` and `windows-sys`, all three in every build: nothing
-//! here waits on a feature.
+//! client's copy of it, and the cooldown's escape hatch.
 
 use std::ffi::OsString;
 use std::io;
@@ -47,12 +12,7 @@ use std::path::{Path, PathBuf};
 
 /// A process just started, as far as the command that started it can tell.
 pub(crate) struct Started {
-    /// Whether it left the job the command was in. On Windows, whether the
-    /// job allowed `CREATE_BREAKAWAY_FROM_JOB` (a command in no job leaves
-    /// none, and counts as having left); where it did not, the process ends
-    /// when the job is closed, as it would for a client that ends its own
-    /// process tree. On Unix always: a session of its own is all a terminal
-    /// or a process group can reach, and a cgroup is never left.
+    /// Whether it left the job the command was in.
     pub(crate) left_job: bool,
     process: platform::Process,
 }
@@ -64,11 +24,8 @@ impl Started {
     }
 }
 
-/// Starts `program` with `args`, detached, its output appended to `stdout`
-/// (the null device when there is none) and its errors to `stderr`. Both
-/// files are created when missing, readable by this user alone on Unix (on
-/// Windows they take the directory's access list, user-only in the data
-/// directory).
+/// Starts `program` with `args`, detached, its output appended to `stdout` (the
+/// null device when there is none) and its errors to `stderr`.
 pub(crate) fn spawn(
     program: &Path,
     args: &[OsString],

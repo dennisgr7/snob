@@ -1,17 +1,8 @@
 //! Rows that are not accounts, in every format a list of accounts has.
 //!
-//! The account renderers know the six fields of a `User`. `snob snapshots`
-//! (one row per capture) and `snob changes` (one row per change) have columns
-//! of their own, and both want the same six formats with the same rules: a
-//! drawn table on a terminal, tab-separated lines down a pipe or into a file
-//! with no format named, JSON objects keyed by column, csv, Markdown, and a
-//! spreadsheet. One renderer for both, so the two cannot answer alike in five
-//! formats and differently in the sixth.
-//!
 //! **Every text cell passes `printable`** whatever its column: a username is
 //! another person's string, and this renderer does not ask which cells hold
-//! one. A moment is epoch seconds in JSON and csv, as everywhere else, and a
-//! date a person reads in the table, Markdown and the spreadsheet.
+//! one.
 
 use anyhow::Result;
 use comfy_table::{ContentArrangement, Table, presets};
@@ -70,8 +61,7 @@ impl Value {
     }
 }
 
-/// A header and its rows. `columns` pairs each JSON key with the title a
-/// table shows for it.
+/// A header and its rows.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Grid {
     pub(crate) columns: Vec<(&'static str, &'static str)>,
@@ -94,9 +84,7 @@ impl Grid {
             .collect()
     }
 
-    /// The grid in `format`. JSON is the array of [`Grid::objects`]; a caller
-    /// with a richer document for JSON renders that itself and hands the
-    /// other formats here.
+    /// The grid in `format`.
     pub(crate) fn render(&self, format: Format, presentation: Presentation) -> Result<Rendered> {
         Ok(Rendered::Text(match format {
             Format::Table if presentation.interactive => self.table(presentation),
@@ -124,8 +112,7 @@ impl Grid {
         self.columns.iter().map(|(_, title)| *title).collect()
     }
 
-    /// The drawn table. Nothing for no rows: what the command says on
-    /// standard error already counts them.
+    /// The drawn table.
     fn table(&self, presentation: Presentation) -> String {
         if self.rows.is_empty() {
             return String::new();

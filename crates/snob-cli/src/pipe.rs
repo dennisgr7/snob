@@ -1,54 +1,22 @@
 //! Starting the browser with its debugging protocol on a private pipe, and
 //! tying its lifetime to ours.
 //!
-//! **The protocol is on a pipe rather than a loopback port because a port
-//! hands the session out**, which was demonstrated rather than supposed. With
-//! `--remote-debugging-port`, the browser listens on 127.0.0.1 and answers
-//! anybody who asks: a second local process read the port out of
-//! `DevToolsActivePort`, called `/json/version` with no credential at all, and
-//! got the Instagram session cookie back from `Storage.getCookies` — `httpOnly`
-//! is a rule for page scripts and means nothing to the protocol itself.
-//! Loopback sockets carry no per-user access control, so that is every account
-//! on the machine, for as long as the browser runs.
+//! **The protocol is on a pipe rather than a loopback port because a port hands
+//! the session out**, which was demonstrated rather than supposed.
 //!
-//! `--remote-debugging-pipe` moves the same protocol onto two anonymous pipes
-//! that only this process and the browser hold handles to — close-on-exec on
-//! Unix and kept out of every other child on Windows, so a second browser
-//! started beside the first does not hold the first one's. There is nothing
-//! to connect to and nothing to guess.
-//!
-//! **No other child catches an end on its way to the browser.** On Windows
-//! both ends are made not inheritable and only the browser's two are marked
-//! otherwise, just before it is created and closed just after, under
-//! [`one_start_at_a_time`]; on macOS, which has no `pipe2`, an end is
-//! close-on-exec a moment after it is opened, under the same lock. Every
-//! other start of a process in a program that starts browsers takes it too
-//! (`detach`, `power`, `browser`), so none forks or inherits in that moment.
+//! **No other child catches an end on its way to the browser.**
 //!
 //! **Why this module exists at all** is that `std::process::Command` cannot
-//! start that browser. Chromium reads the protocol from file descriptor 3 and
-//! writes it to descriptor 4, and on Windows it reaches them through
-//! `_get_osfhandle`, which only answers if the C runtime found those
-//! descriptors in the handle-inheritance blob the parent passed in
-//! `STARTUPINFO.lpReserved2`. `Command` exposes stdin, stdout and stderr and
-//! nothing beyond them, so the blob has to be built here and handed to
-//! `CreateProcessW` directly. On Unix the same idea is four lines of `dup2` in
-//! a `pre_exec` hook.
+//! start that browser.
 //!
-//! **The browser ends with this process however it ends.** When this
-//! process dies without closing it — a panic under the release profile, which
-//! aborts, a second Ctrl+C, Task Manager, `kill -9` — its end of the pipe
-//! closes, and the browser closes itself on that, within a few hundred
-//! milliseconds (measured on Windows 11 against Chrome 153). On Windows a job
-//! object carrying `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` backs that up for a
-//! browser that would not: when the last handle to the job goes, which is when
-//! this process's handles are closed however it died, the kernel ends
-//! everything in it. The cost, measured the same way: a browser the job ends
-//! loses the cookies it had not yet committed to its profile, about its last
-//! half minute; the profile goes on from what it last committed.
-//!
-//! The child is created suspended and assigned to the job before it is
-//! resumed, so there is no instant in which it exists outside the job.
+//! **The browser ends with this process however it ends.** When this process
+//! dies without closing it — a panic under the release profile, which aborts, a
+//! second Ctrl+C, Task Manager, `kill -9` — its end of the pipe closes, and the
+//! browser closes itself on that, within a few hundred milliseconds (measured
+//! on Windows 11 against Chrome 153). The cost, measured the same way: a
+//! browser the job ends loses the cookies it had not yet committed to its
+//! profile, about its last half minute; the profile goes on from what it last
+//! committed.
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -57,14 +25,6 @@ use std::time::Duration;
 use anyhow::Result;
 
 /// Ceiling on one protocol message.
-///
-/// The transport reads until a NUL, so without a ceiling a browser that never
-/// sent one would decide how much memory this process uses. `Browser.getVersion`
-/// and `Storage.getCookies` answer in kilobytes; this is far above anything
-/// real. A message over it is skipped to its terminator and fails only the
-/// call it answers ([`Frame::Oversized`]); what `headless/` asks the page to
-/// hand back is still capped below it, in the bytes it will take here, so an
-/// answer that matters is never the one thrown away.
 pub(crate) const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 
 /// How much of a message past the ceiling is kept: enough to read the `id` it
@@ -75,11 +35,9 @@ const OVERSIZED_HEAD_BYTES: usize = 256;
 #[cfg(windows)]
 pub(crate) use windows_impl::{command_line, wide};
 
-/// Held while this process starts another, and while a pipe's ends are not
-/// yet what they will be: inheritable on Windows for the instant the browser
-/// is created, not yet close-on-exec on macOS. A start that does not take it
-/// could hand its child an end of the browser's protocol, which reads its
-/// commands and writes its answers. Never held across a wait for the child.
+/// Held while this process starts another, and while a pipe's ends are not yet
+/// what they will be: inheritable on Windows for the instant the browser is
+/// created, not yet close-on-exec on macOS.
 pub(crate) fn one_start_at_a_time() -> std::sync::MutexGuard<'static, ()> {
     static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     STARTING
@@ -103,26 +61,15 @@ pub type Message = Vec<u8>;
 pub enum Frame {
     /// A whole message, without its terminator.
     Message(Message),
-    /// A message past [`MAX_MESSAGE_BYTES`], skipped to its terminator. Only
-    /// its first bytes are kept, which is where the browser writes the `id` of
-    /// the call it answers: that call fails and nothing else does. Ending the
-    /// whole connection over one answer would take every other call down
-    /// with it, and the browser along with them.
+    /// A message past [`MAX_MESSAGE_BYTES`], skipped to its terminator.
     Oversized { head: Vec<u8> },
 }
 
 /// The browser's end of the protocol.
-///
-/// Reading and writing are done by two ordinary threads rather than by async
-/// file handles, because a pipe is not pollable the same way on both platforms
-/// and this needs no concurrency beyond "one reader, one writer". The channels
-/// are what the async side sees, and [`crate::cdp`]'s dispatcher is the one
-/// thing that reads them.
 pub struct PipeTransport {
     /// Unbounded, so that nothing sending ever waits on the browser: the
     /// dispatcher answers a target's attach by writing, and a write that could
-    /// wait would be a dispatcher that could stop reading. What goes this way
-    /// is only ever what this process decided to send.
+    /// wait would be a dispatcher that could stop reading.
     pub(crate) to_browser: tokio::sync::mpsc::UnboundedSender<Message>,
     /// Bounded, so a browser narrating faster than it is read cannot grow this
     /// without limit; the dispatcher drains it continuously.
@@ -130,18 +77,6 @@ pub struct PipeTransport {
 }
 
 /// Pulls whole messages out of whatever has arrived so far.
-///
-/// The protocol over a pipe is JSON documents separated by NUL bytes, and a
-/// read returns whatever the pipe had — half a message, several messages, a
-/// message and half of the next. Split out and kept free of any I/O precisely
-/// so that case can be tested without a browser.
-///
-/// **Every byte is looked at once.** Only what has just arrived is searched
-/// for a terminator; what came before it is already known to hold none.
-/// Searching the whole buffer on every read while a message arrives in pieces
-/// is O(len²/chunk): at the 8 MiB ceiling, on the order of four billion bytes
-/// scanned to deliver one message -- and `Storage.getCookies` against a real
-/// profile is exactly the kind of answer that arrives in pieces.
 #[derive(Debug, Default)]
 struct Framer {
     /// The message in progress, never past the ceiling.
@@ -259,22 +194,12 @@ pub struct Ended {
 }
 
 /// The browser this process started.
-///
-/// Killed when dropped: on Windows by the job handle closing, on Unix by
-/// [`BrowserProcess::kill`], from `Drop`. A process that dies without
-/// dropping it leaves the browser to close on its pipe, and on Windows to the
-/// job (see the module header).
-///
-/// On Unix it leads a process group of its own, which its helpers join: the
-/// group is how they are waited for and killed, and it keeps them out of the
-/// group of the process that started it, the owner's session or a terminal's.
 pub struct BrowserProcess {
     #[cfg(windows)]
     inner: windows_impl::Process,
     #[cfg(unix)]
     inner: std::process::Child,
-    /// Set once none of its group is left. From then on the group's number
-    /// may be reused, and is never signaled again.
+    /// Set once none of its group is left.
     #[cfg(unix)]
     group_gone: bool,
 }
@@ -307,11 +232,6 @@ impl BrowserProcess {
 
     /// Waits for it to leave, and for every process it started — its job on
     /// Windows, its process group on Unix — giving up after `patience`.
-    ///
-    /// Its helpers can outlive it by several seconds on a busy machine, and
-    /// until they go they hold the profile: Windows keeps their files in it
-    /// open, and a browser started next on it can stall. Gone means the
-    /// profile can be moved, removed or started on again.
     pub async fn wait_up_to(&mut self, patience: Duration) -> Option<Ended> {
         let deadline = std::time::Instant::now() + patience;
         loop {
@@ -327,8 +247,7 @@ impl BrowserProcess {
         }
     }
 
-    /// Whether nothing it started is still running. Asked once it has been
-    /// reaped: until then it is in its group itself.
+    /// Whether nothing it started is still running.
     fn nothing_left(&mut self) -> bool {
         #[cfg(windows)]
         {
@@ -347,10 +266,8 @@ impl BrowserProcess {
         }
     }
 
-    /// Moves it, with every process it started, to `mode`
-    /// (`power::qos`): its job on Windows, its process group on Linux and
-    /// macOS. Not once it has gone: its group's number may be someone else's
-    /// by then.
+    /// Moves it, with every process it started, to `mode` (`power::qos`): its
+    /// job on Windows, its process group on Linux and macOS.
     pub fn set_mode(&mut self, mode: crate::power::qos::Mode) {
         #[cfg(windows)]
         crate::power::qos::in_job(self.inner.job, mode);
@@ -399,10 +316,6 @@ impl Drop for BrowserProcess {
 }
 
 /// Starts `program` with `args`, talking the debugging protocol over a pipe.
-///
-/// The two protocol descriptors are the only handles of this process's own it
-/// inherits, and on Windows it is in a job object that ends it with this
-/// process.
 pub fn spawn(program: &Path, args: &[String]) -> Result<(BrowserProcess, PipeTransport)> {
     #[cfg(windows)]
     {
@@ -444,9 +357,8 @@ mod windows_impl {
 
     /// The two flag bits the C runtime wants on an inherited descriptor.
     ///
-    /// `FOPEN` says the slot is in use and `FPIPE` says what it is. They are
-    /// not in any header this can import: the layout of `lpReserved2` is a
-    /// private arrangement between a Microsoft C runtime and its own
+    /// They are not in any header this can import: the layout of `lpReserved2`
+    /// is a private arrangement between a Microsoft C runtime and its own
     /// `CreateProcess` wrapper, which is why it has to be written out by hand
     /// here. libuv builds the same structure for Node, which is how every
     /// `--remote-debugging-pipe` client on Windows already works.
@@ -457,9 +369,7 @@ mod windows_impl {
     /// dropped, or when this process is gone.
     pub(super) struct Process {
         handle: HANDLE,
-        /// Held for exactly as long as the browser should live. Closing it is
-        /// what `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` reacts to, and the
-        /// operating system closes it for us however this process dies.
+        /// Held for exactly as long as the browser should live.
         pub(super) job: HANDLE,
         pub(super) pid: u32,
         ended: Option<Ended>,
@@ -501,8 +411,7 @@ mod windows_impl {
             unsafe { TerminateJobObject(self.job, 1) };
         }
 
-        /// Whether the job has no process left in it. One that cannot be asked
-        /// is taken as empty: this only decides how long a close waits.
+        /// Whether the job has no process left in it.
         pub(super) fn job_is_empty(&self) -> bool {
             // SAFETY: all-zero is a valid value of this plain structure.
             let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
@@ -558,15 +467,6 @@ mod windows_impl {
     }
 
     /// One pipe, neither end inheritable.
-    ///
-    /// The end we keep never is: a browser holding a copy of it would keep
-    /// the pipe open after it had exited, and the reader thread would never
-    /// see the end of the stream, and any other child holding one could send
-    /// the browser commands or read its answers. The child's end is made
-    /// inheritable only for the instant the browser is created
-    /// ([`let_the_child_have`]), since the handle list refuses one that is
-    /// not; made so at the pipe's birth, a process another thread started
-    /// meanwhile would have taken it.
     fn pipe() -> Result<(Owned, Owned)> {
         let mut read: HANDLE = std::ptr::null_mut();
         let mut write: HANDLE = std::ptr::null_mut();
@@ -579,8 +479,7 @@ mod windows_impl {
     }
 
     /// Marks one of the child's ends inheritable, which the handle list below
-    /// requires. Called under [`super::one_start_at_a_time`], held until the
-    /// browser is created and this process's copy is closed.
+    /// requires.
     fn let_the_child_have(handle: HANDLE) -> Result<()> {
         // SAFETY: a handle this process owns.
         if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
@@ -590,14 +489,6 @@ mod windows_impl {
     }
 
     /// The C runtime's handle-inheritance blob.
-    ///
-    /// Five slots, because the descriptor numbers are positional: 0, 1 and 2
-    /// have to be present and closed for 3 and 4 to land where Chromium looks
-    /// for them. Its layout is a count, then one flag byte per slot, then one
-    /// handle per slot.
-    ///
-    /// Written out rather than imported because no Windows header describes
-    /// it — see [`FOPEN`].
     fn inheritance_blob(child_read: HANDLE, child_write: HANDLE) -> Vec<u8> {
         let count = CHILD_WRITE_FD + 1;
         let mut blob = Vec::with_capacity(4 + count + count * std::mem::size_of::<HANDLE>());
@@ -619,16 +510,6 @@ mod windows_impl {
     }
 
     /// Quotes one argument the way the C runtime un-quotes it.
-    ///
-    /// `CreateProcessW` takes a single string and every program splits it
-    /// itself, so this has to produce what the split on the other side will put
-    /// back together. The backslash rule is the awkward part: a run of
-    /// backslashes is only special immediately before a quote, where each one
-    /// has to be doubled.
-    ///
-    /// It matters here rather than being pedantry: the profile directory is one
-    /// of these arguments and it sits under the user's own path, which contains
-    /// spaces on almost every Windows machine.
     fn quote(argument: &str) -> String {
         if !argument.is_empty() && !argument.contains([' ', '\t', '"']) {
             return argument.to_string();
@@ -697,9 +578,7 @@ mod windows_impl {
         let mut blob = inheritance_blob(to_browser_read.0, from_browser_write.0);
 
         // Exactly the two protocol handles, and nothing else this process
-        // happens to hold open. Without it `bInheritHandles = TRUE` hands the
-        // child every inheritable handle in the process, which is how a
-        // database file or a socket ends up in a browser.
+        // happens to hold open.
         let mut inherited: [HANDLE; 2] = [to_browser_read.0, from_browser_write.0];
         let mut attribute_size: usize = 0;
         // SAFETY: the documented way to ask for the size; it fails and sets the
@@ -890,10 +769,7 @@ mod windows_impl {
         }
 
         /// The blob is positional: five slots, the first three closed, and the
-        /// two the protocol uses carrying a pipe's flags. Getting the count or
-        /// the order wrong does not fail to start the browser — it starts one
-        /// that cannot find the protocol and sits there until the login times
-        /// out, which is a far more expensive way to learn about it.
+        /// two the protocol uses carrying a pipe's flags.
         #[test]
         fn the_inheritance_blob_puts_the_pipes_at_three_and_four() {
             let read = 0x1111_usize as HANDLE;
@@ -957,10 +833,8 @@ mod unix_impl {
 
     use super::{CHILD_READ_FD, CHILD_WRITE_FD};
 
-    /// Both ends of one pipe, as raw descriptors, close-on-exec: no child
-    /// but the browser they are for gets them, and that one through `dup2`.
-    /// On macOS under [`super::one_start_at_a_time`], since the flag comes a
-    /// moment after the pipe there.
+    /// Both ends of one pipe, as raw descriptors, close-on-exec: no child but
+    /// the browser they are for gets them, and that one through `dup2`.
     pub(super) fn pipe() -> Result<(i32, i32)> {
         let mut ends = [0 as libc::c_int; 2];
         #[cfg(not(target_os = "macos"))]
@@ -996,11 +870,7 @@ mod unix_impl {
         Ok((ends[0], ends[1]))
     }
 
-    /// Puts `fd` at `target` in the child, open across `exec`. `dup2` clears
-    /// close-on-exec on the descriptor it makes, but does nothing at all when
-    /// the two are the same number, so that case clears the flag itself.
-    ///
-    /// Only async-signal-safe calls: this runs between `fork` and `exec`.
+    /// Puts `fd` at `target` in the child, open across `exec`.
     fn onto(fd: libc::c_int, target: libc::c_int) -> std::io::Result<()> {
         // SAFETY: `fcntl` and `dup2` on descriptors this process holds, and
         // nothing that allocates or takes a lock.

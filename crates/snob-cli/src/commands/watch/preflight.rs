@@ -1,8 +1,4 @@
 //! The checks behind `snob watch check`, and the baseline `setup` lays down.
-//!
-//! A file of its own because `setup` asks the same questions: they are asked of
-//! a configuration rather than of a run, and both callers want every one of
-//! them answered rather than the first failure.
 
 use anyhow::Result;
 use snob_core::Pk;
@@ -35,21 +31,13 @@ pub(super) async fn preflight(
     let configured = config::load(paths)?;
     let now = snob_core::clock::now();
 
-    // Built the same way a run builds it, or this would be checking a schedule
-    // nobody is on. A configuration with none at all is not an error here — it
-    // is one of the things worth reporting.
+    // Built the same way a run builds it, or this would be checking a schedule nobody
+    // is on.
     //
-    // **The error is kept**, not turned into `.ok()`: `without_a_session`
-    // pushes a schedule line only for what it is given, and
-    // `CheckReport::verdict()` is `max().unwrap_or(Ok)`, so a dropped error
-    // would let `check` exit 0 about a monitor that dies at `schedule_from` on
-    // every invocation. Every such shape comes from a hand-edit, which the first
-    // line of `watch.toml` says is fine: `every = "5m"`, `cron = "0 9 * *"`,
-    // `at = ["25:00"]`. All pass `config::parse`, which reads TOML, the schema
-    // number and one key clash, and nothing else.
-    //
-    // A file that names no schedule at all is its own line, a warning: the
-    // schedule can come from the command line (`super::schedule::names_no_schedule`).
+    // **The error is kept**, not turned into `.ok()`: `without_a_session` pushes a
+    // schedule line only for what it is given, and `CheckReport::verdict()` is
+    // `max().unwrap_or(Ok)`, so a dropped error would let `check` exit 0 about a
+    // monitor that dies at `schedule_from` on every invocation.
     let no_schedule = configured
         .as_ref()
         .is_some_and(super::schedule::names_no_schedule);
@@ -125,10 +113,6 @@ pub(super) async fn preflight(
     }
 
     // The address as `check` may print it, with any path secret cut off.
-    // `Delivery::destination` is the exact URL on purpose -- it is the outbox
-    // key -- so the redaction happens here, where the report is built: every
-    // line and every `--json` object downstream renders what this hands over,
-    // and a Slack or Discord address printed whole is the secret printed whole.
     let shown = delivery
         .as_ref()
         .map(|d| (crate::watch::webhook::shown_str(&d.destination), d.signed));
@@ -189,19 +173,6 @@ fn say_who_else_reads(paths: &AppPaths, others: &[Watched]) {
 }
 
 /// The webhook line for a run that is deliberately not posting one.
-///
-/// `None` when there is nothing to say — no webhook configured at all, or a run
-/// that is about to post and will report what came back.
-///
-/// `--no-webhook` is the one flag somebody reaches for to check everything else
-/// without disturbing a receiver, and without this line its report would be
-/// byte for byte the one a machine with no `[webhook]` produces. By the time
-/// this is reached `delivery_from` has parsed the address and put every
-/// configured header through `webhook::check`, and a failure there is already
-/// its own `Failed` line, so what is left is a check that passed.
-///
-/// The flag is an argument rather than a condition at the call site, so the
-/// decision whether to push a line is what the test pins.
 fn not_posted(
     webhook: Option<(&str, bool)>,
     no_webhook: bool,
@@ -222,11 +193,6 @@ fn not_posted(
 
 /// Walks the configured accounts once, so there is something to compare
 /// against.
-///
-/// One ordinary run with no webhook: a baseline has nothing to report, so there
-/// is nothing to send, and going through the same path as every other run is
-/// what stops this being a second way of laying one down. Only the entries read
-/// as `account`, which is what the offer was worked out from.
 pub(super) async fn baseline_now(
     paths: &AppPaths,
     configured: Option<&WatchConfig>,
@@ -340,10 +306,7 @@ pub(super) fn describe_check(report: &crate::engine::check::CheckReport) -> Vec<
             // and a copy of it.
             let problem = super::say::problem_line(problem);
             // Under the detail column rather than at column zero, so a reason
-            // reads as belonging to the line above it. Named rather than
-            // written inline: a run of spaces inside a string literal is what
-            // the layout guard in `tests/language.rs` looks for, and it is
-            // right to — this is the one shape it cannot tell from a typo.
+            // reads as belonging to the line above it.
             const UNDER_THE_LABEL: &str = "            ";
             line.push('\n');
             line.push_str(UNDER_THE_LABEL);

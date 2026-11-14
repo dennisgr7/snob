@@ -1,18 +1,7 @@
 //! Sending a report to the address the user chose.
 //!
 //! Everything here is arranged around one rule: **this client cannot carry the
-//! session.** [`WebhookClient::new`] takes no `Session` and no `IgClient`, and
-//! the client under it is built by `snob_ig::http::plain`, which has no
-//! argument to pass a credential through. The destination is a host somebody
-//! typed into a configuration file; sending Instagram's cookie there would be
-//! the same failure `CdnClient::check_downloadable` exists to prevent for the
-//! CDN, one crate up.
-//!
-//! Two smaller rules follow from the same place. Redirects are not followed at
-//! all — a 3xx is exactly how a body lands at a host nobody named — and the
-//! User-Agent says `snob/<version>`, because claiming to be a browser to the user's own
-//! server would be a lie told for no reason and would leak which browser they
-//! have.
+//! session.**
 
 use anyhow::{Result, bail};
 use snob_core::secret::Secret;
@@ -21,9 +10,6 @@ use snob_ig::http::{self, reqwest};
 use url::Url;
 
 /// How much of an error response is read back to show the user.
-///
-/// Bounded for the reason every read in this project is: without it the far end
-/// decides how much memory this process uses.
 const MAX_RESPONSE_BYTES: usize = 4 * 1024;
 
 /// What the receiver is told, beyond the body.
@@ -59,23 +45,12 @@ pub enum Attempt {
     /// Worth trying again: the far end was busy, restarting, unreachable, or
     /// answered with a status it may not answer with next time.
     ///
-    /// **Every HTTP answer lands here, 4xx included.** A refusal is expired by
-    /// the outbox with no retries, and the mark has already moved by then, so a
-    /// 404 from an n8n workflow that happened not to be registered would throw
-    /// away the only copy of a set of arrivals and departures.
+    /// **Every HTTP answer lands here, 4xx included.**
     Failed {
         status: Option<u16>,
         error: String,
     },
     /// The request could not be sent at all, so there is nothing to try again.
-    ///
-    /// Not "the server said no": a configuration that never went through
-    /// [`check`] and produces a header this cannot build. Retrying it sends the
-    /// identical unbuildable request.
-    ///
-    /// **No status, rather than a zero.** `watch_deliveries.last_status` is "the
-    /// HTTP code, when there was one": NULL already says there was none, and 0
-    /// is not a code any server can answer with.
     Refused {
         error: String,
     },
@@ -83,9 +58,6 @@ pub enum Attempt {
 
 impl Attempt {
     /// The HTTP code the far end answered with, when it answered at all.
-    ///
-    /// `Refused` has none to give: the request was never built, so no server
-    /// answered anything.
     pub fn status(&self) -> Option<u16> {
         match self {
             Self::Delivered { status } => Some(*status),
@@ -95,10 +67,6 @@ impl Attempt {
     }
 
     /// What went wrong, in whatever words the far end or the client used.
-    ///
-    /// On the type rather than beside one of the callers, so `engine::check`
-    /// and `commands::watch` describe an attempt with the same words and
-    /// neither falls back to `Debug`.
     pub fn error(&self) -> &str {
         match self {
             Self::Delivered { .. } => "",
@@ -109,17 +77,12 @@ impl Attempt {
 
 impl WebhookClient {
     /// Builds the client.
-    ///
-    /// **No credential can reach this.** There is no argument for one, which is
-    /// the guard rather than a rule somebody has to keep.
     pub fn new(webhook: Webhook) -> Result<Self> {
         // A private destination is one `check` allowed to be unencrypted
         // *because* it is private, so it must not leave the machine through a
         // proxy named by an inherited environment variable -- which is a
         // measured leak of the report, the `Authorization` header and the
-        // signature, in the clear, to a third party. A public receiver keeps
-        // honoring the environment, because somebody behind a mandatory proxy
-        // has no other route out.
+        // signature, in the clear, to a third party.
         let build = if is_private(&webhook.url) {
             http::plain_direct
         } else {
@@ -130,8 +93,7 @@ impl WebhookClient {
                 &format!("snob/{}", env!("CARGO_PKG_VERSION")),
                 // Not `limited(0)`, which follows nothing but reports a 3xx as
                 // an error the same way; `none()` hands the response back so
-                // the status can be read and reported. Either way the body does
-                // not travel to wherever the redirect pointed.
+                // the status can be read and reported.
                 reqwest::redirect::Policy::none(),
             )?,
             webhook,
@@ -139,15 +101,6 @@ impl WebhookClient {
     }
 
     /// Posts one report.
-    ///
-    /// `body` is sent verbatim and signed verbatim. It is not re-serialized
-    /// here, and `.json()` is deliberately not used: that would render the
-    /// value again, and the signature covers bytes.
-    ///
-    /// `event` is what the body says it is, and the header has to agree: the
-    /// point of the header is that a receiver can route on it without parsing
-    /// the body. `content_type` is the body's, which is snob's JSON unless the
-    /// webhook was given another `format` (`wire::outgoing`).
     pub async fn post(
         &self,
         body: &str,
@@ -158,13 +111,6 @@ impl WebhookClient {
     ) -> Attempt {
         // One map for the whole request: snob's headers first, then the user's
         // inserted over them, and the map handed over in one go.
-        // `RequestBuilder::header` is `HeaderMap::append`, so two entries of one
-        // name would both go out: a configured `Authorization` beside the
-        // keyring token, or the user's `Content-Type` beside snob's.
-        //
-        // `HeaderMap` is case-insensitive, so `insert` over the whole map is
-        // what "the last one wins" needs to be true. What the user must not be
-        // able to replace is refused by `check`, not resolved quietly here.
         let mut headers = reqwest::header::HeaderMap::new();
         let mut own = vec![
             ("Content-Type".to_string(), content_type.to_string()),
@@ -214,17 +160,7 @@ impl WebhookClient {
                 let error = describe(status, &without_address(&detail, &self.webhook.url));
 
                 // Every answer is worth another try, including a 4xx, for the
-                // reason `Attempt::Failed` gives. The 4xx a webhook actually
-                // gives are mostly transient: n8n answers 404 for a workflow
-                // that is not currently registered, a reverse proxy answers 404
-                // or 403 while it reloads, an expired bearer token answers 401.
-                // The far end is the user's own server, so retrying costs
-                // nothing that matters, and the attempt and age bounds
-                // (`deliveries::MAX_ATTEMPTS`, not written out here so a copy of
-                // the number cannot go stale) still stop it going on for ever.
-                //
-                // `Refused` is left for a request that could not be sent at all,
-                // which is the only failure retrying genuinely cannot change.
+                // reason `Attempt::Failed` gives.
                 Attempt::Failed {
                     status: Some(status.as_u16()),
                     error,
@@ -244,16 +180,9 @@ impl WebhookClient {
 ///
 /// **Not `reqwest::Error`'s own `Display`**, which ends in ` for url (<the
 /// whole address>)`: that string is written to `watch_deliveries`, warned on
-/// every retry, handed to `snob watch check` and its `--json`, and so into
-/// the log of an unattended service, and on a Slack or Discord webhook the
-/// address is the credential [`shown`] exists to keep out of all four.
-/// `without_url` drops it; the causes under it (a refused connection, a name
-/// that does not resolve, a certificate) are what a person can act on, so
-/// they follow it the way anyhow's `{:#}` would, and the top line alone
-/// ("error sending request") says nothing. None of them is known to name the
-/// address, but this string is kept and printed, so [`without_address`]
-/// checks rather than trusts that, and `printable` takes out what a terminal
-/// would obey.
+/// every retry, handed to `snob watch check` and its `--json`, and so into the
+/// log of an unattended service, and on a Slack or Discord webhook the address
+/// is the credential [`shown`] exists to keep out of all four.
 fn unanswered(error: reqwest::Error, url: &Url) -> String {
     let error = error.without_url();
     let mut words = error.to_string();
@@ -270,12 +199,8 @@ fn unanswered(error: reqwest::Error, url: &Url) -> String {
     snob_core::model::printable(&without_address(&words, url))
 }
 
-/// `text` with the address replaced by [`shown`]'s, and where the path or
-/// the query is the credential, each of those on its own too.
-///
-/// For text this process did not write (an error's causes, a receiver's
-/// answer) that is stored and printed: an address whose shown form is itself
-/// hides nothing, and is left alone.
+/// `text` with the address replaced by [`shown`]'s, and where the path or the
+/// query is the credential, each of those on its own too.
 fn without_address(text: &str, url: &Url) -> String {
     let shown = shown(url);
     if shown == url.as_str() {
@@ -332,39 +257,12 @@ const HIDDEN: &str = "...";
 
 /// The address as it may be shown to a person or written to a log.
 ///
-/// Userinfo cleared: `check` refuses an address that carries a password, and a
-/// refusal, a `status` line or a warning built before `check` is reached must
-/// not print the secret it is refusing.
+/// **The query is not, nor the fragment.**
 ///
-/// The scheme, host and path are kept, because which address was meant is the
-/// whole content of every one of those messages.
-///
-/// **The query is not, nor the fragment.** On many receivers the query is the
-/// credential: Google Chat's `?key=…&token=…`, the `&sig=…` of an Azure Logic
-/// Apps or Power Automate trigger, the `?token=` of a self-hosted endpoint.
-/// One that is there is shown as `?...`, which says there was one, and the
-/// host and path already say which address was meant.
-///
-/// **Nor is the path, where the path is the credential.** A Slack incoming
-/// webhook is `/services/T…/B…/<secret>`, a Discord one
-/// `/api/webhooks/<id>/<token>`, a Zapier one `/hooks/catch/<id>/<key>`, an
-/// IFTTT one `/trigger/<event>/with/key/<key>`, a Teams one on
-/// `*.webhook.office.com` `/webhookb2/<ids>/IncomingWebhook/<ids>`, and a
-/// Make one `hook.<zone>.make.com/<token>`; there is no userinfo to clear
-/// because the whole secret is in the path, which would otherwise be printed
-/// on every `watch check`, in `--json`, and into the log of an unattended
-/// service. For those hosts the path stops at the segment that names the
-/// service, which is still enough to recognize, or goes whole where no
-/// segment does (Make's, or one of those hosts' paths without the segment).
+/// **Nor is the path, where the path is the credential.**
 ///
 /// **An address with no host is shown as one that does not parse**
-/// ([`unparsed`]). A hand-edited one that lost its scheme but has a colon
-/// before its first `/` parses all the same, as an opaque URL whose scheme is
-/// whatever came before the colon: `alice:hunter2@n8n.local/hook` has the
-/// scheme `alice` and the path `hunter2@n8n.local/hook`, and
-/// `hooks.slack.com:443/services/...` the scheme `hooks.slack.com`. There is
-/// no userinfo to clear and no host to judge the path by, so the rules above
-/// would show it as it came, password or secret path included.
+/// ([`unparsed`]).
 pub fn shown(url: &Url) -> String {
     if url.host_str().is_none() {
         return unparsed(url.as_str());
@@ -412,17 +310,9 @@ fn secret_host(host: &str) -> Option<&'static str> {
 /// Whether `host` is a receiver whose path is its credential, and if so, the
 /// segment of the path up to which it may be shown (none: no part of it).
 ///
-/// Every spelling of the same receiver is one: a host written with its final
-/// dot (`hooks.slack.com.`, which the `url` crate keeps) is the host without
-/// it, and the older names still answer (Discord's on `discordapp.com` and
-/// its `canary.` and `ptb.` builds, Teams' legacy Office 365 connectors on
-/// `outlook.office.com` and `outlook.office365.com`, Make's as Integromat).
-/// A host matched here that is not such a receiver only has its path hidden,
-/// which reveals nothing, so the rules lean wide.
-///
-/// **In any case**: the `url` crate lowercases the host of an `https`
-/// address, but not of one under a mistyped scheme (`htps://Hooks.Slack.com`),
-/// which a hand-edited file can hold and `watch status` still shows.
+/// **In any case**: the `url` crate lowercases the host of an `https` address,
+/// but not of one under a mistyped scheme (`htps://Hooks.Slack.com`), which a
+/// hand-edited file can hold and `watch status` still shows.
 fn secret_path(host: &str) -> Option<Option<&'static str>> {
     let host = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
     let host = host.as_str();
@@ -456,18 +346,15 @@ fn secret_path(host: &str) -> Option<Option<&'static str>> {
 ///
 /// **An address that does not parse is never shown as it came**: `shown`'s
 /// rules cannot be applied to what has no parts, and the likeliest such
-/// address, one hand-edited without its scheme, is a Slack or Discord one
-/// whose path is the secret. Which address was meant is still the content
-/// of the line, so its host is kept, as far as the first `/`, `?`, `#`, a
-/// backslash or a port's `:`, with what came before an `@` and after the
-/// host left out.
+/// address, one hand-edited without its scheme, is a Slack or Discord one whose
+/// path is the secret.
 ///
-/// **An `@` past that first `/`, `?`, `#` or backslash hides the host too.**
-/// A password holding one of those characters unencoded is what makes such
-/// an address fail to parse (`https://alice:hunter/2@n8n.local/hook`), and
-/// cut there the "host" would be the user and the start of the password;
-/// the `@` might as well be a path's, and what follows it the end of a
-/// secret path, so nothing around it is shown.
+/// **An `@` past that first `/`, `?`, `#` or backslash hides the host too.** A
+/// password holding one of those characters unencoded is what makes such an
+/// address fail to parse (`https://alice:hunter/2@n8n.local/hook`), and cut
+/// there the "host" would be the user and the start of the password; the `@`
+/// might as well be a path's, and what follows it the end of a secret path, so
+/// nothing around it is shown.
 pub fn shown_str(address: &str) -> String {
     Url::parse(address).map_or_else(|_| unparsed(address), |url| shown(&url))
 }
@@ -523,17 +410,6 @@ fn unparsed(address: &str) -> String {
 
 /// The same refusals, asked of a configuration file rather than of a built
 /// client, and without touching the keyring.
-///
-/// For `snob watch status`, which builds no delivery: a hand-edited
-/// `url = "n8n.local/hook"` with no scheme kills every run at the parse,
-/// before `record_failed_run` is reached, so without this `status` would say
-/// "it has not run yet" with exit 0 while printing the address as though it
-/// were fine, and disagree with `snob watch check` about the same file.
-///
-/// Config-only on purpose. A missing token is a different question and one the
-/// keyring answers; what this asks is whether the address could work at all,
-/// which is a property of the file and available to a probe that has opened
-/// nothing.
 pub fn problem_with_config(
     url: &str,
     headers: &std::collections::BTreeMap<String, String>,
@@ -554,16 +430,11 @@ pub fn problem_with_config(
 }
 
 /// Refuses a destination that should not be posted to before anything is.
-///
-/// Checked when the address is given rather than at the first run, so a service
-/// that would have been shouting a token into the open fails at the moment
-/// somebody can still read the message.
 pub fn check(webhook: &Webhook) -> Result<()> {
     // A password in the address is a credential in a plain-text file, which is
     // the one thing `watch.toml` promises not to hold — and `reqwest` turns it
     // into a second `Authorization` header, so it also collides with the one
-    // the user configured. It would be echoed by `status` and written into the
-    // log of an unattended service by the refusal below.
+    // the user configured.
     if !webhook.url.username().is_empty() || webhook.url.password().is_some() {
         bail!(
             "the address carries a username or password. Put the credential in a header \
@@ -599,24 +470,14 @@ pub fn check(webhook: &Webhook) -> Result<()> {
 
     // Headers the user does not get to set.
     //
-    // Two kinds, and both are refused here rather than resolved silently at the
-    // point of sending. `X-Snob-*` is the protocol: the signature covers bytes
-    // this tool computed, `X-Snob-Event` is what a receiver routes on without
-    // parsing the body, and `X-Snob-Delivery` is what it deduplicates on — a
-    // configured one of those makes the value ambiguous, and most frameworks
-    // join duplicates with ", ".
-    //
     // The rest frame the message, and `Content-Length` is the one that matters:
     // hyper honors a caller-supplied one in preference to measuring the body, so
     // `Content-Length = "0"` would send the POST with no body at all while
-    // `X-Snob-Signature` still claimed the whole document. A receiver that
-    // verifies rejects every attempt; one that does not silently ingests an
-    // empty report of changes.
+    // `X-Snob-Signature` still claimed the whole document.
     //
-    // `Content-Type` is deliberately **not** here. Asking for
-    // `application/json; charset=utf-8` is an ordinary thing to want, and `post`
-    // builds one map so the user's value replaces snob's rather than traveling
-    // beside it.
+    // `Content-Type` is deliberately **not** here. Asking for `application/json;
+    // charset=utf-8` is an ordinary thing to want, and `post` builds one map so
+    // the user's value replaces snob's rather than traveling beside it.
     const FRAMING: [&str; 5] = [
         "content-length",
         "transfer-encoding",
@@ -644,8 +505,7 @@ pub fn check(webhook: &Webhook) -> Result<()> {
     // Every header actually has to be one, built here and not first at the
     // POST: `--header "X Token: abc"`, an empty name, or a value with a newline
     // in it would otherwise pass, and then every POST would die inside
-    // reqwest's builder before a socket opened. The report would be queued,
-    // retried against an error no waiting can fix, and expire.
+    // reqwest's builder before a socket opened.
     for (name, value) in &webhook.headers {
         if reqwest::header::HeaderName::try_from(name.as_str()).is_err() {
             bail!(
@@ -662,11 +522,7 @@ pub fn check(webhook: &Webhook) -> Result<()> {
         }
         // An empty value, for the same reason `--sign-with ""` is refused: it is
         // `--header "Authorization: ${SNOB_TOKEN}"` in a unit file whose
-        // variable is not set. Taken literally it sends an empty
-        // `Authorization`, and because a header given by name is what stops the
-        // keyring token being attached, it *replaces* the stored token with
-        // nothing. The receiver answers 401 to every retry until the report
-        // expires, and the change it carried is gone.
+        // variable is not set.
         if value.trim().is_empty() {
             bail!(
                 "\"{}\" was given an empty value. If that came from an environment variable that \
@@ -680,22 +536,11 @@ pub fn check(webhook: &Webhook) -> Result<()> {
 }
 
 /// Whether an address is somewhere plain HTTP is a reasonable thing to speak.
-///
-/// Loopback, the three private IPv4 ranges, IPv6 unique-local and link-local,
-/// and the `.local` and `.internal` suffixes a homelab uses. Anything else is
-/// the open internet as far as this can tell, and a token does not go there
-/// unencrypted.
-///
-/// Never the metadata service, though some of its spellings fall inside the
-/// ranges above: `check` refuses it before asking this, and the answer also
-/// picks the proxy in [`WebhookClient::new`].
 fn is_private(url: &Url) -> bool {
     if is_the_metadata_service(url) {
         return false;
     }
-    // `url.host()` rather than `host_str()`. The string form of an IPv6 address
-    // keeps the brackets the URL syntax requires — `[::1]` — which does not
-    // parse as an address. The typed host tells the three cases apart.
+    // `url.host()` rather than `host_str()`.
     match url.host() {
         Some(url::Host::Ipv4(v4)) => is_private_v4(v4),
         Some(url::Host::Ipv6(v6)) => {
@@ -730,15 +575,6 @@ fn is_private(url: &Url) -> bool {
 }
 
 /// Whether an address is the cloud instance metadata service, however spelled.
-///
-/// The one destination refused outright rather than by scheme. It answers to
-/// anything that can reach it, with no authentication of any kind, and what it
-/// answers with is the machine's own role credentials — so a webhook pointed
-/// at it is not a delivery, it is a request the user did not mean to make.
-///
-/// Every spelling is asked here, because several of them look private:
-/// 169.254.169.254 is link-local, `fd00:ec2::254` sits inside fc00::/7, and
-/// `metadata.google.internal` carries the `.internal` suffix a homelab uses.
 fn is_the_metadata_service(url: &Url) -> bool {
     match url.host() {
         Some(url::Host::Ipv4(v4)) => v4 == METADATA_V4,
@@ -770,19 +606,11 @@ const METADATA_V6: [std::net::Ipv6Addr; 2] = [
 ];
 
 /// Whether an IPv4 address is somewhere plain HTTP is reasonable.
-///
-/// `0.0.0.0` is treated as loopback: it means "this host" and nothing routes to
-/// it, so refusing it only makes the local case harder to write.
 fn is_private_v4(v4: std::net::Ipv4Addr) -> bool {
     v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
 }
 
 /// The cloud instance metadata endpoint, on every provider that has one.
-///
-/// It is link-local, and the rest of that range is allowed, but it answers
-/// credentials to anything that asks. A mistyped address is one thing; a
-/// mistyped address that POSTs the body and the stored token at the hypervisor
-/// is another.
 const METADATA_V4: std::net::Ipv4Addr = std::net::Ipv4Addr::new(169, 254, 169, 254);
 
 #[cfg(test)]

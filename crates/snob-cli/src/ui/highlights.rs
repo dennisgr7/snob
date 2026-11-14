@@ -1,25 +1,5 @@
 //! The interactive highlights browser: the tray as a list of folders, and
 //! inside each one the story browser's own moves.
-//!
-//! One loop over two levels rather than two loops, because the terminal
-//! machinery — the `Tui` guard and the scratch directory — is per *session*,
-//! and leaving a folder must not tear any of it down. Everything
-//! terminal-shaped is `ui::tui`'s, and the items view is
-//! `stories::draw_items_view`.
-//!
-//! What the levels change is only what a row is and what the three verbs do.
-//! At the tray a row is a folder: Enter walks in, D keeps everything in it,
-//! and the items arrive on the first walk-in and are kept for the session —
-//! reopening a folder is free, like reopening a story. Inside, a row is a
-//! story in all but expiry: Enter hands it to the system viewer, D keeps it
-//! under the very name `snob highlights someone 2 -d 3` would write, and
-//! Left, Backspace or Esc walks back out with the folder's selection
-//! remembered; Esc leaves only from the tray.
-//!
-//! Fetching inside the loop blocks the keys, deliberately: the story browser
-//! already sits on the CDN for megabytes between keystrokes, one `reels_media`
-//! request is smaller than that, and a browser that queues keystrokes against
-//! a request in flight answers them against a list the user cannot see yet.
 
 use std::path::PathBuf;
 
@@ -76,11 +56,8 @@ impl Folder {
     }
 }
 
-/// Drives the two lists until the user leaves them, or picks another account
-/// to see them as. `note` is said on the first frame.
-///
-/// `start` is an entry to open before the first frame — `snob highlights
-/// someone 2 -i` — already checked against the tray by the caller.
+/// Drives the two lists until the user leaves them, or picks another account to
+/// see them as.
 pub async fn browse(
     client: &IgClient,
     tray: &Tray,
@@ -488,10 +465,7 @@ pub async fn browse(
                 }
                 Action::None => {}
             }
-            // The write-back. Skipped when the arm changed levels: `selected`
-            // still belongs to the level the keys were read at. The scroll offset
-            // starts over with the level, and the first draw pulls the remembered
-            // selection back into view.
+            // The write-back.
             if level == level_before {
                 match level {
                     Level::Tray => tray_selected = selected,
@@ -511,8 +485,7 @@ pub async fn browse(
 
 /// The next key, bound for the level the browser is at: `input::next`, but
 /// inside a folder Esc walks back out to the tray, as it does from the same
-/// folder opened from the profile card and from a post to its grid. At the
-/// tray, the top level, it leaves.
+/// folder opened from the profile card and from a post to its grid.
 fn bound_from(level: Level, read: Raw) -> Option<Action> {
     match read {
         Raw::Tick | Raw::Resized => None,
@@ -533,8 +506,7 @@ fn bound_at(level: Level, key: KeyEvent) -> Action {
     }
 }
 
-/// What `?` shows over the tray. Inside a highlight the keys are those of
-/// any list of items, `stories::FOLDER_KEYS`.
+/// What `?` shows over the tray.
 const TRAY_KEYS: &[help::Key] = &[
     help::MOVE,
     help::PAGE,
@@ -548,17 +520,13 @@ const TRAY_KEYS: &[help::Key] = &[
     help::STOP,
 ];
 
-/// `someone-2` for the entry at `index`: the command's own stem, so the
-/// browser and `-d` write the very same names. The command counts from one
-/// and the views from zero, and this is where that difference is written.
+/// `someone-2` for the entry at `index`: the command's own stem, so the browser
+/// and `-d` write the very same names.
 pub(crate) fn stem_of(tray: &Tray, index: usize) -> String {
     crate::commands::highlights::stem_of(tray, index + 1)
 }
 
 /// Fetches an entry's items on first opening; the session keeps them after.
-///
-/// `Ok(false)` is a folder with nothing in it — deleted since the tray was
-/// fetched, or genuinely empty — which is not worth walking into.
 pub(crate) async fn walk_in(
     client: &IgClient,
     tray: &Tray,
@@ -577,16 +545,7 @@ pub(crate) async fn walk_in(
         .is_some_and(|items| !items.is_empty()))
 }
 
-/// D on a folder: everything in it, into the working directory, one at a
-/// time.
-///
-/// One at a time rather than through `download_many`, which reports each
-/// file on standard error as it lands — lines that would tear the frame this
-/// browser is holding. Between items this draws its own frame with the
-/// running tally, because a folder of forty items is minutes, and a screen
-/// frozen on its last frame reads as a hang. The note line gets the final
-/// tally; when anything was saved, the tally also joins the receipts,
-/// because the alternate screen takes the note away on exit.
+/// D on a folder: everything in it, into the working directory, one at a time.
 pub(crate) async fn keep_folder(
     client: &IgClient,
     tui: &mut Tui,
@@ -645,13 +604,8 @@ pub(crate) async fn keep_folder(
     note
 }
 
-/// One frame between downloads: the chrome with the count moving on the
-/// bottom edge.
-///
-/// Drawn by the loop itself rather than by the view, because the view's own
-/// frame reads the folders the loop holds mutably. A draw failure is
-/// ignored on purpose — the save is the job, the frame is the report — and
-/// the caller's next ordinary frame repaints whatever this left behind.
+/// One frame between downloads: the chrome with the count moving on the bottom
+/// edge.
 fn draw_saving(
     tui: &mut Tui,
     username: &str,
@@ -832,10 +786,6 @@ pub(crate) fn folder_title(username: &str, entry: &Entry, index: usize, items: u
 
 /// One folder as a table row: number dim, title, the best count known
 /// right-aligned under its name, and when it last grew, dim as an aside.
-///
-/// The count the session has seen beats the count the tray declared, and
-/// the tray's number is honestly a declaration until the folder has been
-/// opened.
 fn tray_row(index: usize, entry: &Entry, folder: &Folder, colors: bool) -> Row<'static> {
     let dim = tui::paint(colors, tui::DIM);
     let count = match folder.items.as_ref() {

@@ -1,17 +1,7 @@
 //! `snob posts`: the posts on an account's grid, and how to keep a copy.
 //!
-//! `highlights` twice over, in the same shape: `snob posts someone` numbers
-//! the grid, and `snob posts someone 3` opens the third post and numbers what
-//! it holds, a carousel's photos and videos, or the one file a photo or a
-//! reel is. `-d`, `-o`, `--format` and `-i` mean on each listing what they
-//! mean on `highlights`'; without a post's number `-d` takes whole posts.
-//!
 //! **What it costs** is in [`crate::posts`]: the profile, then one read per
-//! page of twelve posts. The listing reads the first page, or `--pages`; a
-//! post's number past them reads on until the grid holds it, up to one
-//! sitting. Listing what a post holds costs nothing more, as the grid's
-//! answer carries every item of every post; the view, which shows a post's
-//! comments, opens one with the two reads the app opens it with.
+//! page of twelve posts.
 //!
 //! **A reader that comes back** names the newest posts it already has with
 //! `--until`, and the read stops at the first page that holds one
@@ -19,14 +9,12 @@
 //! (`pages_read`) and whether it got there (`until`), so what is new is told
 //! from what was only not read.
 //!
-//! **A private account the viewer does not follow is told apart from an
-//! account with no posts**, as `highlights` tells it.
+//! **A private account the viewer does not follow is told apart from an account
+//! with no posts**, as `highlights` tells it.
 //!
 //! **`--tab reels|tagged|reposts` reads another of the profile's tabs**
 //! ([`posts::read_tab`]) the same way, a page of it a request: the listing,
-//! `--pages`, `--until`, the view and `-d` alike. A tab's posts carry no
-//! date and no video's address, so the posts a number or `-d` names are
-//! read again by their info first ([`posts::filled`]), one request each.
+//! `--pages`, `--until`, the view and `-d` alike.
 
 use std::path::Path;
 
@@ -57,12 +45,9 @@ pub async fn run(args: PostsArgs, store: SecretStore, paths: &AccountPaths) -> R
     let typed = common::target_or_own(&app, args.target.as_deref()).await?;
     let known = crate::engine::target::known_pk_of(&app, args.target.as_deref(), &typed)?;
 
-    // Decided before anything is read, because it decides how much is: the
-    // view reads the first page and the next as it is scrolled to, and the
-    // printed form what `--pages` says. `--pages` asks for the printed form
-    // as a format does.
-    // `--until` asks for the printed form too: it is about how far a
-    // listing reads.
+    // Decided before anything is read, because it decides how much is: the view
+    // reads the first page and the next as it is scrolled to, and the printed
+    // form what `--pages` says.
     let browses = args.action.browses(
         args.list.format.is_some() || args.pages.is_some() || !args.until.is_empty(),
         ui::a_human_would_watch_the_listing_scroll_by(),
@@ -245,9 +230,8 @@ pub(crate) async fn download_items(
     posts::download(app.client_shared(), files, destination).await
 }
 
-/// What `-d` saves a video as, decided before anything is asked of
-/// Instagram, so a `--quality best` with no ffmpeg costs nothing. One file
-/// to standard output is the progressive one: a join cannot be streamed.
+/// What `-d` saves a video as, decided before anything is asked of Instagram,
+/// so a `--quality best` with no ffmpeg costs nothing.
 pub(crate) fn videos_of(video: &VideoArgs, action: &MediaActionArgs) -> Result<Videos> {
     if action.selection().is_none() {
         return Ok(Videos::Compat { say_how: false });
@@ -330,8 +314,7 @@ impl Asked {
     }
 }
 
-/// Prints the grid. The numbers here are what the second positional and a
-/// grid-level `-d` take.
+/// Prints the grid.
 fn list_grid(
     grid: &Grid,
     asked: &Asked,
@@ -358,8 +341,7 @@ fn list_grid(
     media::print_listing(text, destination, &hint)
 }
 
-/// Prints what one post holds, after what it says. The numbers here are
-/// what `-d` takes.
+/// Prints what one post holds, after what it says.
 pub(crate) fn list_items(
     username: &str,
     number: usize,

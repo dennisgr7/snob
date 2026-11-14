@@ -1,11 +1,4 @@
 //! `snob watch setup`: the questions, and the file they are written to.
-//!
-//! The half of the monitor that is about not having to remember flags. It asks,
-//! it offers to walk a baseline, and it writes `watch.toml` and two keyring
-//! entries. What is configured is then read back by `super::status`, which is
-//! the only way to tell a monitor that found nothing from one that quietly
-//! stopped — and the two share `describe_config`, so `--dry-run` here and
-//! `status` there cannot describe the same file differently.
 
 use anyhow::{Context, Result, bail};
 use snob_core::model::printable;
@@ -67,9 +60,7 @@ pub async fn setup(
     // the same type a run reads. `config::template` says why.
     let mut config = ask_schedule()?;
     let answers = ask_webhook()?;
-    // The address goes down with it. What somebody agrees to when they answer
-    // for a stranger is read later as the authority for two different acts, and
-    // the wizard is holding the second one at the moment it asks.
+    // The address goes down with it.
     let own = account.and_then(|a| {
         crate::account::username(&Registry::load(paths).unwrap_or_default(), a.pk())
             .map(str::to_string)
@@ -98,10 +89,7 @@ pub async fn setup(
         crate::account::username(&registry, pk).map(str::to_string)
     });
 
-    // Parsed before it is written, and before any secret is stored. A file the
-    // tool wrote and cannot read is the one failure a person cannot debug, and
-    // a keyring entry left behind for a configuration that was never saved is
-    // litter with a token in it.
+    // Parsed before it is written, and before any secret is stored.
     config::parse(&text, &config::path(paths))
         .context("the configuration this produced could not be read back; this is a bug")?;
 
@@ -111,22 +99,16 @@ pub async fn setup(
         return Ok(ExitCode::Ok);
     }
 
-    // The file first, then the secrets: `config::write` can fail on a
-    // read-only or full disk, and a credential belonging to no configured
-    // address is the worse half to be left holding. It is what the origin check
-    // in `plan` has to defend against, and what `purge` has to remember. This
-    // way round, a failure leaves an address with no credential, which
-    // announces itself at the first run instead of sitting there.
+    // The file first, then the secrets: `config::write` can fail on a read-only
+    // or full disk, and a credential belonging to no configured address is the
+    // worse half to be left holding.
     let written = config::write(paths, &text)?;
     answers.store_secrets(&secrets)?;
 
     ui::info(&format!("Written to {}.", written.display()));
 
     // Everything above is a claim about a machine, a session and somebody
-    // else's server. Trying it here is the whole point: a name with a typo, a
-    // token the receiver rejects or a session that has gone are all cheap to
-    // fix now and expensive to discover from an unattended run's log a week
-    // later.
+    // else's server.
     crate::ui::say!();
     let report = preflight(&Default::default(), &secrets, paths, account).await?;
     for line in describe_check(&report) {
@@ -140,16 +122,6 @@ pub async fn setup(
 }
 
 /// The configuration this run would replace, if it would replace one.
-///
-/// The flag is an argument rather than a second condition on the read, because
-/// in a let-chain the scrutinee is evaluated first: `config::load(paths)?` would
-/// fire before `!args.dry_run` could short-circuit, and `--dry-run`, whose whole
-/// job is to show what a correct file looks like, would refuse to run over one
-/// mistyped key in yours.
-///
-/// A function rather than two lines inline so that the order can be tested at
-/// all: `setup` refuses without a terminal several statements before it reaches
-/// here, and nothing a test can call would otherwise ever get this far.
 fn existing_to_replace(paths: &AppPaths, dry_run: bool) -> Result<Option<WatchConfig>> {
     if dry_run {
         return Ok(None);
@@ -159,9 +131,6 @@ fn existing_to_replace(paths: &AppPaths, dry_run: bool) -> Result<Option<WatchCo
 
 /// The `[[account]]` entries to write: those just answered for, read as the
 /// account in use, after every entry read as another account, kept as it was.
-/// The wizard asks about one account's entries, so it replaces only those.
-/// With no account in use the answers have no viewer to be told apart by, so
-/// they replace the whole list, or a later run would read an entry twice.
 fn entries_to_write(
     answered: Vec<Answered>,
     in_use: Option<Pk>,
@@ -213,19 +182,6 @@ impl Answered {
 }
 
 /// What taking the baseline now would walk, over every account it covers.
-///
-/// Every account, because `baseline_now` walks every `[[account]]` in the file:
-/// the stranger somebody has just added has no captures and is the reason the
-/// offer is being made, and their pair goes out at `Pace::third_party()`,
-/// which paces like the default and stops sooner on a network failure. This
-/// is the one place in the tool where hundreds of requests are spent on a
-/// bare confirmation, and the number under it has to be about the walk that
-/// follows.
-///
-/// It is an upper bound rather than a forecast, and deliberately so: an account
-/// whose counters have not moved since a capture nobody reported on is served
-/// out of storage for one request instead of walked. Overstating what a
-/// confirmation costs is the safe direction.
 struct BaselineCost {
     /// How many accounts the walk covers.
     accounts: usize,
@@ -238,10 +194,7 @@ struct BaselineCost {
     /// The requests those pages take, with what goes out beside them
     /// (`engine::walk::requests_to_walk`).
     requests: u64,
-    /// How many accounts the preflight could not read counters for. An account
-    /// it could not ask about — a cooldown standing, or Instagram naming
-    /// nobody — is walked all the same, so it is counted and said rather than
-    /// folded in as zero.
+    /// How many accounts the preflight could not read counters for.
     uncounted: usize,
     /// How many accounts' posts the first capture reads, a profile and a page
     /// each.
@@ -280,14 +233,9 @@ impl BaselineCost {
         line
     }
 
-    /// How long the walk takes, in words: a few minutes within one sitting,
-    /// the sitting's rests past it (`pace::PAGES_PER_SITTING`), and more than
-    /// a day past the day's accounts (`budget::accounts_per_day`).
-    ///
-    /// The rests are counted over all the pages, as the walk counts its
-    /// sitting across every account it reads, and the ceiling is the usual
-    /// one: after a push-back, or with accounts already read today, the walk
-    /// waits for the day sooner, which the sentence says as "roughly".
+    /// How long the walk takes, in words: a few minutes within one sitting, the
+    /// sitting's rests past it (`pace::PAGES_PER_SITTING`), and more than a day
+    /// past the day's accounts (`budget::accounts_per_day`).
     fn how_long(&self) -> String {
         use snob_ig::pace::{ACCOUNTS_PER_PAGE, PAGES_PER_SITTING};
 
@@ -366,22 +314,6 @@ fn baseline_cost(report: &crate::engine::check::CheckReport, browser: bool) -> B
 }
 
 /// Offers to take the first capture, saying what it costs.
-///
-/// The first scheduled run is a `Basis::Baseline`: it reports nothing, by
-/// design, because there is nothing to compare against yet. Somebody who has
-/// just finished configuring a monitor reads that as broken, and the fix is
-/// either to explain it afterwards or to take the capture now — which also
-/// means the first scheduled report is a real one.
-///
-/// **Offered, not taken.** Walking two lists is the heaviest thing this tool
-/// does, and doing it unasked at the end of a wizard would be the one place
-/// requests are spent without the person having agreed to them. The estimate
-/// comes from counters the preflight already read, so working it out costs
-/// nothing.
-///
-/// It lives here rather than in `check`, and that is deliberate: `check` is
-/// meant to be safe to repeat and to point a monitoring system at, and a probe
-/// that walks two lists every time it is polled is worse than no probe.
 async fn offer_the_baseline(
     report: &crate::engine::check::CheckReport,
     secrets: &SecretStore,
@@ -390,11 +322,6 @@ async fn offer_the_baseline(
 ) -> Result<()> {
     // Nothing to offer if a run could not happen anyway, or if there is already
     // something to compare against.
-    //
-    // Asked of the report rather than derived here out of the same `Vec` length.
-    // The check's line and this offer answer one question between them — the
-    // line explains why a first run says nothing, the offer is what stops it
-    // happening — so they read one answer, not two tests in two layers.
     if report.verdict() == Verdict::Failed {
         return Ok(());
     }
@@ -420,9 +347,6 @@ async fn offer_the_baseline(
 }
 
 /// Stores a secret, or clears whatever was there when this run has none.
-///
-/// Clearing matters: somebody running `setup` again to remove a token expects
-/// it gone, and a stale one left in the keyring would keep being sent.
 fn store_secret(secrets: &SecretStore, kind: Kind, value: Option<Secret>) -> Result<()> {
     match value {
         Some(secret) => secrets.save_secret(kind, &secret).with_context(|| {
@@ -493,28 +417,7 @@ fn ask_schedule() -> Result<WatchConfig> {
 /// How far a run may be pushed past its moment, asked against the schedule that
 /// was just settled.
 ///
-/// Asked, because `WatchConfig::jitter` is read by `when_from`, clamped by
-/// `Schedule::with_jitter`, printed by `describe_config` and announced by the
-/// banner, and the wizard is how a setting gets into the file.
-///
-/// **It is validated the way every other answer here is.** The schedule
-/// answers go through the very functions a run parses with, so that "5m" is
-/// refused while the person who typed it is still reading. Jitter is the one
-/// value whose validation can answer zero without saying anything:
-/// `Schedule::with_jitter` clamps silently to what the grid can absorb, and the
-/// room is nothing at all for `*/15 * * * *` and for `--every 2w --on mon`, both
-/// of which this tool advertises. A hand-written `jitter = "10m"` on either
-/// produces a file whose `status` reads back "Each run is pushed up to 10m
-/// later" while every run lands on its moment.
-///
-/// `Schedule::with_jitter(Duration::MAX).jitter()` is the room, exactly:
-/// `with_jitter` is `jitter.min(room_for_jitter())`, and `room_for_jitter` stays
-/// private because nothing outside the schedule should be doing that arithmetic
-/// itself.
-///
-/// `None` is "leave the key out", not "no jitter": the schedule's own default
-/// then applies, which is what somebody who pressed Enter meant. `"0"` is how
-/// the setting is turned off, and it writes `jitter = "0"`.
+/// **It is validated the way every other answer here is.**
 fn ask_jitter(schedule: &schedule::Schedule) -> Result<Option<std::time::Duration>> {
     let room = room_for(schedule);
     if room.is_zero() {
@@ -542,8 +445,7 @@ fn jitter_of(schedule: &schedule::Schedule, typed: &str) -> Result<Option<std::t
     }
     let wanted = duration::parse(typed.trim()).map_err(|e| anyhow::anyhow!(e))?;
     // Through the clamp a run applies, rather than a comparison written again
-    // here. A value this schedule cannot absorb is refused now instead of
-    // quietly becoming a smaller one at every start.
+    // here.
     if schedule.clone().with_jitter(wanted).jitter() < wanted {
         bail!(
             "{} is more room than this schedule has. At most {} can be taken out of the gap \
@@ -556,10 +458,8 @@ fn jitter_of(schedule: &schedule::Schedule, typed: &str) -> Result<Option<std::t
 }
 
 /// Asks `question` until `holds` takes the answer, saying each time what was
-/// wrong with it: one mistyped answer used to end the whole wizard, after
-/// every question before it had been answered and nothing written. Input that
-/// is not there at all (standard input closed) still ends it, since asking
-/// again would read nothing again.
+/// wrong with it: one mistyped answer used to end the whole wizard, after every
+/// question before it had been answered and nothing written.
 fn asked_until_it_holds<T>(question: &str, holds: impl Fn(&str) -> Result<T>) -> Result<T> {
     loop {
         let answer = ui::prompt_line(question)?;
@@ -571,11 +471,6 @@ fn asked_until_it_holds<T>(question: &str, holds: impl Fn(&str) -> Result<T>) ->
 }
 
 /// The most this schedule could absorb, asked of the schedule.
-///
-/// `room_for_jitter` is private and stays private: a second copy of that
-/// arithmetic out here is how the wizard and a run come to disagree.
-/// `with_jitter` is `jitter.min(room_for_jitter())`, so the largest jitter it
-/// will accept is exactly the room.
 fn room_for(schedule: &schedule::Schedule) -> std::time::Duration {
     schedule
         .clone()
@@ -584,8 +479,7 @@ fn room_for(schedule: &schedule::Schedule) -> std::time::Duration {
 }
 
 // The three below are the whole of what `ask_schedule` decides, split out from
-// the prompting so a test can reach them. `config::parse` cannot catch a bad
-// value: it checks the TOML and the schema number, not what the values mean.
+// the prompting so a test can reach them.
 
 /// The `every` field, or what is wrong with the interval.
 fn interval_of(text: &str) -> Result<std::time::Duration> {
@@ -626,20 +520,9 @@ fn cron_of(expression: &str) -> Result<String> {
 
 /// What the webhook questions settled.
 ///
-/// **Named fields, because two of them are `Option<Secret>` and the two are not
-/// interchangeable.** Swapped, the signing key would be sent to the user's
-/// server as the `Authorization` value on every request, and the token — which
-/// that server already holds — would become the shared secret every signature
-/// is computed with, so a signature would prove nothing to the only party that
-/// checks it. Nothing downstream can notice either half. `plan` reads whichever secret is under `Kind::WatchToken` and
-/// puts it in a header; `sign` reads whichever is under `Kind::WatchSigningKey`
-/// and MACs the body with it. Neither has any way to know what it was given.
-///
-/// [`WebhookAnswers::store_secrets`] is the only thing that writes them, and it
-/// is one function so there is one place to read the pairing off.
+/// **Named fields, because two of them are `Option<Secret>` and the two are not interchangeable.**
 struct WebhookAnswers {
-    /// Where reports go, exactly as typed. `None` is no webhook at all, and then
-    /// everything below is empty.
+    /// Where reports go, exactly as typed.
     url: Option<String>,
     heartbeat: bool,
     /// The extra headers that go in the file.
@@ -656,10 +539,6 @@ struct WebhookAnswers {
 impl WebhookAnswers {
     /// Puts the two secrets in the keyring, each under the `Kind` that says what
     /// it is for.
-    ///
-    /// One function, and the only one, so the pairing is in one place and a test
-    /// can assert it: `setup` is behind a terminal check and therefore
-    /// unreachable from a test.
     fn store_secrets(self, secrets: &SecretStore) -> Result<()> {
         store_secret(secrets, Kind::WatchSigningKey, self.signing_key)?;
         store_secret(secrets, Kind::WatchToken, self.token)?;
@@ -690,12 +569,7 @@ fn ask_webhook() -> Result<WebhookAnswers> {
     })?;
 
     // Headers whose values are not secret go in the file; the Authorization
-    // value goes to the keyring and nothing about it is written here. An empty
-    // placeholder in the file would be worse than nothing: it reads as a header
-    // that is configured and sends nothing.
-    //
-    // The question is asked rather than assumed away: `X-Api-Key` on an n8n
-    // instance is the ordinary case.
+    // value goes to the keyring and nothing about it is written here.
     let mut typed = Vec::new();
     if ui::confirm(
         "Does it need any other headers? (written into watch.toml as they are; a token goes \
@@ -720,8 +594,7 @@ fn ask_webhook() -> Result<WebhookAnswers> {
             // Everything typed here is written into `watch.toml` in the clear
             // -- that is the file's contract, "no secret is in it" -- and the
             // very next question exists to put an Authorization value in the
-            // keyring instead. Accepted here, it would sit readable on disk
-            // and silently shadow the stored one at every send.
+            // keyring instead.
             if name.trim().eq_ignore_ascii_case("authorization") {
                 ui::warn(
                     "an Authorization header is a secret and is not written into watch.toml. \
@@ -734,9 +607,7 @@ fn ask_webhook() -> Result<WebhookAnswers> {
     }
     let headers = last_of_each(typed);
 
-    // Checked while the person is still here, address and headers together. The
-    // alternative is a service that starts, waits six hours, and then fails on
-    // something they typed wrong.
+    // Checked while the person is still here, address and headers together.
     crate::watch::webhook::check(&crate::watch::webhook::Webhook {
         url: parsed,
         headers: headers.clone(),
@@ -792,17 +663,6 @@ fn ask_webhook() -> Result<WebhookAnswers> {
 
 /// The headers a run of typed answers describes, a name given twice keeping the
 /// last value.
-///
-/// `[webhook.headers]` is a TOML table, and TOML refuses a duplicate key, so
-/// typing `X-Api-Key: a` and then correcting it to `X-Api-Key: b` (the ordinary
-/// way somebody fixes a value they mistyped) must not produce a file
-/// `config::parse` cannot read, which would abort the wizard after every
-/// question was answered. `webhook::check` is no help here: it validates each
-/// pair on its own, and each of the two is fine.
-///
-/// Sorted rather than left in the order they were typed, which costs nothing:
-/// `WebhookConfig::headers` is a `BTreeMap`, so that is the order they come back
-/// out of the file anyway.
 fn last_of_each(typed: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut headers = std::collections::BTreeMap::new();
     for (name, value) in typed {
@@ -928,29 +788,13 @@ fn save_to_of(answer: &str) -> std::result::Result<Option<std::path::PathBuf>, S
 
 /// The question the recorded consent is an answer to.
 ///
-/// **It names the webhook, because the answer is used for two things.** What
-/// goes into `[account.consent]` is consent to *read* somebody else's lists, and
-/// `Watched::may_run_unattended` then reads it, unchanged, as the authority for
-/// posting that person's arrivals and departures — `username`, `full_name` and
-/// `profile_url`, out of `account_json` — to a third-party server on every run.
-/// `engine::ask_consent_with` says whose list it is and where it lands; the
-/// wizard can say more, because `ask_webhook` runs one line above
-/// `ask_accounts` and the address is already in hand while the question is
-/// being asked.
+/// **It names the webhook, because the answer is used for two things.**
 ///
-/// Split from the prompting so it can be read. Everything around it is behind
-/// `ui::menu`, which answers nothing without a terminal.
-///
-/// An attended `snob watch once <stranger> --webhook …` is told the same
-/// before `engine::ask_consent_with` asks (`once`, through
-/// `report::sent_to`): that one has no access to the delivery configuration
-/// and must not be given one — `ListArgs` carries none, and putting a
-/// `WatchConfig` inside `engine::list` is the layer AGENTS.md keeps free of
-/// how anything is delivered.
-///
-/// The address is shown as everything else shows one
-/// (`webhook::shown_str`): the path of a Slack or Discord webhook is its
-/// secret.
+/// An attended `snob watch once <stranger> --webhook …` is told the same before
+/// `engine::ask_consent_with` asks (`once`, through `report::sent_to`): that one
+/// has no access to the delivery configuration and must not be given one —
+/// `ListArgs` carries none, and putting a `WatchConfig` inside `engine::list` is
+/// the layer AGENTS.md keeps free of how anything is delivered.
 fn consent_question(name: &str, webhook: Option<&str>) -> String {
     match webhook {
         Some(url) => format!(
@@ -968,7 +812,6 @@ fn consent_question(name: &str, webhook: Option<&str>) -> String {
 
 /// The format an address's host is known to take: Slack's and Discord's
 /// incoming webhooks refuse snob's JSON, and ntfy.sh shows it as braces.
-/// Anything else is somebody's own receiver, which reads the report.
 fn format_for(url: &str) -> config::WebhookFormat {
     use config::WebhookFormat;
     let Ok(url) = url::Url::parse(url) else {

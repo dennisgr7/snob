@@ -6,12 +6,6 @@ use snob_core::model::StopReason;
 use snob_ig::error::IgError;
 
 /// How a run ended, under the name the process exits with.
-///
-/// The outcome is the domain's, because `watch_runs.outcome` and the `--json`
-/// documents name it too, and its tokens are [`RunOutcome::as_str`]. Which
-/// number a shell reads for it is this crate's business, and is [`code`].
-///
-/// [`RunOutcome::as_str`]: snob_core::watch::RunOutcome::as_str
 pub use snob_core::watch::RunOutcome as ExitCode;
 
 /// The number the process exits with for `outcome`.
@@ -45,11 +39,6 @@ pub fn outcome_of(number: i32) -> Option<ExitCode> {
 
 /// The code for what Instagram said, when a walk stopped because it said
 /// something.
-///
-/// It has to agree with [`from_stop_reason`], which is the other
-/// road to the same question: the walker records a coarse [`StopReason`] and
-/// keeps the error beside it, and whichever of the two a command happens to
-/// read must not change the answer.
 pub fn from_ig_error(e: &IgError) -> ExitCode {
     match e {
         IgError::SessionExpired | IgError::SignedOutHere | IgError::UserAgentMismatch => {
@@ -57,10 +46,7 @@ pub fn from_ig_error(e: &IgError) -> ExitCode {
         }
         IgError::Challenge { .. } | IgError::Checkpoint { .. } => ExitCode::Challenge,
         // `InCooldown` is the backstop in `Pacer::clear` answering, and it
-        // exits the same way the explicit gates in front of it do. They all
-        // reach this code through `report::refuse_in_cooldown` and its
-        // neighbors; a run that got past them and was stopped here is the same
-        // outcome and must not be told apart by a script reading the code.
+        // exits the same way the explicit gates in front of it do.
         IgError::RateLimited | IgError::FeedbackRequired | IgError::InCooldown { .. } => {
             ExitCode::RateLimited
         }
@@ -76,10 +62,8 @@ pub fn from_ig_error(e: &IgError) -> ExitCode {
     }
 }
 
-/// The code for a result that had to be refused because a walk stopped
-/// early for this reason. `PageLimit` maps to `Error` here, unlike in a
-/// plain list: the cap was asked for, but the refused result is still not
-/// delivered.
+/// The code for a result that had to be refused because a walk stopped early
+/// for this reason.
 pub fn from_stop_reason(reason: StopReason) -> ExitCode {
     match reason {
         StopReason::Canceled => ExitCode::Interrupted,
@@ -93,11 +77,6 @@ pub fn from_stop_reason(reason: StopReason) -> ExitCode {
 }
 
 /// Digs the code out of an error chain.
-///
-/// `anyhow` wraps as it goes, so by the time an error reaches `main` the
-/// thing that knew what happened is several layers down. The tests use this
-/// lookup too: a test that reimplements it can pass while the real one is
-/// broken.
 pub fn from_chain(error: &anyhow::Error) -> Option<ExitCode> {
     error
         .chain()
@@ -106,11 +85,6 @@ pub fn from_chain(error: &anyhow::Error) -> Option<ExitCode> {
 }
 
 /// The exit code for a failed run, from whatever in the chain knows it.
-///
-/// An error that already knows its code wins: it was set by whoever refused
-/// the result, which is more specific than anything reconstructed from an
-/// Instagram error further down. Here rather than in `main`, because the
-/// JSON rendering of a failure names the same code and the two must agree.
 pub fn exit_code_for(error: &anyhow::Error) -> ExitCode {
     if let Some(code) = from_chain(error) {
         return code;
@@ -132,11 +106,6 @@ pub fn exit_code_for(error: &anyhow::Error) -> ExitCode {
 }
 
 /// An error that already knows its exit code.
-///
-/// The walker reports throttling, cancellation and session death as a
-/// [`StopReason`] inside an `Ok`, so by the time a command refuses a result
-/// there is no [`IgError`] left in the chain for `main` to map. This carries
-/// the code instead, keeping "wait a while" and "log in again" tellable apart.
 #[derive(Debug)]
 pub struct ExitError {
     pub code: ExitCode,
@@ -150,15 +119,10 @@ pub struct ExitError {
     /// account, `--spend-alone`). The JSON failure carries it as `reason`.
     reason: Option<&'static str>,
     /// When the cooldown that refused the run lifts, for a refusal by one.
-    /// The JSON failure carries it as `cooldown_until`, so a program reads
-    /// the moment rather than the sentence, which says it in local time.
     cooldown_until: Option<EpochMs>,
-    /// When the run would no longer be refused for this reason, for a
-    /// refusal that is no cooldown but ends at a known moment (the day's cap
-    /// on an agent's writes, `mcp_write_cap`). The JSON failure carries it as
-    /// `retry_at`, for the reason `cooldown_until` is a field: the sentence
-    /// says it in the local time of the machine that wrote it, with no zone,
-    /// and the reader may be a model in another one.
+    /// When the run would no longer be refused for this reason, for a refusal
+    /// that is no cooldown but ends at a known moment (the day's cap on an
+    /// agent's writes, `mcp_write_cap`).
     retry_at: Option<EpochMs>,
 }
 
@@ -174,9 +138,7 @@ impl ExitError {
         }
     }
 
-    /// Adds the advice. A builder rather than a third argument to `new`,
-    /// because most of the places that construct one of these have no advice
-    /// to give and should not have to say so.
+    /// Adds the advice.
     #[must_use]
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
@@ -222,9 +184,7 @@ impl ExitError {
 }
 
 impl std::fmt::Display for ExitError {
-    /// The failure alone. The advice is [`ExitError::hint`], and the printer
-    /// puts it back — but anything that only has a `Display`, like an `anyhow`
-    /// chain being formatted somewhere else, still reads a complete sentence.
+    /// The failure alone.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
     }

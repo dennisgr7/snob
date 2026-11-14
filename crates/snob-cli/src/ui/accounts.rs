@@ -1,18 +1,4 @@
 //! The account picker: which of the accounts signed in here a view acts as.
-//!
-//! A modal over whatever view opened it, drawn like the profile's actions
-//! panel. One row per account in the registry, the active one and any with no
-//! session stored marked, and "Add an account" last. Enter picks an account
-//! for this view only; `u` makes the highlighted one the active account, the
-//! one commands act as when none is named, and leaves the view as it is.
-//!
-//! It reads the registry and whether each account has a session stored, and
-//! never another account's database.
-//!
-//! Adding an account is the browser login `snob login --add` runs, on the
-//! real screen with the view suspended. The Ctrl+C that cancels it is the
-//! process's (`interrupt::install`), so it cancels every request the view
-//! would send after it too, and the view ends with it: the hint says so.
 
 use anyhow::Result;
 use console::measure_text_width;
@@ -40,8 +26,7 @@ pub struct Account {
     pub session: bool,
 }
 
-/// The registry's accounts, in its order. `stored` says whether one has a
-/// session stored.
+/// The registry's accounts, in its order.
 pub fn accounts(registry: &Registry, stored: impl Fn(Pk) -> bool) -> Vec<Account> {
     registry
         .accounts
@@ -109,8 +94,7 @@ impl Picker {
         self.selected == self.accounts.len()
     }
 
-    /// One key. Esc, Left and `a` close the picker; `q` and Ctrl+C leave the
-    /// view, as they do from the profile's actions panel.
+    /// One key.
     pub fn key(&mut self, key: KeyEvent) -> Step {
         self.note.clear();
         let plain = !key
@@ -281,8 +265,7 @@ pub async fn pick(
     }
 }
 
-/// Makes `pk` the active account, under the registry's lock. `None` when the
-/// registry no longer lists it.
+/// Makes `pk` the active account, under the registry's lock.
 fn make_active(paths: &AppPaths, pk: Pk) -> Result<Option<Registry>, RegistryError> {
     let mut listed = false;
     let registry = Registry::update(paths, |registry| {

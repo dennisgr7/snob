@@ -20,13 +20,7 @@ use super::watched::watched_from;
 /// **The scheduled run without the loop**, which is what the README's "one run,
 /// for cron or a systemd timer" describes: the webhook and the accounts both
 /// come from `watch.toml`, through the same `watched_from` the scheduled mode
-/// asks. Building the watched set from the command line alone would never walk
-/// an account `watch setup` added, and typing the name instead would fail every
-/// unattended run, because `Watched::asking` discards the recorded consent that
-/// is the only thing such a run accepts.
-///
-/// An entry that names no viewer is read as `in_use`, the account this
-/// command resolved, if any.
+/// asks.
 pub(super) async fn once(
     args: WatchOnceArgs,
     secrets: SecretStore,
@@ -42,8 +36,6 @@ pub(super) async fn once(
 
     // Before the session is opened and long before a request is spent, so a
     // webhook address that could never work costs nothing to find out about.
-    // The file is read here too: `once` on a timer should need no more
-    // arguments than the scheduled mode does.
     let configured = config::load(paths)?;
     let began = snob_core::clock::now();
     // A run by hand was due for nothing; one a timer asked for was due for
@@ -64,9 +56,7 @@ pub(super) async fn once(
     super::posts::refuse_what_cannot_be_saved(&watched)?;
 
     // A run on a timer at a critical battery would be cut off by the system
-    // hibernating under it. It is not run, and says so; the timer's next
-    // turn runs it once there is power. 130, an interrupted run's code: nothing
-    // is wrong, and nothing was done.
+    // hibernating under it.
     if super::run::waits_for_power(paths, snob_core::clock::now()) {
         ui::warn(report::BATTERY_CRITICAL_HOLD);
         return Ok(ExitCode::Interrupted);
@@ -112,10 +102,9 @@ pub(super) async fn once(
     if let Some(e) = outcome.failed {
         return Err(e);
     }
-    // A run whose own verdict is good but whose report did not arrive is not
-    // a 0: on a timer nothing tries the report again before the next run, and
-    // a status that said all was well left nobody to look. Its own reason, so
-    // a script can tell it from a run that read nothing.
+    // A run whose own verdict is good but whose report did not arrive is not a
+    // 0: on a timer nothing tries the report again before the next run, and a
+    // status that said all was well left nobody to look.
     if outcome.code == ExitCode::Ok && delivery.as_ref().is_some_and(|d| d.left_undelivered()) {
         return Err(crate::exit::ExitError::new(
             ExitCode::Error,
@@ -126,31 +115,21 @@ pub(super) async fn once(
         .into());
     }
 
-    // The run's own verdict, as written into `watch_runs`. The exit codes exist
-    // so a caller on a timer can tell "wait" from "log in again" without
-    // parsing text, and `once` is the mode that is put on a timer.
+    // The run's own verdict, as written into `watch_runs`.
     Ok(outcome.code)
 }
 
-/// `--when-due`: whether the schedule in the file says a run is owed now,
-/// asked of the evaluator the scheduled mode sleeps on, from the same last
-/// run (`scheduled::seed_for`), so a timer that asks every quarter of an hour
-/// runs on the schedule `snob watch` would keep, a quarter of an hour late
-/// at most. The jitter is not rolled: the timer's own cadence already keeps
-/// runs off the second the grid names. Not due costs nothing: no session is
-/// read and nothing is sent, and it is said on standard error **only to a
-/// terminal**: a timer asks 96 times a day, and each line would be one more in
-/// its journal, or one more mail from cron. The trace says it at `debug`.
+/// `--when-due`: whether the schedule in the file says a run is owed now, asked
+/// of the evaluator the scheduled mode sleeps on, from the same last run
+/// (`scheduled::seed_for`), so a timer that asks every quarter of an hour runs
+/// on the schedule `snob watch` would keep, a quarter of an hour late at most.
+/// Not due costs nothing: no session is read and nothing is sent, and it is
+/// said on standard error **only to a terminal**: a timer asks 96 times a day,
+/// and each line would be one more in its journal, or one more mail from cron.
 ///
 /// **A timer keeps nothing between two looks**, so the first look is written
 /// down (`Shared::ask_since`) and a calendar that has never run counts the
-/// moments it owes from it (`schedule::due_asked_since`). Asked only from the
-/// minute of `now`, `--at 09:00` under a task that looks at :07, :22, :37 and
-/// :52 would never be due.
-///
-/// `Some` when a run is owed, with the moment it was owed for
-/// (`schedule::due_moment`), which the run records to be told late from on
-/// time; inside, `None` for an interval no run has started.
+/// moments it owes from it (`schedule::due_asked_since`).
 fn due_for(
     paths: &AppPaths,
     configured: Option<&config::WatchConfig>,

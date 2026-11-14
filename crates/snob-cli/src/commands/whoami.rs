@@ -28,11 +28,9 @@ pub async fn run(
     };
     let (Some((mut session, kept_in)), Some(store), Some(paths)) = (found, &store, &account) else {
         eprintln!("No session stored. Run \"snob login\".");
-        // `--json` still gets an object, as a session that has *died* does:
-        // the two states an automation most wants to tell apart share an exit
-        // code, and neither may hand the parser nothing to read. Every field
-        // the object always carries is here; everything that describes a
-        // session that does not exist is null.
+        // `--json` still gets an object, as a session that has *died* does: the
+        // two states an automation most wants to tell apart share an exit code,
+        // and neither may hand the parser nothing to read.
         if args.output.json {
             crate::ui::say!(
                 "{}",
@@ -60,20 +58,11 @@ pub async fn run(
 
     let mut alive = None;
     // The two facts the command holds on to: when a cooldown ends, and what
-    // Instagram actually said. The address in a challenge is held
-    // exactly once ever — nothing stores it — so dropping it means the user has
-    // to provoke the error again to see it.
-    //
-    // Why the session was not checked is not a third variable. It is these two
-    // read back at the point it is reported, so a return added inside the block
-    // below cannot leave it claiming a check that never happened.
+    // Instagram actually said.
     let mut cooldown_until: Option<Epoch> = None;
     let mut failure: Option<serde_json::Value> = None;
     // The code the command exits with, held rather than returned so the JSON
-    // still gets printed on the way out. It matches `alive`: `alive: false`
-    // under exit 0 would tell a script the opposite of what the body says,
-    // and the machine format is precisely the one that cannot read the
-    // sentence.
+    // still gets printed on the way out.
     let mut code = ExitCode::Ok;
 
     // A session this computer no longer sends as (`owner::signed_out`) is
@@ -98,12 +87,9 @@ pub async fn run(
         let pacer = crate::app::pacer_saying_a_line(paths)?;
 
         // A cooldown means nothing is spent, and checking a session is a
-        // request like any other. `--offline` is the way to ask anyway, and it
-        // is what this falls back to.
+        // request like any other.
         if let Some(held) = crate::app::held(&pacer, Some(paths))? {
             // Seconds, like `created_at` and `validated_at` in the same object.
-            // The conversion is the moment type's own, so the field here and the
-            // date on the next line cannot disagree about which second it is.
             cooldown_until = Some(held.until_ms.to_epoch());
             let mut said = report::held_until(&held);
             said[..1].make_ascii_uppercase();
@@ -157,8 +143,7 @@ pub async fn run(
     if args.output.json {
         // Every value here is a stable token, never a human-facing string —
         // with exactly one exception, `error.message`, which is documentation
-        // for a person and which nothing may branch on. Rewording anything else
-        // would break this contract.
+        // for a person and which nothing may branch on.
         //
         // `cooldown_until` says **when**, never **why**: the reason is written
         // to the cooldowns table but the read side does not hand it back, and
@@ -186,12 +171,6 @@ pub async fn run(
 }
 
 /// Why the session was not checked, when it was not.
-///
-/// Derived rather than tracked. Every input is already held for its own sake
-/// — a session signed out of here is never checked, `--offline` is the
-/// request not to look, and a cooldown end only exists when one was found —
-/// so there is nothing here that can disagree with them. `signed_out` is the
-/// one value added since the others: a token added, none renamed.
 fn not_checked(
     signed_out: bool,
     offline: bool,
@@ -218,8 +197,7 @@ fn describe(
     match &session.username {
         // Filtered here and not in the JSON above: this line is drawn on a
         // terminal, and the name was written by `whoami` out of Instagram's
-        // answer. `serde_json` escapes what it emits, and a machine format has
-        // to carry the true value.
+        // answer.
         Some(u) => lines.push(format!(
             "Account:  @{} ({})",
             snob_core::model::printable(u),

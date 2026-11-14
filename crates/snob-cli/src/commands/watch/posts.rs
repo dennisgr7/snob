@@ -1,30 +1,14 @@
 //! Saving a watched account's new posts where its entry in `watch.toml` says.
 //!
 //! **Only the person chooses the directory**, in `watch.toml` (`save_to` under
-//! `[account.posts]`, written by hand or by `watch setup`): no flag carries
-//! it, and the monitor is offered to no agent. Into it, through
-//! `posts::save_telling`, the files of the posts a run reports as new, one
-//! post after another and one file after another, under the names every
-//! download of snob gives them (`<owner>-<code>[-<n>].<ext>`), never over a
-//! file already there: a file of that name is taken as saved and not fetched
-//! again. So a directory `snob mcp --downloads-dir` or `snob posts -d` also
-//! saves into is never given a post twice.
+//! `[account.posts]`, written by hand or by `watch setup`): no flag carries it,
+//! and the monitor is offered to no agent.
 //!
-//! **From what the grid answered, and nothing more**: the grid's answer
-//! carries every item of every post, so no post is opened and nothing but the
-//! files is fetched, and the files come from the CDN, outside the request
-//! budget, which is why a run's saving has bounds of its own ([`SAVE_AT_MOST`],
+//! **From what the grid answered, and nothing more**: the grid's answer carries
+//! every item of every post, so no post is opened and nothing but the files is
+//! fetched, and the files come from the CDN, outside the request budget, which
+//! is why a run's saving has bounds of its own ([`SAVE_AT_MOST`],
 //! [`SAVE_WITHIN`]).
-//!
-//! The order is the one `run::tick_one` keeps: find, save, make the report
-//! with what was saved, commit, send. A file that failed, or was left past a
-//! bound, is owed: the post's row keeps no `saved_at`, and a later run that
-//! still finds the post on the pages it reads saves what is missing, asking
-//! for nothing more. A post that has left those pages is not tried again by
-//! itself; `watch status` counts it. A push-back on a file ends the saving of
-//! that run, and the report still goes out (the webhook is not Instagram).
-//! Ctrl+C during a save ends the tick with nothing committed, so the next run
-//! finds the same posts and reports them again, saving only what is missing.
 
 use std::time::{Duration, Instant};
 
@@ -37,10 +21,9 @@ use crate::exit::ExitCode;
 use crate::posts::{Bounds, Post, Videos, files_of, save_telling};
 use crate::ui;
 
-/// The most one run fetches into an account's directory: 1 GiB, the ceiling
-/// one call of an agent has (`commands::mcp::tools::SAVE_AT_MOST`, kept apart
-/// because that module is behind the `mcp` feature). A day of an account's
-/// posts is far under it; past it, the rest is owed to the next run.
+/// The most one run fetches into an account's directory: 1 GiB, the ceiling one
+/// call of an agent has (`commands::mcp::tools::SAVE_AT_MOST`, kept apart
+/// because that module is behind the `mcp` feature).
 pub(super) const SAVE_AT_MOST: u64 = 1 << 30;
 
 /// How long one run goes on starting files for an account: 10 minutes, under
@@ -50,8 +33,7 @@ pub(super) const SAVE_WITHIN: Duration = Duration::from_secs(10 * 60);
 
 /// What a video is saved as for `watched`, asked before anything is sent: a
 /// `quality = "best"` with no ffmpeg on this machine is refused as a webhook
-/// address that could never work is, costing nothing. `None` for an entry
-/// that saves nothing.
+/// address that could never work is, costing nothing.
 pub(super) fn videos_for(watched: &Watched) -> Result<Option<Videos>> {
     let Some(entry) = watched.posts() else {
         return Ok(None);
@@ -72,8 +54,7 @@ pub(super) fn refuse_what_cannot_be_saved(watched: &[Watched]) -> Result<()> {
 }
 
 /// Saves the files the posts of `tick` owe, as its entry says, and writes on
-/// the tick what became of them. Nothing for an entry that saves nothing, or a
-/// tick that concluded nothing about the posts.
+/// the tick what became of them.
 pub async fn save_new(app: &App, tick: &mut TickReport, watched: &Watched) -> Result<()> {
     let Some(dir) = watched.posts().and_then(|entry| entry.save_to.clone()) else {
         return Ok(());

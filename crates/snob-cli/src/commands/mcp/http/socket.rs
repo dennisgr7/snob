@@ -1,30 +1,8 @@
-//! `snob mcp --listen socket`: the HTTP server on a Unix socket in snob's
-//! data directory, which **only this user can reach and nobody else can
-//! take**.
-//!
-//! A port on loopback is open to every user of the machine, and nothing
-//! holds it while the server is not running, so another user who binds it
-//! first is handed the key by the next client (`http.rs`, "The server does
-//! not prove itself to its clients"). A socket here closes both: the data
-//! directory is private (`paths::create_private_dir`, `0700`), so nobody
-//! else can connect to it or put a socket of their own at its name, and the
-//! socket itself is made `0600`. Each connection is checked again for who
-//! is at the other end (`peer_cred`), as the owner's and the relay's are:
-//! this user, or root, who can read everything snob keeps anyway (a tunnel
-//! run as a system service is often root). A tunnel of the person's own
-//! brings it elsewhere: `ssh -N -o ExitOnForwardFailure=yes -L
-//! 127.0.0.1:8750:<path>` from the far end, or cloudflared's `unix:<path>`
-//! service. The option makes `ssh` stop when the near end is taken, as the
-//! relay's printed command does (`relay::tunnel_command`): without it `ssh`
-//! warns and stays up, and the client hands the key to whoever holds the
-//! port there.
+//! `snob mcp --listen socket`: the HTTP server on a Unix socket in snob's data
+//! directory, which **only this user can reach and nobody else can take**.
 //!
 //! **One server at a time, at a fixed name**, so a tunnel's configuration
-//! outlives a restart. Who serves is decided by a lock (`mcp.sock.lock`
-//! beside it, held for the server's life), never by connecting: holding
-//! it, a socket found at the name is one a server left when it was killed
-//! (a release build's panic aborts), and is removed; anything there that is
-//! not a socket is left alone, and the server does not start.
+//! outlives a restart.
 
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
@@ -152,7 +130,6 @@ impl Held {
 }
 
 /// Removes the socket, when what is at its name is still this server's.
-/// The lock goes with the file it is held on, after.
 impl Drop for Held {
     fn drop(&mut self) {
         let ours = std::fs::symlink_metadata(&self.path)

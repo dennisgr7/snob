@@ -1,17 +1,8 @@
 //! Asking GitHub for the latest release, and downloading its files.
 //!
-//! **GitHub and nothing else, carrying nothing.** The client is
-//! `snob_ig::http::plain_download`, which has no argument for a credential,
-//! says `User-Agent: snob/<version>` (GitHub refuses a request without
-//! one), and follows a redirect only to the hosts a release is served from,
-//! over HTTPS ([`Origin::allows`]), as the CDN client holds every hop to its
-//! own rule. One question a day at most, sent with the answer's `ETag` so an
-//! unchanged one costs nothing; no retry, since tomorrow's check is the
-//! retry.
-//!
-//! **Every file is checked against `SHA256SUMS`** as it arrives, the same
-//! check `install.sh` and `install.ps1` make, and refused on any difference
-//! or past its ceiling ([`MOST_BYTES`]).
+//! **Every file is checked against `SHA256SUMS`** as it arrives, the same check
+//! `install.sh` and `install.ps1` make, and refused on any difference or past
+//! its ceiling ([`MOST_BYTES`]).
 
 use std::io::Write;
 use std::path::Path;
@@ -181,8 +172,7 @@ pub(crate) async fn sums(origin: &Origin, version: Version) -> anyhow::Result<St
     Ok(snob_ig::http::read_capped(response, MOST_ANSWER).await?)
 }
 
-/// The checksum `sums` lists for `name`, in lowercase hex. The format is
-/// `sha256sum`'s: the hash, a space, a space or `*`, the name.
+/// The checksum `sums` lists for `name`, in lowercase hex.
 pub(crate) fn listed(sums: &str, name: &str) -> Option<String> {
     sums.lines().find_map(|line| {
         let (hash, file) = line.split_once(' ')?;
@@ -193,9 +183,7 @@ pub(crate) fn listed(sums: &str, name: &str) -> Option<String> {
 }
 
 /// Downloads `name` of the release of `version` to `to`, checking it against
-/// `expected` (lowercase hex) as it arrives. Written to `to` plus `.part`
-/// and renamed only once it is whole and right, so a file at `to` is always
-/// one that was checked.
+/// `expected` (lowercase hex) as it arrives.
 pub(crate) async fn download(
     origin: &Origin,
     version: Version,
@@ -251,10 +239,8 @@ pub(crate) fn sha256_of(path: &Path) -> std::io::Result<String> {
 
     let mut file = std::fs::File::open(path)?;
     let mut hash = Sha256::new();
-    // Read a buffer at a time: since sha2 0.11 a hash is no `io::Write`
-    // (digest 0.11 has no `std` feature to make it one), so `io::copy`
-    // cannot feed it. The buffer is on the heap: 64 KiB is a lot to ask of
-    // the stack of whichever thread calls this.
+    // Read a buffer at a time: since sha2 0.11 a hash is no `io::Write` (digest
+    // 0.11 has no `std` feature to make it one), so `io::copy` cannot feed it.
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
         match file.read(&mut buffer) {

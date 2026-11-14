@@ -1,33 +1,10 @@
 //! The process that started this one, and hearing when it is gone.
 //!
-//! **A parent dying sends its children nothing.** A closed terminal sends
-//! `SIGHUP`, a service manager `SIGTERM`, a console closing its event on
-//! Windows, and `interrupt` hears all of them; but a program that runs snob
-//! and dies — a script killed by its timeout, an agent's shell tool, a
-//! tunnel's launcher, an app that crashed — tells nobody. Its snob was
-//! adopted by the system and went on: a walk read page after page for
-//! nobody, spending the account's budget and holding its claim on the list,
-//! only to fail writing a result nobody would read; `snob mcp --listen` kept
-//! its port for ever. So a process that a program drives watches that
-//! program, and its going is one more of the system's ways of asking it to
-//! stop (`interrupt::stop_when_parent_exits`): the walk saves its page and
-//! gives its claim back, exactly as for `SIGTERM`.
+//! **A parent dying sends its children nothing.**
 //!
-//! **Not every snob is watched** ([`worth_watching`]). A command at a
-//! terminal is already told by `SIGHUP` when the terminal goes; a command
-//! somebody detached on purpose (`nohup`, `setsid`, a service) must outlive
-//! whoever started it; and the processes snob itself detaches to outlive the
-//! command that started them (the owner of the browsers, a job's supervisor)
-//! are what they are for.
+//! **Not every snob is watched** ([`worth_watching`]).
 //!
-//! **Watched as a process, never as a thread.** Linux's `PR_SET_PDEATHSIG`
-//! fires when the *thread* that started this process exits, and a parent that
-//! starts its children from a short-lived thread (a pool's blocking thread, a
-//! test harness's per-test thread) would stop every snob it ran for no reason.
-//! So on Linux the parent is watched through a `pidfd`, on macOS through
-//! `kqueue`, on Windows through a handle to it; each is opened while the
-//! parent is known to be this process's ([`arm`]), so a pid used again by
-//! another process later is never mistaken for it.
+//! **Watched as a process, never as a thread.**
 
 /// What [`worth_watching`] decides on, read once at the start
 /// ([`situation`]).
@@ -54,12 +31,9 @@ pub(crate) struct Situation {
 
 /// Whether to stop when the parent goes, in `situation`.
 ///
-/// **Only a process a program drives**: at a terminal `SIGHUP` already says
-/// it, and a command whose output goes to a file has nobody to wait for its
-/// answer, so it keeps what it did before (finishing). Never one detached on
-/// purpose, by a person or by snob. `SNOB_NO_PARENT_WATCH` is the way out for
-/// a case these rules do not foresee; it stays out of the help, as
-/// `SNOB_IGNORE_COOLDOWN` does.
+/// **Only a process a program drives**: at a terminal `SIGHUP` already says it,
+/// and a command whose output goes to a file has nobody to wait for its answer,
+/// so it keeps what it did before (finishing).
 pub(crate) fn worth_watching(situation: Situation) -> bool {
     let Situation {
         driven,
@@ -93,9 +67,8 @@ pub(crate) fn situation(detached_command: bool) -> Situation {
     }
 }
 
-/// Whether `SIGHUP` reached this process ignored, which is what `nohup`
-/// leaves (never on Windows, which has no such signal). `interrupt` asks it
-/// too, before it listens for `SIGHUP`, so as not to undo what `nohup` did.
+/// Whether `SIGHUP` reached this process ignored, which is what `nohup` leaves
+/// (never on Windows, which has no such signal).
 pub(crate) fn hangup_ignored() -> bool {
     platform::hangup_ignored()
 }
@@ -111,8 +84,7 @@ pub(crate) enum Parent {
     /// whether this process still has it.
     #[cfg(unix)]
     Asked(platform::Asked),
-    /// Nothing can be known about it; it is not watched. Only on Windows,
-    /// where a parent that cannot be opened cannot be asked after either.
+    /// Nothing can be known about it; it is not watched.
     #[cfg(windows)]
     Unknowable,
 }
@@ -123,14 +95,12 @@ pub(crate) fn arm() -> Parent {
 }
 
 /// How long the parent is left between two questions, where it can only be
-/// asked after. A walk stops between two requests, seconds apart, so a second
-/// adds nothing anybody would notice, and costs one system call.
+/// asked after.
 #[cfg(unix)]
 const ASK_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Parent {
-    /// Blocks until the parent is gone. Returns at once when it already is;
-    /// never returns when it cannot be known.
+    /// Blocks until the parent is gone.
     pub(crate) fn wait(self) {
         match self {
             Parent::Open(process) => process.wait(),

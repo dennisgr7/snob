@@ -1,9 +1,5 @@
 //! `snob account`: the accounts signed in here, and the one a command acts as
 //! when none is named.
-//!
-//! `list` is one of the few places that looks at every account. It asks each
-//! whether a session is stored and when its database last changed, and opens
-//! none of them.
 
 use anyhow::Result;
 use snob_core::{Epoch, Pk};
@@ -17,8 +13,7 @@ use crate::cli::{AccountCommand, AccountListArgs, AccountUseArgs};
 use crate::exit::ExitCode;
 use crate::ui;
 
-/// Runs `account list` or `account use`. `flag` and `env` are what `list`
-/// resolves its `viewer` from; `use` names its account itself.
+/// Runs `account list` or `account use`.
 pub fn run(
     command: AccountCommand,
     secrets: &SecretStore,
@@ -137,8 +132,7 @@ fn modified(file: &std::path::Path) -> Option<Epoch> {
     i64::try_from(seconds).ok().map(Epoch::new)
 }
 
-/// The status object. Every value is a stable token or a number; the
-/// username is the true value, as `whoami` gives it.
+/// The status object.
 fn json(active: Option<Pk>, rows: &[Row], viewer: Option<&Viewer>) -> serde_json::Value {
     serde_json::json!({
         "active": active,

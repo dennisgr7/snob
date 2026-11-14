@@ -1,30 +1,10 @@
-//! `snob follow` and `snob unfollow`: the only two commands that change
-//! anything on Instagram.
-//!
-//! Two requests: the profile, to turn a name into an id and to find out what
-//! the relationship is already, and the write itself. Both are paid for, the
-//! second out of the write budget, and neither happens during a cooldown.
+//! `snob follow` and `snob unfollow`: the only two commands that change anything
+//! on Instagram.
 //!
 //! **One account per run, and there is no flag that changes it.** The reasoning
 //! is in `AGENTS.md` with the rest of the write regime, and the short version is
 //! that a burst is what strains a service, not a daily total — so the shape of
-//! this command is the safeguard, not a limit inside it. Somebody determined to
-//! run it in a loop can write the loop; what this refuses to do is ship one.
-//!
-//! The other half of the design is that it asks first, because a follow reaches
-//! another person in a way a read never does. Unfollowing afterwards does not
-//! take back the notification they already got, and follow-then-unfollow churn
-//! is a growth-hacking trick rather than the housekeeping this tool is for. So
-//! the question is asked before the request, and `-y` is how a script answers it
-//! in advance.
-//!
-//! A run an agent was told yes to through `snob mcp` (`--confirmed-via`) is
-//! recorded before its first request, and refused with nothing sent once the
-//! day's writes made that way reach the cap (`common::record_agent_act`).
-//!
-//! `--json` prints one object on standard output for every way the run ends
-//! (done, already so, declined), so a program never has to read the sentence;
-//! the failures are the JSON error `main` prints when `--json` was asked for.
+//! this command is the safeguard, not a limit inside it.
 
 use anyhow::{Result, anyhow};
 use snob_core::model::printable;
@@ -40,10 +20,6 @@ use crate::exit::{ExitCode, ExitError};
 use crate::ui;
 
 /// Which of the two verbs is being run.
-///
-/// Not a boolean. Every sentence this command prints differs between the two,
-/// and a boolean named `unfollow` reads backwards at exactly the call sites
-/// where getting it backwards is worst.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
     Follow,
@@ -89,11 +65,6 @@ pub async fn run(
     // property of this process's streams, not of the account, so it is known
     // now — and a run that is going to refuse for want of an answer should not
     // pay for a lookup first.
-    //
-    // The question itself still waits until after the lookup, deliberately: it
-    // names the account the way Instagram spells it, it says "send a follow
-    // request" rather than "follow" for a private account, and it is not asked
-    // at all when the relationship already holds. All three need the profile.
     if !args.consent.yes && !ui::can_be_asked() {
         // The advice goes in the message, where it arrives: a hint on exit 130
         // is never shown, because `report::rendered` returns early for that
@@ -104,10 +75,9 @@ pub async fn run(
         ));
     }
 
-    // **Before the first request**, for a run an agent was told yes to
-    // through `snob mcp`: recorded where the person sees it, and refused with
-    // nothing sent past the day's cap on an agent's writes. An attempt that
-    // then finds nothing to do, or is refused by Instagram, still counts.
+    // **Before the first request**, for a run an agent was told yes to through
+    // `snob mcp`: recorded where the person sees it, and refused with nothing
+    // sent past the day's cap on an agent's writes.
     let act = common::record_agent_act(
         &mut app,
         &args.agent,
@@ -128,9 +98,7 @@ pub async fn run(
         tracing::debug!(error = %e, "the account an act was about could not be stored");
     }
 
-    // Instagram spells the name; the user typed a spelling of it. Everything
-    // from here on uses Instagram's, filtered, because it is going to a
-    // terminal and it came off a server.
+    // Instagram spells the name; the user typed a spelling of it.
     let name = printable(&profile.username);
 
     // Refusing to follow yourself here rather than letting Instagram do it:
@@ -140,9 +108,7 @@ pub async fn run(
         return Err(anyhow!("you cannot {} your own account", verb.present()));
     }
 
-    // Nothing to do is worth saying rather than doing. It also saves the write
-    // budget for a write that changes something, which matters when a slot is
-    // fifteen minutes.
+    // Nothing to do is worth saying rather than doing.
     if let Some(settled) = already_done(verb, &profile) {
         return tell(&args, verb, &profile, &name, settled, None);
     }
@@ -156,9 +122,7 @@ pub async fn run(
     };
 
     // `confirm` answers with its default the moment nobody can answer, which
-    // would turn "nobody was there" into "they said no" — two different
-    // events. The guard above is what keeps that unreachable here, so this
-    // branch only ever runs with somebody at the keyboard.
+    // would turn "nobody was there" into "they said no" — two different events.
     if !args.consent.yes && !ui::confirm(&question, false)? {
         tell(&args, verb, &profile, &name, Outcome::Declined, None)?;
         return Ok(ExitCode::Interrupted);
@@ -176,14 +140,11 @@ pub async fn run(
 }
 
 /// Writes down a write that changed the account's following, so a stored
-/// following list is handed out with it applied until the next walk reads
-/// it (`own_writes`, `engine::serve_stored`). A request a private account
-/// has still to accept changes no list, and nor does a write Instagram
-/// answered as already so.
+/// following list is handed out with it applied until the next walk reads it
+/// (`own_writes`, `engine::serve_stored`).
 ///
 /// **Not a reason to fail the run**: the write has happened, and saying it
-/// failed would invite sending it again. A record that could not be written
-/// leaves the stored list as its walk read it, which is what it was before.
+/// failed would invite sending it again.
 fn remember_own_write(
     app: &crate::app::App,
     profile: &snob_ig::model::WebProfileInfo,
@@ -225,24 +186,17 @@ fn cannot_write(verb: Verb) -> anyhow::Error {
 
 /// `--check-ahead`: what would refuse this write now if an agent made it,
 /// **sending nothing, asking nothing and writing nothing**, or `{"would":
-/// "send"}` on standard output when nothing would. `snob mcp` runs it before
-/// it asks the person for a yes to a follow or an unfollow, so nobody says
-/// yes to one that is then refused, and no ticket is spent on one
-/// (AGENTS.md, "The MCP server").
+/// "send"}` on standard output when nothing would. `snob mcp` runs it before it
+/// asks the person for a yes to a follow or an unfollow, so nobody says yes to
+/// one that is then refused, and no ticket is spent on one (AGENTS.md, "The MCP
+/// server").
 ///
-/// The refusals of [`run`] that cost nothing to know, in its order, each the
-/// same error a run would give: a session this computer no longer sends as
-/// (`owner::signed_out`), another run started by an agent holding the
-/// account (a job's walk, or anything under `--spend-alone`), no CSRF token,
-/// the cooldown, the day's cap on an agent's writes (`--mcp-write-cap`, or
-/// its default), and a wait for the budget past `--max-wait`. Read from the
-/// budget's state and the account's database as `--dry-run` reads them
-/// (`common::standing`). **Not known ahead**: what the profile says (already
-/// so, the viewer's own account, a name that resolves to nothing), and
-/// whatever changes between this and the yes; except a follow of an account
-/// the following list walked in the last hour holds, which is answered as
-/// already so, `{"would": "nothing", ...}`, so no yes is asked for a write
-/// that would change nothing (`followed_as_stored`).
+/// **Not known ahead**: what the profile says (already so, the viewer's own
+/// account, a name that resolves to nothing), and whatever changes between this
+/// and the yes; except a follow of an account the following list walked in the
+/// last hour holds, which is answered as already so, `{"would": "nothing",
+/// ...}`, so no yes is asked for a write that would change nothing
+/// (`followed_as_stored`).
 fn check_ahead(
     args: &FollowArgs,
     verb: Verb,
@@ -312,11 +266,7 @@ fn check_ahead(
 }
 
 /// How recent a walk of the following list has to be for `--check-ahead` to
-/// answer a follow as already so from it, with nothing asked. An hour: long
-/// enough for the follow an agent is asked for right after reading the
-/// lists, short enough that the person is unlikely to have unfollowed the
-/// account in the app since, which is the one way this answer is wrong (and
-/// costs a follow not sent, never one sent).
+/// answer a follow as already so from it, with nothing asked.
 const FOLLOWED_AS_STORED_FOR: i64 = 3_600;
 
 /// The account `typed` names, when the account's own following list, walked
@@ -354,8 +304,7 @@ fn followed_as_stored(
 }
 
 /// How a run ended, as a word a program can match on and a sentence a person
-/// can read. One list, so `--json` and the sentence cannot describe two
-/// different runs.
+/// can read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Outcome {
     AlreadyFollowing,
@@ -391,8 +340,7 @@ impl Outcome {
         matches!(self, Self::Followed | Self::Requested | Self::Unfollowed)
     }
 
-    /// The sentence a person is told. `None` for a refusal they gave
-    /// themselves, which needs no telling back.
+    /// The sentence a person is told.
     fn sentence(self, verb: Verb, name: &str) -> Option<String> {
         Some(match self {
             Self::AlreadyFollowing => format!("You already follow @{name}."),
@@ -405,7 +353,6 @@ impl Outcome {
             Self::Requested => format!("Asked to follow @{name}. They have to accept it."),
             Self::Unfollowed => format!("No longer following @{name}."),
             // Instagram answered, and answered that nothing is different.
-            // Better said plainly than dressed up as success.
             Self::Unchanged => match verb {
                 Verb::Follow => {
                     format!("Instagram accepted the request, but @{name} is still not followed.")
@@ -419,8 +366,7 @@ impl Outcome {
 }
 
 /// Says how the run ended, as a sentence on standard error or, with `--json`,
-/// as one object on standard output. Exit 0 for everything but `Declined`,
-/// whose 130 the caller returns.
+/// as one object on standard output.
 fn tell(
     args: &FollowArgs,
     verb: Verb,
@@ -462,11 +408,6 @@ fn tell(
 
 /// What the profile already says, when it says the request would change
 /// nothing.
-///
-/// `followed_by_viewer` and `requested_by_viewer` are `Option` because the
-/// endpoint omits them on some answers, and `None` means unknown. Unknown must
-/// send the request rather than assume: refusing on a missing field would make
-/// the command stop working the day Instagram drops it from the response.
 fn already_done(verb: Verb, profile: &snob_ig::model::WebProfileInfo) -> Option<Outcome> {
     match verb {
         Verb::Follow if profile.followed_by_viewer == Some(true) => Some(Outcome::AlreadyFollowing),
@@ -490,15 +431,7 @@ fn already_done(verb: Verb, profile: &snob_ig::model::WebProfileInfo) -> Option<
 /// The mutation ids, remembered in the `meta` table between runs.
 ///
 /// **Discovery is what makes a rotated id fix itself, and caching is what makes
-/// discovery affordable.** Finding one means fetching JavaScript bundles until
-/// a mutation turns up in one, and those are megabytes; once per rotation is
-/// nothing, once per follow would be absurd.
-///
-/// Failures are swallowed on both sides, and the same reasoning applies to
-/// each: a read that fails means discovery runs, which is slow and correct, and
-/// a write that fails means the next run discovers again. Neither is worth
-/// failing a follow over, and neither is worth a message the user cannot act
-/// on.
+/// discovery affordable.**
 struct RememberedIds<'a> {
     db: &'a snob_store::store::Store,
 }
@@ -516,17 +449,14 @@ impl DocIds for RememberedIds<'_> {
 }
 
 /// Namespaced, because `meta` holds facts about the database and these are
-/// facts about Instagram. Keyed by the mutation's own name so that a renamed
-/// operation gets a new key rather than a stale value under an old one.
+/// facts about Instagram.
 fn key(friendly_name: &str) -> String {
     format!("graphql.doc_id.{friendly_name}")
 }
 
 /// What actually happened, as Instagram describes it afterwards.
 ///
-/// **Following a private account does not follow it — it asks.** Saying
-/// "Followed" there would be the command lying about the one thing it was run
-/// to do, and the user would go looking for stories that will not be there.
+/// **Following a private account does not follow it — it asks.**
 fn outcome(verb: Verb, status: &FriendshipStatus) -> Outcome {
     match verb {
         Verb::Follow if status.following => Outcome::Followed,

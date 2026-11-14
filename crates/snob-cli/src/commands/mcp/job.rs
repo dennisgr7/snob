@@ -22,10 +22,8 @@ use super::child::Finished;
 use super::tools::{self, Plan};
 use crate::exit::ExitCode;
 
-/// The document a `snob __job` child printed: an object with a job's id,
-/// from a child that exited 0. Anything else is the child's own failure (no
-/// session, no such job, a refusal), handed back as it is, boxed, since a
-/// finished child is large beside a document.
+/// The document a `snob __job` child printed: an object with a job's id, from a
+/// child that exited 0.
 pub fn document(finished: Finished) -> Result<Value, Box<Finished>> {
     let is_one = finished.code == ExitCode::Ok
         && finished
@@ -98,8 +96,7 @@ pub fn result_gone(walk: &Finished) -> bool {
 
 /// The plan of the call that started the job, rebuilt from the tool and the
 /// arguments it recorded (`tools::recorded`), for the page at `offset` of its
-/// result. A record this build cannot plan again (a job not started by a
-/// tool call) is read as a list that exits 0, which is what a job runs.
+/// result.
 pub fn plan_of(doc: &Value, offset: usize) -> Plan {
     let rebuilt = doc
         .get("tool")
@@ -125,8 +122,7 @@ pub fn plan_of(doc: &Value, offset: usize) -> Plan {
         records: true,
     });
     // Not held under anything: the result is the job's file, read again for
-    // every page, so `of` names nothing the server keeps. The limit is the
-    // one the job was started with.
+    // every page, so `of` names nothing the server keeps.
     let limit = plan.page.as_ref().and_then(|page| page.limit);
     plan.page = Some(tools::Page {
         offset,
@@ -180,9 +176,8 @@ pub fn lost_message(doc: &Value) -> &'static str {
     }
 }
 
-/// A job that has not ended, or one whose walk never ran: how it stands,
-/// and a sentence on what to do next. `cancel` is for the answer to
-/// `snob_job_cancel`.
+/// A job that has not ended, or one whose walk never ran: how it stands, and a
+/// sentence on what to do next.
 pub fn standing(doc: &Value, cancel: bool) -> (Answer, String) {
     let status = doc.get("status").and_then(Value::as_str).unwrap_or("lost");
     let going = going(doc);

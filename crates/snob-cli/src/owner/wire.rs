@@ -2,29 +2,18 @@
 //!
 //! **snob's own requests, never the browser's protocol.** The owner is handed
 //! a session and a request, or an intent the allowlist names
-//! (`snob_ig::web::Ask`), and hands back an answer; it checks the intent
-//! again itself, and builds the request for it beside the page's values.
-//! Nothing that reaches the socket can ask the browser for anything else. The
-//! debugging protocol is the one thing that must never be reachable from
-//! outside the process that started the browser — a debugging port hands the
-//! session cookie to any local process that asks (`pipe.rs`) — and a socket
-//! that relayed it would be that port again.
+//! (`snob_ig::web::Ask`), which it checks again itself. A socket that relayed
+//! the debugging protocol would be the debugging port again (`pipe.rs`).
 //!
 //! Each message is its length, four bytes big-endian, and that many bytes of
-//! JSON. A length past [`MAX_MESSAGE_BYTES`] ends the connection: nothing either
-//! side sends comes near it, so one that claims to is not worth reading. The
-//! buffers a message is built and read in are allocated once, at their full
-//! size, and wiped when they go, since the request carries the session.
+//! JSON; a length past [`MAX_MESSAGE_BYTES`] ends the connection. The buffers
+//! are allocated once and wiped when they go, since the request carries the
+//! session.
 //!
 //! **`Hello`, `Welcome`, `Retire`, `Release` and `Done` keep their shape for
-//! good.** They are what two builds say to each other: an owner that cannot
-//! read a command's `Hello` closes without a `Welcome`, so the command can
-//! neither use it nor ask it to leave, and a logout or a purge closes the
-//! browsers of whichever build's owner is running. A field may be added to
-//! them, with `#[serde(default)]`; none is ever removed or renamed.
-//! Everything else is only ever read by the build that wrote it ([`build`]),
-//! and a command skips a message from the owner it cannot read: an owner of
-//! another build tells every command what it heard, in its own words.
+//! good**: they are what two builds say to each other. A field may be added,
+//! with `#[serde(default)]`; none is ever removed or renamed. Everything else
+//! is read only by the build that wrote it ([`build`]).
 
 use serde::{Deserialize, Serialize};
 use snob_core::Pk;
@@ -39,16 +28,7 @@ use zeroize::Zeroizing;
 /// ask for (`headless::PAGE_WIRE_CAP`) once it is written as JSON again.
 const MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
-/// Which binary this is. A command sends only through an owner of its own
-/// build. An owner of an older build that serves nobody else is asked to
-/// leave (`ToOwner::Retire`, see [`older`]); otherwise the command runs its
-/// browser itself. `Release` and `Retire` reach an owner of any build.
-///
-/// The version and the executable's size and modification time, which a
-/// reinstall changes. Fixed the first time it is read, which `owner::install`
-/// and `owner::serve` do as the process starts: an owner reports the binary
-/// it was started from after that file is replaced under it, and a command
-/// running old code never claims the new binary's identity.
+/// Which binary this is.
 pub(super) fn build() -> String {
     static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BUILD
@@ -70,12 +50,8 @@ pub(super) fn build() -> String {
         .clone()
 }
 
-/// Whether an owner of build `theirs` runs a binary older than `ours`, by
-/// the modification time [`build`] ends with: the one a command may retire.
-/// Only ever the older one, so two builds used side by side — a monitor
-/// started before an upgrade and a command after it — never retire each
-/// other's owner in turn; the newer keeps it. A build that says no time is
-/// the oldest there is.
+/// Whether an owner of build `theirs` runs a binary older than `ours`, by the
+/// modification time [`build`] ends with: the one a command may retire.
 pub(super) fn older(theirs: &str, ours: &str) -> bool {
     let modified = |build: &str| {
         build
@@ -121,11 +97,7 @@ pub(super) enum ToOwner {
     /// or a purge is about to take its files.
     Retire,
     /// Whether somebody is waiting on this command now: one typed in a
-    /// terminal, or a full-screen view with the focus. The browsers it uses
-    /// run at the system's normal pace while any command on them says so,
-    /// and efficiently otherwise (`power::qos`). Said after the handshake and
-    /// whenever it changes; no answer. Only ever sent to an owner of this
-    /// build, like everything after the handshake.
+    /// terminal, or a full-screen view with the focus.
     Attention { attended: bool },
 }
 
@@ -158,8 +130,7 @@ pub(super) enum FromOwner {
     },
     /// `Leave` or `Release` has been carried out.
     Done { id: u64 },
-    /// Instagram pushed back on an account's browser. Sent to every command
-    /// the moment it is heard, not in answer to anything.
+    /// Instagram pushed back on an account's browser.
     Heard { pk: Pk, cause: PushedBack },
 }
 

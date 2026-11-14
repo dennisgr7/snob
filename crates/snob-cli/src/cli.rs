@@ -49,41 +49,33 @@ pub struct Cli {
     pub max_wait: Option<std::time::Duration>,
 
     /// Stop, as Ctrl+C stops, when standard input reaches its end
-    // Hidden: plumbing for a parent that runs snob and cannot send it a
-    // signal, which on Windows is every parent (`snob mcp`, a script's
-    // timeout). `interrupt::stop_when_stdin_closes` says the rest.
+    // Hidden: plumbing for a parent that runs snob and cannot send it a signal,
+    // which on Windows is every parent (`snob mcp`, a script's timeout).
     #[arg(long, global = true, hide = true)]
     pub stop_when_stdin_closes: bool,
 
     /// Refuse to send anything for the account while another run given this
     /// flag does
-    // Hidden: plumbing for `snob mcp`, which gives it to every child that
-    // may reach Instagram, so an agent's parallel calls cannot walk one
-    // account from two processes at once. Not for people in this release:
-    // a command typed by hand does not take the lock, and nothing that is
-    // not an agent's should be refused as busy (`app::spend_alone`).
+    // Hidden: plumbing for `snob mcp`, which gives it to every child that may
+    // reach Instagram, so an agent's parallel calls cannot walk one account
+    // from two processes at once.
     #[arg(long, global = true, hide = true)]
     pub spend_alone: bool,
 
     /// Say how a walk goes as one JSON line on standard error per page and
     /// per wait, instead of drawing a bar
     // Hidden: plumbing for a job's supervisor (`jobs/supervise.rs`), which
-    // reads the walk's progress back from its log (`jobs::show`). Wins over
-    // `--no-progress`, which the walk's command line may carry
-    // (`progress::progress_json`).
+    // reads the walk's progress back from its log (`jobs::show`).
     #[arg(long, global = true, hide = true)]
     pub progress_json: bool,
 
     /// Store the session in a protected file instead of the system keyring.
     /// For environments without a desktop session.
-    // Ordered last, with `verbose`. Both are global, so without this they are
-    // propagated into every subcommand and land in the middle of its own
-    // options, splitting a list that reads in a deliberate order.
+    // Ordered last, with `verbose`.
     //
     // **Left out of `-h`** (`hide_short_help`), as `verbose` and the two TLS
     // flags are: they are in every command's help, and in `-h` they were a
-    // third of each one's options, none of them about the command. `--help`
-    // still lists them, and `-h` says it shows more.
+    // third of each one's options, none of them about the command.
     #[arg(long, global = true, display_order = 900, hide_short_help = true)]
     pub no_keyring: bool,
 
@@ -102,14 +94,8 @@ pub struct Cli {
     /// This trusts Mozilla's roots alone instead. Refused on Windows for
     /// ARM64, where it cannot be done, and never applied to the webhook.
     // Why each of those, in full: reqwest 0.13 made the platform verifier the
-    // default, and the trade between a managed machine and a middlebox is
-    // only the person running it can make. On Windows ARM64 the TLS backend
-    // is schannel, which has no way to express "these roots and no others",
-    // and a security flag that silently does nothing is worse than one that
-    // is not offered. A private CA in front of somebody's own webhook
-    // receiver is legitimate, and `snob_ig::http::plain` has no argument for
-    // this -- the same shape that stops the session reaching a webhook. That
-    // reasoning was the flag's help once, in every command's `--help`.
+    // default, and the trade between a managed machine and a middlebox is only
+    // the person running it can make.
     #[arg(long, global = true, display_order = 904, hide_short_help = true)]
     pub strict_roots: bool,
 
@@ -1156,11 +1142,7 @@ pub struct LogoutArgs {
     #[arg(long, hide = true)]
     pub purge_profile: bool,
 
-    // Hidden: plumbing for `snob mcp` (`snob_logout`). The run signs out the
-    // account named here and no other: it is refused, with nothing signed
-    // out, unless the account it resolved is this one. `logout` with no
-    // account resolved signs every account out, which a call that named one
-    // must never come to, whatever the registry holds by then.
+    // Hidden: plumbing for `snob mcp` (`snob_logout`).
     #[arg(long, hide = true, value_name = "USER", conflicts_with = "all")]
     pub only: Option<String>,
 }
@@ -1336,16 +1318,13 @@ pub struct FilterArgs {
     /// Show only accounts with all of these attributes
     // Written out because the two combine in opposite ways: `--only
     // verified,private` reads as "the verified ones and the private ones" and
-    // returns neither — it means verified AND private. See `Filter::allows`
-    // for why that is the useful reading of `only`.
+    // returns neither — it means verified AND private.
     #[arg(long, value_delimiter = ',', value_name = "ATTR")]
     pub only: Vec<Attr>,
 
     /// Shorthand for --hide verified
     // Hidden rather than removed: it is the spelling the first release
-    // documented, so a script written against it still runs. It is kept out of
-    // the help because `--hide` is the general form and a second way to say
-    // one thing is the beginning of one per attribute.
+    // documented, so a script written against it still runs.
     #[arg(long, hide = true)]
     pub no_verified: bool,
 
@@ -1509,11 +1488,9 @@ pub struct WalkArgs {
     pub refresh: bool,
 
     /// Answer from the last stored snapshot without touching the network
-    // `--cache` is the earlier name, kept as a hidden alias so a script
-    // written against it still runs, the same way `mutuals` and
-    // `--no-verified` are kept. `--offline` is the spelling that generalizes:
-    // `whoami` uses it too, for the one intention a script has — spend no
-    // network.
+    // `--cache` is the earlier name, kept as a hidden alias so a script written
+    // against it still runs, the same way `mutuals` and `--no-verified` are
+    // kept.
     #[arg(long, alias = "cache", conflicts_with = "refresh")]
     pub offline: bool,
 
@@ -1540,10 +1517,8 @@ pub struct WalkArgs {
 
     /// Say what the walks would cost, against what today has left, and send
     /// nothing
-    // Refused beside every flag it would ignore: it asks nothing (`-y`),
-    // draws no bar, opens no view, and lists nobody to filter. `--limit` says
-    // the same on its own side, since `scan` has none. `--format` and `-o`
-    // stay, for the estimate's own two forms (`commands::dry_run`).
+    // Refused beside every flag it would ignore: it asks nothing (`-y`), draws
+    // no bar, opens no view, and lists nobody to filter.
     #[arg(
         long,
         conflicts_with_all = [
@@ -1590,11 +1565,9 @@ fn duration(text: &str) -> Result<std::time::Duration, String> {
 }
 
 // The schedule's flags are judged here, each by the domain rule that would
-// refuse it later, so a mistake in one is a mistake on the command line:
-// exit 2 and clap's message, before the file is read or anything is
-// settled, as every other value typed wrong is. Whether the flags make a
-// schedule together (`--on` with neither `--at` nor `--every`) is still
-// `schedule_from`'s question, since clap judges values one at a time.
+// refuse it later, so a mistake in one is a mistake on the command line: exit 2
+// and clap's message, before the file is read or anything is settled, as every
+// other value typed wrong is.
 
 /// `--every`: a duration, and one the monitor may run at
 /// (`Schedule::every`: not twice inside its minimum gap, nor rarer than it
@@ -1698,9 +1671,7 @@ pub struct WebhookArgs {
     pub webhook: Option<String>,
 
     /// Header to send with it, repeatable: --header "Authorization: Bearer x"
-    // A literal token here ends up in the shell history and in `ps`. The help
-    // says so rather than the code refusing it: this is the shape that works in
-    // a systemd unit, where the value comes from an environment file.
+    // A literal token here ends up in the shell history and in `ps`.
     #[arg(long, value_name = "NAME: VALUE")]
     pub header: Vec<String>,
 
@@ -1943,12 +1914,7 @@ pub struct WatchOnceArgs {
     pub delivery: WebhookArgs,
 
     /// Account to watch. Defaults to your own.
-    // No -y here, and deliberately. Consent to enumerate somebody else's lists
-    // is a thing a person gives, and an unattended run that could be handed one
-    // on the command line is one whose consent came from whoever wrote the cron
-    // entry. Reading another account needs a terminal to ask at, or an
-    // `[[account]]` in `watch.toml` carrying the answer somebody gave once,
-    // which is the only thing an unattended run accepts.
+    // No -y here, and deliberately.
     #[arg(value_parser = username)]
     pub target: Option<String>,
 
@@ -1983,7 +1949,6 @@ pub struct ProfileArgs {
     // Not [`BrowseArgs`], deliberately: that group's conflicts name the ids
     // `format` and `path`, and this command's `-o` field is `output` — clap
     // refuses unknown ids, and `Cli::command().debug_assert()` holds it.
-    // The rule itself is shared through [`browse_decision`].
     /// Browse the profile with the arrow keys: Enter opens what is under the
     /// cursor. The default on a terminal; this forces it, and fails where no
     /// terminal can be drawn
@@ -2121,11 +2086,7 @@ pub struct MediaActionArgs {
     pub interactive: bool,
 
     /// Print the listing and exit, even on a terminal
-    // Long-only, like every flag since the short space was closed. It
-    // conflicts with `-i` alone: beside `-d`, `-o` or `--format` it is
-    // redundant rather than ignored -- each of those already prints -- and a
-    // script that says `--no-interactive` defensively should not break the
-    // day a download is added to it.
+    // Long-only, like every flag since the short space was closed.
     #[arg(long, conflicts_with = "interactive")]
     pub no_interactive: bool,
 
@@ -2213,9 +2174,8 @@ pub struct MediaListArgs {
 
     /// Put a small picture of each thing listed in the JSON listing, in
     /// base64
-    // Hidden: plumbing for `snob mcp`, which hands them to a model as
-    // images, so that an agent can look at what it lists
-    // (`media::small_pictures`). A video's is its cover.
+    // Hidden: plumbing for `snob mcp`, which hands them to a model as images,
+    // so that an agent can look at what it lists (`media::small_pictures`).
     #[arg(long, hide = true, conflicts_with_all = ["download", "all", "interactive"])]
     pub small_pictures: bool,
 }
@@ -2268,10 +2228,8 @@ pub struct PostsArgs {
 
     /// How many pages of twelve posts the listing reads, up to 40, one
     /// sitting. The view reads the next page as you reach it instead
-    // A count of pages rather than of posts: a page is what is asked for,
-    // one request each, and a person scrolling a grid decides how far in
-    // pages. Forty is the sitting a list walk rests after
-    // (`pace::PAGES_PER_SITTING`).
+    // A count of pages rather than of posts: a page is what is asked for, one
+    // request each, and a person scrolling a grid decides how far in pages.
     #[arg(
         long,
         value_name = "N",
@@ -2377,10 +2335,7 @@ pub struct PostArgs {
     /// fifteen comments each, the first page included. The view reads the
     /// next page as you reach it instead
     // A count of pages, as `posts --pages`: a page is what is asked for, one
-    // request each. Twenty is `posts::MOST_COMMENT_PAGES`, and each page after
-    // the first waits as the app's "load more" is clicked
-    // (`pace::COMMENT_STEP_MS`). A download reads the first page alone, as the
-    // app opens a post with it.
+    // request each.
     #[arg(
         long,
         value_name = "PAGES",
@@ -2391,10 +2346,8 @@ pub struct PostArgs {
 
     /// Read the replies under the first N comments read that have replies
     /// the page did not show, up to 10, one request each
-    // The first page of each thread alone (`posts::read_threads`): no
-    // capture shows a second. Ten threads, `--replies-of` counted in
-    // (`posts::MOST_THREADS`), each a comment step after the read before
-    // (`pace::COMMENT_STEP_MS`).
+    // The first page of each thread alone (`posts::read_threads`): no capture
+    // shows a second.
     #[arg(
         long,
         value_name = "N",
@@ -2424,9 +2377,8 @@ pub struct PostArgs {
     pub json: bool,
 
     /// Start no further file once this many bytes were fetched
-    // Hidden: plumbing for `snob mcp`, which bounds what one call of an
-    // agent's may fetch (`commands::mcp::tools::SAVE_AT_MOST`). The files
-    // not started are said in the document, under `left`.
+    // Hidden: plumbing for `snob mcp`, which bounds what one call of an agent's
+    // may fetch (`commands::mcp::tools::SAVE_AT_MOST`).
     #[arg(long, hide = true, requires = "json", value_name = "BYTES")]
     pub save_at_most: Option<u64>,
 
@@ -2523,9 +2475,8 @@ pub struct FollowArgs {
 
     /// Refuse when this many writes confirmed through snob mcp were made
     /// in the last 24 hours [default: 10]
-    // Hidden: plumbing for `snob mcp`, which passes its
-    // `--max-writes-per-day` here. Bounded by what the write bucket lets
-    // through in a day anyway, so no number given can promise more.
+    // Hidden: plumbing for `snob mcp`, which passes its `--max-writes-per-day`
+    // here.
     #[arg(
         long,
         hide = true,

@@ -1,70 +1,25 @@
 //! `snob mcp --listen`: the same server over Streamable HTTP, on a loopback
-//! address, behind the key `snob mcp key` keeps, for a tunnel of the
-//! person's own (`ssh -L`, cloudflared, a VPN) to reach from elsewhere.
+//! address, behind the key `snob mcp key` keeps, for a tunnel of the person's
+//! own (AGENTS.md, "Over HTTP").
 //!
-//! **Loopback only** ([`loopback`]): nothing here is meant to be reached
-//! from a network directly, and TLS is the tunnel's job. **The key is
-//! mandatory**: a TCP port on loopback is open to every process of every
-//! user on the machine, unlike the owner's pipe or the relay's socket, so
-//! the address is no secret and the key is what tells the person's client
-//! from anything else that connects. The server will not start without one.
+//! **Loopback only** ([`loopback`]); TLS is the tunnel's job. **The key is
+//! mandatory**: a TCP port on loopback is open to every local user, and
+//! against a caller that is not a browser the key is the only control.
 //!
-//! What a request goes through, in this order, each step before the next is
-//! paid for ([`Front::answer`]):
+//! Each request, in this order:
 //!
-//! 1. **The path**: `/mcp`, and nothing else, `/.well-known/` included, so a
-//!    client looking for OAuth is told there is none.
+//! 1. **The path**: `/mcp` and nothing else, `/.well-known/` included.
 //! 2. **The key**, in `Authorization: Bearer`, **before any of the body is
-//!    read** and before a session exists ([`Gate`]). Both sides are signed
-//!    under a key drawn at start and compared whole, so the time a refusal
-//!    takes says nothing about how much of the key was right. A refusal
-//!    closes the connection, so failed attempts cannot hold connections
-//!    open.
+//!    read** and before a session exists ([`Gate`]).
 //! 3. **The body**, read here, at most [`MOST_BODY`] bytes within
-//!    [`BODY_WITHIN`]: hyper's header timeout does not cover the body, and
-//!    a body that never arrives would hold its connection for ever.
-//! 4. **Sessions**: at most [`MOST_SESSIONS`] open; a new one past them
-//!    closes the session left idle longest with no call running
-//!    ([`idlest`]), and is refused only when every one has a call running.
-//! 5. The SDK's own checks (`Host` and `Origin`, the protocol's headers),
-//!    and then the same handler `snob mcp` serves on standard input and
-//!    output, with the same tickets, limits and children.
+//!    [`BODY_WITHIN`]: hyper's header timeout does not cover the body.
+//! 4. **Sessions**: at most [`MOST_SESSIONS`]; a new one past them closes the
+//!    one left idle longest with no call running ([`idlest`]).
 //!
-//! **A connection that has not shown the key holds no place.** Anything on
-//! the machine can open connections and send nothing, so the cap on open
-//! connections ([`MOST_CONNECTIONS`]) is filled first by the key's holders:
-//! a connection whose first request has not arrived within
-//! [`FIRST_REQUEST_WITHIN`] is closed, and at the cap the oldest connection
-//! that has not shown the key is closed to make room ([`Open`]). Only when
-//! every connection open has shown it is a new one refused. A client's new
-//! connection shows the key in its first request, within milliseconds, so
-//! pushing it out would take more than the cap of new connections opened in
-//! that time.
-//!
-//! **Against a caller that is not a browser, the key is the only control.**
-//! The `Host` and `Origin` checks keep a web page in the person's own
-//! browser from reaching the port through DNS rebinding; anything else sets
-//! those headers as it likes.
-//!
-//! **The server does not prove itself to its clients.** A client, or a
-//! tunnel (cloudflared, a VPN, `ssh -L` or `-R`), sends the key to whatever
-//! answers on the port, and nothing holds the port while `snob mcp --listen`
-//! is not running (stopped, restarted after `upgraded`, never started).
-//! Any other user of the machine who binds it first is handed the key by
-//! the next request, and the key lasts until it is revoked. **On Unix,
-//! `--listen socket` closes this** (`http/socket.rs`): a socket in the
-//! private data directory, which nobody else can connect to or take, for the
-//! tunnel to reach there. On a port, `--listen` is for a machine where
-//! nobody else can run code, and a key that may have been read so is
-//! replaced (`snob mcp key revoke` and `new` for the
-//! keyring's, a new `SNOB_MCP_KEY` for the environment's); startup says so
-//! ([`started`], `key::Source::replace_it`). **The other loopback family is
-//! held too** ([`twin`]): a client told `localhost` may try `[::1]` before
-//! `127.0.0.1`, so bound to one of the two, the server listens on the same
-//! port of the other, and, on a port the person named, refuses to start
-//! when somebody else already does, on that address or on its family's
-//! wildcard held with exclusive use (a plain wildcard holder is not handed
-//! the connections to the address the server binds).
+//! **A connection that has not shown the key holds no place.** **The server
+//! does not prove itself to its clients**; on Unix, `--listen socket`
+//! (`http/socket.rs`) closes that. **The other loopback family is held too**
+//! ([`twin`]), since `localhost` may resolve to either.
 
 use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
@@ -104,46 +59,35 @@ mod socket;
 /// The one path served.
 pub const PATH: &str = super::HTTP_PATH;
 
-/// Connections open at once. A client keeps one or two (a stream it
-/// listens on, and a request), a tunnel a few more. **Counted against the
-/// connections that have shown the key**: a new one past this closes the
-/// oldest that has not ([`Open::admit`]), so a process without the key that
-/// holds idle connections only pushes out its own. Past this many that have
-/// shown it, whoever holds them is not one person's clients, and a new one is
-/// closed at once.
+/// Connections open at once. **Counted against the connections that have shown
+/// the key**: a new one past this closes the oldest that has not
+/// ([`Open::admit`]), so a process without the key that holds idle connections
+/// only pushes out its own.
 const MOST_CONNECTIONS: usize = 32;
 
-/// How long a new connection has to send the head of its first request. A
-/// client connects to send one, and sends it at once; a connection that sends
-/// nothing is closed this soon, rather than after [`HEADERS_WITHIN`], so the
-/// places it holds turn over fast.
+/// How long a new connection has to send the head of its first request.
 const FIRST_REQUEST_WITHIN: Duration = Duration::from_secs(2);
 
 /// Sessions open at once (the revisions before 2026-07-28 open one per
-/// conversation). A session is a little memory and a task, and each client
-/// a person uses holds one. **A new one past these closes the one left idle
-/// longest with no call running** ([`idlest`]), as a new connection closes
-/// one that never showed the key: a client that crashed, slept or closed
-/// without a `DELETE` keeps its session until [`SESSION_IDLE`], and eight
-/// reconnections of that kind in half an hour locked every new conversation
-/// out, with nothing anybody could close (seen against a test server: `200
-/// x8, 503 503`). A client whose session was closed is answered 404 on its
-/// next request, which the protocol has it meet with a new session.
+/// conversation). **A new one past these closes the one left idle longest with
+/// no call running** ([`idlest`]), as a new connection closes one that never
+/// showed the key: a client that crashed, slept or closed without a `DELETE`
+/// keeps its session until [`SESSION_IDLE`], and eight reconnections of that
+/// kind in half an hour locked every new conversation out, with nothing anybody
+/// could close (seen against a test server: `200 x8, 503 503`). A client whose
+/// session was closed is answered 404 on its next request, which the protocol
+/// has it meet with a new session.
 const MOST_SESSIONS: usize = 8;
 
-/// The largest request body taken. The largest call a client makes is a
-/// tool call with a few arguments and a ticket, well under a kilobyte; a
-/// quarter of a megabyte leaves room for a client that sends its whole
-/// `_meta` on every request, and none for one that means harm.
+/// The largest request body taken.
 const MOST_BODY: usize = 256 * 1024;
 
 /// How long a body may take to arrive, from when it is first read.
 const BODY_WITHIN: Duration = Duration::from_secs(30);
 
 /// How long a request's headers may take to arrive, and so how long a
-/// connection may sit idle between two requests: hyper counts both from when
-/// it starts waiting for a request. A client opens another connection when
-/// it needs one.
+/// connection may sit idle between two requests: hyper counts both from when it
+/// starts waiting for a request.
 const HEADERS_WITHIN: Duration = Duration::from_secs(10);
 
 /// hyper's read buffer, which bounds the headers of a request. 16 KiB is
@@ -228,9 +172,6 @@ pub fn loopback(text: &str) -> Result<SocketAddr, String> {
 }
 
 /// `--public-url`'s value: the `https` address a tunnel serves this at.
-/// Only its host and origin are used, to accept the requests addressed to
-/// it ([`allowed`]); `http` is refused, since a tunnel that does not end TLS
-/// would carry the key in plain text.
 pub fn public_url(text: &str) -> Result<Url, String> {
     let url = Url::parse(text).map_err(|e| format!("\"{text}\" is not an address: {e}"))?;
     if url.scheme() != "https" {
@@ -351,14 +292,13 @@ pub async fn serve(
     }
 
     // Stopping: nothing new is taken, and each call's child has been asked to
-    // stop (the handlers race their child against the same token) and gets
-    // its grace. **Then the answers are written, and only then are the
-    // streams ended**: the SDK's own token, canceled, drops an answer it has
-    // not yet handed to its response (a 500, or a stream with no result), so
-    // the server first waits for every response to a request to have been
-    // sent ([`Front::answering`]), which a connection told to close finishes
-    // writing. What is left is a stream that never ends by itself (a
-    // session's own), which the token ends.
+    // stop (the handlers race their child against the same token) and gets its
+    // grace. **Then the answers are written, and only then are the streams
+    // ended**: the SDK's own token, canceled, drops an answer it has not yet
+    // handed to its response (a 500, or a stream with no result), so the server
+    // first waits for every response to a request to have been sent
+    // ([`Front::answering`]), which a connection told to close finishes
+    // writing.
     drop(bound);
     in_flight
         .settled(child::GRACE + Duration::from_secs(5))
@@ -460,24 +400,14 @@ impl Bound {
     }
 }
 
-/// The listener on the same port of the other loopback family, when the
-/// server is bound to `127.0.0.1` or `[::1]`: those are what `localhost`
-/// resolves to, in an order the client's resolver picks, and a port left
-/// free on one of them is one another user of the machine can listen on to
-/// be handed the key by a client told `localhost`.
+/// The listener on the same port of the other loopback family, when the server
+/// is bound to `127.0.0.1` or `[::1]`: those are what `localhost` resolves to,
+/// in an order the client's resolver picks, and a port left free on one of them
+/// is one another user of the machine can listen on to be handed the key by a
+/// client told `localhost`.
 ///
-/// **Not to be had, on a port the person named, the server does not
-/// start**: whatever holds it is not this server, and may be listening for
-/// exactly that. Taken is not only the same address held: a process holding
-/// the family's wildcard (`[::]` or `0.0.0.0`) with exclusive use, as any
-/// user may on Windows, makes the bind fail with access denied rather than
-/// in use, and is handed every connection to the address all the same. So
-/// only a failure that says the family is not there at all
-/// ([`family_absent`]: IPv6 turned off), where nobody can listen either,
-/// lets the server go on with one; any other refuses. On a port the system
-/// picked (`:0`, which only a test or a tunnel set up
-/// afterwards would use) a taken twin is not a reason to refuse. `source`
-/// is where the key came from, which says how to replace it.
+/// **Not to be had, on a port the person named, the server does not start**:
+/// whatever holds it is not this server, and may be listening for exactly that.
 async fn twin(bound: SocketAddr, named: bool, source: key::Source) -> Result<Option<TcpListener>> {
     let other = match bound.ip() {
         IpAddr::V4(ip) if ip == Ipv4Addr::LOCALHOST => IpAddr::V6(Ipv6Addr::LOCALHOST),
@@ -550,9 +480,8 @@ struct Open(VecDeque<(Arc<Seen>, AbortHandle)>);
 
 impl Open {
     /// Whether a new connection may be taken: always while fewer than
-    /// [`MOST_CONNECTIONS`] are open, and otherwise once **the oldest that
-    /// has not shown the key** has been closed to make room. Refused only
-    /// when every connection open has shown it.
+    /// [`MOST_CONNECTIONS`] are open, and otherwise once **the oldest that has
+    /// not shown the key** has been closed to make room.
     fn admit(&mut self) -> bool {
         self.0.retain(|(_, task)| !task.is_finished());
         if self.0.len() < MOST_CONNECTIONS {
@@ -679,9 +608,8 @@ fn writes_warning(in_chat: ConfirmInChat) -> String {
     )
 }
 
-/// One connection, served until it ends or the server stops, when it is
-/// told to finish the response it is writing and take no other. One whose
-/// first request has not arrived within [`FIRST_REQUEST_WITHIN`] is closed.
+/// One connection, served until it ends or the server stops, when it is told to
+/// finish the response it is writing and take no other.
 async fn connection(
     stream: Box<dyn Stream>,
     front: Arc<Front>,
@@ -772,10 +700,9 @@ impl Front {
         // A `GET` is a stream only the server's stopping ends, and is not
         // waited for.
         let answering = (request.method() == Method::POST).then(|| self.answering.enter());
-        // A request in a session is that session alive; a `POST` is one of
-        // its calls until its answer has been sent, and its session is never
-        // closed under it. Only a session the manager holds: any other id
-        // is answered 404 by the SDK, and is noted nowhere.
+        // A request in a session is that session alive; a `POST` is one of its
+        // calls until its answer has been sent, and its session is never closed
+        // under it.
         let session = request
             .headers()
             .get("mcp-session-id")
@@ -835,10 +762,9 @@ impl Front {
         }
     }
 
-    /// Whether a session may be opened now: while fewer than
-    /// [`MOST_SESSIONS`] are, and otherwise once the one left idle longest
-    /// with no call running has been closed for it. `false` only when every
-    /// session open has a call running.
+    /// Whether a session may be opened now: while fewer than [`MOST_SESSIONS`]
+    /// are, and otherwise once the one left idle longest with no call running
+    /// has been closed for it.
     async fn room_for_a_session(&self) -> bool {
         let open: Vec<Arc<str>> = self.manager.sessions.read().await.keys().cloned().collect();
         self.activity.keep_only(&open);
@@ -862,11 +788,7 @@ impl Front {
 /// **Only sessions the manager holds are kept**: the id is whatever the
 /// client's `Mcp-Session-Id` says, up to the size of [`BUFFER`], and every
 /// request with an id nobody was given is answered 404 by the SDK without a
-/// tool being called, so none of the call limits counts it. Noting those
-/// would grow this map by one header per request, with nothing to remove
-/// them but the next `initialize`. So a request's session is noted through
-/// [`Activity::touch_held`], and the map holds no more than the sessions
-/// open and those closed since the last one opened ([`Activity::keep_only`]).
+/// tool being called, so none of the call limits counts it.
 #[derive(Default)]
 struct Activity(Arc<Mutex<HashMap<Arc<str>, Lately>>>);
 
@@ -900,10 +822,8 @@ impl Activity {
         })
     }
 
-    /// [`Activity::touch`], for the session a request names, only if
-    /// `manager` holds it; an id it does not hold is noted nowhere. Asked
-    /// under the manager's lock, so a session closed in between is closed
-    /// after it was noted, and the next opening forgets it.
+    /// [`Activity::touch`], for the session a request names, only if `manager`
+    /// holds it; an id it does not hold is noted nowhere.
     async fn touch_held(
         &self,
         manager: &LocalSessionManager,
@@ -933,9 +853,8 @@ impl Activity {
     }
 }
 
-/// Of the sessions `open`, the one with no call running that was asked
-/// anything longest ago, a session never seen counting as the oldest. `None`
-/// when every one has a call running.
+/// Of the sessions `open`, the one with no call running that was asked anything
+/// longest ago, a session never seen counting as the oldest.
 fn idlest(open: &[Arc<str>], seen: &HashMap<Arc<str>, Lately>) -> Option<Arc<str>> {
     open.iter()
         .filter(|id| seen.get(*id).is_none_or(|lately| lately.calls == 0))
@@ -991,9 +910,7 @@ impl hyper::body::Body for Answering {
 }
 
 /// Whether a request would open a session: an `initialize` sent with no
-/// session, which is what opens one on the revisions before 2026-07-28. A
-/// stateless call opens none, and is not refused when the sessions are
-/// full.
+/// session, which is what opens one on the revisions before 2026-07-28.
 fn opens_a_session(method: &Method, headers: &HeaderMap, body: &[u8]) -> bool {
     method == Method::POST
         && !headers.contains_key("mcp-session-id")
@@ -1011,8 +928,7 @@ enum Unread {
 }
 
 /// The body, whole, if it is at most [`MOST_BODY`] bytes and arrives within
-/// [`BODY_WITHIN`]. A body that announces more is refused before any of it
-/// is read.
+/// [`BODY_WITHIN`].
 async fn read(headers: &HeaderMap, mut body: Incoming) -> Result<Bytes, Unread> {
     let announced = headers
         .get(header::CONTENT_LENGTH)
@@ -1039,9 +955,7 @@ async fn read(headers: &HeaderMap, mut body: Incoming) -> Result<Bytes, Unread> 
         .unwrap_or(Err(Unread::TooSlow))
 }
 
-/// A short answer of ours. `close`: the connection is closed after it, for
-/// a request whose body was left unread, which would otherwise be read as
-/// the next request.
+/// A short answer of ours.
 fn plain(status: StatusCode, said: &'static str, close: bool) -> Response {
     let mut response = http::Response::new(Full::new(Bytes::from_static(said.as_bytes())).boxed());
     *response.status_mut() = status;
@@ -1070,11 +984,9 @@ fn unauthorized() -> Response {
     response
 }
 
-/// The key, as the server holds it to check a request: not the key itself,
-/// but its signature under a key drawn at start, against which what a
-/// client presents is signed and compared. Two signatures of one length,
-/// compared whole, so neither the length of what was sent nor where it went
-/// wrong shows in the time a refusal takes.
+/// The key, as the server holds it to check a request: not the key itself, but
+/// its signature under a key drawn at start, against which what a client
+/// presents is signed and compared.
 struct Gate {
     under: Secret,
     expected: String,

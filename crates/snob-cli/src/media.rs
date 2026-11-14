@@ -25,18 +25,10 @@ use crate::ui::browser::scratch::ABANDONED_AFTER;
 ///
 /// Higher than the profile-picture ceiling, and it has to be: a fifteen-second
 /// story video at Instagram's own bitrate lands in the single-digit megabytes
-/// and the 8 MB cap on `IgClient::download` refuses some of them. Sixty-four is
-/// far above anything Instagram serves for a format capped at fifteen seconds,
-/// so it is still a ceiling rather than a formality — its job is that a
-/// redirect to something else cannot make this read until memory runs out.
+/// and the 8 MB cap on `IgClient::download` refuses some of them.
 pub const MAX_STORY_BYTES: usize = 64 * 1024 * 1024;
 
 /// A photo or a video, as Instagram's `media_type` integer means it.
-///
-/// The integer stops here. Nothing downstream compares a number to 1 or 2, and
-/// an unknown value is its own case rather than being folded into either — a
-/// third kind arriving should read as "unknown" and be downloadable, not be
-/// mislabeled as a photo and given a `.jpg`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Photo,
@@ -70,8 +62,7 @@ pub struct Story {
     pub kind: Kind,
     pub taken_at: Epoch,
     pub expiring_at: Option<Epoch>,
-    /// Where the best copy is. Absent when Instagram described a story and
-    /// offered no version of it, which happens and must not be a crash.
+    /// Where the best copy is.
     pub url: Option<String>,
     /// Accounts tagged in it, already filtered for a terminal.
     pub mentions: Vec<String>,
@@ -87,10 +78,9 @@ pub struct Story {
 /// it and is still a fraction of the full picture's bytes.
 const THUMB_WIDTH: u32 = 640;
 
-/// The picture a view draws small, of the `candidates` Instagram offers for
-/// one item (a video's are its cover): the narrowest at least
-/// [`THUMB_WIDTH`] wide, and when none is, the widest; on a tie, the one
-/// listed first. The one rule for posts, stories and highlights.
+/// The picture a view draws small, of the `candidates` Instagram offers for one
+/// item (a video's are its cover): the narrowest at least [`THUMB_WIDTH`] wide,
+/// and when none is, the widest; on a tie, the one listed first.
 pub(crate) fn thumb_among(candidates: &[PictureVersion]) -> Option<String> {
     let width = |v: &&PictureVersion| v.width.unwrap_or(0);
     candidates
@@ -115,14 +105,11 @@ pub(crate) fn print_listing(
     destination: Option<&Path>,
     hint: &str,
 ) -> Result<ExitCode> {
-    // Every rendering ends in a newline, like `output::render`'s do. Neither
-    // `serde_json::to_string_pretty` nor comfy-table adds one, and without it
-    // the shell prompt comes back glued to the last row.
+    // Every rendering ends in a newline, like `output::render`'s do.
     text.push('\n');
     output::write_rendered(&Rendered::Text(text), destination)?;
 
-    // On standard error, so it does not land in a redirect. The listing is the
-    // answer; this is the hint about what to do with it.
+    // On standard error, so it does not land in a redirect.
     if destination.is_none() && Presentation::detect(None).interactive {
         ui::info(hint);
     }
@@ -144,31 +131,20 @@ pub(crate) fn listing_table(headers: &[&str], presentation: Presentation) -> Tab
     table
 }
 
-/// The most one small picture may weigh ([`small_pictures`]): half a
-/// megabyte. A thumbnail is the narrowest picture at least [`THUMB_WIDTH`]
-/// wide, some tens of kilobytes; where Instagram offered nothing that
-/// narrow it is the widest, and one past this is left out, not cut.
+/// The most one small picture may weigh ([`small_pictures`]): half a megabyte.
 pub(crate) const MAX_SMALL_PICTURE: usize = 512 * 1024;
 
-/// The most the small pictures of one listing weigh together: four
-/// megabytes, three pages of a grid at a hundred kilobytes a picture. They
-/// travel in the listing's JSON and from there into a model's context,
-/// which is no place for more.
+/// The most the small pictures of one listing weigh together: four megabytes,
+/// three pages of a grid at a hundred kilobytes a picture.
 pub(crate) const MOST_SMALL_PICTURES: usize = 4 * 1024 * 1024;
 
-/// A small picture of each of `wanted`, a listing's things by their number
-/// in it and the address of each one's thumbnail (a video's is its cover),
-/// for a reader that looks rather than saves: `snob mcp`, which hands them
-/// to a model as images (`--small-pictures`). Each is `{of, mime, bytes,
-/// data}`, `data` the picture in base64, or `{of, missing}` saying why
-/// there is none: nothing was offered, it was past a ceiling, it could not
-/// be fetched, or what came is no picture.
+/// A small picture of each of `wanted`, a listing's things by their number in
+/// it and the address of each one's thumbnail (a video's is its cover), for a
+/// reader that looks rather than saves: `snob mcp`, which hands them to a model
+/// as images (`--small-pictures`).
 ///
-/// **In the JSON, never on standard output as bytes**, and never an
-/// address: what is handed on is the picture, which names nobody and
-/// expires nowhere. Fetched from the CDN as every thumbnail a view draws
-/// is, one after another; nothing here is a request to Instagram, and
-/// nothing tells anybody what was looked at.
+/// **In the JSON, never on standard output as bytes**, and never an address:
+/// what is handed on is the picture, which names nobody and expires nowhere.
 pub(crate) async fn small_pictures(
     client: &IgClient,
     wanted: Vec<(usize, Option<String>)>,
@@ -227,8 +203,7 @@ fn picture_type(bytes: &[u8]) -> Option<&'static str> {
 }
 
 /// A listing's JSON document with `pictures` beside what it lists
-/// ([`small_pictures`]). Without any, and for NDJSON, whose lines are the
-/// rows alone, the listing as it came.
+/// ([`small_pictures`]).
 pub(crate) fn with_pictures(
     text: String,
     pictures: Option<Vec<serde_json::Value>>,
@@ -262,8 +237,7 @@ pub(crate) fn rows_or_envelope(
     })
 }
 
-/// The accounts a story tags, `@a @b`, for a table cell. Already filtered
-/// when the story was read, because they came off somebody else's profile.
+/// The accounts a story tags, `@a @b`, for a table cell.
 pub(crate) fn mentions_of(story: &Story) -> String {
     story
         .mentions
@@ -273,12 +247,10 @@ pub(crate) fn mentions_of(story: &Story) -> String {
         .join(" ")
 }
 
-/// An empty tray is still an answer, and a document asked for is written
-/// even when there is nothing in it: `{"username": …, "stories": []}`, the
-/// way an empty list command prints `[]`, so a script reading JSON from a
-/// pipe has something to parse. NDJSON with no rows is
-/// already nothing, and a table has nothing to draw; the sentence on
-/// standard error says what happened in both.
+/// An empty tray is still an answer, and a document asked for is written even
+/// when there is nothing in it: `{"username": …, "stories": []}`, the way an
+/// empty list command prints `[]`, so a script reading JSON from a pipe has
+/// something to parse.
 pub(crate) fn empty_document(
     format: Format,
     destination: Option<&Path>,
@@ -303,10 +275,6 @@ pub(crate) fn left_of(story: &Story) -> String {
 }
 
 /// How long a story has left, or nothing when Instagram did not say.
-///
-/// An absent `expiring_at` prints as a dash rather than as an expired story:
-/// zero would be read as "gone", which is a statement, and what is true is that
-/// nobody said.
 fn remaining(expiring_at: Option<Epoch>) -> String {
     let Some(at) = expiring_at else {
         return "-".into();
@@ -317,10 +285,9 @@ fn remaining(expiring_at: Option<Epoch>) -> String {
 /// "7h 23m", "12m", "expired".
 ///
 /// Not `snob_core::duration::format`, which exists to write a duration back
-/// into the monitor's configuration file the way somebody would have typed it
-/// — so it uses the largest unit that divides **exactly** and falls back to
-/// seconds. A story with seven hours and twenty-three minutes left divides
-/// exactly by nothing, and would have printed as `26580s`.
+/// into the monitor's configuration file the way somebody would have typed it —
+/// so it uses the largest unit that divides **exactly** and falls back to
+/// seconds.
 fn countdown(seconds: i64) -> String {
     if seconds <= 0 {
         return "expired".into();
@@ -354,17 +321,6 @@ pub(crate) fn numbers_of(
 }
 
 /// Downloads items of one listing by the numbers it printed.
-///
-/// One number keeps the single-download contract: `-o` names a file (or a
-/// directory that exists, which it is saved into) and a failure is the run's
-/// failure; without `-o` the file lands in the working
-/// directory under the listing's name, and one already there is an answer
-/// rather than a second copy. Several go through [`download_many`]: `-o`
-/// names a directory and the loop keeps going past one that fails.
-///
-/// `stem_base` is what comes before the number in a file name. `no_such` is
-/// the listing's sentence for a number it does not have, the one sentence
-/// for both paths so they cannot drift.
 pub(crate) async fn download_selected(
     client: std::sync::Arc<IgClient>,
     stem_base: String,
@@ -381,8 +337,7 @@ pub(crate) async fn download_selected(
     let [number] = numbers[..] else {
         return download_many(client, stem_base, items.to_vec(), numbers, destination).await;
     };
-    // One-based because that is what the listing shows. Zero is its own
-    // message rather than an underflow.
+    // One-based because that is what the listing shows.
     let story = number
         .checked_sub(1)
         .and_then(|i| items.get(i))
@@ -393,18 +348,16 @@ pub(crate) async fn download_selected(
             let bytes = bytes_of(&client, story).await?;
             output::write_bytes(&bytes, None)?;
         }
-        // A directory that is there already: the file goes into it under
-        // the listing's name, as several would. Taken as a file name, it
-        // failed with "Is a directory" after the story had been fetched.
+        // A directory that is there already: the file goes into it under the
+        // listing's name, as several would.
         Some(dir) if dir.is_dir() => {
             match save_story(&client, &stem_base, items, number, dir).await? {
                 Saved::Now(path) => ui::info(&format!("Saved {}", path.display())),
                 Saved::Already(path) => ui::info(&format!("Already saved {}", path.display())),
             }
         }
-        // The user named it, so replacing what is there is their call -- and
-        // so is downloading it again. Held whole: a named destination may be
-        // anywhere.
+        // The user named it, so replacing what is there is their call -- and so
+        // is downloading it again.
         Some(path) => {
             let bytes = bytes_of(&client, story).await?;
             output::write_bytes(&bytes, Some(path))?;
@@ -426,28 +379,9 @@ pub(crate) enum Saved {
 
 /// Saves one story under the name the listing implies, to disk as it arrives.
 ///
-/// **Nothing is fetched for a story already on disk.** The name depends on
-/// the extension and the extension is read from the bytes, so asking
-/// `default_name` would mean downloading the whole story first -- on a second
-/// `-d all`, every story in the tray fetched and thrown away. The four
-/// extensions `extension_of` can answer are tried first; a hit is "already
-/// saved" and costs nothing.
+/// **Nothing is fetched for a story already on disk.**
 ///
-/// That look is an optimization in front of the atomic check, not a
-/// replacement for it: the write still goes through `output::create_new`,
-/// which refuses a name that appeared between the look and the open. The
-/// doc on `output::write_new` says why the creation has to be the check.
-///
-/// **The file is written to `<stem>.<pid>.part` and renamed at the end.** The
-/// bytes stream to disk through `IgClient::download_to`, and a stream that
-/// stops halfway must not leave a truncated file under the real name, where
-/// the look above would take it for a finished one. A `.part` is removed on
-/// any failure here; one left by a killed process is removed by age the next
-/// time the same story is asked for.
-///
-/// `stem_base` is what comes before the number in the file name: the username
-/// for a story, the username and the highlight's number for a highlight item.
-/// Filtered here, because it carries a name that came off the server.
+/// **The file is written to `<stem>.<pid>.part` and renamed at the end.**
 pub(crate) async fn save_story(
     client: &IgClient,
     stem_base: &str,
@@ -469,19 +403,10 @@ pub(crate) async fn save_story(
 }
 
 /// [`save_story`] for any file of the CDN: `url` saved into `dir` as
-/// `<stem>.<extension>`, the extension read from the bytes, by the same
-/// steps and for the same reasons. `stem` is already filtered and is the
-/// whole name but its extension; `what` names the file in the sentence for
-/// one that offers no address; `cap` is the ceiling on its size.
+/// `<stem>.<extension>`, the extension read from the bytes, by the same steps
+/// and for the same reasons.
 ///
 /// **The stem passes `output::usable_stem` before anything is made of it.**
-/// `printable` leaves a `..`, a separator and a share name as they are, and
-/// the look for an earlier copy and the `.part` are paths built from the
-/// stem: checked only by `default_path` at the end, a name off the server
-/// such as `../x` was probed and streamed to outside `dir`, and on Windows
-/// one such as `\\host\share\x` reached for that host over SMB before the
-/// refusal.
-/// Refused here, nothing is looked at, created or sent.
 pub(crate) async fn save_named(
     client: &IgClient,
     stem: &str,
@@ -496,12 +421,10 @@ pub(crate) async fn save_named(
     }
     let url = url.ok_or_else(|| anyhow!("{what} has no downloadable version"))?;
 
-    // The scratch name carries the process id, so two runs saving into the
-    // same directory never share one: neither can unlink the other's
-    // half-written download, nor publish the other's truncated bytes under
-    // the final name with its rename. `create_new` is the only arbiter for
-    // this process's own name; a `.part` a killed run abandoned is cleared by
-    // age instead.
+    // The scratch name carries the process id, so two runs saving into the same
+    // directory never share one: neither can unlink the other's half-written
+    // download, nor publish the other's truncated bytes under the final name
+    // with its rename.
     sweep_stale_parts(dir, stem);
     let part = dir.join(format!("{stem}.{}.part", std::process::id()));
     let mut file = output::create_new(&part)?;
@@ -538,11 +461,6 @@ pub(crate) async fn save_named(
 }
 
 /// Removes `.part` files for this stem that no live download can still own.
-///
-/// A `.part` younger than [`ABANDONED_AFTER`] may be a sibling process still
-/// streaming -- its mtime moves with every written chunk -- and is left
-/// alone. Failures are ignored: this is housekeeping, and the story saves
-/// either way.
 fn sweep_stale_parts(dir: &Path, stem: &str) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -581,17 +499,6 @@ fn already_saved(dir: &Path, stem: &str) -> Option<PathBuf> {
 }
 
 /// Downloads all of them into a directory.
-///
-/// Keeps going past one that fails, and says so at the end. Stopping at the
-/// first would leave the user with a partial set and no idea which ones are
-/// missing — and a story URL expiring mid-run is the ordinary case here, not
-/// the exceptional one. That covers the write as well as the fetch: a name
-/// already taken in the directory is the ordinary case on a second run, and
-/// must not stop the loop at story one with the rest never attempted.
-///
-/// A Ctrl+C is the one failure that is not collected. Every fetch after it
-/// answers `Canceled` at once, so carrying on would count them all as
-/// failures and exit 1 for what the user did on purpose.
 pub(crate) async fn download_many(
     client: std::sync::Arc<IgClient>,
     stem_base: String,
@@ -641,8 +548,7 @@ pub struct Best {
 /// The ceiling on a video saved from its best tracks, the two together. The
 /// largest best track of the capture of 2026-11-13 was 210.6 MB, past
 /// [`crate::posts::MAX_POST_BYTES`]; both stream to disk, so the ceiling is
-/// only there so that something endless cannot fill it. A pair past it is
-/// saved from the progressive file, said before a byte is fetched.
+/// only there so that something endless cannot fill it.
 pub const MAX_BEST_BYTES: u64 = 512 * 1024 * 1024;
 
 impl Best {
@@ -654,10 +560,9 @@ impl Best {
     }
 }
 
-/// `file` saved into `dir`: from its best tracks, joined by ffmpeg, when it
-/// has them and an ffmpeg to join them; from its progressive file otherwise,
-/// and when the join fails, which is said on standard error. Ctrl+C stops
-/// either.
+/// `file` saved into `dir`: from its best tracks, joined by ffmpeg, when it has
+/// them and an ffmpeg to join them; from its progressive file otherwise, and
+/// when the join fails, which is said on standard error.
 pub(crate) async fn save_file(client: &IgClient, file: &Named, dir: &Path) -> Result<Saved> {
     let (saved, said) = save_file_saying(client, file, dir).await?;
     if let Some(said) = said {
@@ -761,8 +666,7 @@ fn joinable(file: &Named) -> (Option<&Best>, Option<String>) {
 }
 
 /// The best tracks of `stem` fetched into `dir` and joined into one MP4,
-/// answered as the finished `.part` the caller moves into place. Every part
-/// is the process's own (its id in the name) and removed on any failure.
+/// answered as the finished `.part` the caller moves into place.
 async fn joined(
     client: &IgClient,
     stem: &str,
@@ -842,13 +746,7 @@ pub(crate) async fn download_named(
     let dir = destination.unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
 
-    // Several in flight rather than one after another. The CDN is a different
-    // host with its own limits and is deliberately not paced (the reasoning
-    // is on `CdnClient::download_capped`), the client to it carries nothing
-    // that names the account, and the connection is HTTP/2 -- so three
-    // stories share one TCP+TLS connection instead of each waiting its own
-    // round trip. Three is what a browser does when it opens a tray, and
-    // past it a home link is the limit, not the latency.
+    // Several in flight rather than one after another.
     let dir = std::sync::Arc::new(dir.to_path_buf());
     let slots = std::sync::Arc::new(Semaphore::new(STORY_DOWNLOADS_IN_FLIGHT));
     let total = files.len();
@@ -915,9 +813,6 @@ pub(crate) async fn download_named(
 }
 
 /// How many stories download at once under `-d all` or a set.
-///
-/// See the comment in [`download_many`]. Not configurable: a flag would be a
-/// way to go faster, and this program's knobs only ever turn the other way.
 const STORY_DOWNLOADS_IN_FLIGHT: usize = 3;
 
 /// Whether a failed download was the user stopping it.
@@ -926,17 +821,14 @@ pub(crate) fn was_canceled(e: &anyhow::Error) -> bool {
         .any(|cause| matches!(cause.downcast_ref::<IgError>(), Some(IgError::Canceled)))
 }
 
-/// Whether `e` ends the run whatever it was fetching, rather than failing
-/// one file of several: the stop itself, a push-back of Instagram's, the
-/// cooldown one started, and a wait past `--max-wait`. They are the errors
-/// `IgClient::asset_from_the_page` hands on rather than trying the file
-/// another way, since a file fetched by the account's tab is a request
-/// Instagram can refuse.
+/// Whether `e` ends the run whatever it was fetching, rather than failing one
+/// file of several: the stop itself, a push-back of Instagram's, the cooldown
+/// one started, and a wait past `--max-wait`.
 ///
 /// **A loop over files that collects its failures asks this first.** A
-/// push-back counted as one file that failed lets the files after it be
-/// asked for, and the run end as a success, against "a hard stop on the
-/// first push-back" (AGENTS.md).
+/// push-back counted as one file that failed lets the files after it be asked
+/// for, and the run end as a success, against "a hard stop on the first
+/// push-back" (AGENTS.md).
 pub(crate) fn ends_the_run(e: &IgError) -> bool {
     matches!(
         e,
@@ -993,13 +885,6 @@ pub(crate) async fn bytes_of(client: &IgClient, story: &Story) -> Result<Vec<u8>
 }
 
 /// What arrived, read from the bytes rather than from the URL.
-///
-/// The URL is no guide: Instagram's signed links carry `stp=dst-jpg`, an
-/// instruction to the CDN to convert, so a path ending in `.webp` regularly
-/// returns JPEG. The one sniffer -- `pfp::Picture::extension` reads through
-/// it too. MP4's `ftyp` box sits at offset four, after the box length, and
-/// JPEG is both the common case and the sensible guess for anything
-/// unrecognizable: it is what Instagram serves almost everywhere.
 pub(crate) fn extension_of(bytes: &[u8]) -> &'static str {
     let webp = bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP");
     match bytes {

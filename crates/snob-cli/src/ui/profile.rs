@@ -1,48 +1,11 @@
 //! The interactive profile: the account's card, and everything on it opens.
 //!
-//! The card is the page reduced to a screenful — who they are, how you stand
-//! to each other, the counts, the highlights — with one cursor over it.
-//! Up/Down move between rows, Left/Right move within the horizontal ones,
-//! Enter opens what is under the cursor: the actions submenu, the stories,
-//! one of the lists, a highlight. Sub-views come back to the card with Left,
-//! Backspace or Esc; `q` leaves from anywhere.
+//! **What a click costs is paid at the click.**
 //!
-//! **What a click costs is paid at the click.** The card opens on what one
-//! `profile::fetch` with `MutualPolicy::Defer` already holds — about three
-//! requests — and everything deeper says its price first: the mutual walk
-//! runs when the number is opened, a followers or following walk is an
-//! inline y/n question naming the size, and on somebody else's account that
-//! question is the consent question, carried into the engine as
-//! `ListQuery.yes` with the answer recorded on the [`App`]. The posts tile
-//! asks nothing, being no list of people: it reads what `snob posts` opens
-//! with, the profile and the first page of the grid, under a box that says
-//! so.
-//!
-//! **Never call `ui::stories::browse` or `ui::highlights::browse` from
-//! here.** Each makes a [`Tui`] of its own — a second claim on the one
-//! terminal this card already holds — and each creates a [`Scratch`] at the
-//! same `story_scratch()` path, which deletes the live session's files. The
-//! shared internals (`walk_in`, `keep_folder`, `open`, `keep`) are the
-//! supported way in. `ui::people` is entered only through its `browse_in`,
-//! and `ui::posts` through its `browse_grid_in`, never `browse_grid`. Both
-//! borrow this card's guard and its scratch directory instead of
-//! building either: the card a list opens for one of its accounts ([`peek`])
-//! opens that account's picture and stories into the same directory.
+//! **Never call `ui::stories::browse` or `ui::highlights::browse` from here.**
 //!
 //! **The card is fitted to the terminal, and never loses a row to it**
-//! ([`fitted`]). The bio takes up to six rows and ends in `…` when it has
-//! more; `i` shows all the account says about itself, from what was already
-//! read. On a short terminal the bio's extra rows go first, then the blank
-//! rows, so that everything there is to open is still on screen.
-//!
-//! Walks are the other thing that cannot run under the browser's terminal
-//! state: the progress bars belong on the real screen, where their finished
-//! receipts stay in the user's scrollback, and raw mode would stairstep them
-//! anyway (it clears OPOST on Unix). [`Tui::suspend`] hands the terminal
-//! back before `engine::list` draws its bars; [`Tui::resume`] takes it back
-//! and repaints from nothing. Everything terminal-shaped beyond that is
-//! `ui::tui`'s — the guard, the chrome, and the receipts said on the real
-//! screen after the alternate screen has taken the frame away.
+//! ([`fitted`]).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -114,8 +77,7 @@ enum CardRow {
     Highlights,
 }
 
-/// Which rows this profile has to move over. Absent parts are simply not
-/// focusable: a hidden tray is not a row that says "nothing".
+/// Which rows this profile has to move over.
 fn card_rows(profile: &Profile) -> Vec<CardRow> {
     card_rows_of(profile, false)
 }
@@ -195,9 +157,8 @@ struct Media {
     mutual: Option<Vec<User>>,
     pfp: Option<Picture>,
     pfp_opened: Option<PathBuf>,
-    /// Whether fetching the picture is a request to Instagram and not the
-    /// CDN alone ([`picture_is_a_request`]). The read-only card says so on
-    /// the row, before the key.
+    /// Whether fetching the picture is a request to Instagram and not the CDN
+    /// alone ([`picture_is_a_request`]).
     pfp_is_a_request: bool,
     /// Whether the card draws the account's picture ([`pictured`]), and the
     /// small one it draws once that has arrived.
@@ -373,9 +334,7 @@ pub async fn browse(
     media.pictured = pictured;
     media.pictures = preview::Gallery::draws();
     // The account's small picture, fetched once the card has been up for a
-    // moment and while the keys are read (`preview::Gallery`). Through a
-    // client of its own to hold: the walks this card starts take the `App`
-    // whole.
+    // moment and while the keys are read (`preview::Gallery`).
     let mut gallery = preview::Gallery::new();
     let shared = app.client_shared();
 
@@ -385,10 +344,7 @@ pub async fn browse(
     let mut page_rows = 1usize;
     let mut switch_to: Option<Viewer> = None;
 
-    // The level as it is on screen, for a `Busy` to keep and wait over. A
-    // macro and not a closure: a closure made once would hold the media and
-    // the list for as long as it lived, and the fetch the wait is for needs
-    // them back. Each use borrows for the one frame it draws.
+    // The level as it is on screen, for a `Busy` to keep and wait over.
     macro_rules! level_frame {
         () => {
             |frame: &mut Frame<'_>| {
@@ -631,9 +587,8 @@ pub async fn browse(
                             CardRow::Counts => match state.counts_col {
                                 // The grid, as `snob posts` opens it: the
                                 // profile and the grid's first page, under a
-                                // box and with no question, since it is no
-                                // list of people. A count of zero is an
-                                // answer the card already has.
+                                // box and with no question, since it is no list
+                                // of people.
                                 0 if profile.posts == Some(0) => {
                                     note = "No posts".to_string();
                                 }
@@ -1178,10 +1133,6 @@ fn entry_title(entry: &Entry) -> String {
 }
 
 /// The `y` was the consent, for the engine and for the next question alike.
-///
-/// Recorded only for somebody else's account — your own lists have nothing
-/// to agree to — and only when a name was typed, which is the only case the
-/// engine would ask about.
 fn consent_was_given(app: &mut App, typed: Option<&str>, own: bool) {
     if !own && let Some(name) = typed {
         app.record_consent(engine::target::clean(name));
@@ -1473,8 +1424,7 @@ async fn ensure_pfp(app: &App, profile: &Profile, media: &mut Media) -> Result<(
 // What the card and the card a list opens both do.
 
 /// Enter on a story: fetched and handed to the system viewer, under the box
-/// `busy` already drew the view for. The note it leaves, and whether a key
-/// stopped it.
+/// `busy` already drew the view for.
 async fn story_open(
     busy: Busy,
     tui: &mut Tui,
@@ -1629,8 +1579,7 @@ const PEEK_KEYS: &[help::Key] = &[
     help::STOP,
 ];
 
-/// What `?` shows over the stories that card opens. `q` is back here, as it
-/// is on the card they were opened from, and there is no account to change.
+/// What `?` shows over the stories that card opens.
 const PEEK_STORIES_KEYS: &[help::Key] = &[
     help::MOVE,
     help::PAGE,
@@ -1707,9 +1656,7 @@ pub(crate) enum Peeked {
     Ignored,
 }
 
-/// Binds one key of the card a list opens. Deliberately not `action_of`:
-/// here `q` and Esc both mean "back to the list", where in the card they
-/// leave.
+/// Binds one key of the card a list opens.
 pub(crate) fn peek_key(key: KeyEvent) -> Peeked {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let plain = !ctrl && !key.modifiers.contains(KeyModifiers::ALT);
@@ -1731,21 +1678,13 @@ pub(crate) fn peek_key(key: KeyEvent) -> Peeked {
     }
 }
 
-/// Whether the card a list opens can open this row: only what is a file
-/// away. The stories came with the profile, and looking at one is a download
-/// from the CDN, which is no request to Instagram; the picture is the same,
-/// or says on its row that it is one request ([`picture_is_a_request`]). A
-/// highlight is a walk, a list is a walk and a question, and the mutual
-/// followers are pages of a sitting: those stay with `snob profile`, which
-/// asks before it spends.
+/// Whether the card a list opens can open this row: only what is a file away.
 fn opens_in_a_list(row: CardRow) -> bool {
     matches!(row, CardRow::Picture | CardRow::Stories)
 }
 
-/// The hints under the card a list opens: the keys of the row under the
-/// cursor, when one opens, then the ones that are always there. `several`
-/// is whether there is more than one row to move between, and `cut` whether
-/// the bio is shown short of whole.
+/// The hints under the card a list opens: the keys of the row under the cursor,
+/// when one opens, then the ones that are always there.
 fn peek_hint(focus: Option<CardRow>, several: bool, cut: bool) -> String {
     let mut hint = String::new();
     if several {
@@ -1770,14 +1709,11 @@ fn peek_hint(focus: Option<CardRow>, several: bool, cut: bool) -> String {
 /// The card of the account under the cursor of a list, on the guard the list
 /// holds: what `snob profile` shows, without the rows that start a walk.
 ///
-/// **It opens what is a file away and nothing else** ([`opens_in_a_list`]):
-/// the picture and the stories the profile came with, each fetched when its
-/// key is pressed, under a [`Busy`], into `scratch`, which is the caller's:
-/// the list's own, or the card's when the list was opened from the card,
-/// since two scratch directories on one path is the second deleting the
-/// first's files. `i` shows the whole bio, and sends nothing.
-///
-/// `None` is back to the list; `Some` leaves the view with that code.
+/// **It opens what is a file away and nothing else** ([`opens_in_a_list`]): the
+/// picture and the stories the profile came with, each fetched when its key is
+/// pressed, under a [`Busy`], into `scratch`, which is the caller's: the list's
+/// own, or the card's when the list was opened from the card, since two scratch
+/// directories on one path is the second deleting the first's files.
 pub(crate) async fn peek(
     tui: &mut Tui,
     app: &App,
@@ -2103,8 +2039,7 @@ fn viewing_rows(profile: &Profile) -> Vec<CardRow> {
 // ---------------------------------------------------------------------------
 // Frames. Pure rendering: state in, cells out, no terminal asked anything.
 
-/// The widest the card grows. Past this a line of facts stops being a card
-/// and starts being a banner; on a wide terminal the card centers instead.
+/// The widest the card grows.
 const CARD_MAX_W: u16 = 96;
 
 /// The most rows of the card a bio takes. Instagram's own form ends a bio
@@ -2125,16 +2060,13 @@ struct Fit {
     gaps: bool,
     /// The blank row inside the top border and inside the bottom one.
     padded: bool,
-    /// The picture drawn at the left of the about block, the text beside
-    /// it. Then the picture's row is that drawing and has no band of its
-    /// own ([`banded`]).
+    /// The picture drawn at the left of the about block, the text beside it.
     avatar: bool,
 }
 
-/// The picture on the card: this many columns, which at a pixel a column
-/// and two a row is a square of 16 by 16, and a row under it that says what
-/// it is and carries the cursor. Small on purpose: it says who the card is
-/// about at a glance, and Enter is one key away from the real thing.
+/// The picture on the card: this many columns, which at a pixel a column and
+/// two a row is a square of 16 by 16, and a row under it that says what it is
+/// and carries the cursor.
 const AVATAR_W: u16 = 16;
 const AVATAR_ROWS: u16 = AVATAR_W / 2 + 1;
 
@@ -2208,18 +2140,12 @@ fn banded(rows: &[CardRow], fit: Fit) -> impl Iterator<Item = &CardRow> + Clone 
         .filter(move |row| !(fit.avatar && **row == CardRow::Picture))
 }
 
-/// Fits the card to the rows of `area`, giving up first what costs least:
-/// the bio's rows past the second, since the whole of it is one `i` away;
-/// then the blank rows between the bands; then the ones inside the border;
-/// and the bio's second row last. **Never a row of the card**: a row is
-/// something to open, and one that fell off the bottom of a short terminal
-/// was there to move onto and not to see, which is what this replaced. A
-/// terminal too short for even that cuts the card at its bottom edge.
-///
-/// `pictured` is whether the card draws its picture (`Media::pictured`).
-/// The picture is the first thing given up: it is drawn only where the
-/// whole card fits with it, since under that it would be taking rows from
-/// the bio to show sixteen pixels of a face.
+/// Fits the card to the rows of `area`, giving up first what costs least: the
+/// bio's rows past the second, since the whole of it is one `i` away; then the
+/// blank rows between the bands; then the ones inside the border; and the bio's
+/// second row last. **Never a row of the card**: a row is something to open,
+/// and one that fell off the bottom of a short terminal was there to move onto
+/// and not to see, which is what this replaced.
 fn fitted(profile: &Profile, rows: &[CardRow], area: Rect, pictured: bool) -> Fit {
     let text_w = text_width(area);
     let fits = |fit: Fit| card_height(profile, rows, text_w, fit) <= area.height;
@@ -2250,10 +2176,9 @@ fn row_height(row: &CardRow) -> u16 {
     if *row == CardRow::Counts { 2 } else { 1 }
 }
 
-/// The bio as the card shows it, and whether that left any of it out:
-/// wrapped, its blank lines dropped, since a row of the card is worth more
-/// than a pause, and at most `rows` rows, the last ending in `…` where there
-/// was more. `i` shows all of it, as it was written ([`about_text`]).
+/// The bio as the card shows it, and whether that left any of it out: wrapped,
+/// its blank lines dropped, since a row of the card is worth more than a pause,
+/// and at most `rows` rows, the last ending in `…` where there was more.
 fn bio_on_the_card(bio: &str, width: usize, rows: usize) -> (Vec<String>, bool) {
     let width = width.max(8);
     let mut lines: Vec<String> = tui::wrapped(bio, width)
@@ -2321,9 +2246,8 @@ fn about_lines(
     lines
 }
 
-/// Everything the account says about itself, for the box `i` opens: the
-/// name, the category, the bio as it was written, blank lines and all, and
-/// the link. Wrapped here, so the box knows how far it can scroll.
+/// Everything the account says about itself, for the box `i` opens: the name,
+/// the category, the bio as it was written, blank lines and all, and the link.
 fn about_text(profile: &Profile, width: usize, colors: bool) -> Vec<Line<'static>> {
     let mut blocks: Vec<Vec<Line<'static>>> = Vec::new();
     let mut heading = Vec::new();
@@ -2374,7 +2298,6 @@ fn about_text(profile: &Profile, width: usize, colors: bool) -> Vec<Line<'static
 const ABOUT_MAX_W: u16 = 72;
 
 /// The box `i` opens over the card: [`about_text`], from line `scroll` on.
-/// Hands back the furthest it can scroll, which is 0 when all of it fits.
 fn about_modal(frame: &mut Frame<'_>, profile: &Profile, scroll: usize, colors: bool) -> usize {
     let dim = tui::paint(colors, tui::DIM);
     let bold = tui::paint(colors, tui::BOLD);
@@ -2420,10 +2343,8 @@ fn says_something(profile: &Profile) -> bool {
         || profile.external_url.is_some()
 }
 
-/// `i`: all the account says about itself, over the view `under` draws,
-/// until a key that does not scroll it is pressed. Nothing is fetched: it is
-/// what the card was opened with. The key that closes it is spent doing so,
-/// as in [`help::show`].
+/// `i`: all the account says about itself, over the view `under` draws, until a
+/// key that does not scroll it is pressed.
 fn show_about(
     tui: &mut Tui,
     profile: &Profile,
@@ -2457,7 +2378,6 @@ fn show_about(
 }
 
 /// Whether a key asks for the box of [`show_about`]: `i`, with nothing held.
-/// Bound here and not in `action_of`, since only the two cards have one.
 fn asks_about(key: KeyEvent) -> bool {
     key.code == KeyCode::Char('i')
         && !key
@@ -2546,10 +2466,8 @@ fn card_frame(
     frame.render_widget(block, card);
     let width = inner.width as usize;
 
-    // The vertical bands, built from the rows this profile has: an absent
-    // part is not a band that says "nothing". Band 0 is the about block;
-    // `at` is where each row landed, which depends on whether this terminal
-    // has the rows for a blank one between them.
+    // The vertical bands, built from the rows this profile has: an absent part
+    // is not a band that says "nothing".
     let about = about_lines(profile, fit.about_width(width), fit.bio, colors);
     let mut constraints = vec![Constraint::Length(about_rows(profile, width, fit))];
     let mut at = Vec::with_capacity(rows.len());
@@ -2674,9 +2592,7 @@ fn card_frame(
         }
     }
 
-    // The question, over everything and where the eyes are. Drawn last: the
-    // veil dims what is already on screen, and the modal's Clear keeps the
-    // veil out of the modal.
+    // The question, over everything and where the eyes are.
     if state.ask != Ask::None {
         tui::veil(frame, colors);
         question_modal(frame, &ask_wording(state.ask, own, profile), colors);
@@ -2685,8 +2601,7 @@ fn card_frame(
 
 /// One focusable row: a label, an optional dim aside, and a dim `›` at the
 /// right edge saying "this opens" (`opens`; the read-only card has no such
-/// rows). The selection covers the whole band, the
-/// way a row of a list would, not just the text.
+/// rows).
 fn draw_row_button(
     frame: &mut Frame<'_>,
     band: Rect,
@@ -2726,11 +2641,9 @@ fn draw_row_button(
     }
 }
 
-/// The counters as three tiles: the label dim on top, the number bold under
-/// it, and the focused tile inverted whole — `column_highlight_style` covers
-/// the full height of the rows area, which is exactly the two lines. The
-/// focused tile's label is not dim: dim and reverse video together is a
-/// faint background with the label lost in it on more than one theme.
+/// The counters as three tiles: the label dim on top, the number bold under it,
+/// and the focused tile inverted whole — `column_highlight_style` covers the
+/// full height of the rows area, which is exactly the two lines.
 fn draw_counts(
     frame: &mut Frame<'_>,
     band: Rect,
@@ -2786,18 +2699,16 @@ fn counted(n: Option<u64>) -> String {
     n.map(grouped).unwrap_or_else(|| "?".to_string())
 }
 
-/// The card's bottom edge: the note when there is one, otherwise the hints
-/// for the row under the cursor. A pending question is a modal, not a line
-/// here.
+/// The card's bottom edge: the note when there is one, otherwise the hints for
+/// the row under the cursor.
 fn card_footer_line(here: CardRow, cut: bool, note: &str, colors: bool) -> Line<'static> {
     tui::footer(note, &card_hint(here, cut), colors)
 }
 
-/// The account's picture at the left of the about block: the picture, once
-/// it has arrived, and under it the row that says what it is and carries
-/// the cursor, since a picture cannot be drawn in reverse video and still be
-/// the picture. Until it arrives its place is kept, empty, so that nothing
-/// on the card moves when it does.
+/// The account's picture at the left of the about block: the picture, once it
+/// has arrived, and under it the row that says what it is and carries the
+/// cursor, since a picture cannot be drawn in reverse video and still be the
+/// picture.
 fn draw_avatar(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -2823,10 +2734,7 @@ fn draw_avatar(
     );
 }
 
-/// The card's hints. `cut` is whether the bio is shown short of whole, which
-/// is when `i` is worth naming here. The account key gives its place to the
-/// save on the highlights row, so that the line still fits a card 80 columns
-/// wide; `?` names every key.
+/// The card's hints.
 fn card_hint(here: CardRow, cut: bool) -> String {
     let mut hint = String::from("↑↓ move · ←→ pick · enter open");
     hint.push_str(match here {
@@ -2860,14 +2768,9 @@ fn question_size(question: &str, area: Rect) -> (u16, u16) {
     (width, height)
 }
 
-/// A y/n question about a walk, as a modal over the frame: double border —
-/// the only double in the program, the stroke that says "on top" without
-/// naming a color — over a `Clear`, at the optical center. The card asks its
-/// pending question with it, and the account list asks with it before walking
-/// again as another account.
-///
-/// No default answer on purpose: `ui::confirm` prints `[Y/n]`, but a walk of
-/// three hundred pages must not have an Enter that quietly starts it.
+/// A y/n question about a walk, as a modal over the frame: double border — the
+/// only double in the program, the stroke that says "on top" without naming a
+/// color — over a `Clear`, at the optical center.
 pub(crate) fn question_modal(frame: &mut Frame<'_>, question: &str, colors: bool) {
     let dim = tui::paint(colors, tui::DIM);
     let bold = tui::paint(colors, tui::BOLD);
@@ -2989,9 +2892,7 @@ fn draw_actions_panel(
     );
 }
 
-/// One chip. Focused: the text with a blank cell each side, inverted — the
-/// button a terminal knows how to draw, no brackets needed. Unfocused: the
-/// text plain. The `>` is what is left when there is no styling at all.
+/// One chip.
 fn chip(text: &str, focused: bool, colors: bool) -> Span<'static> {
     if focused {
         if colors {
@@ -3005,8 +2906,7 @@ fn chip(text: &str, focused: bool, colors: bool) -> Span<'static> {
 }
 
 /// Which chips fit: the smallest window that keeps `selected` whole, grown
-/// rightward while there is room. Widths are display columns; `sep` is what
-/// sits between two chips.
+/// rightward while there is room.
 fn chip_window(
     widths: &[usize],
     sep: usize,
@@ -3031,11 +2931,9 @@ fn chip_window(
     start..end
 }
 
-/// One physical row of chips, windowed to `width`, with a dim marker at
-/// either end that has chips cut off. The plain labels are measured; the
-/// styling lives in spans, so it never counts as columns. Three spaces
-/// between chips: with the focused chip an inverted block, the gap alone
-/// separates, and a glyph would fight the `·` inside the labels.
+/// One physical row of chips, windowed to `width`, with a dim marker at either
+/// end that has chips cut off. The plain labels are measured; the styling lives
+/// in spans, so it never counts as columns.
 fn chip_row(
     prefix: &str,
     labels: &[String],
@@ -3089,9 +2987,6 @@ fn grouped(n: u64) -> String {
 }
 
 /// The header's short words for how the two accounts stand to each other.
-///
-/// Attribute-shaped on purpose — they sit beside "verified, private" — where
-/// the printed document says the same thing as a sentence.
 fn relation_words(profile: &Profile) -> Vec<&'static str> {
     let mut words = Vec::new();
     if let Some(r) = profile.relation {

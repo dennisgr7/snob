@@ -1,29 +1,8 @@
 //! `snob stories`: what an account has up right now, and how to keep a copy.
 //!
-//! The requests for the listing, from the browser: the profile (two
-//! requests the first time a name is seen, its id and then the profile) and
-//! the reel, which is the web client's story gallery, opened over the
-//! stories tray the home page shows, read off the page for nothing. Without
-//! one: the profile, by name, and the reel. Then one more per story
-//! downloaded, from the CDN, which is a different host with its own limits
-//! and is not charged against Instagram's budget. The same shape as `pfp`,
-//! for the same reasons, and like `pfp` it walks no list and stores no
-//! snapshot.
+//! **Downloading a story does not mark it as seen.**
 //!
-//! **Downloading a story does not mark it as seen.** Registering a view is a
-//! separate call, and a write — so it falls under the two-write rule and this
-//! project has no code that could send it; `crates/snob-core/tests/no_seen.rs`
-//! reads the source of every crate to keep it that way. The consequence
-//! belongs to the person whose story it is, whose viewer list stays a record of
-//! people who opened it in the app, and it is the one property here that nobody
-//! running the tool would ever notice being broken.
-//!
-//! **It does not ask for consent, and that is deliberate.** The consent rule
-//! covers enumerating somebody — walking their followers, which is thousands of
-//! requests about thousands of people who did not ask to be in a database.
-//! Reading one reel is one request about one account, and `pfp` does not ask
-//! either. Asking here would make the question routine, and a question that is
-//! always asked stops being read.
+//! **It does not ask for consent, and that is deliberate.**
 
 use std::path::Path;
 
@@ -162,10 +141,9 @@ fn no_such_story(stories: &Stories, number: usize) -> anyhow::Error {
     )
 }
 
-/// The network half: the profile and the reel, each paid for inside the
-/// client, for the reason `pfp`'s fetch gives, kept apart from the session
-/// and the filesystem so a test can drive it.
-/// `known` is the account's pk when this machine has seen it.
+/// The network half: the profile and the reel, each paid for inside the client,
+/// for the reason `pfp`'s fetch gives, kept apart from the session and the
+/// filesystem so a test can drive it.
 pub async fn fetch(
     client: &IgClient,
     typed: &str,
@@ -189,13 +167,6 @@ pub async fn fetch(
 }
 
 /// The wire item, reduced.
-///
-/// The largest version wins rather than the first. Instagram lists candidates
-/// in an order it does not promise, and the web client picks the one that fits
-/// its viewport — nothing here draws in a terminal, so what is wanted is simply
-/// the biggest. `image_versions2` is read even for a video, because a video
-/// item carries its poster frame there and an item with no `video_versions` is
-/// then still downloadable as the picture Instagram has of it.
 pub(crate) fn story_from(item: &ReelItem) -> Story {
     let kind = Kind::of(item.media_type);
     let video = largest(&item.video_versions).map(|v| v.url.clone());

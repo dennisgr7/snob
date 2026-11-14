@@ -1,62 +1,10 @@
-//! Listening to the calls Instagram's own app makes on the page, for
-//! push-back.
+//! Listening to the calls Instagram's own app makes on the page, for push-back.
 //!
-//! **Why.** The tab snob sends from is on instagram.com, and the site's app
-//! runs in it and makes calls of its own. Instagram talks to the session
-//! through every one of them: a 429 or a challenge on one of the app's calls is
-//! the service saying no, exactly as it would be on one of snob's. Unheard,
-//! that answer would reach snob only at its own next request, and not at all
-//! when there was none — and a 429 on the site's own page load would be read
-//! by nobody.
-//! The rule is a hard stop on the first push-back, so the browser listens.
+//! **Recorded exactly once, by the process holding the browser.**
 //!
-//! **What counts.** Only calls to Instagram's hosts (in a sandbox, to the site
-//! the tab is on) that the app sends with `XMLHttpRequest` or `fetch`, and the
-//! documents the tab loads. A 429 counts the moment its answer arrives; any
-//! other answer that could be one — a refusal, or a JSON answer that might
-//! declare a failure under a 200 — is judged when its body has arrived, by
-//! [`snob_ig::error::push_back`], the same rule the client applies to its own.
-//! A route the app takes to `/challenge/` counts when the tab's address says
-//! so, with no request at all. The paths and the thresholds are provisional
-//! until a capture of the real app with `tools/capture/record.js` says
-//! otherwise; what makes them safe meanwhile is that nothing is counted that
-//! the rule does not already call a push-back.
-//!
-//! **Recorded exactly once, by the process holding the browser.** A cooldown
-//! repeated within a day doubles, so one push-back written down twice costs
-//! twice. A [`Latch`] shared with the page decides it: the listener, and the
-//! page for each of snob's own answers ([`pushed_back`]), claim it through
-//! [`heard`], and only the first to claim it records, in the database of the
-//! account the browser is for. The command that asked is not needed for it:
-//! a push-back is recorded even when that command has stopped waiting. Once it is
-//! claimed, every answer of snob's goes back as `PageError::PushedBack`,
-//! which the client never records.
-//!
-//! The listener hears the documents snob reads as well as the app's; the
-//! fetches snob sends are skipped only to spare reading their bodies twice,
-//! as the page judges their answers itself. Each runs in a script named
-//! [`OWN_SCRIPT`], which is the initiator the browser reports for it —
-//! measured on Chromium 141, where the app's own `eval`'d code has an empty
-//! name, so an empty name alone would have taken those for snob's.
-//!
-//! The app's calls also carry what the document does not: the web session
-//! id, the rest of the app's forms and the variables of its queries, kept
-//! for the requests built from the page's values ([`Documents`]). They are
-//! kept by the document that sent them, named by its loader, so that a call
-//! is built only from its own document's even when an event that said the
-//! tab changed documents was dropped or came late.
-//!
-//! Once claimed, the tab is sent to `about:blank` — nothing more of the app
-//! runs — and the page refuses to send anything until the browser is closed.
-//!
-//! **Where.** In a task of its own, fed by the dispatcher's events. A body is
-//! read with `Network.getResponseBody` from yet another task: the dispatcher
-//! must never wait on a reply, and this task must not stop listening while it
-//! waits for one. `Fetch.enable` is not used for any of this: it pauses
-//! every request a page's scripts make and every document, whatever its
-//! address, as well as the event log, the sync with Facebook and video by
-//! address; each is judged in the dispatcher, where no event is dropped,
-//! rather than here, by the rule [`super::guard`] writes down.
+//! Each runs in a script named [`OWN_SCRIPT`], which is the initiator the browser
+//! reports for it — measured on Chromium 141, where the app's own `eval`'d code
+//! has an empty name, so an empty name alone would have taken those for snob's.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -73,13 +21,10 @@ use super::lock;
 use crate::cdp::{Connection, Event};
 
 /// The name snob's own fetch script runs under, which the browser reports as
-/// the initiator of every request it sends. Seen by nothing but the protocol:
-/// the script runs in an isolated world the page cannot reach.
+/// the initiator of every request it sends.
 pub(super) const OWN_SCRIPT: &str = "snob-request";
 
-/// How many of the app's requests are followed at once. A request is
-/// forgotten when it finishes; this only bounds a page that starts requests
-/// and never finishes them.
+/// How many of the app's requests are followed at once.
 const FOLLOWED: usize = 512;
 
 /// How long reading one answer's body may take.
@@ -91,10 +36,6 @@ const BODY_TIMEOUT: Duration = Duration::from_secs(10);
 const KEPT_DOCUMENTS: usize = 4;
 
 /// The first push-back heard on a browser, and who heard it.
-///
-/// A `watch` rather than a plain lock so that it can be waited on: the owner
-/// of the browsers tells every command sending as the account the moment it is
-/// claimed, not at the command's next request (`owner`).
 #[derive(Debug)]
 pub(super) struct Latch {
     claimed: tokio::sync::watch::Sender<Option<PushedBack>>,
@@ -109,8 +50,7 @@ impl Default for Latch {
 }
 
 impl Latch {
-    /// Claims the latch for `cause`. `true` for the first to claim it, who
-    /// records it; `false` when it was claimed already.
+    /// Claims the latch for `cause`.
     pub(super) fn claim(&self, cause: PushedBack) -> bool {
         self.claimed.send_if_modified(|claimed| {
             if claimed.is_some() {
@@ -142,7 +82,6 @@ pub(super) struct Shared {
     /// sandbox's fake be heard, and the host whose cookies are written back.
     pub(super) site: Mutex<Option<String>>,
     /// What the app's own calls carried, by the document that sent them.
-    /// A std lock, never held across an await.
     pub(super) documents: Mutex<Documents>,
 }
 
@@ -152,7 +91,6 @@ pub(super) struct Document {
     /// The loader the document came from, which names it.
     loader: String,
     /// The web session id the app last sent from it ([`web_session_of`]).
-    /// The app makes a new one for each page load.
     pub(super) web_session: Option<String>,
     /// For a request built like the app's to copy.
     pub(super) calls: AppCalls,
@@ -166,10 +104,8 @@ pub(super) struct Document {
 #[derive(Debug, Default)]
 pub(super) struct Documents {
     kept: VecDeque<Document>,
-    /// The latest `variables` the app sent with each of the registry's
-    /// reads, from any document. Kept when the document goes: a flag the
-    /// app sends is the same on the next document, where the app may not
-    /// send that read at all.
+    /// The latest `variables` the app sent with each of the registry's reads,
+    /// from any document.
     templates: HashMap<Operation, String>,
     /// The numbers the app sent the registry's reads under, from any
     /// document, when its call vouched for them: kept for the same reason.
@@ -662,10 +598,8 @@ async fn body_of(connection: &Connection, tab: &str, request: &str) -> Option<St
         .map(str::to_string)
 }
 
-/// What a call the page made was refused with, at `warn`, whether or not
-/// this is the push-back that gets recorded: which call, and what Instagram
-/// said. Only the path, as the query can carry a name; the body through the
-/// same excerpt every error gets.
+/// What a call the page made was refused with, at `warn`, whether or not this
+/// is the push-back that gets recorded: which call, and what Instagram said.
 fn noted(path: &str, status: u16, body: &str) {
     tracing::warn!(
         path,
@@ -699,16 +633,8 @@ pub(super) fn noted_own(asked: &str, response: &PageResponse) {
     );
 }
 
-/// A push-back heard on the page, on the app's traffic or on one of snob's
-/// own answers: recorded if nobody has yet, and the tab stopped either way.
-/// The recording, when this call claimed it, runs on a task of its own, handed
-/// back for a caller that must not answer before it is done.
-///
-/// Every command sending as the account is told the moment the latch is
-/// claimed, which is before the cooldown is committed: a command that reads
-/// the store at once can still find none. Nothing is sent in that window —
-/// the browser refuses everything once claimed — but a reader of the store
-/// should go by the error it was given rather than by the row.
+/// A push-back heard on the page, on the app's traffic or on one of snob's own
+/// answers: recorded if nobody has yet, and the tab stopped either way.
 pub(super) fn heard(
     connection: &Connection,
     tab: &str,
@@ -730,13 +656,8 @@ pub(super) fn heard(
     }))
 }
 
-/// Writes the cooldown down where every process reads it before it spends:
-/// in the database of the account whose browser heard it.
-///
-/// Through the budget's own connection alone, as the client records: the
-/// command that opened this browser opened the store first, so the schema is
-/// there, and an owner of an older build, still serving after an upgrade,
-/// must not fail to write it down because a newer build moved the schema on.
+/// Writes the cooldown down where every process reads it before it spends: in
+/// the database of the account whose browser heard it.
 fn record(paths: &AccountPaths, reason: &str, minimum: Duration) {
     use snob_core::budget::RateBudget;
     let recorded = snob_store::store::rate_budget::SqliteRateBudget::open(paths)

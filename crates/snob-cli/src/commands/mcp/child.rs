@@ -1,21 +1,12 @@
 //! Running one `snob` command for a tool call, and reading what it said.
 //!
-//! **Every call is a process of its own**, the binary this server is, run
-//! with the arguments a person would type. Not a function call into the
-//! commands, for three reasons that each would be enough: a command reads its
-//! confirmation from standard input, which here carries the protocol; the
-//! cancellation token is the process's, so one call's Ctrl+C would be every
-//! call's; and a stray line on standard output would be a frame of JSON-RPC
-//! the client cannot parse. A child has its own of all three, and everything
-//! the commands promise (the budget, the cooldown, consent, the write regime)
-//! holds for it exactly as it holds for a person, because it is the same code
-//! path a person runs.
+//! **Every call is a process of its own**, the binary this server is, run with
+//! the arguments a person would type.
 //!
 //! **Stopping is closing its standard input** (`--stop-when-stdin-closes`),
-//! which a parent can do on every platform; the child then stops as for
-//! Ctrl+C, saving its page and giving its walk back, and is killed only if it
-//! has not gone in [`GRACE`]. Killing it outright would hold its walk's claim
-//! until the claim's lease ran out.
+//! which a parent can do on every platform; the child then stops as for Ctrl+C,
+//! saving its page and giving its walk back, and is killed only if it has not
+//! gone in [`GRACE`].
 
 use std::ffi::OsString;
 use std::process::Stdio;
@@ -27,16 +18,11 @@ use tokio::process::Command;
 
 use crate::exit::ExitCode;
 
-/// How long a child asked to stop gets before it is killed. A walk stops
-/// between two requests, and a request in flight is raced against the
-/// cancellation, so seconds are plenty; a write in flight is the one thing
-/// that is not abandoned, and its answer comes back well inside this. The
-/// same grace a job's walk gets, from the one home it has (`jobs`).
+/// How long a child asked to stop gets before it is killed.
 pub const GRACE: Duration = crate::jobs::GRACE;
 
-/// The longest one heartbeat may take to reach the client before the call
-/// goes on without it. A client that has stopped reading would otherwise hold
-/// the call, and the child's stop with it, for as long as it does not read.
+/// The longest one heartbeat may take to reach the client before the call goes
+/// on without it.
 const TICK_WITHIN: Duration = Duration::from_secs(5);
 
 /// The most of standard error kept for a failure that did not end in the JSON
@@ -96,13 +82,8 @@ impl Stamp {
     }
 }
 
-/// Whether the binary a server started from is gone or has changed, given
-/// what it was then and what is at its path now (`None`: nothing is).
-///
-/// Every installer does one of the two: Homebrew's and Scoop's cleanup
-/// remove the old version's directory, WinGet and `install.ps1` move the
-/// running file aside and put the new one in its place, and `install.sh`
-/// and a package replace the file at the same path.
+/// Whether the binary a server started from is gone or has changed, given what
+/// it was then and what is at its path now (`None`: nothing is).
 fn upgraded(then: Option<&Stamp>, now: Option<&Stamp>) -> bool {
     match (then, now) {
         (_, None) => true,
@@ -124,15 +105,14 @@ impl Launch {
         }
     }
 
-    /// Whether the binary this server runs its children from is no longer
-    /// the one it started from.
+    /// Whether the binary this server runs its children from is no longer the
+    /// one it started from.
     ///
     /// **Then nothing is started**, rather than a child of whatever is at the
     /// path now: a newer child may read the arguments this server built in a
     /// way this server never checked, and a removed file starts nothing (nor
-    /// could a child started through `/proc/self/exe` start the browser
-    /// owner, which reads `current_exe` again). Restarting the server, which
-    /// the client does when it reconnects it, is the whole fix.
+    /// could a child started through `/proc/self/exe` start the browser owner,
+    /// which reads `current_exe` again).
     pub fn upgraded(&self) -> bool {
         upgraded(self.started_from.as_ref(), Stamp::of(&self.exe).as_ref())
     }
@@ -154,18 +134,8 @@ impl Launch {
         for name in NEVER_INHERITED {
             command.env_remove(name);
         }
-        // **In a process group of its own, so closing its standard input is
-        // the only stop it gets.** Sharing the server's, the Ctrl+C a person
-        // presses to stop `snob mcp --listen` reached every child too, which
-        // took it as its first request to stop; the server then closed its
-        // input, a second request, and the child exited at once (`interrupt`:
-        // a second request does not wait), with no JSON failure and the
-        // terminal's reset sequences written into the pipe, and a write in
-        // flight was abandoned. Seen in 4 runs of 9 against a fake Instagram
-        // that never answered. On Windows a new group has Ctrl+C disabled and
-        // still hears the console closing, signing out and shutting down; on
-        // Unix a group other than the terminal's foreground one is not sent
-        // its SIGINT, and SIGTERM and SIGHUP still reach the child by pid.
+        // **In a process group of its own, so closing its standard input is the
+        // only stop it gets.**
         #[cfg(windows)]
         command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP);
         #[cfg(unix)]
@@ -176,11 +146,8 @@ impl Launch {
     /// Runs `snob <globals> <args>` to its end, or until `stop` resolves.
     ///
     /// `tick` is called every `every` while it runs, with how long it has run,
-    /// so the caller can tell the client the call is alive, and **its future
-    /// is awaited here**, in the call's own task, before the loop goes on. So
-    /// a heartbeat has reached the client before the result can: the
-    /// specification has progress notifications stop once a request is
-    /// answered, and a send spawned off carries no order with the result.
+    /// so the caller can tell the client the call is alive, and **its future is
+    /// awaited here**, in the call's own task, before the loop goes on.
     pub async fn run<F>(
         &self,
         args: &[String],
@@ -229,8 +196,6 @@ impl Launch {
                 // would race the result (see above), and rmcp keeps which
                 // request a message belongs to in a task-local
                 // (`ORIGINATING_REQUEST`) that does not cross `tokio::spawn`.
-                // Bounded, so a client that stopped reading cannot keep the
-                // child's exit or its stop from being seen.
                 _ = beat.tick() => {
                     let _ = tokio::time::timeout(TICK_WITHIN, tick(started.elapsed())).await;
                 }
@@ -288,8 +253,7 @@ fn read(code: Option<i32>, out: &[u8], err: &str) -> Finished {
     }
 }
 
-/// The exit code a number stands for. One a child cannot exit with (it was
-/// killed by a signal, or it is newer than this server) is a failure.
+/// The exit code a number stands for.
 fn from_number(number: i32) -> ExitCode {
     crate::exit::outcome_of(number).unwrap_or(ExitCode::Error)
 }

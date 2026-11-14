@@ -26,14 +26,8 @@ use super::delivery::{Delivery, deliver, drain};
 use super::say::{describe_tick, refusal_line, say_what_was_given_up};
 use super::wire::{failed_tick_json, json_line, tick_json};
 
-/// One run: each viewer's entries read as that viewer, then what every
-/// account owes sent, then every account's database settled.
-///
-/// A fresh `App` per viewer and per run rather than one held open for weeks.
-/// It picks up a session that was replaced and a refreshed User-Agent, and —
-/// the reason that matters on Windows — it holds no SQLite connection while
-/// the loop sleeps, so `snob purge` in another terminal is not blocked by a
-/// file this has open.
+/// One run: each viewer's entries read as that viewer, then what every account
+/// owes sent, then every account's database settled.
 pub(super) async fn run_viewers(
     paths: &AppPaths,
     secrets: &SecretStore,
@@ -66,10 +60,7 @@ pub(super) async fn run_viewers(
 /// Writes down that a run starts, before any of its work: **a run counts from
 /// its start** (`scheduled::last_started`), so one that fails before any
 /// account writes its row in `watch_runs` is not due again at a timer's next
-/// look, and one still walking when that look comes is not started twice. The
-/// rule the loop already keeps for itself. Best effort, as
-/// [`waits_for_power`] is: the run is not refused for a file it could not
-/// write, and the rows it does write still count.
+/// look, and one still walking when that look comes is not started twice.
 fn started(paths: &AppPaths, at: Epoch) {
     match Shared::open(paths).and_then(|shared| shared.monitor_started(at)) {
         Ok(()) => {}
@@ -77,11 +68,9 @@ fn started(paths: &AppPaths, at: Epoch) {
     }
 }
 
-/// Whether the run that is due waits for power: the battery is critical, so
-/// the system is about to hibernate or shut down under a run started now
-/// (`power::battery`). Written down in `shared.db` at every look, so `snob
-/// watch status` says what the monitor is doing instead of calling it late,
-/// and can tell a monitor still waiting from one that is gone.
+/// Whether the run that is due waits for power: the battery is critical, so the
+/// system is about to hibernate or shut down under a run started now
+/// (`power::battery`).
 pub(super) fn waits_for_power(paths: &AppPaths, now: Epoch) -> bool {
     if !crate::power::battery::critical() {
         return false;
@@ -165,13 +154,7 @@ async fn run_groups(
     }
 
     // Once, after every viewer, and whatever the viewers did — including when
-    // none had news of its own, which is the common case. Rows left aging past
-    // `MAX_AGE_SECS` are never handed back by `due`, and nothing expires them
-    // but a failed attempt.
-    //
-    // Not after a cancellation: the queue is `DRAIN_LIMIT` POSTs of up to
-    // thirty seconds each per account, and nothing is lost by leaving it —
-    // what is owed stays owed, and the next run drains it.
+    // none had news of its own, which is the common case.
     if let Some(delivery) = delivery
         && !cancel.is_canceled()
     {
@@ -218,10 +201,6 @@ pub(super) async fn drain_all(
 }
 
 /// Retention for every account's database, with no session needed.
-///
-/// Every door a run can close early closes after this or before a session is
-/// asked for, so it is what keeps owed reports, old captures and the run log
-/// expiring while a session is gone or an address is refused.
 pub(super) fn settle_all(paths: &AppPaths) {
     let now = snob_core::clock::now();
     say_what_was_given_up(
@@ -315,10 +294,7 @@ fn skip(
 /// The two modes differ here and nowhere else, and **only in prose**: with
 /// `--json` both write one compact line per account and run, news or not
 /// (`tick_one`), so `snob watch --json >> events.ndjson` and `snob watch once
-/// --json >> events.ndjson` make the same file. Without it a scheduled service
-/// stays quiet when there is no news, which is what makes "silence means
-/// nothing changed" true, while `once` is looked at while it runs and says so
-/// either way.
+/// --json >> events.ndjson` make the same file.
 #[derive(Clone, Copy)]
 pub(super) struct Printing {
     json: bool,
@@ -351,20 +327,13 @@ impl Printing {
 }
 
 /// What a run over several accounts came to.
-///
-/// Not `snob_core::watch::RunOutcome`, which is what *one* run of *one* account
-/// came to and is the vocabulary `watch_runs.outcome` is kept in. This is the
-/// summary of a whole pass over the file: the requests it spent, the first
-/// reason any of its ticks gave, and the one failure nobody has printed yet.
 pub(super) struct RunSummary {
     /// Requests spent by every account that got as far as spending any.
     pub(super) spent: u32,
     /// The first non-`Ok` verdict a tick reported, the accounts being in the
-    /// order the file names them. [`first_reason`] is where the choice between
-    /// first and worst is made, and why there is no worst to choose.
+    /// order the file names them.
     pub(super) code: ExitCode,
-    /// The last failure, unprinted. Every earlier one has already been printed,
-    /// for the reason [`to_print_and_to_return`] gives.
+    /// The last failure, unprinted.
     pub(super) failed: Option<anyhow::Error>,
 }
 
@@ -418,13 +387,6 @@ impl Tally {
 }
 
 /// Every account one viewer watches, through that viewer's `App`.
-///
-/// One `App` for all of them: they share a session and a request budget. A
-/// failure on one account does not stop the rest — a private account somebody
-/// stopped being allowed to read must not silence the monitor's own.
-///
-/// `self` in `watched` is whoever `app` is, so this is handed only the entries
-/// read as that viewer.
 async fn run_accounts(
     app: &mut crate::app::App,
     watched: &[Watched],
@@ -441,9 +403,8 @@ async fn run_accounts(
         }
         // A pause between two accounts, as a person takes going from one
         // profile to the next (`DWELL_MS`, 1.5 to 4 s): back to back, two
-        // accounts' first requests would leave one after the other with no
-        // time between them a reader takes. Only ever slower; nothing is
-        // waited against a test server (`IgClient::is_live`).
+        // accounts' first requests would leave one after the other with no time
+        // between them a reader takes.
         if index > 0
             && app
                 .client()
@@ -454,11 +415,7 @@ async fn run_accounts(
         }
         // Read around the tick rather than out of the report it returns.
         //
-        // `TickReport.requests` is worked out at the *end* of `tick`, so any
-        // `?` on the way out throws away a measurement the pacer has already
-        // been charged for — and `tick_one` also `?`s on serializing the body
-        // and on `deliver`, both of them after a whole successful two-list
-        // walk. What was really spent has its own row in AGENTS.md.
+        // What was really spent has its own row in AGENTS.md.
         let before = app.client().pacer().spent();
         let outcome = tick_one(app, account, delivery, printing, timing).await;
         let charged = app.client().pacer().spent().saturating_sub(before);
@@ -467,18 +424,10 @@ async fn run_accounts(
         match outcome {
             Ok(tick) => tally.code = first_reason(tally.code, tick.outcome()),
             Err(e) => {
-                // A tick that failed is still a tick that happened, and the
-                // run log says "one row per tick, including the ticks that
-                // found nothing": without this row `status` goes on printing
-                // the last good run, and `prune` keeps that newest row for
-                // ever.
-                //
-                // An account whose *first* tick fails still records nothing:
-                // `watch_runs.account_pk` references `accounts(pk)`, and
-                // nothing has put a row there yet.
-                //
-                // The moment is read once and given to both, so the row in the
-                // run log and the line in the stream name the same second.
+                // A tick that failed is still a tick that happened, and the run
+                // log says "one row per tick, including the ticks that found
+                // nothing": without this row `status` goes on printing the last
+                // good run, and `prune` keeps that newest row for ever.
                 let at = snob_core::clock::now();
                 record_failed_run(app.db(), app.viewer().pk, account, &e, charged, at, timing);
                 if printing.json {
@@ -491,17 +440,8 @@ async fn run_accounts(
     }
 }
 
-/// Writes the row a failed tick owes the run log of `viewer`, the account
-/// `db` belongs to.
-///
-/// Best-effort, like `commit`'s own recording: a run log that cannot be written
-/// is worth a line in the journal and is not a reason to turn a failure into a
-/// different failure.
-///
-/// The account has to be resolved locally, because a tick that failed at
-/// `target::resolve` never learned an id. An account that has never been seen
-/// has no `accounts` row for the foreign key to point at, so nothing is written
-/// — which is exactly the case the comment at the call site names.
+/// Writes the row a failed tick owes the run log of `viewer`, the account `db`
+/// belongs to.
 fn record_failed_run(
     db: &Store,
     viewer: Pk,
@@ -545,15 +485,6 @@ fn record_failed_run(
 }
 
 /// Splits a run's failures into the ones it prints and the one it hands back.
-///
-/// Only one can be returned, and whoever gets it prints it — `scheduled` so the
-/// service keeps going, `main` so `once` exits with the right code. So the rest
-/// are printed here, in the order they happened, and each failure reaches the
-/// journal exactly once.
-///
-/// Printing every failure here *and* returning one would write the whole
-/// `error:` / `caused by:` / `hint:` block twice per failing run, and returning
-/// `Ok` to avoid that would hide that an account had failed.
 fn to_print_and_to_return<T>(failures: Vec<T>) -> (Vec<T>, Option<T>) {
     let mut failures = failures.into_iter();
     let last = failures.next_back();
@@ -562,17 +493,7 @@ fn to_print_and_to_return<T>(failures: Vec<T>) -> (Vec<T>, Option<T>) {
 
 /// The verdict a run answers with, folded over the ticks that succeeded.
 ///
-/// **The first non-`Ok` one, not the worst.** `ExitCode` is a handful of
-/// independent reasons rather than a severity scale: it derives no `Ord`, and
-/// its numbers are a shell convention — 130 is 128 plus SIGINT — so "the worst"
-/// is not something this could compute. Deriving `Ord` and taking the maximum
-/// would put `Interrupted` above `NoSession`: a run somebody stopped would
-/// outrank a session that has gone, in the value `once` hands back as its
-/// process exit code.
-///
-/// So the rule is the order the accounts are already in, and the earliest reason
-/// wins. A tick that failed outright is not here at all — it leaves through
-/// `RunSummary::failed`, and `once` returns this only when nothing failed.
+/// **The first non-`Ok` one, not the worst.**
 fn first_reason(so_far: ExitCode, tick: ExitCode) -> ExitCode {
     match so_far {
         ExitCode::Ok => tick,
@@ -617,10 +538,6 @@ async fn tick_one(
 }
 
 /// Says out loud which lists this run could not look at, and why.
-///
-/// To standard error, so it does not land in the middle of a report something
-/// else is parsing — and said even in JSON, where a caller reading `looked`
-/// would otherwise have to guess why.
 fn warn_about_refusals(tick: &TickReport) {
     for (kind, skipped) in tick
         .lists
