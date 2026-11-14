@@ -1,20 +1,10 @@
 //! Where the tool keeps its data, following each platform's conventions.
 //!
-//! **These are per user, never per directory.** Everything here comes from
-//! `directories`, which reads the user's profile, so `snob` run from two
-//! different folders is the same session, the same database and the same cache.
-//! The only thing the working directory decides is where an exported file lands
-//! when no `-o` was given, which is what any command-line tool does.
-//!
-//! Data goes to the **local** directory, not the one that roams with the user
-//! profile. On Windows that is the difference between Roaming and Local, and it
-//! matters here: the database uses WAL, and WAL on a directory synced by
-//! OneDrive or a roaming profile is a documented cause of SQLite corruption. It
-//! also keeps megabytes of snapshots out of the roaming profile. Configuration
-//! stays in the syncable directory, where it belongs.
-//!
-//! On Linux and macOS both paths are the same, so the distinction only shows on
-//! Windows.
+//! **Per user, never per directory**: everything comes from `directories`.
+//! Data goes to the **local** directory, not the one that roams: the
+//! database uses WAL, and WAL on a synced folder (OneDrive, a roaming
+//! profile) is a documented cause of SQLite corruption. Configuration stays
+//! in the syncable one. The two differ on Windows only.
 
 use std::path::{Path, PathBuf};
 
@@ -34,13 +24,9 @@ pub enum PathError {
         #[source]
         source: std::io::Error,
     },
-    /// The directory exists and could not be limited to this account.
-    ///
-    /// Its own variant rather than a [`PathError::Create`], because the
-    /// directory was created perfectly well and blaming the creation sends
-    /// somebody looking in the wrong place. What failed is the half that makes
-    /// it private, and that is the half worth naming: the database inside it is
-    /// the whole follower history in the clear.
+    /// The directory exists and could not be limited to this account: the
+    /// half worth naming, since the database inside is the whole follower
+    /// history in the clear.
     #[error("could not restrict {path} to your account: {detail}")]
     NotPrivate { path: PathBuf, detail: String },
     #[error("could not write {path}: {source}")]
@@ -60,16 +46,9 @@ pub struct AppPaths {
     /// build older than the first release may have left a session there, and
     /// `purge` leaves nothing behind.
     legacy_data: Option<PathBuf>,
-    /// Set by [`Self::rooted_at`], and the reason [`Self::stories_root`] is not
-    /// simply the system temporary directory.
-    ///
-    /// Every other location this type hands out is already under the root a
-    /// test or `--sandbox-root` gave it. The scratch directory is the one that
-    /// would otherwise escape, because it is the one that comes from the
-    /// environment rather than from `directories`. "Every file this run
-    /// touches is under one directory" is a promise the sandbox seam makes in
-    /// `AGENTS.md`, and a hole in it is a test writing into the real
-    /// `%TEMP%`.
+    /// Set by [`Self::rooted_at`]: the scratch directory comes from the
+    /// environment, and under a sandbox it must stay under the root like
+    /// every other file the run touches.
     sandbox: Option<PathBuf>,
 }
 
@@ -95,8 +74,8 @@ impl AppPaths {
         Self {
             config: root.join("config"),
             data: root.join("data"),
-            // Always defined so that `purge` removing it can be tested on any
-            // platform, not just Windows.
+            // Always defined, so that `purge` removing it is tested on every
+            // platform.
             legacy_data: Some(root.join("legacy-data")),
             sandbox: Some(root.to_path_buf()),
         }
@@ -178,13 +157,9 @@ impl AppPaths {
     }
 
     /// The browser profile of one account: the device its requests are sent
-    /// from, and nobody else's.
-    ///
-    /// **One per account**, because one account is only ever sent from one
-    /// browser and two accounts never share one: a profile shared by two
-    /// would have to be emptied at every switch of account, throwing the
-    /// device away each time, and a session coming back to it would come back
-    /// from a browser Instagram had never seen.
+    /// from. **One per account**: a profile shared by two would be emptied at
+    /// every switch, and each session would come back from a browser
+    /// Instagram had never seen.
     pub fn browser_profile_for(&self, pk: snob_core::Pk) -> PathBuf {
         self.browser_profile().join(pk.to_string())
     }
@@ -195,37 +170,18 @@ impl AppPaths {
         self.data.join("browser-hints.json")
     }
 
-    /// Where `snob stories --interactive` puts a story it is about to hand to
-    /// the system viewer.
+    /// Where a story about to be handed to the system viewer is put: under
+    /// the system's temporary directory (`$XDG_RUNTIME_DIR` on Linux,
+    /// [`runtime_dir`]), one directory per process. Measured on Windows 11:
+    /// the viewers hold no handle on the file, `%TEMP%` and `%LOCALAPPDATA%`
+    /// carry identical ACLs, and Windows Search crawls the latter, so the
+    /// data directory would buy nothing.
     ///
-    /// **Under the operating system's temporary directory, one directory per
-    /// process**, because the data directory buys nothing here, as measured on
-    /// Windows 11:
-    ///
-    /// - Photos with the picture on screen and Media Player with the video
-    ///   playing hold **no** handle on the file: Restart Manager reports
-    ///   nobody, and `DeleteFileW` succeeds while the window is still up. A
-    ///   viewer that opens without `FILE_SHARE_DELETE` exists, and nothing can
-    ///   delete underneath it, but it is not the default.
-    /// - `%TEMP%` and `%LOCALAPPDATA%` carry **identical** ACLs -- SYSTEM,
-    ///   Administrators, the user -- both inherited. On Linux
-    ///   `$XDG_RUNTIME_DIR` is better than either: 0700 *by specification*, on
-    ///   tmpfs, and gone with the session.
-    /// - Windows Search crawls `%LOCALAPPDATA%`, so the data directory is not
-    ///   the more private place either.
-    ///
-    /// `std::env::temp_dir()` does the right thing on all three platforms, and
-    /// on Linux [`runtime_dir`] prefers `$XDG_RUNTIME_DIR` when there is one.
-    ///
-    /// **The process id is in the name on purpose**, twice over: two `snob`
-    /// runs must not share a directory one of them will delete, and a
-    /// fixed-name directory in a shared temporary space is a name anybody can
-    /// predict and create first.
-    ///
-    /// [`Self::owned_dirs`] carries the parent, so `snob purge` still reaches
-    /// whatever a run left behind. The system's own cleaner is not a mechanism
-    /// to lean on: the oldest thing in one Windows machine's `%TEMP%` had been
-    /// there forty-nine days.
+    /// **The process id is in the name on purpose**: two runs must not share
+    /// a directory one of them will delete, and a fixed name in a shared
+    /// temporary space is one anybody can create first. `purge` removes the
+    /// parent ([`Self::owned_dirs`]): the system's cleaner is not to be
+    /// leaned on.
     pub fn story_scratch(&self) -> PathBuf {
         self.stories_root()
             .join(format!("run-{}", std::process::id()))
@@ -234,26 +190,17 @@ impl AppPaths {
     /// The parent of every [`Self::story_scratch`], which is what `purge`
     /// removes and what the age sweep walks.
     pub fn stories_root(&self) -> PathBuf {
-        // A sandbox root replaces every other location a run touches, and this
-        // is one of them: a test must not be able to reach into the real
-        // temporary directory, and `--sandbox-root` promising "every file this
-        // run touches" has to keep being true.
+        // A sandbox root replaces every location a run touches, this one
+        // included.
         match &self.sandbox {
             Some(root) => root.join("stories"),
             None => runtime_dir().join("snob-ig-stories"),
         }
     }
 
-    /// Every directory this tool may have created, for `snob purge` to remove.
-    ///
-    /// Assembled here rather than by the command so that a directory added
-    /// later cannot be forgotten by the one command whose whole job is to leave
-    /// nothing behind -- the configuration directory included, which is where
-    /// `watch.toml` goes.
-    ///
-    /// Deduplicated, because on macOS the configuration and data directories
-    /// are the same path: listed twice, the second removal would fail on a
-    /// directory the first one had already taken and be reported as a problem.
+    /// Every directory this tool may have created, for `snob purge`: listed
+    /// here so that one added later is not forgotten. Deduplicated, since on
+    /// macOS the configuration and data directories are the same path.
     pub fn owned_dirs(&self) -> Vec<PathBuf> {
         let mut dirs: Vec<PathBuf> = Vec::new();
         let stories = self.stories_root();
@@ -261,9 +208,7 @@ impl AppPaths {
             Some(&self.data),
             Some(&self.config),
             self.legacy_data.as_ref(),
-            // The one location outside the data directory this tool writes to,
-            // here rather than left to the system's cleaner for the reason
-            // [`Self::story_scratch`] gives.
+            // The one location outside the data directory this tool writes to.
             Some(&stories),
         ]
         .into_iter()
@@ -277,23 +222,17 @@ impl AppPaths {
     }
 
     /// Creates what every run writes to: the data directory, and only that.
-    ///
-    /// The configuration directory is created by what writes configuration
-    /// (`config::write`), because creating it for everybody leaves an empty
-    /// folder in the roaming profile of every machine this runs on.
+    /// The configuration directory is made by what writes configuration, so
+    /// that no empty folder is left in every roaming profile.
     pub fn ensure_dirs(&self) -> Result<(), PathError> {
         create_private_dir(&self.data)
     }
 }
 
 /// Where one account's own files are: its database, its session file and its
-/// browser profile.
-///
-/// A type of its own so that a function that acts as an account says so in its
-/// signature: the database and the session file are only reachable from here,
-/// never from [`AppPaths`], so a caller cannot open one account's data while
-/// holding nothing but the machine's. Everything that is not the account's is
-/// the [`AppPaths`] it derefs to.
+/// browser profile. A type of its own so that the database and the session
+/// file are reachable only from here, never from the [`AppPaths`] it derefs
+/// to.
 #[derive(Debug, Clone)]
 pub struct AccountPaths {
     app: AppPaths,
@@ -328,9 +267,7 @@ impl AccountPaths {
 
     /// Held, with [`try_lock_file`], by a run that may send requests for this
     /// account only while no other such run does (`--spend-alone`). The lock
-    /// is the operating system's and goes with the process, so a run that
-    /// was killed leaves nothing held; the empty file it leaves behind means
-    /// nothing.
+    /// goes with the process; the empty file left behind means nothing.
     pub fn spend_lock(&self) -> PathBuf {
         self.dir().join("spend.lock")
     }
@@ -386,44 +323,30 @@ impl AccountPaths {
     }
 
     /// Which sessions of the account may be sent as, by any process on this
-    /// machine: one `created_at` a line, in whole seconds, as
-    /// [`snob_core::session::Session`] keeps it. There and empty, none is.
-    /// **Not there, in a directory that is, every session is sent as**: a
-    /// directory from before this file existed, never signed out of nor
-    /// logged in to since. Every way a directory is made starts one, empty
-    /// ([`Self::ensure_dirs`], and the layout's move, which lands a directory
-    /// whole), so only such an old one is ever without it; its first sign-out
-    /// or login starts it ([`Self::sign_out`], [`Self::admit_session`]).
+    /// machine: one `created_at` a line, in whole seconds. There and empty,
+    /// none is. **Not there, in a directory that is, every session is sent
+    /// as**: a directory from before this file existed. Every way a directory
+    /// is made starts one, empty ([`Self::ensure_dirs`], the layout's move),
+    /// and the first sign-out or login of an old one starts it.
     ///
-    /// A session is named by when it was made because nothing else about it
-    /// lasts: Instagram rotates the `sessionid` itself, and what the browser
-    /// rotated is written back to the store with the `created_at` it had
-    /// (`snob-cli`'s `headless::write_back`), so the session a walk holds in
-    /// memory and the one stored since are still the same one. **Only ever
-    /// compared for equality, never ordered**: the clock that stamped them
-    /// may have been set back since, which would make a later login look
-    /// older.
+    /// A session is named by when it was made because Instagram rotates the
+    /// `sessionid` itself, and what the browser rotated is written back with
+    /// the `created_at` it had. **Compared for equality only, never
+    /// ordered**: a clock set back would make a later login look older.
     ///
-    /// **Every rewrite of it holds [`Self::signed_in_lock`]**: a sign-out,
-    /// a login let in, and a full list trimmed. Only making it where there
-    /// is none goes without ([`start_signed_out`]), since a file made new
-    /// cannot put back anything another process took out.
+    /// **Every rewrite holds [`Self::signed_in_lock`]**. Only making it where
+    /// there is none goes without ([`start_signed_out`]): a file made new
+    /// cannot put back what another process took out.
     pub fn signed_in(&self) -> PathBuf {
         self.dir().join(SIGNED_IN)
     }
 
     /// The lock beside [`Self::signed_in`] that its writers take, one at a
-    /// time, in this process or another ([`lock_file`]).
-    ///
-    /// Why: a login that finds the list full reads it, writes a trimmed copy
-    /// beside it and moves that over it. A sign-out that emptied the list
-    /// between the read and the move would be undone by the move, and the
-    /// sessions it signed out of would be sent as again. Holding this, the
-    /// sign-out waits for the move and empties what it left, or the login
-    /// waits for the sign-out and reads the empty list. A separate file
-    /// because the list itself is replaced, and a lock held on the file it
-    /// replaced holds nothing. Readers ([`Self::refuses_session`]) take
-    /// none: the move and the appended lines are each seen whole.
+    /// time ([`lock_file`]): a login that trims a full list reads it and
+    /// moves a copy over it, and a sign-out between the two would be undone
+    /// by the move. A separate file because the list itself is replaced.
+    /// Readers take none: the move and the appended lines are each seen
+    /// whole.
     pub fn signed_in_lock(&self) -> PathBuf {
         self.dir().join(SIGNED_IN_LOCK)
     }
@@ -436,13 +359,11 @@ impl AccountPaths {
         lock_file(&self.signed_in_lock())
     }
 
-    /// Signs the account out for every process on this machine: from now
-    /// on no session it has now is sent as ([`Self::refuses_session`]),
-    /// whichever process still holds one in memory, until a login lets its
-    /// own in ([`Self::admit_session`]). An account with no directory
-    /// writes nothing and makes none: a directory that is gone already
-    /// refuses every session, and one made again starts empty
-    /// ([`Self::ensure_dirs`]).
+    /// Signs the account out for every process on this machine: no session
+    /// it has now is sent as ([`Self::refuses_session`]) until a login lets
+    /// its own in ([`Self::admit_session`]). With no directory it writes
+    /// nothing and makes none: a directory that is gone refuses every
+    /// session already.
     pub fn sign_out(&self) -> std::io::Result<()> {
         // The lock's file is made in the directory, never the directory, so
         // one that is gone, or goes as this looks, is not made again.
@@ -454,22 +375,14 @@ impl AccountPaths {
         std::fs::File::create(self.signed_in()).map(drop)
     }
 
-    /// Lets the session made at `made`, which a login has just made, be sent
-    /// as by every process, whatever was signed out of before: it goes on
-    /// [`Self::signed_in`], making the account's directory if it has none.
+    /// Lets the session a login has just made, at `made`, be sent as by every
+    /// process: it goes on [`Self::signed_in`], making the account's
+    /// directory if it has none.
     ///
-    /// **Once a login is let in, the list names it**, whatever else was
-    /// making the directory at the same moment: a list not there is started
-    /// with this one line, never read as "every session is sent as", since
-    /// the directory may be one another process has just made and is about
-    /// to give its empty list ([`Self::ensure_dirs`]), which would then
-    /// refuse this login. A login lets the session stored before it in with
-    /// it on an old directory with no list ([`Self::admit_login`]), so there
-    /// a first login only adds to what was sent as already.
-    ///
-    /// **Kept to [`SIGNED_IN_KEPT`] sessions**, the earliest let in going
-    /// first: a session that many logins ago is refused, and a walk still
-    /// holding it after so many logins without a logout is not one to go on.
+    /// **A list not there is started with this one line**, never read as
+    /// "every session is sent as": the directory may be one another process
+    /// has just made and is about to give its empty list. **Kept to
+    /// [`SIGNED_IN_KEPT`] sessions**, the earliest let in going first.
     pub fn admit_session(&self, made: snob_core::Epoch) -> Result<(), PathError> {
         self.ensure_dirs()?;
         let _held = self.hold_signed_in().map_err(|source| PathError::Write {
@@ -537,27 +450,16 @@ impl AccountPaths {
             })
     }
 
-    /// Lets a login's session, made at `made`, in ([`Self::admit_session`]),
-    /// where `kept` is the session stored for the account before it, if any.
+    /// Lets a login's session in ([`Self::admit_session`]), where `kept` is
+    /// the session stored for the account before it, if any.
     ///
     /// **A login that fails leaves what worked before working.** A login is
-    /// let in before Instagram is asked about it, and a failed one is not
-    /// taken back out. On a directory with a list, that only adds a line.
-    /// On one a version before the list made (no list, so every session is
-    /// sent as), it would start a list naming the failed login alone, and
-    /// the session still stored would be refused from then on. So there the
-    /// stored one is let in first. After a `purge` nothing is stored, so
-    /// nothing from before is let back in that way.
-    ///
-    /// **Only by making the list, never by adding to one**: both lines are
-    /// written in the one step that creates it. A list there already, a
-    /// logout's or a purge's made a moment ago included, is left to name
-    /// what it names, and only the login's own line goes onto it; adding the
-    /// stored session to it would let back in the very session that logout
-    /// signed out.
-    ///
-    /// Both steps under one hold of [`Self::signed_in_lock`], so no
-    /// sign-out comes between the look for a list and the line added to it.
+    /// let in before Instagram is asked about it. On a directory from before
+    /// the list existed (every session sent as), starting the list with the
+    /// login alone would refuse the session still stored, so there the stored
+    /// one is let in with it, **only in the step that makes the list**: a
+    /// list already there, a logout's included, gets the login's line alone.
+    /// Both steps hold [`Self::signed_in_lock`].
     pub fn admit_login(
         &self,
         made: snob_core::Epoch,
@@ -659,12 +561,9 @@ fn pause_at(seam: Seam) {
     let _ = seam;
 }
 
-/// Starts the list of who is signed in ([`AccountPaths::signed_in`]),
-/// empty, in `dir`, a directory that is, or is about to become, an
-/// account's: nobody is signed in to an account directory something other
-/// than a login made. **Never over a list already there**: another process
-/// that made the directory at the same moment may have let a login in
-/// since.
+/// Starts the list of who is signed in, empty, in `dir`, an account's
+/// directory or one about to become it. **Never over a list already there**:
+/// another process may have let a login in since.
 pub(crate) fn start_signed_out(dir: &Path) -> std::io::Result<()> {
     match std::fs::File::create_new(dir.join(SIGNED_IN)) {
         Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => Err(e),
@@ -694,15 +593,12 @@ impl std::ops::Deref for AccountPaths {
     }
 }
 
-/// The name of one job: `j` and 26 characters of Crockford's base32, the
-/// first ten of them the moment it was made (`snob-cli`'s `jobs/id.rs` makes
-/// them; this only checks them).
+/// The name of one job: `j` and 26 characters of Crockford's base32
+/// (`snob-cli`'s `jobs/id.rs` makes them; this only checks them).
 ///
 /// **Parsed, never trusted.** An id arrives from an agent's call and from a
 /// directory listing, and becomes a path ([`AccountPaths::job_dir`]): the
-/// pattern admits no separator, no dot and no case but upper, so nothing that
-/// passes can name anything but a directory directly inside the jobs
-/// directory.
+/// pattern admits no separator and no dot.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct JobId(String);
 
@@ -730,12 +626,9 @@ impl std::fmt::Display for JobId {
 }
 
 /// Whether somebody holds the lock on `path`, asked **without writing
-/// anything**: `None` when there is no file, which nobody can be holding.
-///
-/// [`try_lock_file`] creates the file it is asked about, and so does
-/// [`lock_file`], which is a write `snob status` and `--dry-run` promise not
-/// to make. This opens what is there for reading, and only that, tries the
-/// lock and lets it go at once.
+/// anything** (`snob status` and `--dry-run` promise that): `None` when
+/// there is no file. Opens what is there for reading, tries the lock and
+/// lets it go at once.
 pub fn lock_is_held(path: &Path) -> std::io::Result<Option<bool>> {
     let file = match std::fs::OpenOptions::new().read(true).open(path) {
         Ok(file) => file,
@@ -749,26 +642,16 @@ pub fn lock_is_held(path: &Path) -> std::io::Result<Option<bool>> {
     }
 }
 
-/// The folder name every path here is built from.
-///
-/// Exposed so that a caller recognizing one of our own directories compares
-/// against the value `ProjectDirs` was given rather than against a copy of it.
-/// `snob purge` needs exactly that, and a second spelling of this string is one
-/// that stops matching the day the application is renamed — silently, because
-/// the guard simply never fires again.
+/// The folder name every path here is built from, so that `snob purge`
+/// compares against the value `ProjectDirs` was given, not a copy of it.
 pub fn app_dir_name() -> &'static str {
     APPLICATION
 }
 
-/// Whether a directory is plausible as one of ours, and so may be deleted whole.
-///
-/// `snob purge` removes directories recursively, which is the only destructive
-/// thing this tool does anywhere. It does not take the path on trust: a
-/// `ProjectDirs` that resolved oddly — an empty `HOME`, a profile variable that
-/// never expanded — turns "remove the data directory" into something far worse,
-/// and the check that rules it out costs nothing. Anything this tool creates
-/// sits at least two levels below the root and is never the home directory
-/// itself.
+/// Whether a directory is plausible as one of ours, and so may be deleted
+/// whole: a `ProjectDirs` that resolved oddly (an empty `HOME`) must not turn
+/// `purge` into something far worse. Anything this tool creates sits at
+/// least two levels below the root and is never the home directory.
 pub fn is_safe_to_remove(dir: &Path) -> bool {
     // Rejects `/`, `C:\`, `/data` and `C:\data` alike.
     if dir.parent().is_none_or(|parent| parent.parent().is_none()) {
@@ -777,25 +660,14 @@ pub fn is_safe_to_remove(dir: &Path) -> bool {
 
     match directories::BaseDirs::new() {
         Some(base) => dir != base.home_dir(),
-        // With no home to compare against, the depth check above is all there
-        // is — and it is the one that matters.
         None => true,
     }
 }
 
-/// Where a file that should not outlive the session goes.
-///
-/// `$XDG_RUNTIME_DIR` when there is one, and [`std::env::temp_dir`] otherwise.
-/// The preference is Linux's alone in practice, and it is worth the three
-/// lines: the XDG base directory specification requires that directory to be
-/// owned by the user, `0700`, on a filesystem that is not shared, and **removed
-/// when the session ends** — which is every property wanted here and none of
-/// which `/tmp` promises. `std::env::temp_dir` reads `GetTempPath2W` on
-/// Windows and `$TMPDIR` on macOS, both of which are already per-user.
-///
-/// The variable is checked for being an absolute path that exists, because it
-/// arrives from the environment and a relative one would put somebody else's
-/// photograph in the working directory.
+/// Where a file that should not outlive the session goes: `$XDG_RUNTIME_DIR`
+/// (owned by the user, `0700`, removed with the session, by specification)
+/// when it is an absolute path that exists, else [`std::env::temp_dir`],
+/// which is per-user on Windows and macOS.
 fn runtime_dir() -> PathBuf {
     if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
         let path = PathBuf::from(runtime);
@@ -806,38 +678,18 @@ fn runtime_dir() -> PathBuf {
     std::env::temp_dir()
 }
 
-/// Removes what earlier runs left in the scratch directory.
-///
-/// **The one mechanism here that does not depend on anything having gone
-/// right.** Everything else — the viewer releasing the file, the session
-/// reaching its own cleanup — is a thing that usually happens. A process killed
-/// mid-view, a viewer that opened the file without sharing delete, a machine
-/// restarted: none of those clean up after themselves, and on Windows the
-/// temporary directory is not emptied on boot.
-///
-/// It walks by age rather than by process id, because a process id is reused
-/// and a directory named after a run that ended last week may be named after a
-/// run in progress today. `older_than` is deliberately generous: a browsing
-/// session is minutes, so hours is far past anything live.
-///
-/// Every failure is ignored on purpose. This is housekeeping, and a run that
-/// cannot tidy up after an earlier one still has a story to show.
+/// Removes what earlier runs left in the scratch directory, by age: a
+/// process id is reused, and nothing else cleans up after a killed process.
+/// `older_than` is generous; every failure is ignored.
 ///
 /// **It walks only a root that is this user's own.** The root sits at a
-/// predictable name in a directory anybody can write to (`/tmp`, wherever
-/// `$XDG_RUNTIME_DIR` is unset), and the sweep runs before
-/// [`create_fresh_scratch_dir`] gets to refuse a foreign one. So on Unix the
-/// root is opened without following a link, and the open descriptor, not the
-/// name, is asked whether it is a real directory, owned by the effective user
-/// and closed to everybody else ([`own_private_dir`]). Anything else is left
-/// alone unwalked: a directory another user planted there is theirs to
-/// rename, and theirs to swap for a link into this user's home between a
-/// look at the name and a walk of it. On Linux the walk then goes through
-/// `/proc/self/fd`, so it is of the very directory the descriptor checked;
-/// where that is not mounted it goes by the name, which is still the same
-/// directory, since an entry this user owns in a sticky or private directory
-/// cannot be renamed or replaced by anybody else. Windows keeps the link
-/// check alone: its temporary directory is the user's own.
+/// predictable name in a directory anybody can write to, and the sweep runs
+/// before [`create_fresh_scratch_dir`] refuses a foreign one. On Unix the
+/// root is opened without following a link and the descriptor is asked
+/// whether it is a directory, the effective user's and closed to everybody
+/// else ([`own_private_dir`]); on Linux the walk goes through
+/// `/proc/self/fd`, so it is of the directory that was checked. Windows
+/// keeps the link check alone: its temporary directory is the user's own.
 pub fn sweep_old_scratch(root: &Path, older_than: std::time::Duration) {
     let Some(walk) = ScratchWalk::of(root) else {
         return; // nothing has ever run, which is the common case
@@ -894,11 +746,8 @@ impl ScratchWalk {
 }
 
 /// Opens `dir` without following a link at its name, and answers the
-/// descriptor with what `fstat` read from it, provided it is a real
-/// directory; an `Err` otherwise.
-///
-/// What it answers is about the directory the descriptor holds, so a name
-/// swapped for something else after this call does not move the check.
+/// descriptor with what `fstat` read from it, if it is a real directory. A
+/// name swapped afterwards does not move the check.
 #[cfg(unix)]
 fn open_dir(dir: &Path) -> std::io::Result<(std::fs::File, std::fs::Metadata)> {
     use std::os::unix::fs::OpenOptionsExt as _;
@@ -987,15 +836,9 @@ fn through_descriptor(_held: &std::fs::File, _found: &std::fs::Metadata) -> Opti
     None
 }
 
-/// Replaces `path` with `contents` by way of `temporary`: written whole with
-/// `write_new_private`, then renamed over `path`, so a reader sees the old
-/// file or the new one and never half of one. `fs::write` truncates first, so
-/// a process that dies mid-write would leave a half-written file behind;
-/// a rename is atomic on every platform snob runs on.
-///
-/// The error carries the path of the step that failed: `temporary` when the
-/// write did, `path` when the rename did. The caller maps it into its own
-/// vocabulary.
+/// Replaces `path` with `contents` by way of `temporary`, written whole
+/// ([`write_new_private`]) and renamed over it, so a reader never sees half
+/// a file. The error carries the path of the step that failed.
 pub fn replace_private(
     path: &Path,
     temporary: &Path,
@@ -1036,23 +879,16 @@ pub fn try_lock_file(path: &Path) -> std::io::Result<Option<std::fs::File>> {
     }
 }
 
-/// Creates a file only its owner can read, at exactly this name, and syncs
-/// its contents to disk before returning.
+/// Creates a file only its owner can read, at exactly this name, synced to
+/// disk before returning.
 ///
-/// The pieces, each load-bearing:
-/// - anything left over from a failed run is removed first, which is what
-///   makes `create_new` usable at a fixed name;
-/// - `create_new`, not `create`: never open something that already exists,
-///   never follow a link. `create(true)` would open an existing file with
-///   whatever permissions it already had, since the mode only applies at
-///   creation, and [`create_private_dir`] chmods a directory to 0700 without
-///   removing anything already inside it, so a link planted while it was lax
-///   outlives the tightening;
-/// - on Unix the mode is set **at creation** -- a later chmod leaves a window
-///   in which the file is readable by others;
-/// - `sync_all` before returning: a file that is renamed into place with its
-///   contents still in the page cache is not the protection against a
-///   half-written file that writing to a temporary is for.
+/// - What a failed run left is removed first, so `create_new` works at a
+///   fixed name.
+/// - `create_new`, never `create`: an existing file keeps the permissions it
+///   had, and a link planted while the directory was lax would be followed.
+/// - On Unix the mode is set **at creation**: a later chmod leaves a window.
+/// - `sync_all`, or a rename could put a file in place with its contents
+///   still in the page cache.
 fn write_new_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
@@ -1070,27 +906,14 @@ fn write_new_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     file.sync_all()
 }
 
-/// Creates the directory and restricts it to its owner.
+/// Creates the directory and restricts it to its owner: `0700` on Unix; on
+/// Windows a protected DACL (inheritance stopped, not added to) with one
+/// entry, for this user, since the ACL inherited from `%LOCALAPPDATA%`
+/// limits nothing where the profile's is not the default. Administrators
+/// and `SYSTEM` are not listed: they can take ownership anyway.
 ///
-/// On Unix it chmods 0700. On Windows the ACL inherited from `%LOCALAPPDATA%`
-/// is not enough: on a machine whose profile ACL is not the default, nothing
-/// inherited limits anything, and the database and the browser profile are the
-/// entire follower history and a live session in the clear.
-///
-/// So on Windows this writes a DACL of its own, with
-/// `PROTECTED_DACL_SECURITY_INFORMATION`, which is the flag that stops
-/// inheritance rather than merely adding to it. One access-allowed ACE, for the
-/// user this process is running as, and nothing else — the faithful reading of
-/// 0700. Administrators and `SYSTEM` are deliberately not listed: on Unix root
-/// is not in a 0700 mode either, and on Windows both hold the privileges that
-/// let them take ownership regardless, so naming them would widen the written
-/// rule without narrowing what anybody can actually reach.
-///
-/// **A failure is an error, not a warning**: a directory this could not
-/// restrict is a directory holding the follower history where the check said
-/// it would not be, and a caller that is told "fine" cannot act on it. It gets
-/// its own variant so the sentence names what really went wrong instead of
-/// blaming the creation.
+/// **A failure is an error, not a warning**: the database and the browser
+/// profile are the follower history and a live session in the clear.
 pub fn create_private_dir(dir: &Path) -> Result<(), PathError> {
     std::fs::create_dir_all(dir).map_err(|source| PathError::Create {
         path: dir.to_path_buf(),
@@ -1109,47 +932,28 @@ enum Root {
     /// a directory found there must be this account's own.
     Shared,
     /// A directory under the data directory, which only this account can
-    /// enter, so nobody else could have made it -- or the data directory
-    /// itself, in a home only this account can write to. **A link found at
-    /// such a name is the person's own** (a data directory moved to another
-    /// disk), so it is followed and what it reaches made private, as
-    /// [`AppPaths::ensure_dirs`] has just done through it; removing it would
-    /// leave every later run an empty directory and the person's sessions and
-    /// databases unreferenced where the link pointed. The owner is not asked
-    /// either: a filesystem may report a wrong one (NFSv4 with broken id
-    /// mapping, sshfs without `idmap=user`) while letting this account change
-    /// the mode, and a login or a browser probe refused there would refuse
-    /// nothing.
+    /// enter, or the data directory itself. **A link found at such a name is
+    /// the person's own** (a data directory moved to another disk), so it is
+    /// followed and what it reaches made private. The owner is not asked: a
+    /// filesystem may report a wrong one (NFSv4 with broken id mapping, sshfs
+    /// without `idmap=user`) while letting this account change the mode.
     Private,
 }
 
-/// Creates and restricts the parent of a fresh directory: at the
-/// [`Root::Private`] name with [`create_private_dir`], a link the person made
-/// there followed; at the [`Root::Shared`] name, which somebody else can
-/// predict, keeping a real directory that is already there and never
+/// Creates and restricts the parent of a fresh directory: a
+/// [`Root::Private`] name with [`create_private_dir`], and the
+/// [`Root::Shared`] name, which somebody else can predict, without ever
 /// following a link.
 ///
-/// The shared name is the scratch **root** under the world-writable
-/// temporary directory -- the parent every [`create_fresh_scratch_dir`] leaf
-/// sits in, and the directory [`sweep_old_scratch`] walks with
-/// `remove_dir_all`. [`create_private_dir`] cannot be trusted with that name:
-/// `create_dir_all`
-/// answers `Ok` over a planted link, and [`restrict_to_this_account`] then
-/// lands the `0700` on **whatever the link points at** -- so whoever planted
-/// it chooses which directory of this account's the age sweep then deletes
-/// out of. A link or a stray file found at the name is removed as itself --
-/// the same recipe as at the leaf, through [`remove_entry`] on the one reading
-/// of it -- while a real directory is kept, because it holds other runs'
-/// scratch. A real directory there that belongs to somebody else is
-/// refused, which is the refusal wanted.
+/// The shared name is the scratch root, which [`sweep_old_scratch`] walks
+/// with `remove_dir_all`: `create_dir_all` answers `Ok` over a planted link,
+/// and the `0700` would land on whatever it points at. A link or a stray
+/// file there is removed as itself; a real directory is kept (it holds other
+/// runs' scratch), and refused when it is somebody else's.
 ///
-/// On Unix the `0700` goes on through a descriptor opened without following a
-/// link ([`open_dir`]), never through the name again: whoever planted a real
-/// directory at the name owns it, and could swap it for a link into this
-/// account's home between the look above and a `chmod` by path, choosing
-/// which of this account's directories is made private. The descriptor is
-/// also asked who owns it, so a planted directory is refused even for root,
-/// whom a `chmod` would not stop.
+/// On Unix the `0700` goes on through a descriptor opened without following
+/// a link ([`open_dir`]), never through the name again, and the descriptor
+/// is asked who owns it, so a planted directory is refused even for root.
 fn create_private_root(dir: &Path, root: Root) -> Result<(), PathError> {
     if root == Root::Private {
         return create_private_dir(dir);
@@ -1209,42 +1013,25 @@ fn create_shared_root_as(dir: &Path, me: u32) -> Result<(), PathError> {
 }
 
 /// Creates a private directory that **did not exist a moment ago**, under a
-/// parent in the data directory that is made private first.
-///
-/// For a directory whose name somebody else can predict, which is what a
-/// directory named after the process id is. [`create_private_dir`] adopts
-/// whatever is already at the path: `create_dir_all` answers `Ok` when the
-/// entry exists, a symbolic link to a directory included, and the
-/// permissions are then set on **whatever it points at**.
-///
-/// The parent is made private with [`create_private_dir`]: nobody else can
-/// enter the data directory, so a link at the parent's name is the person's
-/// own and is followed, and the parent is not asked who owns it
-/// ([`Root::Private`]). The scratch, outside it, is
+/// parent in the data directory that is made private first. For a name
+/// somebody else can predict, such as one with the process id:
+/// [`create_private_dir`] would adopt whatever is at the path, a link
+/// included. The scratch, outside the data directory, is
 /// [`create_fresh_scratch_dir`].
 pub fn create_fresh_private_dir(dir: &Path) -> Result<(), PathError> {
     create_fresh(dir, Root::Private)
 }
 
 /// [`create_fresh_private_dir`] for the scratch, whose root sits at a
-/// predictable name in a temporary directory anybody can write to.
+/// predictable name in a temporary directory anybody can write to: a
+/// `run-<pid>` planted there as a link would choose where a run writes every
+/// story it fetches.
 ///
-/// On a machine with other users, a `/tmp/snob-ig-stories/run-<pid>` planted
-/// ahead of time as a link would choose where a run writes every story it
-/// fetches, and have a directory of the victim's own made `0700`. That needs
-/// a parent anybody can create entries in, which an unrestricted one under
-/// `/tmp` is.
-///
-/// Two things close it. The parent is created and restricted first -- with
-/// `create_private_root`, which refuses to follow a link planted at *its*
-/// predictable name too, and refuses a directory there that is somebody
-/// else's ([`Root::Shared`]) -- so on a run that is the first to use it nobody
-/// else can put an entry inside; and the leaf is created with `create_dir`,
-/// which fails rather than adopts when something is already there. What is
-/// already there is removed if it is something this tool could have left --
-/// an earlier run's directory under a reused process id, which Windows hands
-/// out again freely -- and the creation is tried once more. [`remove_tree`]
-/// takes a link as the link itself, never following it.
+/// The parent is created and restricted first ([`create_private_root`],
+/// [`Root::Shared`]), and the leaf is made with `create_dir`, which fails
+/// rather than adopts. What is already there (an earlier run's directory
+/// under a reused process id) is removed, a link as the link itself, and the
+/// creation tried once more.
 pub fn create_fresh_scratch_dir(dir: &Path) -> Result<(), PathError> {
     create_fresh(dir, Root::Shared)
 }
@@ -1268,13 +1055,9 @@ fn create_fresh(dir: &Path, root: Root) -> Result<(), PathError> {
     restrict_to_this_account(dir)
 }
 
-/// Removes a directory tree, or a link found at the name as the link itself.
-///
-/// For `snob purge`, whose list includes the scratch root in the shared
-/// temporary directory. `remove_dir_all` already refuses a link at the top --
-/// it opens without following -- which is safe, but it reports somebody
-/// else's planted link as our failure to clean up. Taking the link as a link
-/// leaves what it points at alone and still leaves nothing of snob's behind.
+/// Removes a directory tree, or a link found at the name as the link itself:
+/// `purge` reaches the scratch root in the shared temporary directory, and
+/// what a planted link points at is left alone.
 pub fn remove_tree(dir: &Path) -> std::io::Result<()> {
     let found = std::fs::symlink_metadata(dir)?;
     if found.is_dir() {
@@ -1284,14 +1067,9 @@ pub fn remove_tree(dir: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Removes an entry already judged not to be a real directory, as itself: a
-/// link as the link, whatever it points at, and a file as the file.
-///
-/// It goes by the metadata the caller read rather than reading it again, so
-/// whatever appears at the name in between, no directory's contents are
-/// removed: `remove_dir` takes only an empty directory and `remove_file` none.
-/// At the scratch root that is another run's live scratch, created between
-/// the two readings a second one would make.
+/// Removes an entry already judged not to be a real directory, as itself, by
+/// the metadata the caller read: whatever appears at the name in between, no
+/// directory's contents are removed.
 fn remove_entry(dir: &Path, found: &std::fs::Metadata) -> std::io::Result<()> {
     if is_link_to_a_directory(found) {
         std::fs::remove_dir(dir)
@@ -1300,12 +1078,9 @@ fn remove_entry(dir: &Path, found: &std::fs::Metadata) -> std::io::Result<()> {
     }
 }
 
-/// [`remove_tree`], tried a few times over a few seconds before giving up; a
-/// tree that is already gone is removed.
-///
-/// For a browser profile. Windows keeps a directory while any handle inside
-/// it is open, and a browser that has just been told to close takes a moment
-/// to let go of them all.
+/// [`remove_tree`], tried a few times over a few seconds; a tree already
+/// gone is removed. For a browser profile: Windows keeps a directory while a
+/// handle inside it is open.
 pub fn remove_tree_patiently(dir: &Path) -> std::io::Result<()> {
     patiently(|| match remove_tree(dir) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1335,12 +1110,9 @@ fn patiently(mut attempt: impl FnMut() -> std::io::Result<()>) -> std::io::Resul
     }
 }
 
-/// Whether a directory entry is a link whose target is a directory.
-///
-/// Only Windows tells the two kinds of link apart, and only there does it
-/// matter: a directory link is a directory to the call that removes it, so it
-/// goes with `RemoveDirectory`, and `DeleteFile` answers `ERROR_ACCESS_DENIED`
-/// on it. On Unix every link is a file and `remove_file` takes it.
+/// Whether a directory entry is a link whose target is a directory, which
+/// only Windows tells apart: it goes with `RemoveDirectory`, and `DeleteFile`
+/// answers `ERROR_ACCESS_DENIED` on it.
 fn is_link_to_a_directory(found: &std::fs::Metadata) -> bool {
     #[cfg(windows)]
     {
@@ -1368,30 +1140,17 @@ fn restrict_to_this_account(dir: &Path) -> Result<(), PathError> {
 
     #[cfg(windows)]
     windows_acl::restrict_to_owner(dir)?;
-    // The ACL says who may read it; this says who may copy it into a database
-    // that outlives it. Two separate findings, one function.
     #[cfg(windows)]
     keep_out_of_the_search_index(dir);
 
     Ok(())
 }
 
-/// Marks a directory so that Windows Search does not index what is inside it.
-///
-/// The crawl scope includes `AppData\Local`, and a query against the live
-/// index returned files out of `%LOCALAPPDATA%\snob-ig\data\browser-profile`,
-/// the profile that holds a second copy of the session while a login is in
-/// progress. Unmarked, everything this tool writes is read by the indexer and
-/// copied into its database, where deleting the original does not remove it.
-///
+/// Marks a directory so that Windows Search does not index what is inside:
+/// a query against the live index returned files out of the browser profile.
 /// `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED` is inherited by files created inside
-/// afterwards: a file created in a marked directory carries the attribute
-/// without anything setting it. So this is set once, on the directory, at
-/// creation.
-///
-/// Failure is ignored deliberately. The attribute is a defense in depth on top
-/// of the ACL, not the thing keeping anybody out, and a tool that refuses to
-/// run because an attribute would not set is worse than one that is indexed.
+/// afterwards, so it is set once, at creation. Failure is ignored: this is
+/// defense in depth on top of the ACL.
 #[cfg(windows)]
 fn keep_out_of_the_search_index(dir: &Path) {
     use std::os::windows::ffi::OsStrExt;
@@ -1416,26 +1175,50 @@ fn keep_out_of_the_search_index(dir: &Path) {
     }
 }
 
-/// Giving a directory a DACL that names only the user running this process.
-///
-/// Written against `windows-sys` rather than through a crate because it is one
-/// call each to five documented functions, and because the shape of the answer
-/// — a protected DACL with exactly one ACE — is what
-/// `the_data_directory_is_not_readable_by_other_accounts` reads back. The user
-/// and the ACL are [`crate::windows_user`]'s, which the owner's pipe shares.
+/// Giving a directory a DACL that names only the user running this process:
+/// protected, with exactly one entry, which
+/// `the_data_directory_is_not_readable_by_other_accounts` reads back. The
+/// user and the ACL are [`crate::windows_user`]'s.
 #[cfg(windows)]
 mod windows_acl {
+    use std::collections::BTreeSet;
     use std::os::windows::ffi::OsStrExt;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
 
-    use windows_sys::Win32::Security::Authorization::{SE_FILE_OBJECT, SetNamedSecurityInfoW};
-    use windows_sys::Win32::Security::{
-        CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE,
-        PROTECTED_DACL_SECURITY_INFORMATION,
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        GetNamedSecurityInfoW, SE_FILE_OBJECT, SetNamedSecurityInfoW,
     };
+    use windows_sys::Win32::Security::{
+        ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, CONTAINER_INHERIT_ACE,
+        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
+        GetSecurityDescriptorControl, OBJECT_INHERIT_ACE, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, SE_DACL_PROTECTED, SECURITY_DESCRIPTOR_CONTROL,
+    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 
     use super::PathError;
     use crate::windows_user::{OneUserAcl, User};
+
+    /// What the entry hands on: to the directories and the files inside,
+    /// because the point is the database and the browser profile rather than
+    /// the folder itself.
+    const INHERITANCE: u32 = CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE;
+
+    /// `ACCESS_ALLOWED_ACE_TYPE`, as an entry's header spells it.
+    const ACCESS_ALLOWED: u8 = 0;
+
+    /// The directories this process has already given the DACL.
+    ///
+    /// `SetNamedSecurityInfoW` hands the entry on to everything already
+    /// inside, whether or not anything changes: about 0.75 s for a tree of
+    /// 5,000 files (Windows 11, 2026-11-14), and one command asks for the
+    /// data directory several times. So that walk is paid once a process for
+    /// each directory, and a later call only reads the DACL back
+    /// ([`is_owners_alone`]): a directory removed and made again since
+    /// inherits its parent's, is not read as private, and is written again.
+    static RESTRICTED: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 
     fn failed(dir: &Path, what: &str, error: std::io::Error) -> PathError {
         PathError::NotPrivate {
@@ -1446,20 +1229,22 @@ mod windows_acl {
 
     pub(super) fn restrict_to_owner(dir: &Path) -> Result<(), PathError> {
         let user = User::this_process().map_err(|e| failed(dir, "reading this user", e))?;
-        // Inherited by what is created inside, because the point is the
-        // database and the browser profile rather than the folder itself.
-        let mut acl = OneUserAcl::new(&user, CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE)
-            .map_err(|e| failed(dir, "building the ACL", e))?;
-
         let mut wide: Vec<u16> = dir
             .as_os_str()
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
 
-        // `PROTECTED_DACL_SECURITY_INFORMATION` is the half that matters. Set
-        // the DACL without it and the inherited entries stay, which is the
-        // situation this exists to end.
+        let restricted = || RESTRICTED.lock().unwrap_or_else(|e| e.into_inner());
+        if restricted().contains(dir) && is_owners_alone(&mut wide, &user) {
+            return Ok(());
+        }
+
+        let mut acl =
+            OneUserAcl::new(&user, INHERITANCE).map_err(|e| failed(dir, "building the ACL", e))?;
+
+        // `PROTECTED_DACL_SECURITY_INFORMATION` is the half that matters:
+        // without it the inherited entries stay.
         //
         // SAFETY: a null-terminated path, and an ACL that outlives the call.
         let set = unsafe {
@@ -1479,21 +1264,93 @@ mod windows_acl {
                 detail: format!("SetNamedSecurityInfo failed: Windows error {set}"),
             });
         }
+        restricted().insert(dir.to_path_buf());
         Ok(())
+    }
+
+    /// Whether the DACL of the directory `wide` names is the one
+    /// [`restrict_to_owner`] writes: protected, and one entry of its own that
+    /// allows `user` everything and is handed on to what is inside. `false`
+    /// for anything else and for whatever cannot be read, which is then
+    /// written again.
+    fn is_owners_alone(wide: &mut [u16], user: &User) -> bool {
+        let mut acl: *mut ACL = std::ptr::null_mut();
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        // SAFETY: a null-terminated path and out-parameters; the descriptor,
+        // which `acl` points into, is freed below.
+        let read = unsafe {
+            GetNamedSecurityInfoW(
+                wide.as_mut_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut acl,
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if read != 0 {
+            return false;
+        }
+
+        let mut control: SECURITY_DESCRIPTOR_CONTROL = 0;
+        let mut revision: u32 = 0;
+        let mut sizes = ACL_SIZE_INFORMATION {
+            AceCount: 0,
+            AclBytesInUse: 0,
+            AclBytesFree: 0,
+        };
+        let mut entry: *mut std::ffi::c_void = std::ptr::null_mut();
+        // SAFETY: `descriptor` is the one just read and `acl`, checked not to
+        // be null (no DACL at all lets everybody in), points into it; both
+        // live until the `LocalFree` below. The out-parameters are locals of
+        // the types asked for. Entry 0 is asked for only of an ACL that says
+        // it has one, and is read as an allowed entry (its header, the mask,
+        // then the SID) only once its header says it is one.
+        let ours = unsafe {
+            !acl.is_null()
+                && GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) != 0
+                && control & SE_DACL_PROTECTED != 0
+                && GetAclInformation(
+                    acl,
+                    (&raw mut sizes).cast(),
+                    std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+                    AclSizeInformation,
+                ) != 0
+                && sizes.AceCount == 1
+                && GetAce(acl, 0, &mut entry) != 0
+                && {
+                    let allowed = entry.cast::<ACCESS_ALLOWED_ACE>();
+                    (*allowed).Header.AceType == ACCESS_ALLOWED
+                        && u32::from((*allowed).Header.AceFlags) == INHERITANCE
+                        && (*allowed).Mask == FILE_ALL_ACCESS
+                        && EqualSid((&raw mut (*allowed).SidStart).cast(), user.sid()) != 0
+                }
+        };
+        // SAFETY: the descriptor the read produced, freed once.
+        unsafe { LocalFree(descriptor) };
+        ours
+    }
+
+    /// [`is_owners_alone`] for this process's user, by the directory's path.
+    #[cfg(test)]
+    pub(super) fn reads_as_private(dir: &Path) -> bool {
+        let mut wide: Vec<u16> = dir
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let user = User::this_process().expect("this process has a token");
+        is_owners_alone(&mut wide, &user)
     }
 
     /// What the directory's DACL actually says, for the test that reads it
     /// back. Returns whether the DACL is protected, and every SID in it.
     #[cfg(test)]
     pub(super) fn describe(dir: &Path) -> (bool, Vec<String>) {
-        use windows_sys::Win32::Foundation::LocalFree;
-        use windows_sys::Win32::Security::Authorization::{
-            ConvertSidToStringSidW, GetNamedSecurityInfoW,
-        };
-        use windows_sys::Win32::Security::{
-            ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, GetAce, GetAclInformation,
-            GetSecurityDescriptorControl, PSID, SE_DACL_PROTECTED, SECURITY_DESCRIPTOR_CONTROL,
-        };
+        use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+        use windows_sys::Win32::Security::{ACE_HEADER, PSID};
 
         let mut wide: Vec<u16> = dir
             .as_os_str()
@@ -1579,7 +1436,6 @@ mod windows_acl {
     /// This process's user, as a string SID, so a test can compare.
     #[cfg(test)]
     pub(super) fn current_user_sid() -> String {
-        use windows_sys::Win32::Foundation::LocalFree;
         use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 
         let user = crate::windows_user::User::this_process().expect("this process has a token");
@@ -2155,6 +2011,36 @@ mod tests {
             vec![windows_acl::current_user_sid()],
             "somebody other than this account is named in the directory's DACL"
         );
+    }
+
+    /// The DACL is written once a process for each directory and only read
+    /// back after that. A directory removed and made again at the same name
+    /// inherits whatever its parent grants: the read has to see that it is
+    /// not the one written, or the skip would leave it open.
+    #[cfg(windows)]
+    #[test]
+    fn a_directory_made_again_is_restricted_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("data");
+
+        create_private_dir(&dir).unwrap();
+        assert!(
+            windows_acl::reads_as_private(&dir),
+            "the DACL just written is not read back as the one written, so every call \
+             would write it again"
+        );
+
+        std::fs::remove_dir(&dir).unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        assert!(
+            !windows_acl::reads_as_private(&dir),
+            "a directory with the DACL it inherited reads as private"
+        );
+
+        create_private_dir(&dir).unwrap();
+        let (protected, sids) = windows_acl::describe(&dir);
+        assert!(protected, "the directory made again kept what it inherited");
+        assert_eq!(sids, vec![windows_acl::current_user_sid()]);
     }
 
     /// Where the data goes must not depend on the directory the command was
