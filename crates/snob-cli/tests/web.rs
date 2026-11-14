@@ -2253,3 +2253,234 @@ async fn a_tick_killed_before_its_commit_reports_the_same_posts_next_time() {
     assert_eq!(news_of(&lost), [ig::newer_post(ig::SOMEONE, 0)]);
     assert_eq!(news_of(&again), news_of(&lost));
 }
+
+/// An entry that watches `name`'s posts alone and saves them into `dir`,
+/// videos as the app's file, so no ffmpeg is asked after.
+fn saving_to(name: &str, dir: &std::path::Path) -> snob_cli::engine::watch::Watched {
+    use snob_cli::engine::watch::{PostsWatch, Watched};
+    Watched::asking(name.to_string()).watching(
+        false,
+        Some(PostsWatch {
+            save_to: Some(dir.to_path_buf()),
+            quality: Some(snob_cli::cli::Quality::Compat),
+        }),
+    )
+}
+
+/// A tick on `watched`, its posts saved as a run saves them, and, when
+/// `commit`, committed.
+async fn tick_saving(
+    server: &MockServer,
+    world: &World,
+    root: &std::path::Path,
+    watched: &snob_cli::engine::watch::Watched,
+    commit: bool,
+) -> snob_cli::engine::watch::TickReport {
+    let mut app = app_on(server, world, root);
+    let mut tick = snob_cli::engine::watch::tick(&mut app, watched)
+        .await
+        .unwrap();
+    snob_cli::commands::watch::posts::save_new(&app, &mut tick, watched)
+        .await
+        .unwrap();
+    if commit {
+        snob_cli::engine::watch::commit(&mut app, &tick, None).unwrap();
+    }
+    tick
+}
+
+/// The names in `dir`, sorted; none when it is not there.
+fn files_in(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// How many files of the CDN were asked for since the first `since`
+/// requests.
+async fn media_since(server: &MockServer, since: usize) -> usize {
+    sent_since(server, since)
+        .await
+        .iter()
+        .filter(|path| path.starts_with("/media/"))
+        .count()
+}
+
+/// A new post's files are saved under the names every download gives them,
+/// `<owner>-<code>`, and the report names them.
+#[tokio::test]
+async fn a_new_posts_files_are_saved_under_their_own_names() {
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("media");
+    let watched = saving_to("someone", &dir);
+    tick_saving(&server, &world, tmp.path(), &watched, true).await;
+
+    world.person(ig::SOMEONE, |p| p.newer = 1);
+    an_hour_passes(tmp.path());
+    let tick = tick_saving(&server, &world, tmp.path(), &watched, true).await;
+    let new = ig::newer_post(ig::SOMEONE, 0);
+    let name = format!("someone-{}.jpg", ig::code_of(new));
+    assert_eq!(files_in(&dir), std::slice::from_ref(&name));
+    let saved = &tick.report.posts.as_ref().unwrap().saved;
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].files, [name]);
+    assert_eq!((saved[0].failed, saved[0].left), (0, 0));
+    assert!(
+        snob_store::store::watch_posts::pending_saves(
+            common::open_db(tmp.path()).conn(),
+            Pk::new(ig::SOMEONE)
+        )
+        .unwrap()
+        .is_empty(),
+        "nothing is owed"
+    );
+}
+
+/// Nothing of what the first run takes as known is saved: it is not news.
+#[tokio::test]
+async fn nothing_of_the_baseline_is_saved() {
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("media");
+    tick_saving(
+        &server,
+        &world,
+        tmp.path(),
+        &saving_to("someone", &dir),
+        true,
+    )
+    .await;
+    assert!(files_in(&dir).is_empty());
+    assert_eq!(media_since(&server, 0).await, 0);
+}
+
+/// A run that saved and was stopped before its commit finds the same post
+/// next time, and does not fetch what is already in the directory.
+#[tokio::test]
+async fn a_file_already_there_is_not_fetched_again() {
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("media");
+    let watched = saving_to("someone", &dir);
+    tick_saving(&server, &world, tmp.path(), &watched, true).await;
+
+    world.person(ig::SOMEONE, |p| p.newer = 1);
+    an_hour_passes(tmp.path());
+    tick_saving(&server, &world, tmp.path(), &watched, false).await;
+    assert_eq!(files_in(&dir).len(), 1);
+
+    let since = common::requests(&server).await;
+    let again = tick_saving(&server, &world, tmp.path(), &watched, true).await;
+    assert_eq!(news_of(&again), [ig::newer_post(ig::SOMEONE, 0)]);
+    assert_eq!(
+        media_since(&server, since).await,
+        0,
+        "nothing fetched twice"
+    );
+    assert_eq!(again.report.posts.as_ref().unwrap().saved[0].files.len(), 1);
+}
+
+/// A file that failed is owed, and a later run saves it while its post is
+/// still on the page it reads, asking for nothing more than that page.
+#[tokio::test]
+async fn a_file_that_failed_is_tried_again_while_its_post_is_still_on_the_page() {
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("media");
+    let watched = saving_to("someone", &dir);
+    tick_saving(&server, &world, tmp.path(), &watched, true).await;
+
+    world.person(ig::SOMEONE, |p| p.newer = 1);
+    let new = ig::newer_post(ig::SOMEONE, 0);
+    wiremock::Mock::given(wiremock::matchers::path(format!("/media/{new}.jpg")))
+        .respond_with(wiremock::ResponseTemplate::new(500))
+        .with_priority(1)
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    an_hour_passes(tmp.path());
+    let tick = tick_saving(&server, &world, tmp.path(), &watched, true).await;
+    assert_eq!(tick.report.posts.as_ref().unwrap().saved[0].failed, 1);
+    assert!(files_in(&dir).is_empty());
+    let owed = |root: &std::path::Path| {
+        snob_store::store::watch_posts::pending_saves(
+            common::open_db(root).conn(),
+            Pk::new(ig::SOMEONE),
+        )
+        .unwrap()
+        .len()
+    };
+    assert_eq!(owed(tmp.path()), 1);
+
+    an_hour_passes(tmp.path());
+    let tick = tick_saving(&server, &world, tmp.path(), &watched, true).await;
+    assert!(news_of(&tick).is_empty(), "it was reported already");
+    assert_eq!(files_in(&dir).len(), 1);
+    assert_eq!(owed(tmp.path()), 0);
+}
+
+/// A directory that cannot be made fails the saves, not the run: the report
+/// still names the new post, and says nothing of it was saved.
+#[tokio::test]
+async fn a_failed_save_does_not_keep_the_report_from_going_out() {
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let in_the_way = tmp.path().join("a file");
+    std::fs::write(&in_the_way, b"not a directory").unwrap();
+    let watched = saving_to("someone", &in_the_way.join("media"));
+    tick_saving(&server, &world, tmp.path(), &watched, true).await;
+
+    world.person(ig::SOMEONE, |p| p.newer = 1);
+    an_hour_passes(tmp.path());
+    let tick = tick_saving(&server, &world, tmp.path(), &watched, true).await;
+    assert!(tick.report.has_changes());
+    assert_eq!(news_of(&tick), [ig::newer_post(ig::SOMEONE, 0)]);
+    let saved = &tick.report.posts.as_ref().unwrap().saved;
+    assert!(saved[0].files.is_empty());
+    assert_eq!(saved[0].failed, 1);
+}
+
+/// The report names every file of a post that was saved, a carousel's
+/// photo and video both, in the directory it gives as a whole path. The
+/// carousel here is a post brought back from the archive that is newer
+/// than everything seen, which is news.
+#[tokio::test]
+async fn the_report_names_the_files_that_were_saved() {
+    let world = World::new();
+    world.person(ig::SOMEONE, |p| p.deleted = vec![0]);
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("media");
+    let watched = saving_to("someone", &dir);
+    tick_saving(&server, &world, tmp.path(), &watched, true).await;
+
+    world.person(ig::SOMEONE, |p| p.deleted.clear());
+    an_hour_passes(tmp.path());
+    let tick = tick_saving(&server, &world, tmp.path(), &watched, true).await;
+    let carousel = ig::post_pk(ig::SOMEONE, 0);
+    assert_eq!(news_of(&tick), [carousel]);
+    let saved = &tick.report.posts.as_ref().unwrap().saved[0];
+    let code = ig::code_of(carousel);
+    assert_eq!(
+        saved.files,
+        [
+            format!("someone-{code}-1.jpg"),
+            format!("someone-{code}-2.mp4")
+        ]
+    );
+    assert_eq!(files_in(&dir), saved.files);
+    assert!(std::path::Path::new(&saved.directory).is_absolute());
+}

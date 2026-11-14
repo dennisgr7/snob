@@ -51,6 +51,9 @@ pub(super) async fn once(
     let delivery = delivery_from(&args.delivery, configured.as_ref(), &secrets)?;
 
     let watched = watched_from(args.target.clone(), configured.as_ref(), in_use);
+    // A `quality = "best"` with no ffmpeg here, refused as an impossible
+    // webhook address is: before anything is opened or spent.
+    super::posts::refuse_what_cannot_be_saved(&watched)?;
 
     // A run on a timer at a critical battery would be cut off by the system
     // hibernating under it. It is not run, and says so; the timer's next

@@ -49,6 +49,11 @@ mod run;
 mod scheduled;
 mod unit;
 
+/// Saving a watched account's new posts, which `run` does between finding
+/// them and reporting them. Public for `tests/web.rs`, which saves through
+/// the test tab as a run does.
+pub mod posts;
+
 /// What a run is told before it starts — which accounts it is for and on what
 /// schedule — and, for `check` and `setup`, whether any of it would work at
 /// all. Read by the commands above and by `setup` and `status`, which is why

@@ -57,6 +57,9 @@ pub(super) async fn scheduled(
     // here for the same reason the schedule is: a bad address should stop this
     // at the moment somebody is watching it start.
     let delivery = delivery_from(&args.delivery, configured.as_ref(), &secrets)?;
+    // An entry that keeps its videos at their best on a machine with no
+    // ffmpeg, refused for the same reason and in the same place.
+    super::posts::refuse_what_cannot_be_saved(&watched)?;
 
     // Refused here rather than at the first tick. A service that starts, waits
     // six hours and then exits because it was never allowed to read that

@@ -570,7 +570,11 @@ async fn tick_one(
 ) -> Result<TickReport> {
     let tick = crate::engine::watch::tick(app, watched).await;
     app.progress().finish();
-    let tick = tick?;
+    let mut tick = tick?;
+    // Saved before the report is made, so it names what is in the directory,
+    // and before the commit, so a run stopped while saving commits nothing
+    // and the next one finds the same posts (`posts` says the order).
+    super::posts::save_new(app, &mut tick, watched).await?;
 
     if printing.json {
         crate::ui::say!("{}", json_line(&tick_json(&tick)));
