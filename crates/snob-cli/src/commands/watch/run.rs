@@ -42,6 +42,7 @@ pub(super) async fn run_viewers(
     printing: Printing,
     with_progress: bool,
 ) -> RunSummary {
+    started(paths, snob_core::clock::now());
     let cancel = crate::interrupt::install();
     run_groups(paths, watched, delivery, printing, &cancel, |account| {
         let opened = App::open(&secrets.session_of(account), account, with_progress)?;
@@ -51,6 +52,20 @@ pub(super) async fn run_viewers(
         }))
     })
     .await
+}
+
+/// Writes down that a run starts, before any of its work: **a run counts from
+/// its start** (`scheduled::last_started`), so one that fails before any
+/// account writes its row in `watch_runs` is not due again at a timer's next
+/// look, and one still walking when that look comes is not started twice. The
+/// rule the loop already keeps for itself. Best effort, as
+/// [`waits_for_power`] is: the run is not refused for a file it could not
+/// write, and the rows it does write still count.
+fn started(paths: &AppPaths, at: Epoch) {
+    match Shared::open(paths).and_then(|shared| shared.monitor_started(at)) {
+        Ok(()) => {}
+        Err(e) => tracing::debug!(error = %e, "could not write down that the run started"),
+    }
 }
 
 /// Whether the run that is due waits for power: the battery is critical, so

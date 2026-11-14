@@ -329,13 +329,19 @@ const _: () = assert!(CLOCK_JUMP_SECS > NAP_FAR_SECS);
 const _: () = assert!(NAP_FAR_SECS < snob_core::watch::schedule::MIN_GAP_SECS);
 
 /// When the monitor last started a run, for any account: the latest across
-/// every account's database.
+/// every account's database, and the start every run writes in `shared.db`
+/// before its work (`run::started`), which is there even when no account got
+/// as far as its row.
 ///
 /// Opened and closed here rather than held: the loop deliberately keeps no
 /// SQLite connection while it sleeps, so `snob purge` in another terminal is not
-/// blocked by a file this has open.
+/// blocked by a file this has open. `shared.db` is only read, so `watch status`
+/// stays a reader.
 pub(super) fn last_started(paths: &AppPaths) -> Result<Option<Epoch>> {
-    let mut latest = None;
+    let mut latest = Shared::read_existing(paths)?
+        .map(|shared| shared.monitor_last_started())
+        .transpose()?
+        .flatten();
     for account in account_databases(paths) {
         let Some(store) = snob_store::store::Store::open_existing(&account)? else {
             continue;
@@ -532,6 +538,32 @@ mod tests {
         assert_eq!(
             last_started(&paths).unwrap(),
             Some(Epoch::new(1_700_003_600))
+        );
+    }
+
+    /// A run that wrote no row in any account's database still counts: its
+    /// start, written before the work, moves the schedule on.
+    #[test]
+    fn a_run_that_recorded_nothing_still_moves_the_schedule_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::rooted_at(tmp.path());
+        let every = Schedule::every(std::time::Duration::from_secs(6 * 3_600)).unwrap();
+        let started = Epoch::new(1_700_000_000);
+        Shared::open(&paths)
+            .unwrap()
+            .monitor_started(started)
+            .unwrap();
+
+        assert_eq!(last_started(&paths).unwrap(), Some(started));
+        let a_look_later = started + std::time::Duration::from_secs(15 * 60);
+        let seed = seed_for(&paths, &every, a_look_later).unwrap();
+        assert_eq!(seed, Some(started));
+        assert!(
+            matches!(
+                schedule::due(&every, seed, a_look_later, &chrono::Utc),
+                schedule::Due::At(_)
+            ),
+            "the next look a quarter of an hour on is not due"
         );
     }
 

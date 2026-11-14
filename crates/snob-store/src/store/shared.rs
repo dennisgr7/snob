@@ -39,6 +39,13 @@ const INTERVAL_SEED: &str = "interval_seeded_at";
 /// within the very minute the calendar names.
 const ASKED_SINCE: &str = "monitor_asked_since";
 
+/// The `meta` key under which the monitor writes when it last started a run,
+/// before any of its work. A run that fails on every account it covers may
+/// write no row in any `watch_runs` (an account never resolved has no row in
+/// `accounts` to hang one on), and a timer reading only those rows would find
+/// the run still due at every look after it.
+const STARTED_AT: &str = "monitor_started_at";
+
 /// The `meta` key under which the monitor writes since when it has held a due
 /// run back for a critical battery. A row in an existing table rather than a
 /// column: it is one value for the machine, and it needs no migration.
@@ -162,6 +169,19 @@ impl Shared {
             params![ASKED_SINCE, at.get().to_string()],
         )?;
         Ok(self.asked_since()?.unwrap_or(at))
+    }
+
+    /// When the monitor last started a run, if it ever wrote one down.
+    pub fn monitor_last_started(&self) -> Result<Option<Epoch>, StoreError> {
+        let at = super::meta_get(&self.conn, STARTED_AT)?;
+        Ok(at.and_then(|at| at.parse().ok()).map(Epoch::new))
+    }
+
+    /// Writes down that the monitor started a run at `at`. Never moved back:
+    /// of two runs racing, the later start is the one kept.
+    pub fn monitor_started(&self, at: Epoch) -> Result<(), StoreError> {
+        let kept = self.monitor_last_started()?.map_or(at, |was| was.max(at));
+        super::meta_set(&self.conn, STARTED_AT, &kept.get().to_string())
     }
 
     /// The run that is due being held back for a critical battery; `None`
@@ -334,6 +354,24 @@ mod tests {
             "a later look keeps the first"
         );
         assert_eq!(shared.asked_since().unwrap(), Some(Epoch::new(1_000)));
+    }
+
+    #[test]
+    fn the_latest_start_of_the_monitor_is_the_one_kept() {
+        let (_tmp, shared) = shared();
+        assert_eq!(shared.monitor_last_started().unwrap(), None);
+        shared.monitor_started(Epoch::new(2_000)).unwrap();
+        shared.monitor_started(Epoch::new(1_000)).unwrap();
+        assert_eq!(
+            shared.monitor_last_started().unwrap(),
+            Some(Epoch::new(2_000)),
+            "a start never moves back"
+        );
+        shared.monitor_started(Epoch::new(3_000)).unwrap();
+        assert_eq!(
+            shared.monitor_last_started().unwrap(),
+            Some(Epoch::new(3_000))
+        );
     }
 
     /// STRICT, like every table in the accounts' databases.

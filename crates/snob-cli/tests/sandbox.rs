@@ -909,6 +909,64 @@ async fn a_calendar_never_run_is_due_at_the_timers_next_look() {
     assert!(stderr(&out).contains("Not due yet"), "{}", stderr(&out));
 }
 
+/// A run that failed before any account wrote its row is not run again at
+/// the timer's next look.
+///
+/// The one account watched is a name nobody owns, so the run fails resolving
+/// it and no `watch_runs` row is ever written (there is no row in `accounts`
+/// to hang one on). The start every run writes before its work is what moves
+/// the schedule on; without it, every look a quarter of an hour apart would
+/// spend the same requests on the same refusal.
+#[tokio::test]
+async fn a_run_that_failed_is_not_run_again_at_the_next_look() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    Mock::given(method("GET"))
+        .and(url_path("/api/v1/users/web_profile_info/"))
+        .and(query_param("username", "ghost"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("<html></html>"))
+        .with_priority(1)
+        .mount(&instagram)
+        .await;
+    log_in(tmp.path(), &instagram);
+    configure(
+        tmp.path(),
+        "schema = 2\nevery = \"6h\"\n\n[[account]]\ntarget = \"ghost\"\n\n\
+         [account.consent]\nagreed_at = 1700000000\n",
+    );
+    // The interval's clock started seven hours ago, so the first look is due.
+    let paths = snob_store::paths::AppPaths::rooted_at(tmp.path());
+    let now = snob_core::clock::now().get();
+    snob_store::store::shared::Shared::open(&paths)
+        .unwrap()
+        .seed_interval(snob_core::Epoch::new(now - 7 * 3_600))
+        .unwrap();
+
+    let before = instagram.received_requests().await.unwrap().len();
+    let out = snob(
+        tmp.path(),
+        Some(&instagram),
+        &["watch", "once", "--when-due"],
+    );
+    assert!(!out.status.success(), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("Not due yet"), "{}", stderr(&out));
+    let after_the_run = instagram.received_requests().await.unwrap().len();
+    assert!(after_the_run > before, "the run asked about the account");
+
+    let out = snob(
+        tmp.path(),
+        Some(&instagram),
+        &["watch", "once", "--when-due"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).contains("Not due yet"), "{}", stderr(&out));
+    assert_eq!(
+        instagram.received_requests().await.unwrap().len(),
+        after_the_run,
+        "the next look sends nothing"
+    );
+}
+
 /// A stranger's lists are not read on an answer nobody gave.
 ///
 /// The domain rule, asserted of the program rather than of a function: an
