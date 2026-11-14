@@ -63,8 +63,20 @@ fn language_header(locale: Option<&str>) -> String {
     }
 }
 
+/// The longest language tag taken: what RFC 5646 says an implementation
+/// should make room for.
+const LONGEST_TAG: usize = 35;
+
+/// The longest subtag of a language tag (RFC 5646).
+const LONGEST_SUBTAG: usize = 8;
+
 /// Unix locales arrive as `es_ES.UTF-8`, and may be the C locale, which
 /// describes no language.
+///
+/// **Only what a language tag can hold comes out**: subtags of one to
+/// [`LONGEST_SUBTAG`] ASCII letters and digits between hyphens, the first
+/// starting with a letter, [`LONGEST_TAG`] bytes at most. Anything else is
+/// no tag, as a missing locale is: the value goes into a header.
 fn normalize_tag(raw: &str) -> String {
     let tag = raw
         .split(['.', '@'])
@@ -73,8 +85,14 @@ fn normalize_tag(raw: &str) -> String {
         .trim()
         .replace('_', "-");
 
-    if matches!(tag.as_str(), "C" | "POSIX") || !tag.starts_with(|c: char| c.is_ascii_alphabetic())
-    {
+    let subtag = |subtag: &str| {
+        (1..=LONGEST_SUBTAG).contains(&subtag.len())
+            && subtag.bytes().all(|b| b.is_ascii_alphanumeric())
+    };
+    let is_a_tag = tag.len() <= LONGEST_TAG
+        && tag.starts_with(|c: char| c.is_ascii_alphabetic())
+        && tag.split('-').all(subtag);
+    if matches!(tag.as_str(), "C" | "POSIX") || !is_a_tag {
         return String::new();
     }
     tag
@@ -361,6 +379,57 @@ mod tests {
         // A language with no region is already its own preference; a browser
         // does not repeat it at a lower weight.
         assert_eq!(language_header(Some("eu")), "eu");
+    }
+
+    /// A tag keeps every shape a system hands out: scripts, numeric regions,
+    /// variants, and Windows' sort suffix, which arrives after an underscore.
+    #[test]
+    fn a_locale_that_is_a_language_tag_is_taken_as_it_was() {
+        for (locale, tag) in [
+            ("zh-Hans-CN", "zh-Hans-CN"),
+            ("sr_RS@latin", "sr-RS"),
+            ("ca_ES.UTF-8@valencia", "ca-ES"),
+            ("ca-ES-valencia", "ca-ES-valencia"),
+            ("es-419", "es-419"),
+            ("ast_ES", "ast-ES"),
+            ("de-DE_phoneb", "de-DE-phoneb"),
+            (" en_GB ", "en-GB"),
+            ("sl-rozaj-biske-1994", "sl-rozaj-biske-1994"),
+        ] {
+            assert_eq!(normalize_tag(locale), tag, "{locale:?}");
+        }
+        assert_eq!(language_header(Some("zh-Hans-CN")), "zh-Hans-CN,zh;q=0.9");
+    }
+
+    /// What no language tag can hold is no tag: it would go into a header
+    /// as it came, or keep the request from being built at all.
+    #[test]
+    fn a_locale_that_is_no_language_tag_falls_back() {
+        for garbage in [
+            "en US",
+            "en\nUS",
+            "en\r\nX-Injected: 1",
+            "es_ES;q=1",
+            "es,fr",
+            "es=ES",
+            "fran\u{e7}ais",
+            "\u{65e5}\u{672c}",
+            "es-ES\u{202e}",
+            "en_",
+            "en--US",
+            "abcdefghi",
+            "en-abcdefghi",
+            "en-US-aaaaaaaa-bbbbbbbb-cccccccc-dddddddd",
+            "1337",
+            "*",
+        ] {
+            assert_eq!(normalize_tag(garbage), "", "{garbage:?}");
+            assert_eq!(
+                language_header(Some(garbage)),
+                "en-US,en;q=0.9",
+                "{garbage:?}"
+            );
+        }
     }
 
     /// The C locale describes no language at all, and must not become one.
