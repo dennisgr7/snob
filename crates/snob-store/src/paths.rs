@@ -1207,9 +1207,9 @@ fn restrict_to_this_account(dir: &Path) -> Result<(), PathError> {
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o700);
-        std::fs::set_permissions(dir, perms).map_err(|source| PathError::Create {
+        std::fs::set_permissions(dir, perms).map_err(|source| PathError::NotPrivate {
             path: dir.to_path_buf(),
-            source,
+            detail: source.to_string(),
         })?;
     }
 
