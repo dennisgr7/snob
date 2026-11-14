@@ -1012,6 +1012,7 @@ impl Gate {
         crate::random::fill_random(&mut bytes)
             .context("the system would not hand out random bytes")?;
         let under = Secret::new(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes));
+        zeroize::Zeroize::zeroize(&mut bytes);
         Ok(Self {
             expected: sign::sign(key.expose(), &under),
             under,
