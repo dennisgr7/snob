@@ -99,6 +99,13 @@ impl Shared {
         }
     }
 
+    /// The connection, for a test that moves a moment kept here by hand, as
+    /// tests move the account database's ([`super::Store::conn`]).
+    #[doc(hidden)]
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Records a push-back on `pk`, and forgets the ones too old to matter.
     pub fn record(
         &self,

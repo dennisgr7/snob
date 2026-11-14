@@ -1037,6 +1037,19 @@ async fn the_scheduled_stream_is_one_json_line_a_tick() {
                 [],
             )
             .expect("the run log is writable");
+        // And the start every run writes before its work, which counts as
+        // the run's as much as its row does.
+        snob_store::store::shared::Shared::open(&snob_store::paths::AppPaths::rooted_at(
+            tmp.path(),
+        ))
+        .expect("the sandbox has a shared.db by now")
+        .conn()
+        .execute(
+            "UPDATE meta SET value = CAST(CAST(value AS INTEGER) - 3600 AS TEXT) \
+             WHERE key = 'monitor_started_at'",
+            [],
+        )
+        .expect("shared.db is writable");
     }
 
     let mut child = command(tmp.path(), Some(&instagram))
