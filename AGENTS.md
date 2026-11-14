@@ -223,7 +223,10 @@ with a documented reason in the same place.
   `doc_id`s are discovered from the page's JavaScript, never hard-coded.
   A comments cursor goes back as `min_id` only in the shape Instagram
   hands one out (`comments_cursor_has_its_shape`); a page with another
-  is the last.
+  is the last. A thread of replies (`Rest::Replies`) goes out with the
+  app's three keys in its order and an empty cursor, and nothing else
+  (`Rest::takes_every_key`): no capture shows a second page of one, so
+  none is asked for, and a thread that says it has more is said to.
 - **Headers.** Every value is the page's, or computed from the User-Agent of
   the browser actually installed; what cannot be computed is left out. An
   absent header is honest, an invented one is not, and no header is a
@@ -234,8 +237,10 @@ with a documented reason in the same place.
   5 to 15 min rest after 40 pages (`PAGES_PER_SITTING`, `SITTING_PAUSE_MS`),
   `HARD_PAGE_CAP = 2000`. A post's comments read a page after another
   (`post --comments`, at most `posts::MOST_COMMENT_PAGES`, 20) are 2 to 5 s
-  apart (`COMMENT_STEP_MS`), as "load more" is clicked; pages of a grid and
-  of comments count in the sitting as a list's do
+  apart (`COMMENT_STEP_MS`), as "load more" is clicked, and so are the
+  threads of replies read after them (`post --replies`/`--replies-of`, at
+  most `posts::MOST_THREADS`, 10, one request each); pages of a grid, of
+  comments and of replies count in the sitting as a list's do
   (`IgClient::count_in_the_sitting`), and a command that reads on by itself
   pays a rest owed before its next page. Under it, the persistent GCRA buckets of
   `snob-store/src/store/rate_budget.rs`: pace (3.83 s emission, burst 20),
@@ -752,6 +757,19 @@ reaches a server already listening: no command, no key, see "Over HTTP").
   the likers ask, as a walk does, with a question of our words and the
   code, are checked first with `likers --check-ahead` (`busy`, the
   cooldown, the day's accounts) and recorded as an act.
+- **A post's comments and the replies under them are read on**
+  (`snob_post`'s `comments`, `replies` and `replies_of`, each part of the
+  command as `--comments=`, `--replies=` and `--replies-of=`, checked in
+  `tools::threads`): up to `posts::MOST_COMMENT_PAGES` pages and
+  `posts::MOST_THREADS` threads, the two kinds of thread together, each
+  comment named by its pk in digits (`CommentPk::parse`), anything else
+  `invalid_arguments` with nothing sent. They ask no yes: comments and
+  replies are what a post shows anyone who opens it, and they are charged
+  to the day's accounts as a page of comments is. Every comment and reply
+  carries its `pk`, so an agent comes back for the threads it wants. **The
+  answer is bounded** (`answer::bounded_post`): the comments, their replies
+  and the threads named together within `answer::PAGE_BYTES`, in order,
+  with `comments_left_out`, `replies_left_out` and `cut` when anything was.
 - Arguments are checked, not passed through: an `account` must be a possible
   username, so it can never be read as a flag, and an unknown argument is
   refused rather than ignored. A tool that is not listed (the writes without
@@ -948,8 +966,10 @@ reaches a server already listening: no command, no key, see "Over HTTP").
   longer of a call that asks (the person's answer, `ANSWER_WITHIN`, then
   the longer of `--max-wait`, `mcp::MAX_WAIT` when not given, and a list's
   wait for its job, `MOST_WAIT_SECONDS` plus
-  `jobs::start::SUPERVISOR_WITHIN`) and a profile (`--max-wait` and the
-  longest rest between sittings), then the child's grace and a margin. A
+  `jobs::start::SUPERVISOR_WITHIN`), a profile (`--max-wait` and the
+  longest rest between sittings) and a post read as far as it goes
+  (those two and 29 comment steps, `pace::COMMENT_STEP_MS`'s longest
+  each), then the child's grace and a margin. A
   list's walk is bounded by it however long it is: the call hands back the
   job and the walk goes on.
 - **Over HTTP, for a tunnel of your own** (`snob mcp --listen <addr>`,

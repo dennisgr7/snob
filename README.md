@@ -93,6 +93,8 @@ snob highlights someone 2 -d all # save everything in its second highlight
 snob posts someone               # the posts on its grid
 snob post <link> -d all          # one post by its link, every photo and video in it
 snob post <link> --comments 5    # the post and five pages of its comments
+snob post <link> --replies 3     # and the replies under the first three that have more
+snob post <link> --replies-of <comment-pk>  # the replies under one comment, by its id
 snob reel <link> -d all          # the same for a reel
 snob likers <link>               # who liked a post, as many as Instagram shows
 snob fetch <cdn-address>         # one file by its address, no account needed
@@ -187,7 +189,10 @@ can read:
   list comes back a page at a time (up to 200 accounts, without their
   pictures' addresses), and the later pages are handed back from what was
   already read, sending nothing; one given a limit still says how many
-  accounts the whole list has.
+  accounts the whole list has. A post can be read with more pages of its
+  comments and the replies under them, the first threads with more than
+  shown or comments named by their id, within one bounded answer that says
+  what it left out.
   `snob status --agents` lists what agents were told yes to in the last 24
   hours, and agents may make at most ten follows and unfollows a day on the
   account (`--max-writes-per-day` to change it, up to 99); what you type in a
