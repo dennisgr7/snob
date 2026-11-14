@@ -45,9 +45,17 @@ pub(super) async fn once(
     // The file is read here too: `once` on a timer should need no more
     // arguments than the scheduled mode does.
     let configured = config::load(paths)?;
-    if args.when_due && !is_due(paths, configured.as_ref())? {
-        return Ok(ExitCode::Ok);
-    }
+    let began = snob_core::clock::now();
+    // A run by hand was due for nothing; one a timer asked for was due for
+    // the moment the schedule names, which is what tells it late.
+    let timing = if args.when_due {
+        let Some(due_at) = due_for(paths, configured.as_ref(), began)? else {
+            return Ok(ExitCode::Ok);
+        };
+        crate::engine::watch::RunTiming::due(due_at, began, std::time::Duration::ZERO)
+    } else {
+        crate::engine::watch::RunTiming::by_hand(began)
+    };
     let delivery = delivery_from(&args.delivery, configured.as_ref(), &secrets)?;
 
     let watched = watched_from(args.target.clone(), configured.as_ref(), in_use);
@@ -89,6 +97,7 @@ pub(super) async fn once(
         delivery.as_ref(),
         Printing::watched(args.output.json),
         !args.progress.no_progress,
+        timing,
     )
     .await;
 
@@ -138,7 +147,15 @@ pub(super) async fn once(
 /// moments it owes from it (`schedule::due_asked_since`). Asked only from the
 /// minute of `now`, `--at 09:00` under a task that looks at :07, :22, :37 and
 /// :52 would never be due.
-fn is_due(paths: &AppPaths, configured: Option<&config::WatchConfig>) -> Result<bool> {
+///
+/// `Some` when a run is owed, with the moment it was owed for
+/// (`schedule::due_moment`), which the run records to be told late from on
+/// time; inside, `None` for an interval no run has started.
+fn due_for(
+    paths: &AppPaths,
+    configured: Option<&config::WatchConfig>,
+    now: snob_core::Epoch,
+) -> Result<Option<Option<snob_core::Epoch>>> {
     use snob_core::watch::schedule::{self, Due};
 
     // Not the flags' sentence: `once` has none of them, and `--when-due` reads
@@ -151,11 +168,16 @@ fn is_due(paths: &AppPaths, configured: Option<&config::WatchConfig>) -> Result<
     }
     let schedule =
         super::schedule::schedule_from(&crate::cli::WatchRunArgs::default(), configured)?;
-    let now = snob_core::clock::now();
     let last_run = super::scheduled::seed_for(paths, &schedule, now)?;
     let asked_since = snob_store::store::shared::Shared::open(paths)?.ask_since(now)?;
     match schedule::due_asked_since(&schedule, last_run, asked_since, now, &chrono::Local) {
-        Due::Now { .. } => Ok(true),
+        Due::Now { .. } => Ok(Some(schedule::due_moment(
+            &schedule,
+            last_run,
+            Some(asked_since),
+            now,
+            &chrono::Local,
+        ))),
         Due::At(at) => {
             use std::io::IsTerminal as _;
             let said = format!("Not due yet: the next run is on {}.", report::stored_on(at));
@@ -164,7 +186,7 @@ fn is_due(paths: &AppPaths, configured: Option<&config::WatchConfig>) -> Result<
             } else {
                 tracing::debug!("{said}");
             }
-            Ok(false)
+            Ok(None)
         }
         Due::Never => Err(anyhow::anyhow!(
             "this schedule can never come round: nothing matches it"

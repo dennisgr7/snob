@@ -1254,9 +1254,15 @@ reaches a server already listening: no command, no key, see "Over HTTP").
   (never installs) a systemd service and timer, a crontab line, a launch
   agent or the PowerShell that registers a scheduled task (the value is
   still `schtasks`; a `schtasks /TR` line only parses in `cmd.exe`), all
-  running `watch once --when-due` every 15 minutes, so the schedule is translated nowhere: the run asks the
-  scheduled mode's evaluator (`schedule::due`, from `scheduled::seed_for`)
-  and, not due, reads no session and sends nothing; `watch status` says
+  running `watch once --when-due` every 15 minutes, so the schedule is
+  translated nowhere: the run asks the scheduled mode's evaluator
+  (`schedule::due_asked_since`, from `scheduled::seed_for`, and the first
+  look of a timer, kept in `shared.db`, so a calendar that never ran is due
+  at the first look after its moment) and, not due, reads no session and
+  sends nothing, saying so only to a terminal; **a run counts from its
+  start**, written in `shared.db` before its work (`run::started`), so one
+  that failed before any account wrote its row is not due again at the next
+  look; `watch status` says
   when that evaluator next comes round (`next_run` in `--json`), from the
   last run it would start from, read and never written
   (`scheduled::seed_as_stored`), with no request; what a run reports
@@ -1264,8 +1270,18 @@ reaches a server already listening: no command, no key, see "Over HTTP").
   pacer was charged, measured around the tick. Schedules: `--every` is a floor
   from the previous run and `--on/--at` or `--cron` a calendar; the next run
   is on the calendar and past the floor, both (`--every 2w --on mon` is legal
-  and is what cron cannot say). Cron day-of-month and day-of-week combine with
-  OR when both are restricted.
+  and is what cron cannot say), the interval added on the wall clock so a
+  change of the clocks moves no run off its hour. Cron day-of-month and
+  day-of-week combine with OR when both are restricted. **A run records when
+  it was due, began and ended** (`watch_runs.due_at`, `began_at`,
+  `finished_at`, migration 020; `engine::watch::RunTiming`): due for the
+  moment the evaluator named (`schedule::due_moment`, or the one the loop
+  slept towards, before its jitter), and for nothing when started by hand.
+  It began late when that is more than `watch::LATE_AFTER` (half an hour,
+  twice the timer's quarter) past its moment, beyond the jitter it was
+  allowed; the report says so (`run.due_at`, `began_at`, `ended_at`,
+  `late_by`, `late`, additive), and so do its summary and `watch status`,
+  which notes a last run that began late.
 
 ## Platforms
 

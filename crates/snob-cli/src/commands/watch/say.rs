@@ -215,7 +215,36 @@ pub(super) fn describe_tick(tick: &TickReport) -> Vec<String> {
         lines.push(String::new());
         lines.push("Its posts could not be read this time.".to_string());
     }
+    if let Some(line) = tick.timing.as_ref().and_then(timing_line) {
+        lines.push(String::new());
+        lines.push(line);
+    }
     lines
+}
+
+/// When a run the schedule asked for was due, began and ended, and how late
+/// it began when that is late (`RunTiming::late`). Nothing for a run started
+/// by hand, which was due for nothing.
+pub(super) fn timing_line(timing: &crate::engine::watch::RunTiming) -> Option<String> {
+    let due = timing.due_at?;
+    let mut line = format!(
+        "Due on {}, began on {}",
+        report::stored_on(due),
+        report::stored_on(timing.began_at)
+    );
+    if let Some(ended) = timing.ended_at {
+        line.push_str(&format!(", ended on {}", report::stored_on(ended)));
+    }
+    line.push('.');
+    if timing.late()
+        && let Some(late) = timing.late_by()
+    {
+        line.push_str(&format!(
+            " It began {} late.",
+            snob_core::duration::format(std::time::Duration::from_secs(late.unsigned_abs()))
+        ));
+    }
+    Some(line)
 }
 
 /// The answer as a person reads it.
@@ -1010,6 +1039,29 @@ mod tests {
         assert!(text.contains("\"snob followers someone\""), "{text}");
         let own = describe(&report_with(None, vec![]), false).join("\n");
         assert!(own.contains("\"snob followers\" once"), "{own}");
+    }
+
+    /// A run the schedule asked for says when it was due and began, and says
+    /// it began late when it did; one by hand says nothing of it.
+    #[test]
+    fn a_late_run_says_so_in_its_summary() {
+        use crate::engine::watch::RunTiming;
+        let due = snob_core::Epoch::new(1_700_000_000);
+        let late = RunTiming::due(
+            Some(due),
+            due + std::time::Duration::from_secs(3 * 3_600),
+            std::time::Duration::ZERO,
+        );
+        let line = timing_line(&late).unwrap();
+        assert!(line.starts_with("Due on "), "{line}");
+        assert!(line.contains("It began 3h late."), "{line}");
+        let on_time = RunTiming::due(
+            Some(due),
+            due + std::time::Duration::from_secs(60),
+            std::time::Duration::ZERO,
+        );
+        assert!(!timing_line(&on_time).unwrap().contains("late"));
+        assert_eq!(timing_line(&RunTiming::by_hand(due)), None);
     }
 
     /// Posts read within the hour are said to be, rather than read as an

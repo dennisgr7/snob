@@ -243,6 +243,8 @@ pub(super) async fn baseline_now(
         None,
         Printing::unattended(false),
         true,
+        // Asked for by hand, at the end of the wizard: due for nothing.
+        crate::engine::watch::RunTiming::by_hand(snob_core::clock::now()),
     )
     .await
     .into_result()

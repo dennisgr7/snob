@@ -182,6 +182,12 @@ pub struct Run {
     /// report's `run.posts.skipped` says it; `None` when it looked at them or
     /// does not watch them.
     pub posts_skipped: Option<String>,
+    /// The moment the schedule said the run was for; `None` for one started
+    /// by hand.
+    pub due_at: Option<Epoch>,
+    /// When the run began, before any of its work; `None` for a row written
+    /// before it was recorded.
+    pub began_at: Option<Epoch>,
 }
 
 /// Records a run, whatever came of it.
@@ -196,8 +202,9 @@ pub struct Run {
 pub fn record_run(conn: &Connection, run: &Run) -> Result<i64, StoreError> {
     conn.execute(
         "INSERT INTO watch_runs
-             (account_pk, started_at, finished_at, requests, outcome, changes, posts_skipped)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (account_pk, started_at, finished_at, requests, outcome, changes, posts_skipped,
+              due_at, began_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             pk_to_sql(run.account_pk),
             run.started_at.get(),
@@ -209,6 +216,8 @@ pub fn record_run(conn: &Connection, run: &Run) -> Result<i64, StoreError> {
             run.outcome.as_ref().map(RecordedOutcome::as_str),
             run.changes,
             run.posts_skipped,
+            run.due_at.map(Epoch::get),
+            run.began_at.map(Epoch::get),
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -232,7 +241,8 @@ pub fn last_runs(conn: &Connection) -> Result<Vec<Run>, StoreError> {
         // The view rather than the window function again: `prune` exempts
         // exactly these rows from the thirty-day sweep, and a tie-break that
         // means one thing here and another there deletes the row this displays.
-        "SELECT account_pk, started_at, finished_at, requests, outcome, changes, posts_skipped
+        "SELECT account_pk, started_at, finished_at, requests, outcome, changes, posts_skipped,
+                due_at, began_at
          FROM newest_run
          ORDER BY account_pk",
     )?;
@@ -249,6 +259,8 @@ pub fn last_runs(conn: &Connection) -> Result<Vec<Run>, StoreError> {
                 .map(RecordedOutcome::from_token),
             changes: row.get(5)?,
             posts_skipped: row.get(6)?,
+            due_at: row.get::<_, Option<i64>>(7)?.map(Epoch::new),
+            began_at: row.get::<_, Option<i64>>(8)?.map(Epoch::new),
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
@@ -893,6 +905,8 @@ mod tests {
                     outcome: Some(RunOutcome::Ok.into()),
                     changes: 0,
                     posts_skipped: None,
+                    due_at: None,
+                    began_at: None,
                 },
             )
             .unwrap();
@@ -942,6 +956,8 @@ mod tests {
                 outcome: None,
                 changes: 0,
                 posts_skipped: Some("no_browser".into()),
+                due_at: None,
+                began_at: None,
             },
         )
         .unwrap();
@@ -949,6 +965,31 @@ mod tests {
             last_runs(db.conn()).unwrap()[0].posts_skipped.as_deref(),
             Some("no_browser")
         );
+    }
+
+    /// When a run was due and when it began are kept with it.
+    #[test]
+    fn when_a_run_was_due_and_began_is_read_back_with_it() {
+        let mut db = Store::in_memory().unwrap();
+        account_with_capture(&mut db, Pk::new(7), &[user(1, "one")]);
+        record_run(
+            db.conn(),
+            &Run {
+                account_pk: Pk::new(7),
+                started_at: Epoch::new(5_000),
+                finished_at: Some(Epoch::new(5_100)),
+                requests: 1,
+                outcome: None,
+                changes: 0,
+                posts_skipped: None,
+                due_at: Some(Epoch::new(1_000)),
+                began_at: Some(Epoch::new(4_900)),
+            },
+        )
+        .unwrap();
+        let run = &last_runs(db.conn()).unwrap()[0];
+        assert_eq!(run.due_at, Some(Epoch::new(1_000)));
+        assert_eq!(run.began_at, Some(Epoch::new(4_900)));
     }
 
     /// The two retention windows this file owns, written out.
@@ -1346,6 +1387,8 @@ mod tests {
                     outcome: Some(RunOutcome::NoSession.into()),
                     changes: 0,
                     posts_skipped: None,
+                    due_at: None,
+                    began_at: None,
                 },
             )
             .unwrap();
@@ -1614,6 +1657,8 @@ mod tests {
                     outcome: Some(RunOutcome::Ok.into()),
                     changes: 0,
                     posts_skipped: None,
+                    due_at: None,
+                    began_at: None,
                 },
             )
             .unwrap();
@@ -1655,6 +1700,8 @@ mod tests {
                     outcome: Some(RunOutcome::Ok.into()),
                     changes,
                     posts_skipped: None,
+                    due_at: None,
+                    began_at: None,
                 },
             )
             .unwrap();

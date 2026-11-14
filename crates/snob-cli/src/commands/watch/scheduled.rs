@@ -78,7 +78,7 @@ pub(super) async fn scheduled(
     // run without leaving a signal listener behind on each one.
     let cancel = crate::interrupt::install();
     let printing = Printing::unattended(args.output.json);
-    let run = || {
+    let run = |timing| {
         run_viewers(
             paths,
             &secrets,
@@ -86,6 +86,7 @@ pub(super) async fn scheduled(
             delivery.as_ref(),
             printing,
             !args.progress.no_progress,
+            timing,
         )
     };
 
@@ -99,7 +100,9 @@ pub(super) async fn scheduled(
         // *schedule* does not land on the same second every day, and delaying a
         // run somebody just asked for would only look broken.
         last_run = Some(snob_core::clock::now());
-        if let Err(e) = run().await.into_result() {
+        // Asked for at start, by hand: due for nothing.
+        let timing = crate::engine::watch::RunTiming::by_hand(snob_core::clock::now());
+        if let Err(e) = run(timing).await.into_result() {
             report::print_error(&e, printing.wording());
         }
     }
@@ -112,7 +115,8 @@ pub(super) async fn scheduled(
     // answer with the *next* one and the wake-up would creep forward instead of
     // arriving. Recomputed when the clock stops ticking and starts jumping —
     // see `CLOCK_JUMP_SECS`.
-    let mut waiting_for: Option<(Epoch, u32)> = None;
+    // And the moment it is due for, before the jitter, which a run records.
+    let mut waiting_for: Option<(Epoch, u32, Option<Epoch>)> = None;
     // The previous time round's clock reading, which is how a clock that jumped
     // is told from one that ticked.
     let mut clock_was: Option<Epoch> = None;
@@ -135,7 +139,7 @@ pub(super) async fn scheduled(
         }
         clock_was = Some(now);
 
-        let (wake_at, missed) = match waiting_for {
+        let (wake_at, missed, due_at) = match waiting_for {
             Some(pending) => pending,
             None => {
                 let pending = match schedule::due(&schedule, last_run, now, &chrono::Local) {
@@ -144,7 +148,11 @@ pub(super) async fn scheduled(
                     // late it is, and shifting it further would move the target
                     // every time round the loop, since the target would be
                     // computed from a `now` that keeps advancing.
-                    Due::Now { missed } => (now, missed),
+                    Due::Now { missed } => (
+                        now,
+                        missed,
+                        schedule::due_moment(&schedule, last_run, None, now, &chrono::Local),
+                    ),
                     // A variant rather than a sentinel moment, so the compiler
                     // asks for this case instead of an arm order keeping
                     // `wake_at` from saturating.
@@ -167,6 +175,7 @@ pub(super) async fn scheduled(
                     Due::At(at) => (
                         schedule::wake_at(&schedule, at, fastrand::f64(), &chrono::Local),
                         0,
+                        Some(at),
                     ),
                 };
                 waiting_for = Some(pending);
@@ -209,12 +218,14 @@ pub(super) async fn scheduled(
             // tight loop retrying it.
             last_run = Some(now);
             waiting_for = None;
+            // The jitter rolled is the schedule's own lateness, not the run's.
+            let timing = crate::engine::watch::RunTiming::due(due_at, now, schedule.jitter());
 
             // A scheduled service does not exit because one run failed. A
             // cooldown lifts, a network comes back, and a session that is gone
             // gets reported every time until somebody fixes it — which is the
             // point of something that watches.
-            if let Err(e) = run().await.into_result() {
+            if let Err(e) = run(timing).await.into_result() {
                 report::print_error(&e, printing.wording());
             }
             // The browser does not sleep through the hours to the next run:
@@ -536,6 +547,8 @@ mod tests {
                     outcome: None,
                     changes: 0,
                     posts_skipped: None,
+                    due_at: None,
+                    began_at: None,
                 },
             )
             .unwrap();
@@ -591,6 +604,8 @@ mod tests {
                 outcome: None,
                 changes: 0,
                 posts_skipped: None,
+                due_at: None,
+                began_at: None,
             },
         )
         .unwrap();

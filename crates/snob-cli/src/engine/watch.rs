@@ -343,6 +343,69 @@ pub struct TickList {
     pub skipped: Option<Skipped>,
 }
 
+/// When a run was due, began and ended.
+///
+/// The schedule's moment beside the run's own, so a run that started late can
+/// be told from one on time, whether the machine slept through its moment, a
+/// timer missed it, or it waited for the budget or a cooldown. Decided by
+/// whoever started the run (`commands::watch`), since only it knows the
+/// schedule; the engine carries it, and `commit` writes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunTiming {
+    /// The moment the schedule said the run was for; `None` for one started
+    /// by hand, which was due for nothing.
+    pub due_at: Option<Epoch>,
+    /// When the run began, before any of its work.
+    pub began_at: Epoch,
+    /// When this account's part of it ended, once it has.
+    pub ended_at: Option<Epoch>,
+    /// How late the schedule itself may start it: the jitter the loop rolls.
+    pub allowed: std::time::Duration,
+}
+
+/// How far past its moment, beyond the jitter, a run may start and still be
+/// on time: half an hour. Twice the quarter of an hour between two looks of
+/// the timer `watch unit` prints, so a look that came just after the moment,
+/// and a start that took a while, is never late; a machine asleep through
+/// its moment, a timer that missed a look, or a wait for the budget or a
+/// cooldown is.
+pub const LATE_AFTER: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+impl RunTiming {
+    /// A run started by hand: due for nothing, never late.
+    pub fn by_hand(began_at: Epoch) -> Self {
+        Self {
+            due_at: None,
+            began_at,
+            ended_at: None,
+            allowed: std::time::Duration::ZERO,
+        }
+    }
+
+    /// A run the schedule said was due at `due_at`, the jitter allowed.
+    pub fn due(due_at: Option<Epoch>, began_at: Epoch, allowed: std::time::Duration) -> Self {
+        Self {
+            due_at,
+            began_at,
+            ended_at: None,
+            allowed,
+        }
+    }
+
+    /// How long after its moment it began, in seconds; 0 for a run that began
+    /// on it or before, and `None` for one due for nothing.
+    pub fn late_by(&self) -> Option<i64> {
+        self.due_at.map(|due| (self.began_at - due).max(0))
+    }
+
+    /// Whether it began later than [`LATE_AFTER`] past its moment, beyond the
+    /// jitter.
+    pub fn late(&self) -> bool {
+        let allowed = (LATE_AFTER + self.allowed).as_secs() as i64;
+        self.late_by().is_some_and(|late| late > allowed)
+    }
+}
+
 /// The posts, as this run found them: why it drew no conclusion about them,
 /// when it did not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -383,6 +446,8 @@ pub struct TickReport {
     pub lists: Vec<TickList>,
     /// The posts, when the account's are watched.
     pub posts: Option<TickPosts>,
+    /// When the run was due, began and ended, as whoever started it said.
+    pub timing: Option<RunTiming>,
     /// Every post this run read off the grid, for the saves still owed to
     /// one that is on it.
     pub read_posts: Vec<crate::posts::Post>,
@@ -456,6 +521,8 @@ pub fn commit(
             posts_skipped: tick
                 .posts_skipped()
                 .map(|skipped| skipped.as_str().to_string()),
+            due_at: tick.timing.and_then(|timing| timing.due_at),
+            began_at: tick.timing.map(|timing| timing.began_at),
         },
     );
     if let Err(e) = record {
@@ -584,6 +651,7 @@ impl TickReport {
             requests,
             lists: Vec::new(),
             posts: None,
+            timing: None,
             read_posts: Vec::new(),
             posts_commit: None,
             committable: Vec::new(),
@@ -878,6 +946,7 @@ pub async fn tick(app: &mut App, watched: &Watched) -> Result<TickReport> {
         requests: app.client().pacer().spent().saturating_sub(before),
         lists,
         posts: tick_posts,
+        timing: None,
         read_posts,
         posts_commit,
         committable: compared.marks,
@@ -1340,6 +1409,28 @@ mod tests {
             tick.outcome(),
             crate::exit::from_stop_reason(StopReason::RateLimit)
         );
+    }
+
+    /// A run is late past half an hour beyond its jitter, and never when it
+    /// was due for nothing.
+    #[test]
+    fn a_run_is_late_past_half_an_hour_beyond_its_jitter() {
+        let due = Epoch::new(1_700_000_000);
+        let minutes = |n: u64| std::time::Duration::from_secs(n * 60);
+        let on_time = RunTiming::due(Some(due), due + minutes(29), std::time::Duration::ZERO);
+        assert_eq!(on_time.late_by(), Some(29 * 60));
+        assert!(!on_time.late(), "a timer's quarter of an hour, and some");
+        let late = RunTiming::due(Some(due), due + minutes(31), std::time::Duration::ZERO);
+        assert!(late.late());
+        let jittered = RunTiming::due(Some(due), due + minutes(40), minutes(15));
+        assert!(
+            !jittered.late(),
+            "the jitter the loop rolled is no lateness"
+        );
+        assert!(!RunTiming::by_hand(due + minutes(600)).late());
+        assert_eq!(RunTiming::by_hand(due).late_by(), None);
+        let early = RunTiming::due(Some(due), due - minutes(1), std::time::Duration::ZERO);
+        assert_eq!(early.late_by(), Some(0));
     }
 
     /// And a checkpoint is reported as a checkpoint, not as "log in again":

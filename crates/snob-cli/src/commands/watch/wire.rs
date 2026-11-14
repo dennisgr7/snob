@@ -21,7 +21,7 @@ use snob_core::model::{User, printable};
 use snob_core::watch::{Basis, Rename};
 
 use crate::app::Viewer;
-use crate::engine::watch::{ListReport, Skipped, TickReport, WatchReport, Watched};
+use crate::engine::watch::{ListReport, RunTiming, Skipped, TickReport, WatchReport, Watched};
 use crate::engine::watch_posts::{PostsReport, SavedPost};
 use crate::exit::ExitCode;
 use crate::posts::{Post, PostKind};
@@ -201,12 +201,21 @@ fn report_json(
 
 /// The `run` object, the same in every report and every line of the stream,
 /// a failed tick's included, so one reader takes `run.at` off any of them.
+///
+/// **When it was due, began and ended**, additively: `due_at` is the moment
+/// the schedule named (`null` for a run started by hand), `began_at` when the
+/// run began and `ended_at` when this account's part of it ended, each with
+/// its `_iso`; `late_by` is how many seconds after `due_at` it began, and
+/// `late` whether that is past what a timer's look and the jitter explain
+/// (`engine::watch::LATE_AFTER`). All `null` where a run says nothing of it:
+/// `diff`, which ran nothing, and a failed tick's line.
 fn run_json(
     at: Epoch,
     looked: bool,
     requests: u32,
     lists: serde_json::Value,
     posts: serde_json::Value,
+    timing: Option<&RunTiming>,
 ) -> serde_json::Value {
     serde_json::json!({
         "at": at,
@@ -215,6 +224,14 @@ fn run_json(
         "requests": requests,
         "lists": lists,
         "posts": posts,
+        "due_at": timing.and_then(|t| t.due_at),
+        "due_at_iso": timing.and_then(|t| t.due_at).and_then(iso),
+        "began_at": timing.map(|t| t.began_at),
+        "began_at_iso": timing.and_then(|t| iso(t.began_at)),
+        "ended_at": timing.and_then(|t| t.ended_at),
+        "ended_at_iso": timing.and_then(|t| t.ended_at).and_then(iso),
+        "late_by": timing.and_then(RunTiming::late_by),
+        "late": timing.map(RunTiming::late),
         "tool": { "name": "snob", "version": env!("CARGO_PKG_VERSION") },
     })
 }
@@ -234,6 +251,7 @@ fn tick_run_json(tick: &TickReport) -> serde_json::Value {
             Some(posts) => serde_json::json!({ "skipped": posts.skipped.map(|s| s.as_str()) }),
             None => serde_json::Value::Null,
         },
+        tick.timing.as_ref(),
     )
 }
 
@@ -318,6 +336,14 @@ pub(super) fn status_json(
             "requests": run.requests,
             "changes": run.changes,
             "posts_skipped": run.posts_skipped,
+            // When it was due, began and ended, and how late it began
+            // (`watch_runs`, migration 020): null for a run by hand, and for
+            // a row from before.
+            "due_at": run.due_at,
+            "began_at": run.began_at,
+            "ended_at": run.finished_at,
+            "late_by": super::status::timing_of(run).and_then(|t| t.late_by()),
+            "late": super::status::timing_of(run).map(|t| t.late()),
         })).collect::<Vec<_>>(),
         "accounts": marks.iter().map(|MarkOf { mark: m, viewer, .. }| serde_json::json!({
             "viewer": viewer.json(),
@@ -379,6 +405,7 @@ pub(super) fn stored_json(viewer: &Viewer, report: &WatchReport, now: Epoch) -> 
             0,
             serde_json::json!([]),
             serde_json::Value::Null,
+            None,
         ),
         viewer,
         report,
@@ -443,7 +470,7 @@ pub(super) fn failed_tick_json(
             "username": watched.name().map(printable),
             "is_self": watched.name().is_none(),
         },
-        "run": run_json(at, false, requests, serde_json::json!([]), serde_json::Value::Null),
+        "run": run_json(at, false, requests, serde_json::json!([]), serde_json::Value::Null, None),
         "error": {
             "code": crate::exit::from_chain(error).unwrap_or(ExitCode::Error).as_str(),
             "message": printable(&format!("{error:#}")),
@@ -1350,6 +1377,14 @@ mod tests {
                     "requests": 14,
                     "lists": [],
                     "posts": null,
+                    "due_at": null,
+                    "due_at_iso": null,
+                    "began_at": null,
+                    "began_at_iso": null,
+                    "ended_at": null,
+                    "ended_at_iso": null,
+                    "late_by": null,
+                    "late": null,
                     "tool": { "name": "snob", "version": env!("CARGO_PKG_VERSION") },
                 },
                 "viewer": { "pk": 42, "username": "me" },
@@ -1456,6 +1491,29 @@ mod tests {
         let body = payload(&tick, "run-1", "watch.heartbeat");
         assert_eq!(body["run"]["posts"]["skipped"], serde_json::Value::Null);
         assert_eq!(body["run"]["looked"], true);
+    }
+
+    /// A run says when it was due, began and ended, and that it began late.
+    #[test]
+    fn a_late_run_says_when_it_was_due_and_when_it_began() {
+        let mut tick =
+            TickReport::for_test(report_with(None, vec![]), 1, Epoch::new(1_700_007_200));
+        tick.timing = Some(RunTiming {
+            ended_at: Some(Epoch::new(1_700_007_300)),
+            ..RunTiming::due(
+                Some(Epoch::new(1_700_000_000)),
+                Epoch::new(1_700_007_200),
+                std::time::Duration::ZERO,
+            )
+        });
+        let body = payload(&tick, "run-1", "watch.heartbeat");
+        assert_eq!(body["run"]["due_at"], 1_700_000_000);
+        assert_eq!(body["run"]["due_at_iso"], "2023-11-14T22:13:20Z");
+        assert_eq!(body["run"]["began_at"], 1_700_007_200);
+        assert_eq!(body["run"]["ended_at"], 1_700_007_300);
+        assert_eq!(body["run"]["late_by"], 7_200);
+        assert_eq!(body["run"]["late"], true);
+        assert_eq!(body["schema"], SENT_SCHEMA, "additive: the schema stays");
     }
 
     /// A post goes out without any address of its media: only its own page.

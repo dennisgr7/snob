@@ -384,6 +384,25 @@ impl Recorded {
                     ));
                 }
                 lines.push(format!("{line}."));
+                if let Some(timing) = timing_of(run) {
+                    let late = timing
+                        .late_by()
+                        .filter(|_| timing.late())
+                        .map(|late| {
+                            format!(
+                                ", {} late",
+                                snob_core::duration::format(std::time::Duration::from_secs(
+                                    late.unsigned_abs()
+                                ))
+                            )
+                        })
+                        .unwrap_or_default();
+                    lines.push(format!(
+                        "    It was due on {} and began on {}{late}.",
+                        report::stored_on(run.due_at.unwrap_or_default()),
+                        report::stored_on(timing.began_at),
+                    ));
+                }
             }
             if !ran {
                 lines.push("  It has not run yet.".to_string());
@@ -436,6 +455,21 @@ impl Recorded {
 /// One missed run is a machine that was asleep, a laptop that was shut, a
 /// cooldown that ran long. Three is nobody coming back.
 const MISSED_BEFORE_FAILED: i64 = 3;
+
+/// When a recorded run was due and began, when it was recorded with both:
+/// what `status` and its `--json` tell a late run by. The jitter it was
+/// allowed is not recorded, so none is allowed here, which only ever calls a
+/// run late that the run itself, allowed its jitter, did not.
+pub(super) fn timing_of(run: &watch_store::Run) -> Option<crate::engine::watch::RunTiming> {
+    Some(crate::engine::watch::RunTiming {
+        ended_at: run.finished_at,
+        ..crate::engine::watch::RunTiming::due(
+            Some(run.due_at?),
+            run.began_at?,
+            std::time::Duration::ZERO,
+        )
+    })
+}
 
 /// How often the timer `watch unit` prints asks whether a run is due: a
 /// quarter of an hour (`unit::ASK_EVERY_MINUTES`), so a run under it starts
@@ -684,6 +718,20 @@ fn health(
                 } else {
                     "SNOB_NO_BROWSER is set, and a grid is read from the browser"
                 }
+            ));
+        }
+        // A last run that began well after the moment it was due for: the
+        // machine slept through it, the timer missed it, or it waited for the
+        // budget or a cooldown. Worth a look, and it ends with the next run
+        // on time.
+        if *watched
+            && let Some(timing) = timing_of(run).filter(|t| t.late())
+            && let Some(late) = timing.late_by()
+        {
+            at_least(Verdict::Warned);
+            notes.push(format!(
+                "{who}'s last run began {} after the moment it was due for",
+                snob_core::duration::format(std::time::Duration::from_secs(late.unsigned_abs()))
             ));
         }
         let Some(code) = run.outcome.as_ref().filter(|c| **c != RunOutcome::Ok) else {
@@ -1204,6 +1252,8 @@ target = "self"
             outcome: Some(outcome.into()),
             changes: 0,
             posts_skipped: None,
+            due_at: None,
+            began_at: None,
         }
     }
 
@@ -2057,6 +2107,50 @@ every = \"6h\"
             None,
         );
         assert_eq!(found.verdict, Verdict::Warned, "{:?}", found.notes);
+    }
+
+    /// A last run that began well after its moment is a note, and said
+    /// beside the run; one on time, or by hand, is not.
+    #[test]
+    fn a_run_that_began_late_is_noted() {
+        let configured = watch_toml("schema = 1\nevery = \"6h\"\n");
+        let late = watch_store::Run {
+            due_at: Some(NOW - Duration::from_secs(3 * 3_600)),
+            began_at: Some(NOW - Duration::from_secs(60)),
+            ..ran(ExitCode::Ok)
+        };
+        let found = health(
+            Some(&configured),
+            &[of(&late)],
+            &[],
+            Default::default(),
+            NOW,
+            None,
+        );
+        assert_eq!(found.verdict, Verdict::Warned, "{:?}", found.notes);
+        assert!(
+            found
+                .notes
+                .iter()
+                .any(|n| n.contains("after the moment it was due for")),
+            "{:?}",
+            found.notes
+        );
+
+        let on_time = watch_store::Run {
+            due_at: Some(NOW - Duration::from_secs(120)),
+            began_at: Some(NOW - Duration::from_secs(60)),
+            ..ran(ExitCode::Ok)
+        };
+        let found = health(
+            Some(&configured),
+            &[of(&on_time)],
+            &[],
+            Default::default(),
+            NOW,
+            None,
+        );
+        assert_eq!(found.verdict, Verdict::Ok, "{:?}", found.notes);
     }
 
     /// A file with no schedule is a warning, not a monitor that cannot start:

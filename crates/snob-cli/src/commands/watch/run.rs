@@ -17,7 +17,7 @@ use snob_store::store::Store;
 use snob_store::store::shared::Shared;
 
 use crate::app::{App, Viewer};
-use crate::engine::watch::{TickReport, Watched, group_by_viewer};
+use crate::engine::watch::{RunTiming, TickReport, Watched, group_by_viewer};
 use crate::exit::{ExitCode, ExitError};
 use crate::report;
 use crate::ui;
@@ -41,16 +41,25 @@ pub(super) async fn run_viewers(
     delivery: Option<&Delivery>,
     printing: Printing,
     with_progress: bool,
+    timing: RunTiming,
 ) -> RunSummary {
-    started(paths, snob_core::clock::now());
+    started(paths, timing.began_at);
     let cancel = crate::interrupt::install();
-    run_groups(paths, watched, delivery, printing, &cancel, |account| {
-        let opened = App::open(&secrets.session_of(account), account, with_progress)?;
-        Ok(opened.map(|mut app| {
-            app.stops_on_a_critical_battery(crate::power::battery::critical);
-            Box::new(app)
-        }))
-    })
+    run_groups(
+        paths,
+        watched,
+        delivery,
+        printing,
+        timing,
+        &cancel,
+        |account| {
+            let opened = App::open(&secrets.session_of(account), account, with_progress)?;
+            Ok(opened.map(|mut app| {
+                app.stops_on_a_critical_battery(crate::power::battery::critical);
+                Box::new(app)
+            }))
+        },
+    )
     .await
 }
 
@@ -104,6 +113,7 @@ async fn run_groups(
     watched: &[Watched],
     delivery: Option<&Delivery>,
     printing: Printing,
+    timing: RunTiming,
     cancel: &CancelToken,
     mut open: impl FnMut(&AccountPaths) -> Result<Option<Box<App>>>,
 ) -> RunSummary {
@@ -137,7 +147,7 @@ async fn run_groups(
                 // never from a flag, so the refusal when nobody is at a
                 // terminal has to say so.
                 app.consent_comes_from_the_config();
-                run_accounts(&mut app, &entries, delivery, printing, &mut tally).await;
+                run_accounts(&mut app, &entries, delivery, printing, timing, &mut tally).await;
                 continue;
             }
             Ok(None) => no_session_for(viewer, &registry, as_whom.as_deref(), &entries),
@@ -149,6 +159,7 @@ async fn run_groups(
             &entries,
             why,
             printing,
+            timing,
             &mut tally,
         );
     }
@@ -274,6 +285,7 @@ fn skip(
     entries: &[Watched],
     why: anyhow::Error,
     printing: Printing,
+    timing: RunTiming,
     tally: &mut Tally,
 ) {
     let at = snob_core::clock::now();
@@ -286,7 +298,7 @@ fn skip(
     });
     for entry in entries {
         if let Some((db, viewer)) = &db {
-            record_failed_run(db, *viewer, entry, &why, 0, at);
+            record_failed_run(db, *viewer, entry, &why, 0, at, timing);
         }
         if printing.json {
             crate::ui::say!(
@@ -418,6 +430,7 @@ async fn run_accounts(
     watched: &[Watched],
     delivery: Option<&Delivery>,
     printing: Printing,
+    timing: RunTiming,
     tally: &mut Tally,
 ) {
     for (index, account) in watched.iter().enumerate() {
@@ -447,7 +460,7 @@ async fn run_accounts(
         // and on `deliver`, both of them after a whole successful two-list
         // walk. What was really spent has its own row in AGENTS.md.
         let before = app.client().pacer().spent();
-        let outcome = tick_one(app, account, delivery, printing).await;
+        let outcome = tick_one(app, account, delivery, printing, timing).await;
         let charged = app.client().pacer().spent().saturating_sub(before);
         tally.spent += charged;
 
@@ -467,7 +480,7 @@ async fn run_accounts(
                 // The moment is read once and given to both, so the row in the
                 // run log and the line in the stream name the same second.
                 let at = snob_core::clock::now();
-                record_failed_run(app.db(), app.viewer().pk, account, &e, charged, at);
+                record_failed_run(app.db(), app.viewer().pk, account, &e, charged, at, timing);
                 if printing.json {
                     let line = failed_tick_json(Some(app.viewer()), account, &e, at, charged);
                     crate::ui::say!("{}", json_line(&line));
@@ -496,6 +509,7 @@ fn record_failed_run(
     error: &anyhow::Error,
     requests: u32,
     at: Epoch,
+    timing: RunTiming,
 ) {
     let pk = match watched.name() {
         Some(name) => snob_store::store::accounts::find_pk_by_username(
@@ -521,6 +535,8 @@ fn record_failed_run(
             outcome: Some(outcome.into()),
             changes: 0,
             posts_skipped: None,
+            due_at: timing.due_at,
+            began_at: Some(timing.began_at),
         },
     );
     if let Err(e) = record {
@@ -570,6 +586,7 @@ async fn tick_one(
     watched: &Watched,
     delivery: Option<&Delivery>,
     printing: Printing,
+    timing: RunTiming,
 ) -> Result<TickReport> {
     let tick = crate::engine::watch::tick(app, watched).await;
     app.progress().finish();
@@ -578,6 +595,12 @@ async fn tick_one(
     // and before the commit, so a run stopped while saving commits nothing
     // and the next one finds the same posts (`posts` says the order).
     super::posts::save_new(app, &mut tick, watched).await?;
+    // Ended once what it reports is settled, which is the moment the report
+    // is made of.
+    tick.timing = Some(RunTiming {
+        ended_at: Some(snob_core::clock::now()),
+        ..timing
+    });
 
     if printing.json {
         crate::ui::say!("{}", json_line(&tick_json(&tick)));
@@ -675,6 +698,7 @@ mod tests {
             &watched,
             None,
             Printing::unattended(false),
+            RunTiming::by_hand(snob_core::clock::now()),
             &mut outcome,
         )
         .await;
@@ -782,6 +806,7 @@ mod tests {
             None,
             Printing::unattended(false),
             false,
+            RunTiming::by_hand(snob_core::clock::now()),
         )
         .await;
 
@@ -828,6 +853,7 @@ mod tests {
             &watched,
             None,
             Printing::unattended(false),
+            RunTiming::by_hand(snob_core::clock::now()),
             &CancelToken::default(),
             |account| {
                 opened.borrow_mut().push(account.pk());
@@ -908,6 +934,7 @@ mod tests {
             &[],
             Some(&delivery),
             Printing::unattended(false),
+            RunTiming::by_hand(snob_core::clock::now()),
             &CancelToken::default(),
             |_| unreachable!("nothing is watched"),
         )
@@ -960,6 +987,7 @@ mod tests {
             &watched,
             Some(&delivery),
             Printing::unattended(false),
+            RunTiming::by_hand(snob_core::clock::now()),
             &cancel,
             |account| {
                 opened.borrow_mut().push(account.pk());

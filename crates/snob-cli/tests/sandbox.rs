@@ -1098,6 +1098,67 @@ async fn watch_status_says_when_an_accounts_posts_were_last_read() {
     );
 }
 
+/// A run a timer starts three hours after its moment, as a machine asleep
+/// through it would, records when it was due and when it began, and says it
+/// began late: in its report, in `watch status` and in its `--json`.
+#[tokio::test]
+async fn a_run_that_began_late_says_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    log_in(tmp.path(), &instagram);
+    configure(tmp.path(), "schema = 2\nevery = \"6h\"\n");
+    // The interval's clock started nine hours ago, so the run was due three
+    // hours ago.
+    let paths = snob_store::paths::AppPaths::rooted_at(tmp.path());
+    let now = snob_core::clock::now().get();
+    snob_store::store::shared::Shared::open(&paths)
+        .unwrap()
+        .seed_interval(snob_core::Epoch::new(now - 9 * 3_600))
+        .unwrap();
+
+    let out = snob(
+        tmp.path(),
+        Some(&instagram),
+        &["watch", "once", "--when-due", "--json"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let line = json(&out);
+    let due = line["run"]["due_at"].as_i64().expect("a due moment");
+    assert!((due - (now - 3 * 3_600)).abs() < 120, "{line}");
+    assert_eq!(line["run"]["late"], true, "{line}");
+    assert!(
+        line["run"]["late_by"].as_i64().unwrap() >= 3 * 3_600 - 120,
+        "{line}"
+    );
+    assert!(line["run"]["began_at"].as_i64().is_some(), "{line}");
+    assert!(line["run"]["ended_at"].as_i64().is_some(), "{line}");
+
+    let said = json(&snob(tmp.path(), None, &["watch", "status", "--json"]));
+    let last = &said["last_runs"][0];
+    assert_eq!(last["late"], true, "{said}");
+    assert_eq!(last["due_at"], due, "{said}");
+    assert!(
+        said["health"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note
+                .as_str()
+                .unwrap_or_default()
+                .contains("after the moment it was due for")),
+        "{said}"
+    );
+    let text = stdout(&snob(tmp.path(), None, &["watch", "status"]));
+    assert!(text.contains("It was due on"), "{text}");
+
+    // A run by hand was due for nothing, and is never late.
+    let out = snob(tmp.path(), Some(&instagram), &["watch", "once", "--json"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let line = json(&out);
+    assert_eq!(line["run"]["due_at"], serde_json::Value::Null, "{line}");
+    assert_eq!(line["run"]["late"], false, "{line}");
+}
+
 /// `watch unit schtasks` prints the PowerShell that registers the task,
 /// with this binary's path, and warns that a file with no webhook leaves the
 /// reports where nobody reads them.

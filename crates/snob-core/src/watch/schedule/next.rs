@@ -428,6 +428,58 @@ pub fn due_asked_since<Tz: TimeZone>(
     due_from(schedule, last_run, Some(asked_since), now, zone)
 }
 
+/// The moment a run that is due at `now` was due for: what a run records as
+/// its `due_at`, so one that started late can be told from one on time.
+///
+/// On a calendar, the most recent moment it names that is owed (the one the
+/// look back of [`next_after`] finds), and never before the floor, since no
+/// run could have started earlier; on an interval, the floor itself, one
+/// interval after the last run. `None` when nothing is due at `now`, and for
+/// an interval nothing has started (its first run is due whenever it is
+/// asked).
+pub fn due_moment<Tz: TimeZone>(
+    schedule: &Schedule,
+    last_run: Option<Epoch>,
+    asked_since: Option<Epoch>,
+    now: Epoch,
+    zone: &Tz,
+) -> Option<Epoch> {
+    let last_run = last_run.map(|last| last.min(now));
+    if next_after_asked_since(schedule, last_run, asked_since, now, zone)? > now {
+        return None;
+    }
+    let step = Duration::from_secs(schedule.step_secs() as u64);
+    let Some(calendar) = &schedule.calendar else {
+        return last_run.map(|last| last + step);
+    };
+    let served = last_run.map(|last| moment_served(calendar, last, zone));
+    let floor = match (served, last_run) {
+        (Some(moment), Some(last)) => on_the_wall_clock(moment, step, zone)
+            .max(moment + Duration::from_secs(super::MIN_GAP_SECS.unsigned_abs()))
+            .max(last),
+        _ => Epoch::new(i64::MIN),
+    };
+    let earliest = match served {
+        Some(moment) => moment.get().div_euclid(60) + 1,
+        None => asked_since
+            .map_or(now, |asked| asked.min(now))
+            .get()
+            .div_euclid(60),
+    };
+    minutes_on_named_days(
+        calendar,
+        zone,
+        now.get().div_euclid(60),
+        Direction::Backward,
+    )
+    .take_while(|(minute, _)| *minute >= earliest)
+    .find(|(minute, at)| {
+        calendar.allows(at)
+            && !already_run_at_this_wall_clock(zone, Epoch::new(minute * 60), at, last_run)
+    })
+    .map(|(minute, _)| Epoch::new(minute * 60).max(floor))
+}
+
 /// The body of [`due`] and [`due_asked_since`].
 fn due_from<Tz: TimeZone>(
     schedule: &Schedule,
@@ -1146,6 +1198,33 @@ mod tests {
             due(&schedule, None, at(hours(9) + 7 * 60), &Utc),
             Due::At(at(hours(9) + 7 * 24 * 3_600)),
         );
+    }
+
+    /// The moment a due run was due for: the calendar's moment it is late
+    /// for, or the interval's floor; none for a run not due.
+    #[test]
+    fn a_due_run_knows_the_moment_it_was_due_for() {
+        let calendar = Schedule::calendar(&[Weekday::Mon], &[(9, 0)]).unwrap();
+        let asked = at(hours(8) + 50 * 60);
+        assert_eq!(
+            due_moment(&calendar, None, Some(asked), at(hours(11)), &Utc),
+            Some(at(hours(9))),
+            "two hours late for 09:00"
+        );
+        assert_eq!(
+            due_moment(&calendar, None, Some(asked), at(hours(8) + 55 * 60), &Utc),
+            None,
+            "not due yet"
+        );
+
+        let every = Schedule::every(Duration::from_secs(hours(6) as u64)).unwrap();
+        let last = at(hours(1));
+        assert_eq!(
+            due_moment(&every, Some(last), None, at(hours(8)), &Utc),
+            Some(at(hours(7))),
+            "the floor, an interval after the last run"
+        );
+        assert_eq!(due_moment(&every, None, None, at(hours(8)), &Utc), None);
     }
 
     /// A timer that looks twice before the moment waits for it.
