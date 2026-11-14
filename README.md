@@ -244,6 +244,111 @@ can read:
   them. After upgrading snob, reconnect the server in the client: a server
   whose binary changed under it refuses every call.
 
+### What a webhook receives
+
+Each report is one POST, sent again until a 2xx comes back (for a week, and
+once a run), so a receiver may see one twice: **deduplicate on `run.id`**,
+which is also the `X-Snob-Delivery` header. `X-Snob-Event` says which event
+it is without reading the body (`watch.changes`, `watch.heartbeat`, or
+`watch.preflight` from `snob watch check`), `X-Snob-Attempt` which try this
+is, and with a signing key `X-Snob-Signature: sha256=<hex>` is the
+HMAC-SHA256 of the exact bytes of the body under that key. The `User-Agent`
+is `snob/<version>`. With `format = "json"`, the default, the body is the
+report below plus a `summary`; the other formats send the summary alone.
+`snob watch --json >> events.ndjson` writes the same report as one line per
+account and run, without `run.id`.
+
+```json
+{
+  "schema": 1,
+  "event": "watch.changes",
+  "run": {
+    "id": "f1e2d3c4b5a69788-42",
+    "at": 1763196400,
+    "at_iso": "2025-11-15T08:46:40Z",
+    "looked": true,
+    "requests": 6,
+    "lists": [
+      { "kind": "followers", "skipped": null },
+      { "kind": "following", "skipped": null }
+    ],
+    "posts": { "skipped": null },
+    "due_at": 1763190000,
+    "due_at_iso": "2025-11-15T07:00:00Z",
+    "began_at": 1763196380,
+    "began_at_iso": "2025-11-15T08:46:20Z",
+    "ended_at": 1763196400,
+    "ended_at_iso": "2025-11-15T08:46:40Z",
+    "late_by": 6380,
+    "late": true,
+    "tool": { "name": "snob", "version": "0.9.0" }
+  },
+  "viewer": { "pk": 42, "username": "me" },
+  "account": { "pk": 42, "username": "me", "is_self": true },
+  "lists": {
+    "followers": {
+      "basis": "compared",
+      "since": 1763110000,
+      "since_iso": "2025-11-14T08:46:40Z",
+      "until": 1763196400,
+      "until_iso": "2025-11-15T08:46:40Z",
+      "count": 310
+    },
+    "following": null
+  },
+  "posts": {
+    "basis": "compared",
+    "since": 1763110000,
+    "since_iso": "2025-11-14T08:46:40Z",
+    "until": 1763196400,
+    "until_iso": "2025-11-15T08:46:40Z",
+    "pages_read": 1,
+    "complete": true
+  },
+  "counts": {
+    "followers_gained": 1,
+    "followers_lost": 0,
+    "following_gained": 0,
+    "following_lost": 0,
+    "renamed": 0,
+    "posts_new": 1,
+    "total": 1
+  },
+  "events": {
+    "followers_gained": [
+      { "pk": 1001, "username": "someone", "profile_url": "https://www.instagram.com/someone/" }
+    ],
+    "followers_lost": [],
+    "following_gained": [],
+    "following_lost": [],
+    "renamed": [],
+    "posts_new": [
+      {
+        "pk": "3800000000000000001",
+        "code": "DSs0gAAAAAB",
+        "url": "https://www.instagram.com/p/DSs0gAAAAAB/",
+        "kind": "photo",
+        "taken_at": 1763190000,
+        "taken_at_iso": "2025-11-15T07:00:00Z",
+        "pinned": false,
+        "item_count": 1,
+        "caption": "Open day this Friday",
+        "saved": null
+      }
+    ]
+  }
+}
+```
+
+`counts.total` counts the lists' changes and the renames, not the new posts,
+which `counts.posts_new` counts beside it; `event` is `watch.changes` when
+either has news. A list or the posts that could not be read this run say why
+in `run.lists[].skipped` and `run.posts.skipped`, so an empty report is told
+from one that could not look. `due_at` is `null` for a run started by hand,
+and `late` says a run began more than half an hour past its moment, beyond
+the jitter it was allowed. New fields may be added; `schema` changes only
+when one is removed or changes meaning.
+
 ## Staying a light client
 
 There is no official API for most of this, so snob uses the same web API
