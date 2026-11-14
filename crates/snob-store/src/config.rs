@@ -1,18 +1,13 @@
-//! The monitor's configuration file.
+//! The monitor's configuration file, `watch.toml`: the one file in the
+//! configuration directory, which [`write`] creates.
 //!
-//! The one file in the configuration directory, which is created by whatever
-//! writes there and not before, so [`write`] creates it.
-//!
-//! **Read with serde, written from a template by hand.** A serializer produces
-//! a correct file and a useless one: it cannot put the reason for a value next
-//! to the value, and this project puts the reason next to the thing it governs
-//! everywhere else. A file somebody is meant to edit has to explain itself, so
-//! the template is written out and the parser is what has to keep up with it —
-//! and a test writes the template and reads it back, so it cannot drift.
+//! **Read with serde, written from a template by hand**: a file somebody is
+//! meant to edit has to explain itself, and a serializer cannot put the
+//! reason for a value next to it. A test writes the template and reads it
+//! back, so the two cannot drift.
 //!
 //! **No secrets live here.** The webhook's token and signing key go to the
-//! keyring beside the session, because this file is plain text at a guessable
-//! path and a token in it is a token in every backup of the home directory.
+//! keyring: this file is plain text at a guessable path.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -23,12 +18,9 @@ use crate::paths::AppPaths;
 use snob_core::duration;
 use snob_core::{Epoch, Pk};
 
-/// What the file says.
-///
-/// `deny_unknown_fields` throughout, and that is not pedantry: this file drives
-/// something that runs unattended for months, and a mistyped key that is
-/// silently ignored is a schedule nobody is running or a consent nobody gave.
-/// Better to refuse at startup, where somebody is watching.
+/// What the file says. `deny_unknown_fields` throughout: this drives something
+/// that runs unattended for months, and a mistyped key silently ignored is a
+/// schedule nobody is running or a consent nobody gave.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WatchConfig {
@@ -77,13 +69,9 @@ pub struct WebhookConfig {
     pub format: WebhookFormat,
 }
 
-/// The shape of what a webhook is sent.
-///
-/// `json` is the report a program reads, and the default, so a file written
-/// before this existed sends what it always sent. The others carry the
-/// report's summary alone, as the service at the far end wants it posted:
-/// a Slack or Discord incoming webhook refuses snob's JSON, and ntfy shows
-/// a JSON body as a wall of braces.
+/// The shape of what a webhook is sent: `json`, the report a program reads
+/// and the default, or the report's summary alone as the service at the far
+/// end wants it posted.
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum WebhookFormat {
@@ -117,11 +105,9 @@ pub struct AccountConfig {
     /// is using.
     #[serde(default)]
     pub viewer: Option<Pk>,
-    /// The recorded answer to "may this walk somebody else's lists?".
-    ///
-    /// A table rather than a bool, because what has to be on record is that
-    /// somebody answered and when — a `true` is something any editor can type
-    /// without having been asked anything.
+    /// The recorded answer to "may this walk somebody else's lists?". A table
+    /// rather than a bool: what has to be on record is that somebody answered
+    /// and when.
     #[serde(default)]
     pub consent: Option<ConsentConfig>,
     /// Whether its followers and following are watched. On unless the file
@@ -196,12 +182,9 @@ fn yes() -> bool {
 }
 
 impl AccountConfig {
-    /// Whether this line names the account the session belongs to.
-    ///
-    /// The at sign comes off first, because everywhere else in the tool it does:
-    /// `@self` is what somebody writes who has just written `@friend` on the
-    /// line above. Without it that line is read as a stranger named `self`, and
-    /// a scheduled run refuses to start asking for confirmation to read an
+    /// Whether this entry names the account the session belongs to. The at
+    /// sign comes off first, as everywhere else: `@self` read as a stranger
+    /// named `self` would have a scheduled run ask for consent to read an
     /// account it owns.
     pub fn is_own(&self) -> bool {
         self.target
@@ -278,13 +261,10 @@ pub fn load(paths: &AppPaths) -> Result<Option<WatchConfig>, ConfigError> {
 
 /// Parses one, naming the file in anything it complains about.
 pub fn parse(text: &str, path: &Path) -> Result<WatchConfig, ConfigError> {
-    // **The schema is read first.** `WatchConfig` carries `deny_unknown_fields`,
-    // and a file from a newer version is by definition one with keys this build
-    // has never heard of: parsed whole first, it would be refused as a typo
-    // ("unknown field `something_new`") rather than as a newer file.
-    //
-    // Two lines and no `deny_unknown_fields`, so every other key is ignored. A
-    // missing schema key reaches the full parse, where it reads as schema 1.
+    // **The schema is read first**, ignoring every other key: a file from a
+    // newer version has keys this build does not know, and parsed whole it
+    // would be refused as a typo rather than as a newer file. A missing
+    // schema key reaches the full parse, where it reads as schema 1.
     #[derive(serde::Deserialize)]
     struct Version {
         #[serde(default)]
@@ -312,17 +292,10 @@ pub fn parse(text: &str, path: &Path) -> Result<WatchConfig, ConfigError> {
         });
     }
 
-    // `cron` and the `at`/`on` pair are two syntaxes for the same thing, and
-    // only one of them can win. `schedule_from` takes `cron` first while the
-    // sentence the monitor prints is built from every field that is populated,
-    // so the banner would describe a schedule nobody is on. The flags cannot
-    // reach this state, `cli.rs` declares them as conflicting; the file can,
-    // and `deny_unknown_fields` is on this struct for exactly the reason that
-    // applies here, that a schedule nobody is running must not be accepted in
-    // silence.
-    //
-    // `every` alongside a calendar stays legal: those two combine rather than
-    // compete, which is what `--every 2w --on mon` means.
+    // `cron` and the `at`/`on` pair are two syntaxes for one thing, and only
+    // `cron` would be used while the banner described both. The flags cannot
+    // reach this state; the file can. `every` beside a calendar stays legal:
+    // those combine (`--every 2w --on mon`).
     if config.cron.is_some() && !(config.at.is_empty() && config.on.is_empty()) {
         let other = if config.at.is_empty() { "on" } else { "at" };
         return Err(ConfigError::Invalid {
@@ -335,8 +308,8 @@ pub fn parse(text: &str, path: &Path) -> Result<WatchConfig, ConfigError> {
     }
 
     for account in &config.accounts {
-        // An entry that watches nothing is a mistake somebody made, not a
-        // setting: refused where it is written rather than run for nothing.
+        // An entry that watches nothing is a mistake, refused where it is
+        // written.
         if !account.lists && account.posts.is_none() {
             return Err(ConfigError::Invalid {
                 path: path.to_path_buf(),
@@ -347,9 +320,8 @@ pub fn parse(text: &str, path: &Path) -> Result<WatchConfig, ConfigError> {
                 ),
             });
         }
-        // A relative directory is relative to wherever the run was started
-        // from, which for a service or a timer is not anywhere the person
-        // chose.
+        // A relative directory is relative to wherever a service or a timer
+        // starts, which is nowhere the person chose.
         if let Some(dir) = account.posts.as_ref().and_then(|p| p.save_to.as_ref())
             && !dir.is_absolute()
         {
@@ -373,43 +345,26 @@ pub fn parse(text: &str, path: &Path) -> Result<WatchConfig, ConfigError> {
 pub fn write(paths: &AppPaths, contents: &str) -> Result<PathBuf, ConfigError> {
     let path = path(paths);
     if let Some(parent) = path.parent() {
-        // `create_private_dir` rather than `create_dir_all`, which is what the
-        // data directory already uses. This holds the webhook address — which
-        // for an n8n, Slack or Discord hook *is* the credential — the accounts
-        // being watched and when consent was given, and 0755 would let every
-        // other account on the machine read all three.
+        // Private: this holds the webhook address, which for an n8n, Slack or
+        // Discord hook *is* the credential, and the accounts being watched.
         crate::paths::create_private_dir(parent)?;
     }
 
-    // Written whole and then moved into place, and readable only by its owner:
-    // a process that dies mid-write must not leave a half-written schedule
-    // that the next start refuses to parse.
     let temporary = path.with_extension("toml.new");
     crate::paths::replace_private(&path, &temporary, contents.as_bytes())
         .map_err(|(path, source)| ConfigError::Write { path, source })?;
     Ok(path)
 }
 
-/// Renders a configuration file a person can read and edit.
+/// Renders a configuration file a person can read and edit, each value with
+/// the sentence that explains it. **It takes the type [`parse`] produces**,
+/// so the round trip is a comparison and it cannot be handed what the file
+/// cannot hold (a header named twice).
 ///
-/// Written out rather than serialized, so every value can carry the sentence
-/// that explains it. What comes back has to parse — [`parse`] is what reads it
-/// — and a test writes one of these and reads it back for exactly that reason.
-/// **It takes the type [`parse`] produces, so the round trip is a comparison
-/// rather than a description of one**, and so it cannot be handed what the
-/// file cannot hold: a list of header pairs can name one header twice, and
-/// `[webhook.headers]` is a TOML table that cannot, so the wizard would write
-/// a file it could not read back after every question had been answered.
-///
-/// `signed` stays a parameter, because it is not in the file and must not be: it
-/// says a key went into the keyring, and all this writes is the sentence telling
-/// the reader to look there.
-///
-/// `schema` is what this build writes rather than what the argument holds, so
-/// the round trip is an equality for every configuration of this schema.
-///
-/// `name_of` gives the username beside each viewer's id, for the reader: the
-/// id is what the file means, and a number alone says nothing to a person.
+/// `signed` is not in the file: it says a key went into the keyring, and
+/// only the sentence pointing there is written. `schema` is what this build
+/// writes, whatever the argument holds. `name_of` gives the username written
+/// beside each viewer's id, for the reader.
 pub fn template(
     config: &WatchConfig,
     signed: bool,
@@ -562,12 +517,8 @@ impl WatchConfig {
     }
 }
 
-/// A TOML array of basic strings.
-///
-/// Through [`quote`] rather than a bare `"{v}"`. Every day and time in one is
-/// validated before it can reach here, so
-/// nothing can carry a quote today — and the file's own first line invites
-/// hand-editing, which is the route by which "nothing can" stops being true.
+/// A TOML array of basic strings, each through [`quote`]: the file invites
+/// hand-editing, so nothing is assumed about what a value carries.
 fn quoted_list(values: &[String]) -> String {
     values
         .iter()
@@ -588,10 +539,8 @@ pub(crate) fn quote(value: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            // Every other control character, as the unicode escape TOML
-            // defines for it: left raw, one -- a form feed pasted into a
-            // webhook header, say -- would make the file unparseable after
-            // setup had reported success and put both secrets in the keyring.
+            // Every other control character as TOML's unicode escape: left
+            // raw, one would make the file unparseable.
             c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
             c => out.push(c),
         }

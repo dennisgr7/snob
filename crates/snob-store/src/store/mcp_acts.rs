@@ -1,31 +1,20 @@
 //! What an agent was told yes to through `snob mcp`, and the cap on an
-//! agent's writes in a day.
+//! agent's writes in a day (AGENTS.md, "The MCP server": nobody can prove who
+//! said yes, so the person sees what was done and the volume stays human).
 //!
-//! **snob cannot prove who said yes** (AGENTS.md, "The MCP server"): a client
-//! declares what it can show, and an agent can type a yes in the chat itself.
-//! So what was done in the person's name is kept where they can see it
-//! (`snob status`), and the number of writes an agent may make in a day stays
-//! a person's number, whoever answered.
-//!
-//! One row per command a child of `snob mcp` ran on a yes, written by that
-//! child **before its first request**, in a transaction of its own: a write
-//! Instagram then refused still counts, which is the conservative way round
-//! for a cap. The cap and the record are one transaction, so two runs cannot
-//! both take the last write of the day.
-//!
-//! Only follow and unfollow are writes ([`is_write`]), and only acts recorded
-//! here are counted: a write the person types in a terminal is theirs, and no
-//! row is written for it.
+//! One row per command a child of `snob mcp` ran on a yes, written **before
+//! its first request**: a write Instagram then refused still counts. The cap
+//! and the record are one transaction, so two runs cannot both take the last
+//! write of the day. Only follow and unfollow are writes, and only acts
+//! recorded here are counted.
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::{Store, StoreError, pk_from_sql, pk_to_sql};
 use snob_core::{EpochMs, Pk};
 
-/// The writes an agent may make in any 24 hours when the server was given no
-/// `--max-writes-per-day`: about as many follows and unfollows as a person
-/// tidying their list by hand makes in a sitting, and a tenth of what the
-/// write bucket would let through.
+/// The writes an agent may make in any 24 hours by default: about what a
+/// person tidying their list by hand makes in a sitting.
 pub const WRITES_A_DAY: u32 = 10;
 
 /// The most `--max-writes-per-day` may be: what the write bucket lets
@@ -35,9 +24,7 @@ pub const MOST_WRITES_A_DAY: u32 = super::rate_budget::WRITES_IN_A_DAY;
 /// The window the cap counts and `snob status` shows.
 pub const DAY_MS: i64 = 86_400_000;
 
-/// How long a row is kept: past the day anything reads, so that a look at
-/// the database by hand finds the recent past, and short enough that the
-/// table stays a few hundred rows at most.
+/// How long a row is kept: past the day anything reads.
 const KEPT_MS: i64 = 7 * DAY_MS;
 
 /// The commands that change something on Instagram.
@@ -119,12 +106,9 @@ pub fn record(
     Ok(Recorded::Done(id))
 }
 
-/// Whether one more write at `now` would be past `cap`, **writing nothing**:
-/// [`Recorded::Capped`] when it would. What [`record`] decides inside its
-/// transaction, and what `snob mcp` asks before it asks the person for a yes
-/// to a write (`follow --check-ahead`), so nobody says yes to one the cap
-/// then refuses. Between the two another write may still take the last one,
-/// which `record` then refuses.
+/// Whether one more write at `now` would be past `cap`, **writing nothing**.
+/// Asked ahead of the person's yes (`follow --check-ahead`); [`record`]
+/// decides again inside its transaction.
 pub fn over_the_cap(
     conn: &Connection,
     cap: u32,
@@ -135,9 +119,8 @@ pub fn over_the_cap(
     if counted < cap {
         return Ok(None);
     }
-    // The day frees a write when the oldest of those that would still be
-    // over the cap leaves it. `get`, though `counted >= cap` keeps the index
-    // in range: a cap of 0 would otherwise index past the end.
+    // Free again when the oldest write still over the cap leaves the day.
+    // `get`, since a cap of 0 indexes past the end.
     let index = writes.len() - cap as usize;
     let oldest = writes.get(index).copied().unwrap_or(now.get());
     Ok(Some(Recorded::Capped {

@@ -1,48 +1,21 @@
-//! Session storage.
+//! Session storage: the system keyring (Credential Manager, Keychain or
+//! Secret Service), or a file where there is none.
 //!
-//! By default it goes to the system keyring (Credential Manager, Keychain or
-//! Secret Service). The file fallback exists for environments without a desktop
-//! session, where the keyring simply is not there.
-//!
-//! # What this protects against, and what it does not
-//!
-//! Worth stating plainly, because the shape of the module suggests a hierarchy
-//! that does not exist:
+//! What this protects against:
 //!
 //! - **Other users of the machine**: yes. The keyring is per account, and the
 //!   file is `0600` inside a `0700` directory.
-//! - **A bare copy of the store, read somewhere else**: yes. The keyring
-//!   database, the Windows credential and — on Windows — the file fallback are
-//!   sealed under a key that comes from the user's login: DPAPI there, the login
-//!   keychain on macOS, the Secret Service collection on Linux. The bytes on
-//!   their own are not a session.
-//! - **The secret leaving this computer**: **no**. It is the claim somebody
-//!   checks before deciding whether backing up a profile, turning roaming on or
-//!   handing on a disk image is safe, so it is worth the three sentences. The
-//!   Windows credential is written `CRED_PERSIST_LOCAL_MACHINE`, so it stays on
-//!   the machine that created it even where the account has roamable state;
-//!   `entry_for` carries how that is asked for and the experiment that showed
-//!   the change does not strand an entry written the old way. Outside Windows
-//!   the file fallback is `Protection::Plain` — plain JSON at `0600` — so a
-//!   copy of it is a working session anywhere, with no password and no key.
-//!   And a keychain or collection carried off together with the login password
-//!   opens wherever it is opened, because that password is the whole of what
-//!   seals it.
-//! - **Code running as the user themselves**: **no. Nowhere. By any backend.**
-//!   Windows documents no read restriction on `CRED_TYPE_GENERIC`, and any
-//!   process of the same logon can call `CredRead` or `CryptUnprotectData` and
-//!   get the plaintext with no prompt. That is not a gap in this tool; it is
-//!   what every credential store on a desktop offers, and it is the same
-//!   boundary `gh`, `aws`, `docker` and `flyctl` settle for.
-//!
-//! Two consequences follow. **On Windows the keyring and the file fallback have
-//! the same cryptographic protection** — both are DPAPI under the user's master
-//! key — so choosing between them is about management, not strength. And
-//! **adding secondary entropy to `CryptProtectData` would buy nothing**: it
-//! would have to live in the binary, where it is public, and the only attacker
-//! it could stop is one that already runs as the user and can simply read it.
-//! It would also become a value that can never change without invalidating
-//! every stored session. It has been considered and rejected.
+//! - **A bare copy of the store, read elsewhere**: yes for the keyring and,
+//!   on Windows, the file, both sealed under the user's login (DPAPI, the
+//!   login keychain, the Secret Service collection).
+//! - **The secret leaving this computer**: no. The Windows credential is
+//!   written `CRED_PERSIST_LOCAL_MACHINE` and does not roam, but outside
+//!   Windows the file is `Protection::Plain`, plain JSON at `0600`, a working
+//!   session wherever it is copied; and a keychain carried off with the
+//!   login password opens anywhere.
+//! - **Code running as the user**: no, by any backend, as with every
+//!   credential store on a desktop. So secondary entropy for
+//!   `CryptProtectData` would buy nothing: it would live in the binary.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -55,24 +28,10 @@ use crate::paths::{AccountPaths, AppPaths, PathError};
 use snob_core::secret::Secret;
 use snob_core::session::{MAX_KEYRING_SECRET_BYTES, Session, keyring_bytes};
 
-/// Installs the platform's credential store, once per process.
-///
-/// `keyring-core` holds one default store and every `Entry` is built from it,
-/// so something has to choose. This is that choice, and it is the same one the
-/// `keyring` wrapper makes: the Windows Credential Manager, the macOS
-/// keychain, or the Secret Service over zbus.
-///
-/// **Idempotent and never repeated**, because `set_default_store` replaces what
-/// is there: a second call partway through a run would hand later reads a
-/// different store than the one earlier writes went to. Caching the outcome in
-/// a `OnceLock` also means a store that could not be built is not retried on
-/// every entry, which on a headless box is every command.
-///
-/// A failure here is not an error the tool stops for. It means there is no
-/// keyring on this machine — a server, a container, WSL — which is ordinary,
-/// and the file fallback is what answers next. The caller turns it into
-/// [`SecretsError::KeyringUnavailable`] and `probe_writable` turns that into
-/// the backend the user is told about.
+/// Installs the platform's credential store, once per process:
+/// `set_default_store` replaces what is there, and a store that could not be
+/// built (a server, a container, WSL) is not retried on every entry. That
+/// failure is ordinary, and the file is what answers next.
 fn use_the_platform_store() -> Result<(), SecretsError> {
     use std::sync::OnceLock;
 
@@ -103,17 +62,9 @@ const KEYRING_USER: &str = "session";
 /// Separate keyring entry used only to check that writing works.
 const KEYRING_PROBE_USER: &str = "write-probe";
 
-/// What the credential store said when it was asked for one secret.
-///
-/// **Three answers, not two.** "The store holds nothing under that name" and
-/// "this process cannot reach the store at all" are not the same fact and do
-/// not deserve the same reaction: the first is a configuration the user chose,
-/// the second is a machine that cannot honor the one they did choose.
-/// `commands::watch::delivery::plan` warns on the second, where a webhook
-/// report would otherwise go out unauthenticated and unsigned.
-///
-/// An enum rather than a second predicate the caller has to remember to ask:
-/// a guard living in a doc-comment is not a guard.
+/// What the credential store said when asked for one secret. "It holds
+/// nothing" and "it cannot be reached" are different facts: on the second a
+/// webhook report would go out unsigned, and the caller warns.
 #[derive(Debug)]
 pub enum Stored {
     Found(Secret),
@@ -137,20 +88,11 @@ impl Stored {
     }
 }
 
-/// Everything this tool may keep in the keyring that is not one account's
-/// session.
-///
-/// An enum with an `ALL` rather than a set of loose strings, and the reason is
-/// [`SecretStore::delete_all`]: it walks this list, so a secret added later is
-/// deleted by `snob purge` without anybody having to remember to add it there
-/// too. A test walks the variants for the same reason.
-///
-/// **No feature gate on any variant**, the MCP key's included: a build
-/// without `snob mcp` still purges a key an earlier build stored.
-///
-/// The probe entry is deliberately not here. It is written and removed by the
-/// write check itself and never holds anything, so listing it would only mean
-/// `delete_all` reporting a failure about a value nobody stored.
+/// Everything kept in the keyring that is not one account's session.
+/// [`SecretStore::delete_all`] walks `ALL`, so a secret added later is purged
+/// without anybody remembering to. **No feature gate on any variant**: a
+/// build without `snob mcp` still purges a key an earlier build stored. The
+/// probe entry is not here: it never holds anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// A token the monitor sends as a header to the user's webhook.
@@ -166,9 +108,8 @@ pub enum Kind {
 impl Kind {
     pub const ALL: [Kind; 3] = [Kind::WatchToken, Kind::WatchSigningKey, Kind::McpKey];
 
-    /// The keyring entry's user name. Stable: changing one of these strands
-    /// whatever is already stored under the old one, where `purge` will no
-    /// longer find it either.
+    /// The keyring entry's user name. Stable: changing one strands what is
+    /// stored under it, where `purge` no longer finds it either.
     pub fn entry_name(self) -> &'static str {
         match self {
             Self::WatchToken => "watch-token",
@@ -182,13 +123,8 @@ impl Kind {
 pub enum SecretsError {
     #[error("the system keyring is unavailable: {0}")]
     KeyringUnavailable(String),
-    /// The keyring answered, and would not give the entry up.
-    ///
-    /// Deliberately not [`SecretsError::KeyringUnavailable`], which means there
-    /// is no backend to talk to at all — ordinary on a server, a container or
-    /// WSL, and never a reason to say a session survived. Here there **is** one,
-    /// it is holding the session, and it refused. That is the one case where
-    /// "the session was deleted" is false, so it needs a sentence of its own.
+    /// The keyring answered, and would not give the entry up: unlike
+    /// [`SecretsError::KeyringUnavailable`], a session is still stored.
     #[error("the system keyring would not delete the stored session: {0}")]
     KeyringRefused(String),
     /// The keyring answered, and would not hand the entry over.
@@ -255,12 +191,9 @@ struct StoredSession {
 pub struct SecretStore {
     backend: Backend,
     paths: AppPaths,
-    /// Keyring service name.
-    ///
-    /// A field rather than a constant because tests **have** to point
-    /// elsewhere: the keyring belongs to the operating system, not the process,
-    /// and a test calling `delete()` under the real name wipes the session of
-    /// whoever is running the suite.
+    /// Keyring service name. A field because tests have to point elsewhere:
+    /// the keyring is the operating system's, and a test under the real name
+    /// would wipe the session of whoever runs the suite.
     service: String,
 }
 
@@ -278,15 +211,9 @@ impl SecretStore {
         }
     }
 
-    /// Points at a different set of keyring entries. **Tests and the sandbox.**
-    ///
-    /// Two callers, and they are the same rule from two directions: a test must
-    /// not delete the session of whoever is running it, and neither must a run
-    /// under `--sandbox-root`. Forcing [`Backend::File`] does not achieve
-    /// either on its own — this store reaches the keyring on every backend, to
-    /// clear a stale entry in [`SessionStore::save`] and because the secrets in
-    /// [`Kind`] other than the session have no file form — so the service name
-    /// is what actually separates them.
+    /// Points at a different set of keyring entries. **Tests and the
+    /// sandbox**: forcing [`Backend::File`] is not enough, since this store
+    /// reaches the keyring on every backend.
     #[doc(hidden)]
     #[must_use]
     pub fn with_service(mut self, service: &str) -> Self {
@@ -298,20 +225,10 @@ impl SecretStore {
         self.backend
     }
 
-    /// Checks that writing works, and reports **where** it would work.
-    ///
-    /// This runs before anything is asked of the user. Having someone complete
-    /// a two-factor login and then lose the result because there was no D-Bus
-    /// is the worst possible failure of this command.
-    ///
-    /// On a machine with no keyring — a server, a container, WSL, any headless
-    /// Linux — this falls back to the file rather than refusing, on purpose:
-    /// asking the user to run the whole login again with
-    /// `--no-keyring` teaches them a flag to fix a situation the tool could
-    /// have recognized itself. What it does **not** do is fall back silently:
-    /// the answer says which backend it landed on, and the caller says so out
-    /// loud, because a session quietly stored somewhere less protected than the
-    /// user expected is its own kind of failure.
+    /// Checks that writing works, and reports **where**, before anything is
+    /// asked of the user: a two-factor login must not be lost for want of a
+    /// D-Bus. With no keyring it falls back to the file, and never silently:
+    /// the caller says which backend it landed on.
     pub fn probe_writable(&self) -> Result<Backend, SecretsError> {
         if self.backend == Backend::Keyring {
             match self.probe_keyring() {
@@ -343,10 +260,7 @@ impl SecretStore {
         Ok(())
     }
 
-    /// Fixes the backend to the one that was found to work.
-    ///
-    /// Called after [`SecretStore::probe_writable`] so that the store saves
-    /// where it proved it could, rather than where it was first asked to.
+    /// Fixes the backend to the one [`SecretStore::probe_writable`] found.
     #[must_use]
     pub fn using(mut self, backend: Backend) -> Self {
         self.backend = backend;
@@ -374,19 +288,9 @@ impl SecretStore {
         }
     }
 
-    /// Stores one of the secrets in [`Kind`].
-    ///
-    /// Keyring only, unlike the session — and that is a deliberate difference
-    /// rather than an omission. The session has a fallback because without one
-    /// the tool does not work at all on a machine with no keyring, which is
-    /// normal for a server or a container. A webhook token is not in that
-    /// position: without it the monitor still runs, still
-    /// reports, and still writes to standard output. So rather than invent a
-    /// second protected file, this says it cannot keep the secret and the user
-    /// passes `--sign-with` or `--header` on the command line, where a systemd
-    /// unit can supply it from an environment file. The MCP key is in the same
-    /// position, and its way past a machine with no keyring is the same:
-    /// `SNOB_MCP_KEY` in the server's environment.
+    /// Stores one of the secrets in [`Kind`]. **Keyring only**: the monitor
+    /// runs without its token and the MCP server takes `SNOB_MCP_KEY`, so no
+    /// second protected file is invented for them.
     pub fn save_secret(&self, kind: Kind, value: &Secret) -> Result<(), SecretsError> {
         self.entry_for(kind.entry_name())?
             .set_password(value.expose())
@@ -422,20 +326,9 @@ impl SecretStore {
         }
     }
 
-    /// Which of the secrets in [`Kind`] are on this machine: the monitor's
-    /// and the MCP key.
-    ///
-    /// The session is not among them: [`SessionStore::something_is_stored`]
-    /// answers for that one, and it has to, because a session too corrupt to
-    /// parse still counts and `load_secret` would call it absent.
-    ///
-    /// This exists so `purge` can **name** what it is about to remove. What it
-    /// removes is `Kind::ALL` unconditionally, so nothing depends on this
-    /// answer being complete — a keyring that refuses to be read leaves the
-    /// listing short and the deletion whole, which is the right way round.
-    ///
-    /// Walking `Kind::ALL` rather than naming them, so a secret added later
-    /// appears here without anybody remembering to come back.
+    /// Which of the secrets in [`Kind`] are on this machine, so that `purge`
+    /// can name what it removes. The removal is `Kind::ALL` whatever this
+    /// says.
     pub fn secrets_stored(&self) -> Vec<Kind> {
         Kind::ALL
             .into_iter()
@@ -454,23 +347,10 @@ impl SecretStore {
             })
     }
 
-    /// Removes every secret this tool has ever written — the monitor's, the
-    /// MCP key, the session of every account in `accounts`, and the
-    /// single-account layout's — and says so only if they all went.
-    ///
-    /// `Kind::ALL` is the one list of what is not an account's, for the same
-    /// reason `owned_dirs` is one list: a secret added later must not be
-    /// forgotten by the one command whose entire job is to leave nothing
-    /// behind, and a webhook token still in the keyring after `snob purge` is
-    /// exactly the failure that command exists to prevent.
-    ///
-    /// [`SessionStore::delete`] is the other half, and the split is the whole
-    /// point: `snob logout` removes the session and nothing else. The monitor
-    /// goes on running from `watch.toml`, and without its webhook token and
-    /// signing key it would post reports with neither `Authorization` nor
-    /// `X-Snob-Signature`; a receiver that requires the token answers 401 to
-    /// every retry until the report expires, and the change in that report is
-    /// gone.
+    /// Removes every secret this tool has written: those in [`Kind`], the
+    /// session of every account in `accounts` and the single-account
+    /// layout's. `Ok` only if they all went. `snob logout` removes a session
+    /// alone ([`SessionStore::delete`]): the monitor still needs its token.
     pub fn delete_all(&self, accounts: &[snob_core::Pk]) -> Result<(), SecretsError> {
         let places: Vec<Place> = accounts
             .iter()
@@ -486,11 +366,8 @@ impl SecretStore {
         remove(&self.service, &entries, &files)
     }
 
-    /// Separate entry for the write check.
-    ///
-    /// It must not be a session's: checking by writing and deleting over the
-    /// real entry would destroy a working session whenever the login that
-    /// follows ends up failing.
+    /// A separate entry for the write check: probing over a real session
+    /// would destroy it whenever the login that follows fails.
     fn probe_entry(&self) -> Result<keyring_core::Entry, SecretsError> {
         self.entry_for(KEYRING_PROBE_USER)
     }
@@ -512,9 +389,7 @@ enum Place {
 }
 
 impl Place {
-    /// The keyring entry's user name. Stable: changing it strands whatever is
-    /// already stored under the old one, where `purge` will no longer find it
-    /// either.
+    /// The keyring entry's user name. Stable, as [`Kind::entry_name`] is.
     fn entry_name(&self) -> String {
         match self {
             Self::Legacy(_) => KEYRING_USER.to_string(),
@@ -557,8 +432,7 @@ impl SessionStore {
         }
     }
 
-    /// The file path, when the backend is one. Kept apart from `describe` so
-    /// that machine-readable output does not have to dig it out of a sentence.
+    /// The file path, when the backend is one.
     pub fn storage_path(&self) -> Option<String> {
         self.path_in(self.backend)
     }
@@ -579,9 +453,7 @@ impl SessionStore {
     /// [`Self::save`], to a backend named here rather than the store's own:
     /// the one [`Self::load_located`] found the session in.
     pub fn save_in(&self, backend: Backend, session: &Session) -> Result<(), SecretsError> {
-        // `Zeroizing` throughout: the serialized session is the cookie in
-        // plaintext, and it would otherwise be left in freed memory for a core
-        // dump or a swap file to pick up.
+        // `Zeroizing`: the serialized session is the cookie in plaintext.
         let json = Zeroizing::new(
             serde_json::to_string(session)
                 .map_err(|e| SecretsError::Corrupt(format!("while serializing: {e}")))?,
@@ -589,13 +461,10 @@ impl SessionStore {
 
         match backend {
             Backend::Keyring => {
-                // The Windows keyring has a size ceiling. If we go over it,
-                // store the essentials rather than failing.
-                //
-                // **Inside this arm**, because it is a property of this
-                // backend: a 0600 file has no size limit, and the essentials
-                // leave out `username`, `csrftoken`, `mid` and `ig_did`, without
-                // which `IgClient::get` omits `X-CSRFToken`.
+                // The Windows credential has a size ceiling; past it the
+                // essentials are stored rather than nothing. In this arm
+                // only: a file has no limit, and the essentials lack the
+                // CSRF token.
                 let json =
                     if keyring_bytes(&json) > MAX_KEYRING_SECRET_BYTES {
                         tracing::warn!(
@@ -613,19 +482,23 @@ impl SessionStore {
                 self.entry()?
                     .set_password(&json)
                     .map_err(|e| SecretsError::KeyringUnavailable(e.to_string()))?;
-                // Do not leave two different sessions lying around: `load`
-                // reads the keyring first, so a file left beside the entry is
-                // a live cookie nothing reads any more, and it lands in every
-                // backup of the home directory.
-                let _ = std::fs::remove_file(self.place.file());
+                // `load` reads the keyring first, so a file left beside the
+                // entry is a live cookie nothing reads any more.
+                if let Err(e) = std::fs::remove_file(self.place.file())
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!(
+                        error = %e,
+                        file = %self.place.file().display(),
+                        "the session is in the keyring, but its older copy in the file could \
+                         not be removed"
+                    );
+                }
             }
             Backend::File => {
                 self.write_file(&json)?;
-                // Not a reason to fail the save: the backend the user asked for
-                // has the session. But not something to pass over in silence
-                // either — `load` reads the keyring **first**, so an entry that
-                // will not go is the session every later run picks up, and the
-                // file just written is never reached.
+                // `load` reads the keyring **first**: an entry that will not
+                // go is the session every later run picks up.
                 if let Ok(entry) = self.entry()
                     && let Err(e) = entry.delete_credential()
                     && !matches!(e, keyring_core::Error::NoEntry)
@@ -645,21 +518,13 @@ impl SessionStore {
         Ok(self.load_located()?.map(|(session, _)| session))
     }
 
-    /// The stored session, and which backend it was found in.
-    ///
-    /// For writing a session back where it came from rather than where this
-    /// store would put a new one. The two differ on a machine with no keyring
-    /// where `snob login` fell back to the file: every later run is built
-    /// without `--no-keyring`, reads the file, and a save aimed at the keyring
-    /// would fail there.
+    /// The stored session, and the backend it was found in, for writing it
+    /// back where it came from: after a login that fell back to the file,
+    /// later runs are built without `--no-keyring`.
     pub fn load_located(&self) -> Result<Option<(Session, Backend)>, SecretsError> {
         let kept = match self.read_keyring() {
-            // The keyring is there and refused. That is not "no session
-            // stored", which would send the user to log in again over one that
-            // is still there, and `save` removes the file fallback once a
-            // keyring entry exists, so there is nothing behind it to catch
-            // them. The file is still the right thing to try next, and it is
-            // tried out loud.
+            // The keyring is there and refused: not "no session stored". The
+            // file is tried next, out loud.
             Err(e @ SecretsError::KeyringUnreadable(_)) => {
                 tracing::warn!(error = %e, "trying the file instead");
                 None
@@ -669,12 +534,8 @@ impl SessionStore {
         self.located(kept)
     }
 
-    /// [`Self::load_located`], except that a keyring which refuses to hand
-    /// the session over is an error rather than a reason to try the file.
-    ///
-    /// For the move to the per-account layout, which deletes the copies it
-    /// read from: moving on as if nothing were stored would leave the
-    /// session behind in an entry nothing reads any more.
+    /// [`Self::load_located`], except that a keyring which refuses is an
+    /// error: the move to the per-account layout deletes what it read from.
     pub(crate) fn load_located_strictly(&self) -> Result<Option<(Session, Backend)>, SecretsError> {
         let kept = self.read_keyring()?;
         self.located(kept)
@@ -684,9 +545,8 @@ impl SessionStore {
         &self,
         kept: Option<Zeroizing<String>>,
     ) -> Result<Option<(Session, Backend)>, SecretsError> {
-        // Both places are checked whatever the preferred backend: if the user
-        // saved with --no-keyring and then runs without the flag, the session
-        // still has to show up.
+        // Both places, whatever the preferred backend: a session saved with
+        // `--no-keyring` still shows up without the flag.
         if let Some(json) = kept {
             return parse_session(&json).map(|s| Some((s, Backend::Keyring)));
         }
@@ -696,35 +556,16 @@ impl SessionStore {
         Ok(None)
     }
 
-    /// Whether there is a credential here at all.
-    ///
-    /// **Anything but a clean "nothing there" counts as one.** A stored session
-    /// too corrupt to parse is still a session on the disk, so treating the parse
-    /// failure as absence would let `logout` print "there was no session stored"
-    /// while deleting one — and skip the line about it still being live on
-    /// Instagram, which is exactly the case where the user needs it.
-    ///
-    /// It lives here rather than in the commands that ask because the reading
-    /// is the non-obvious part: `!matches!(load(), Ok(None))` written out at a
-    /// call site looks like an oversight, and the obvious `load().is_ok()` is
-    /// wrong in the one way that matters.
+    /// Whether there is a credential here at all. **Anything but a clean
+    /// "nothing there" counts**: a session too corrupt to parse is still on
+    /// the disk, and `logout` must not say there was none while deleting it.
     pub fn something_is_stored(&self) -> bool {
         !matches!(self.load(), Ok(None))
     }
 
-    /// Removes the session from everywhere it can be, and says so only if it
-    /// went.
-    ///
-    /// **Every location is attempted even after one of them refuses.** Stopping
-    /// at the first failure would leave the copies behind it alive, and this
-    /// call does not promise to have tried — it promises that no live cookie
-    /// survives it.
-    ///
-    /// A refusal from the keyring is reported too, so neither `logout` nor
-    /// `purge` says a credential is gone while it is still in the store.
-    /// `NoEntry` is not a refusal — it means there was nothing to take away,
-    /// which is the result being asked for — and neither is having no keyring
-    /// at all, for the same reason: there is no copy there to leave behind.
+    /// Removes the session from everywhere it can be; `Ok` only if it went.
+    /// Every location is attempted even after one refuses. `NoEntry` and
+    /// having no keyring at all are not refusals.
     pub fn delete(&self) -> Result<(), SecretsError> {
         remove(
             &self.service,
@@ -742,8 +583,7 @@ impl SessionStore {
     fn read_keyring(&self) -> Result<Option<Zeroizing<String>>, SecretsError> {
         let entry = match self.entry() {
             Ok(e) => e,
-            // No keyring backend at all. Ordinary on a server, a container or
-            // WSL, and the session may still be in the fallback file.
+            // No keyring at all: the session may still be in the file.
             Err(e) => {
                 tracing::debug!(error = %e, "there is no keyring to read from");
                 return Ok(None);
@@ -757,29 +597,33 @@ impl SessionStore {
     }
 
     fn load_from_file(&self) -> Result<Option<Zeroizing<String>>, SecretsError> {
-        let file = self.place.file();
-        if !file.exists() {
-            return Ok(None);
+        // Read and judged by the answer, never asked about first: a `logout`
+        // elsewhere may remove the file in between.
+        match read_file(&self.place.file()) {
+            Err(SecretsError::Read { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                Ok(None)
+            }
+            read => read.map(Some),
         }
-        read_file(&file).map(Some)
     }
 
     fn write_file(&self, json: &str) -> Result<(), SecretsError> {
         self.place.ensure_dirs()?;
-        let stored = protect(json)?;
-        let serialized = serde_json::to_vec_pretty(&stored)
-            .map_err(|e| SecretsError::Corrupt(format!("while wrapping: {e}")))?;
+        // Outside Windows both are the cookie in the clear.
+        let mut stored = protect(json)?;
+        let serialized = serde_json::to_vec_pretty(&stored).map(Zeroizing::new);
+        stored.payload.zeroize();
+        let serialized =
+            serialized.map_err(|e| SecretsError::Corrupt(format!("while wrapping: {e}")))?;
         write_private(&self.place.file(), &serialized)
     }
 }
 
-/// Removes these keyring entries and these files, every one of them even after
-/// one refuses, and says so only if they all went.
-///
-/// One error comes back where two can happen, and the file's wins. Both give
-/// the same exit code and both withhold the same claim, so the choice only
-/// decides which sentence is printed — and the file's names a path somebody can
-/// go and delete by hand.
+/// Removes these keyring entries and these files, every one even after one
+/// refuses; `Ok` only if they all went. Of two errors the file's wins: it
+/// names a path somebody can delete by hand.
 fn remove(service: &str, entries: &[String], files: &[PathBuf]) -> Result<(), SecretsError> {
     let mut keyring_refused = None;
     for name in entries {
@@ -794,12 +638,10 @@ fn remove(service: &str, entries: &[String], files: &[PathBuf]) -> Result<(), Se
         }
     }
 
-    // A file is not housekeeping: each is a working session, so a failure to
-    // remove one is a live cookie left behind exactly like an entry's.
     let mut file_refused = None;
     for file in files {
-        if file.exists()
-            && let Err(source) = std::fs::remove_file(file)
+        if let Err(source) = std::fs::remove_file(file)
+            && source.kind() != std::io::ErrorKind::NotFound
             && file_refused.is_none()
         {
             file_refused = Some(SecretsError::Write {
@@ -815,43 +657,16 @@ fn remove(service: &str, entries: &[String], files: &[PathBuf]) -> Result<(), Se
     }
 }
 
-/// Builds a keyring entry, installing the platform's credential store the
-/// first time one is asked for.
+/// Builds a keyring entry, installing the platform's store the first time.
 ///
-/// **On Windows the credential is asked for local persistence**, and that
-/// is the whole reason this goes to `keyring-core` and a store directly
-/// rather than through the `keyring` wrapper. The default is
-/// `CRED_PERSIST_ENTERPRISE`, which Microsoft documents as visible "to
-/// logon sessions for this user **on other computers**": on a machine with
-/// a roaming profile, or with Credential Roaming enabled, the session
-/// cookie would follow the user around the network. `CRED_PERSIST_LOCAL_MACHINE`
-/// keeps it where it was created, which is the same reasoning that puts the
-/// database in the local data directory rather than the roaming one.
-/// `keyring`'s own `Entry` has no way to say so; the store's `persistence`
-/// modifier is a supported one.
-///
-/// **The question this had to answer before it could ship** was whether an
-/// entry already written as Enterprise is still found once the lookup asks
-/// for Local, because if it is not, the first save after an upgrade logs
-/// every existing user out without saying so. It was run against a real
-/// Credential Manager on Windows 11, under a throwaway target name:
-///
-/// - An entry written with `CRED_PERSIST_ENTERPRISE` is returned unchanged
-///   by a plain `CredReadW(target, CRED_TYPE_GENERIC, 0)`. Persistence is a
-///   field of the stored record, not part of the key — the key is the target
-///   name and the credential type, and `CredReadW` takes nothing else.
-/// - Writing the same target with `CRED_PERSIST_LOCAL_MACHINE` replaces
-///   that one record in place: the `Persist` field goes from 3 to 2 and the
-///   blob is the new one. No second entry appears and the first is not
-///   orphaned. The reverse direction behaves the same way.
-///
-/// So an existing session is read normally after the upgrade and quietly
-/// becomes local the next time it is written. Nobody is logged out, and no
-/// read-under-both-persistences migration path is needed.
-///
-/// The target name is the store crate's default, `{user}.{service}`, the
-/// same one the `keyring` wrapper composes, so an entry written through the
-/// wrapper is the entry read here.
+/// **On Windows the credential is asked for local persistence**, which is why
+/// this goes to `keyring-core` and a store directly: the default, Enterprise,
+/// is visible "to logon sessions for this user on other computers", and the
+/// cookie would roam. Checked on Windows 11 against a real Credential
+/// Manager: persistence is a field of the record, not part of its key, so an
+/// entry written as Enterprise is read unchanged and becomes local the next
+/// time it is written. The target name is the store's default,
+/// `{user}.{service}`, the one the `keyring` wrapper composes.
 fn entry_for(service: &str, user: &str) -> Result<keyring_core::Entry, SecretsError> {
     use_the_platform_store()?;
 
@@ -868,20 +683,16 @@ fn entry_for(service: &str, user: &str) -> Result<keyring_core::Entry, SecretsEr
     }
 }
 
-/// Reads a stored session, clearing what it read on the way out.
-///
-/// On Unix the payload **is** the session in the clear — the protection
-/// there is the file's 0600 permissions, not encryption — so the bytes read
-/// off the disk and the payload parsed out of them are both the cookie.
-/// This runs on every command, so an unzeroized copy of each is left in
-/// freed memory every time the tool starts.
+/// Reads a stored session, clearing what it read: on Unix the payload is the
+/// cookie in the clear.
 fn read_file(path: &std::path::Path) -> Result<Zeroizing<String>, SecretsError> {
     let raw = Zeroizing::new(std::fs::read(path).map_err(|source| SecretsError::Read {
         path: path.display().to_string(),
         source,
     })?);
-    let mut stored: StoredSession = serde_json::from_slice(&raw)
-        .map_err(|e| SecretsError::Corrupt(format!("the session file is not valid: {e}")))?;
+    let mut stored: StoredSession = serde_json::from_slice(&raw).map_err(|e| {
+        SecretsError::Corrupt(format!("the session file is not valid: {}", shape_of(&e)))
+    })?;
     let session = unprotect(&stored);
     stored.payload.zeroize();
     session
@@ -889,11 +700,25 @@ fn read_file(path: &std::path::Path) -> Result<Zeroizing<String>, SecretsError> 
 
 fn parse_session(json: &str) -> Result<Session, SecretsError> {
     let session: Session = serde_json::from_str(json)
-        .map_err(|e| SecretsError::Corrupt(format!("could not parse: {e}")))?;
+        .map_err(|e| SecretsError::Corrupt(format!("could not parse: {}", shape_of(&e))))?;
     session
         .check_schema()
         .map_err(|e| SecretsError::Corrupt(e.to_string()))?;
     Ok(session)
+}
+
+/// What is wrong with stored JSON, **without serde's own sentence**: that one
+/// quotes the value it tripped on, which here can be the cookie.
+fn shape_of(e: &serde_json::Error) -> String {
+    use serde_json::error::Category;
+
+    let what = match e.classify() {
+        Category::Io => "it could not be read",
+        Category::Syntax => "it is not JSON",
+        Category::Data => "it is not what this version stores",
+        Category::Eof => "it ends early",
+    };
+    format!("{what} (line {}, column {})", e.line(), e.column())
 }
 
 /// Writes with restricted permissions and atomically, through a temporary
@@ -937,10 +762,13 @@ fn unprotect(stored: &StoredSession) -> Result<Zeroizing<String>, SecretsError> 
             #[cfg(windows)]
             {
                 let bytes = unb64(&stored.payload)?;
-                let plain = Zeroizing::new(dpapi::unprotect(&bytes)?);
-                String::from_utf8(plain.to_vec())
+                String::from_utf8(dpapi::unprotect(&bytes)?)
                     .map(Zeroizing::new)
-                    .map_err(|e| SecretsError::Corrupt(format!("not valid UTF-8: {e}")))
+                    .map_err(|e| {
+                        let reason = e.utf8_error();
+                        e.into_bytes().zeroize();
+                        SecretsError::Corrupt(format!("not valid UTF-8: {reason}"))
+                    })
             }
             #[cfg(not(windows))]
             {
@@ -986,8 +814,10 @@ mod dpapi {
     }
 
     fn transform(input: &[u8], encrypt: bool) -> Result<Vec<u8>, SecretsError> {
+        let length = u32::try_from(input.len())
+            .map_err(|_| SecretsError::Corrupt("it is too large to be a session".into()))?;
         let in_blob = CRYPT_INTEGER_BLOB {
-            cbData: input.len() as u32,
+            cbData: length,
             pbData: input.as_ptr() as *mut u8,
         };
         let mut out_blob = CRYPT_INTEGER_BLOB {
@@ -1032,15 +862,16 @@ mod dpapi {
             });
         }
 
-        // SAFETY: on success Windows guarantees pbData is valid for cbData bytes.
+        if out_blob.pbData.is_null() {
+            return Ok(Vec::new());
+        }
+        // SAFETY: on success Windows guarantees pbData is valid for cbData
+        // bytes, and it was just checked not to be null.
         let output = unsafe {
             std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec()
         };
-        // On the decrypt path this buffer is the session in the clear, and it
-        // is Windows's memory rather than ours: nothing else will wipe it, and
-        // `LocalFree` only returns it to the heap with the cookie still in it.
-        // The copy above is what the caller wraps in `Zeroizing`; this is the
-        // original.
+        // On the decrypt path this is the session in the clear, in memory
+        // `LocalFree` hands back to the heap as it is: wiped first.
         //
         // SAFETY: same pointer and length the read above used, still owned by
         // this function and not yet freed.
@@ -1544,6 +1375,29 @@ mod tests {
         account.ensure_dirs().unwrap();
         std::fs::write(account.session_file(), b"this is not json").unwrap();
         assert!(matches!(mine(&store).load(), Err(SecretsError::Corrupt(_))));
+    }
+
+    /// serde's own sentence quotes the value it tripped on. A keyring entry or
+    /// a file holding the cookie as a bare string, as somebody pasting one in
+    /// by hand leaves it, is refused without the cookie in the error, which
+    /// is printed and, for an agent, handed back as JSON.
+    #[test]
+    fn a_stored_session_that_does_not_parse_is_not_quoted_in_the_error() {
+        let bare = format!("\"{SID}\"");
+
+        let from_the_keyring = parse_session(&bare).unwrap_err().to_string();
+        assert!(
+            !from_the_keyring.contains("AbCdEfGhIjKl"),
+            "{from_the_keyring}"
+        );
+        assert!(from_the_keyring.contains("line 1"), "{from_the_keyring}");
+
+        let (_tmp, store, _keyring) = file_store();
+        let account = store.paths.account(ME);
+        account.ensure_dirs().unwrap();
+        std::fs::write(account.session_file(), &bare).unwrap();
+        let from_the_file = mine(&store).load().unwrap_err().to_string();
+        assert!(!from_the_file.contains("AbCdEfGhIjKl"), "{from_the_file}");
     }
 
     #[test]

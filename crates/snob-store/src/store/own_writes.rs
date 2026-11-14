@@ -1,21 +1,11 @@
-//! The follows and unfollows the account made through snob, so a stored
+//! The follows and unfollows the account made through snob, so that a stored
 //! following list can be handed out with them applied.
 //!
-//! A stored list is a walk's, and a walk is a moment. After `snob unfollow
-//! someone`, the stored following list went on naming them until the next
-//! walk, so `snob unfollowers --offline`, an agent's stored list and every
-//! list a cooldown served answered as if the unfollow had not happened. The
-//! write is a fact this computer knows for certain, having sent it.
-//!
-//! **Applied and said, never passed off as a walk**: the engine applies what
-//! is here to a stored list of the account's own following only
-//! (`engine::serve_stored`), the list keeps its walk's date and provenance,
-//! and the run says how many of the account's own changes it applied. A
-//! list walked after a write already holds it, so only writes newer than
-//! the walk are applied.
-//!
-//! One row per write Instagram took that changed the relationship: a follow
-//! that became a request, or one already so, changed no list.
+//! **Applied and said, never passed off as a walk** (`engine::serve_stored`):
+//! only to a stored list of the account's own following, only the writes
+//! newer than its walk, and the run says how many it applied. One row per
+//! write Instagram took that changed the relationship: a follow that became
+//! a request, or one already so, changed no list.
 
 use rusqlite::{Connection, params};
 

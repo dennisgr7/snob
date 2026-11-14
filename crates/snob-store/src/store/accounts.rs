@@ -59,16 +59,11 @@ pub fn record_poll(
     Ok(())
 }
 
-/// The pk behind a username, restricted to accounts the tool tracks.
-///
-/// Usernames are not unique over time — someone renames and another takes the
-/// old name — so the join keeps the lookup to tracked accounts, and the most
-/// recently polled one wins. Case-insensitive, so `@Ghost` finds `ghost`.
+/// The pk behind a username, among tracked accounts only: usernames are not
+/// unique over time, so the most recently polled one wins. Case-insensitive.
 pub fn find_pk_by_username(conn: &Connection, username: &str) -> Result<Option<Pk>, StoreError> {
-    // The empty name is `users::ensure`'s placeholder for "seen but never
-    // named", not a username — no Instagram account has one. Without this,
-    // `snob followers "" --cache` matches whichever unnamed account was polled
-    // last and answers about somebody else's lists.
+    // The empty name is `users::ensure`'s placeholder for "never named", and
+    // would match whichever unnamed account was polled last.
     if username.is_empty() {
         return Ok(None);
     }
@@ -85,16 +80,9 @@ pub fn find_pk_by_username(conn: &Connection, username: &str) -> Result<Option<P
     Ok(pk.map(super::pk_from_sql))
 }
 
-/// The account the session belongs to, as this database has recorded it.
-///
-/// `None` on a machine that has never run anything against a session, which is
-/// a real state rather than an error: `snob watch status` opens the store
-/// without one and has to answer anyway.
-///
-/// One row is expected — `is_self` is written by `upsert` from what the engine
-/// resolved — but logging in as somebody else leaves the old row behind, so the
-/// most recently polled one wins, the way `find_pk_by_username` settles the
-/// same kind of tie.
+/// The account the session belongs to, as this database recorded it; `None`
+/// before anything ran. A login as somebody else leaves the old row behind,
+/// so the most recently polled one wins.
 pub fn own(conn: &Connection) -> Result<Option<Pk>, StoreError> {
     let pk = conn
         .query_row(

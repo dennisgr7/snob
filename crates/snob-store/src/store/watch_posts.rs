@@ -1,18 +1,10 @@
 //! What the monitor has seen of a watched account's posts, and the receipt
 //! that says a baseline exists and how far it reaches.
 //!
-//! The same split as `watch.rs` keeps for the lists: the rows say what was
-//! seen, the mark says what was concluded, and **both are written only by
-//! `watch::commit_report`**, in the transaction that queues the report that
-//! names the posts. Reporting a post and recording that it was reported are
-//! one event, so a process killed between the two reports it again rather
-//! than never.
-//!
-//! A post is identified by its media pk, a `u64` that is not a [`Pk`], so it
-//! is stored as its decimal digits (`018_watch_posts.sql` says why) through
-//! [`media_pk_to_sql`] and [`media_pk_from_sql`], the siblings of
-//! `pk_to_sql`. This crate does not depend on `snob-ig`, so the type crossing
-//! this boundary is the bare `u64`.
+//! **Both are written only by `watch::commit_report`**, in the transaction
+//! that queues the report naming the posts, so a process killed between the
+//! two reports a post again rather than never. A media pk is a `u64` that is
+//! not a [`Pk`], stored as its decimal digits (`018_watch_posts.sql`).
 
 use std::collections::HashSet;
 use std::time::Duration;

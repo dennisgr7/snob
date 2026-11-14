@@ -1,8 +1,5 @@
-//! User persistence.
-//!
-//! `users` is a metadata cache, not a claim of membership in any list: someone
-//! being here only means we have seen them at some point. Membership lives in
-//! `snapshot_members`.
+//! `users` is a metadata cache: being here means having been seen once.
+//! Membership of a list lives in `snapshot_members`.
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -11,19 +8,9 @@ use snob_core::Pk;
 use snob_core::clock::now;
 use snob_core::model::User;
 
-/// Records that an account exists, without claiming to know its name.
-///
-/// `users.username` is `TEXT NOT NULL` in a `STRICT` table and
-/// `accounts.pk REFERENCES users(pk)`, so a row has to exist before anything
-/// else about the account can be stored — even on the paths where the name has
-/// never been learned.
-///
-/// The empty string is what "not known" looks like here. No Instagram account
-/// has one, so it cannot collide with a real name — but it is not
-/// self-defending: `find_pk_by_username` refuses it explicitly, because a
-/// lookup for `""` would otherwise match whichever unnamed account was polled
-/// last. [`upsert`] reads it as never having known rather than as a name that
-/// changed.
+/// Records that an account exists without knowing its name: `accounts.pk`
+/// references `users(pk)`, so the row has to exist first. The empty string
+/// is "not known"; every lookup by name refuses it.
 pub fn ensure(conn: &Connection, pk: Pk) -> Result<(), StoreError> {
     let now = now().get();
     conn.execute(
@@ -35,23 +22,11 @@ pub fn ensure(conn: &Connection, pk: Pk) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Inserts or updates a user and records the rename if there was one.
+/// Inserts or updates a user and returns the previous username when it
+/// changed. An empty stored name ([`ensure`]) is not a rename.
 ///
-/// Returns the previous username when it changed, which is an event worth
-/// reporting in its own right.
-///
-/// An empty stored name is not a rename. It is what [`ensure`] writes when the
-/// account was seen but never named, and filing `"" -> realname` in
-/// `username_history` would put a change that never happened into the table the
-/// monitor is meant to read.
-///
-/// `prepare_cached` throughout, and that is not a micro-optimization here: this
-/// runs once per account inside `snapshots::save_page`, which is the only
-/// per-account loop in the program. `Connection::execute` and `query_row`
-/// compile their statement every call, so a six-thousand-follower walk would
-/// pay twelve thousand `sqlite3_prepare_v2` calls for two distinct statements.
-/// The cache lives on the connection, so they survive across pages and
-/// transactions.
+/// `prepare_cached` because this runs once per account in
+/// `snapshots::save_page`, the only per-account loop in the program.
 pub fn upsert(conn: &Connection, u: &User) -> Result<Option<String>, StoreError> {
     let pk = pk_to_sql(u.pk);
     let now = now().get();
@@ -87,8 +62,7 @@ pub fn upsert(conn: &Connection, u: &User) -> Result<Option<String>, StoreError>
 
     match previous {
         Some(old) if !old.is_empty() && old != u.username => {
-            // Not cached: a rename is rare, so keeping a third statement in the
-            // cache would only push out one of the two that run every account.
+            // Not cached: a rename is rare.
             conn.execute(
                 "INSERT INTO username_history (pk, username, changed_at) VALUES (?1, ?2, ?3)",
                 params![pk, old, now],
@@ -100,26 +74,15 @@ pub fn upsert(conn: &Connection, u: &User) -> Result<Option<String>, StoreError>
 }
 
 /// The stored name, when one was ever learned.
-///
-/// The translation from the empty-string placeholder to `None` happens here, at
-/// the boundary that writes it, so callers never have to know the encoding.
-/// `find` hands the raw row back — it is the metadata cache — and every reader
-/// that wanted a *name* was doing its own `is_empty` check against a placeholder
-/// documented on [`ensure`] in another crate.
 pub fn name(conn: &Connection, pk: Pk) -> Result<Option<String>, StoreError> {
     Ok(find(conn, pk)?
         .map(|u| u.username)
         .filter(|name| !name.is_empty()))
 }
 
-/// The pk last seen under `name`, in any case, when any account was: a name
-/// learned from any answer, a list page among them, so the account need not
-/// have been walked.
-///
-/// Names are not unique over time — someone renames and another takes the old
-/// name — so the most recently seen wins, and the caller checks the answer it
-/// gets by the pk against the name. The empty name is [`ensure`]'s "never
-/// learned", and never matches.
+/// The pk last seen under `name`, in any case, walked or not. Names are not
+/// unique over time: the most recently seen wins, and the caller checks the
+/// answer it gets by the pk against the name.
 pub fn pk_named(conn: &Connection, name: &str) -> Result<Option<Pk>, StoreError> {
     if name.is_empty() {
         return Ok(None);
@@ -136,12 +99,8 @@ pub fn pk_named(conn: &Connection, name: &str) -> Result<Option<Pk>, StoreError>
     Ok(pk.map(pk_from_sql))
 }
 
-/// The columns [`row_to_user`] reads, in the order it reads them.
-///
-/// The same rule as `SNAPSHOT_COLUMNS`, for the same mapper-by-position
-/// reason -- and here a slip is quieter than an `InvalidColumnIndex`:
-/// `is_private` and `is_verified` are both `Option<bool>`, so a transposed
-/// pair compiles, runs, and swaps two attributes on every account.
+/// The columns [`row_to_user`] reads, in its order: `is_private` and
+/// `is_verified` are both `Option<bool>`, so a transposed pair compiles.
 pub(crate) const USER_COLUMNS: &str = "pk, username, full_name, is_private, is_verified, pfp_url";
 
 pub(crate) fn find(conn: &Connection, pk: Pk) -> Result<Option<User>, StoreError> {

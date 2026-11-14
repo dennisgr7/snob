@@ -1,24 +1,11 @@
-//! Schema migrations.
+//! Schema migrations. A published one is never edited; the next is added.
 //!
-//! Rules for the ones that come next:
-//!
-//! - A published migration is never edited; a new one is added.
-//! - **A migration never writes `PRAGMA foreign_keys` itself**: inside the
-//!   chain's transaction it is a no-op. [`super::migrate`] turns it off around
-//!   the run instead, and says why.
-//! - **Rebuild a table by create-copy-drop-rename.** The other recipe, writing
-//!   `sqlite_schema` directly, needs `PRAGMA writable_schema = ON`, and
-//!   `super::configure` sets `SQLITE_DBCONFIG_DEFENSIVE`, which forbids it.
-//! - The `validate()` test is mandatory: it runs the whole chain from scratch
-//!   and fails if one of them breaks.
-//!
-//! One trap worth knowing before chasing the wrong error: `foreign_key_check`
-//! **misreports** on `snapshot_members`. That table is `WITHOUT ROWID`, SQLite
-//! returns NULL in the rowid column for such children, and `rusqlite_migration`
-//! deserializes that column as a non-optional `i64` — so a genuinely dangling
-//! row surfaces as a rusqlite `InvalidColumnType`, not as a foreign-key error.
-//! The transaction still rolls back, so it is safe; it just does not say what
-//! happened.
+//! - **No `PRAGMA foreign_keys` inside a migration**: it is a no-op in the
+//!   chain's transaction. [`super::migrate`] turns it off around the run.
+//! - **Rebuild a table by create-copy-drop-rename**: `writable_schema` is
+//!   forbidden by `SQLITE_DBCONFIG_DEFENSIVE`.
+//! - `foreign_key_check` misreports on `snapshot_members` (`WITHOUT ROWID`,
+//!   so a NULL rowid): a dangling row surfaces as `InvalidColumnType`.
 
 use std::sync::LazyLock;
 
@@ -48,11 +35,7 @@ pub(crate) const CHAIN: [&str; 20] = [
     include_str!("sql/020_run_times.sql"),
 ];
 
-/// How many there are, which is what `user_version` counts up to.
-///
-/// Named so that "this database is from a newer snob" can be answered before
-/// the migration runner answers it in its own words. Derived from the chain
-/// rather than written down twice.
+/// What `user_version` counts up to.
 pub const COUNT: usize = CHAIN.len();
 
 pub static MIGRATIONS: LazyLock<Migrations<'static>> =
