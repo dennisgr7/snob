@@ -689,16 +689,42 @@ pub async fn read_grid(
         ));
     }
     let declared = info.posts.map(|p| p.count);
-    let mut grid = Grid {
-        username: info.username,
-        posts: Vec::new(),
-        next: None,
-        declared,
-    };
     // Zero is an answer the profile already gave, as in `highlights`.
     if declared == Some(0) {
+        let grid = Grid {
+            username: info.username,
+            posts: Vec::new(),
+            next: None,
+            declared,
+        };
         return Ok((Fetched::Grid(grid), GridRead::default()));
     }
+    let (mut grid, how) = read_pages(client, &info.username, pages, at_least, until).await?;
+    grid.declared = declared;
+    Ok((Fetched::Grid(grid), how))
+}
+
+/// The pages of `username`'s grid, once its profile is open: the first,
+/// then each next one a step after the page before and past any rest the
+/// account's sitting owes, while fewer than `at_least` posts are held, or
+/// while fewer than `pages` were read and none of `until` has come
+/// ([`reached`]); at most [`MOST_PAGES`]. What [`read_grid`] reads after the
+/// profile, and what the monitor reads of an account whose profile it has
+/// open (`engine::watch_posts`). The grid's declared count is left to the
+/// caller, who read the profile.
+pub async fn read_pages(
+    client: &IgClient,
+    username: &str,
+    pages: u32,
+    at_least: usize,
+    until: &[MediaPk],
+) -> Result<(Grid, GridRead)> {
+    let mut grid = Grid {
+        username: username.to_string(),
+        posts: Vec::new(),
+        next: None,
+        declared: None,
+    };
     let first = client.profile_posts(&grid.username, None).await?;
     grid.take(first);
     let mut read = 1;
@@ -716,7 +742,7 @@ pub async fn read_grid(
         pages: read,
         reached: reached(&grid.posts, until),
     };
-    Ok((Fetched::Grid(grid), how))
+    Ok((grid, how))
 }
 
 impl Grid {

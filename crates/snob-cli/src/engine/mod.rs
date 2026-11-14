@@ -29,6 +29,7 @@ pub mod people;
 pub mod target;
 pub mod walk;
 pub mod watch;
+pub mod watch_posts;
 
 use anyhow::Result;
 use snob_core::model::{ListKind, StopReason, User};

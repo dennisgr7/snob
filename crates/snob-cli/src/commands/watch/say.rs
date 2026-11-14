@@ -17,6 +17,7 @@ use snob_core::watch::{Basis, ListDiff};
 use crate::engine::Provenance;
 use crate::engine::check::Problem;
 use crate::engine::watch::{Skipped, WatchReport};
+use crate::engine::watch_posts::PostsSkipped;
 use crate::report;
 
 /// Why a list was not compared, said in a sentence.
@@ -47,6 +48,33 @@ pub(super) fn refusal_line(kind: ListKind, skipped: Skipped) -> String {
             report::why_incomplete(reason).unwrap_or("it stopped early")
         ),
     }
+}
+
+/// Why the posts of `account` were not looked at, said in a sentence; the
+/// sibling of [`refusal_line`]. `None` for posts read less than an hour ago,
+/// which is the rule working and not worth a warning.
+pub(super) fn posts_refusal_line(account: Option<&str>, skipped: PostsSkipped) -> Option<String> {
+    let whose = match account {
+        Some(name) => format!("the posts of @{}", printable(name)),
+        None => "the posts".to_string(),
+    };
+    Some(match skipped {
+        PostsSkipped::ReadRecently => return None,
+        PostsSkipped::Cooldown => {
+            format!("{whose} were not read: the account is in cooldown, and nothing is sent")
+        }
+        PostsSkipped::Incomplete(reason, _) => format!(
+            "{whose} could not be read in full ({}), so nothing was concluded about them; the \
+             next run reads them again",
+            report::why_incomplete(reason).unwrap_or("it stopped early")
+        ),
+        PostsSkipped::Hidden => {
+            format!("{whose} are not shown to you: the account is private and you do not follow it")
+        }
+        PostsSkipped::NoBrowser => format!(
+            "{whose} were not read: a grid is read from the browser, and SNOB_NO_BROWSER is set"
+        ),
+    })
 }
 
 /// What is wrong with something `snob watch check` looked at, said in a
@@ -450,6 +478,7 @@ mod tests {
             followers: Some(baseline(ListKind::Followers)),
             following: Some(baseline(ListKind::Following)),
             renamed: vec![],
+            posts: None,
         };
 
         let text = describe(&report, false).join("\n");

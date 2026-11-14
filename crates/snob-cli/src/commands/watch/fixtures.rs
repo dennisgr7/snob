@@ -47,6 +47,7 @@ pub(in crate::commands::watch) fn report_with(
         followers,
         following: None,
         renamed,
+        posts: None,
     }
 }
 

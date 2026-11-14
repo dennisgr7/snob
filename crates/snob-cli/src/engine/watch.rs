@@ -20,6 +20,7 @@ use snob_core::{Epoch, Pk};
 use snob_store::store::{accounts, snapshots, users, watch as store};
 
 use crate::app::{App, Viewer};
+use crate::engine::watch_posts::{self, PostsReport, PostsSkipped};
 use crate::engine::{self, ListOutcome, ListQuery, Provenance, target};
 use crate::exit::ExitCode;
 
@@ -69,6 +70,9 @@ pub struct WatchReport {
     pub followers: Option<ListReport>,
     pub following: Option<ListReport>,
     pub renamed: Vec<Rename>,
+    /// What this run concluded about the account's posts; `None` when it
+    /// does not watch them or concluded nothing.
+    pub posts: Option<PostsReport>,
 }
 
 impl WatchReport {
@@ -82,10 +86,22 @@ impl WatchReport {
     }
 
     /// How many individual changes, counted the way `Changes::len` counts --
-    /// both lists plus the renames -- without building a `Changes`.
+    /// both lists plus the renames -- without building a `Changes`, and the
+    /// new posts beside them.
     pub fn change_count(&self) -> usize {
+        self.list_change_count() + self.new_posts()
+    }
+
+    /// The changes of the lists and the renames alone: what a report's
+    /// `counts.total` has always counted, and still does.
+    pub fn list_change_count(&self) -> usize {
         let of = |kind| self.report(kind).map_or(0, |r| r.diff.len());
         of(ListKind::Followers) + of(ListKind::Following) + self.renamed.len()
+    }
+
+    /// How many new posts this run found.
+    pub fn new_posts(&self) -> usize {
+        self.posts.as_ref().map_or(0, |posts| posts.news.len())
     }
 
     /// The changes, in the shape the payload and the printer both want.
@@ -115,7 +131,7 @@ impl WatchReport {
     /// Told apart from "nothing changed", which is what the caller would
     /// otherwise print at somebody who has never run the tool on this account.
     pub fn has_anything_stored(&self) -> bool {
-        self.followers.is_some() || self.following.is_some()
+        self.followers.is_some() || self.following.is_some() || self.posts.is_some()
     }
 }
 
@@ -327,6 +343,13 @@ pub struct TickList {
     pub skipped: Option<Skipped>,
 }
 
+/// The posts, as this run found them: why it drew no conclusion about them,
+/// when it did not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TickPosts {
+    pub skipped: Option<PostsSkipped>,
+}
+
 /// Why a run declined to draw a conclusion from a list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Skipped {
@@ -358,6 +381,14 @@ pub struct TickReport {
     pub report: WatchReport,
     pub requests: u32,
     pub lists: Vec<TickList>,
+    /// The posts, when the account's are watched.
+    pub posts: Option<TickPosts>,
+    /// Every post this run read off the grid, for the saves still owed to
+    /// one that is on it.
+    pub read_posts: Vec<crate::posts::Post>,
+    /// What committing the posts writes, when the run concluded on them.
+    /// Private for the reason `committable` is.
+    posts_commit: Option<snob_store::store::watch_posts::Commit>,
     /// The captures this report spoke about, and the moment it covers.
     ///
     /// Held rather than recomputed because [`commit`] has to move exactly these
@@ -398,7 +429,7 @@ pub fn commit(
         at,
         tick.rename_cursor,
         &tick.renames_sent,
-        None,
+        tick.posts_commit.as_ref(),
         // The store's own type, not a copy mapped across: the compiler would
         // say nothing about a field added here that a mapper drops.
         delivery,
@@ -549,6 +580,9 @@ impl TickReport {
             report,
             requests,
             lists: Vec::new(),
+            posts: None,
+            read_posts: Vec::new(),
+            posts_commit: None,
             committable: Vec::new(),
             at,
             rename_cursor: None,
@@ -574,6 +608,28 @@ impl TickReport {
     /// for silence reads them as the same thing and they are opposites.
     pub fn looked(&self) -> bool {
         self.lists.iter().any(|l| l.skipped.is_none())
+            || self.posts.is_some_and(|posts| posts.skipped.is_none())
+    }
+
+    /// Why the posts were not looked at, when they are watched and were not.
+    pub fn posts_skipped(&self) -> Option<PostsSkipped> {
+        self.posts.and_then(|posts| posts.skipped)
+    }
+
+    /// Records that every file of `saved` is now where the entry keeps them,
+    /// and what the report says of each post. Only a committed tick writes
+    /// either: the saves are written with the report that names them.
+    pub fn record_saves(
+        &mut self,
+        done: Vec<snob_ig::shortcode::MediaPk>,
+        saved: Vec<watch_posts::SavedPost>,
+    ) {
+        if let Some(commit) = &mut self.posts_commit {
+            commit.saved.extend(done.into_iter().map(|pk| pk.get()));
+        }
+        if let Some(posts) = &mut self.report.posts {
+            posts.saved = saved;
+        }
     }
 
     /// What this run amounts to, in the vocabulary `$?` and the README's table
@@ -587,7 +643,12 @@ impl TickReport {
         if self.looked() {
             return ExitCode::Ok;
         }
-        refused_outcome(&self.lists)
+        // Posts alone, read within the hour: nothing was due, and nothing is
+        // wrong.
+        if self.lists.is_empty() && self.posts_skipped() == Some(PostsSkipped::ReadRecently) {
+            return ExitCode::Ok;
+        }
+        refused_outcome(&self.lists, self.posts_skipped())
     }
 }
 
@@ -598,7 +659,17 @@ impl TickReport {
 /// it has no stored account to report against, so the two cannot drift:
 /// `snob watch once someone` during a cooldown exits the same way whether or
 /// not that account had ever been walked before.
-fn refused_outcome(lists: &[TickList]) -> ExitCode {
+///
+/// The posts' refusal is asked after the lists': a cooldown and a push-back
+/// read the same way, and a private account or no browser is an error.
+fn refused_outcome(lists: &[TickList], posts: Option<PostsSkipped>) -> ExitCode {
+    let of_posts = match posts {
+        Some(PostsSkipped::Cooldown) => Some(ExitCode::RateLimited),
+        Some(PostsSkipped::Incomplete(reason, said)) => {
+            Some(said.unwrap_or_else(|| crate::exit::from_stop_reason(reason)))
+        }
+        _ => None,
+    };
     lists
         .iter()
         .find_map(|list| match list.skipped {
@@ -612,6 +683,7 @@ fn refused_outcome(lists: &[TickList]) -> ExitCode {
             }
             _ => None,
         })
+        .or(of_posts)
         .unwrap_or(ExitCode::Error)
 }
 
@@ -649,7 +721,12 @@ pub async fn tick(app: &mut App, watched: &Watched) -> Result<TickReport> {
     // says so instead of guessing.
     let mut pk: Option<Pk> = None;
 
-    for kind in [ListKind::Followers, ListKind::Following] {
+    let kinds: &[ListKind] = if watched.lists() {
+        &[ListKind::Followers, ListKind::Following]
+    } else {
+        &[]
+    };
+    for &kind in kinds {
         // A canceled walk comes back `Ok`, so without this the loop would go
         // on to the second list, and `App::resolved_target` drops the
         // remembered counters once the first walk has begun, so it would ask
@@ -731,7 +808,22 @@ pub async fn tick(app: &mut App, watched: &Watched) -> Result<TickReport> {
         lists.push(TickList { kind, skipped });
     }
 
-    let pk = match (pk, watched.name()) {
+    // The posts, after the lists, in the same action: the profile the lists
+    // opened is the one the grid follows (`watch_posts::look` says the order).
+    let after_lists = app.client().pacer().spent() > before;
+    let battery_said = lists.iter().any(|list| {
+        matches!(
+            list.skipped,
+            Some(Skipped::Incomplete(StopReason::Canceled, _))
+        )
+    });
+    let looked_at_posts = watch_posts::look(app, watched, after_lists, battery_said).await?;
+    let posts_skipped = looked_at_posts.as_ref().and_then(|look| look.skipped);
+
+    let pk = match (
+        pk.or(looked_at_posts.as_ref().and_then(|look| look.pk)),
+        watched.name(),
+    ) {
         (Some(pk), _) => pk,
         (None, None) => app.viewer().pk,
         (None, Some(name)) => {
@@ -741,7 +833,10 @@ pub async fn tick(app: &mut App, watched: &Watched) -> Result<TickReport> {
             // the same tick on a walked account, and the `--json` stream does
             // not say `"error"` about a state that lifts on its own.
             accounts::find_pk_by_username(app.db().conn(), name)?.ok_or_else(|| {
-                crate::report::refuse_nothing_looked_at(name, refused_outcome(&lists))
+                crate::report::refuse_nothing_looked_at(
+                    name,
+                    refused_outcome(&lists, posts_skipped),
+                )
             })?
         }
     };
@@ -756,13 +851,29 @@ pub async fn tick(app: &mut App, watched: &Watched) -> Result<TickReport> {
     // Nothing is written here. The marks and the cursor move in `commit`,
     // together with the report being queued — reporting and recording having
     // reported are one event.
-    let compared = compare(app, pk, &usable, head)?;
+    let mut compared = compare(app, pk, &usable, head)?;
+    let (tick_posts, read_posts, posts_commit) = match looked_at_posts {
+        Some(look) => {
+            compared.report.posts = look.report;
+            (
+                Some(TickPosts {
+                    skipped: look.skipped,
+                }),
+                look.read,
+                look.commit,
+            )
+        }
+        None => (None, Vec::new(), None),
+    };
 
     Ok(TickReport {
         viewer: app.viewer().clone(),
         report: compared.report,
         requests: app.client().pacer().spent().saturating_sub(before),
         lists,
+        posts: tick_posts,
+        read_posts,
+        posts_commit,
         committable: compared.marks,
         at,
         rename_cursor: compared.rename_cursor,
@@ -1004,6 +1115,7 @@ fn compare(app: &App, pk: Pk, usable: &[(ListKind, i64)], head: i64) -> Result<C
             followers,
             following,
             renamed,
+            posts: None,
         },
         marks,
         rename_cursor: covered,
@@ -1202,6 +1314,7 @@ mod tests {
             followers: None,
             following: None,
             renamed: Vec::new(),
+            posts: None,
         };
         let mut tick = TickReport::for_test(report, 1, Epoch::default());
         tick.lists = vec![TickList {
@@ -1235,6 +1348,7 @@ mod tests {
                 followers: None,
                 following: None,
                 renamed: Vec::new(),
+                posts: None,
             };
             let mut tick = TickReport::for_test(report, 1, Epoch::default());
             tick.lists = vec![TickList {

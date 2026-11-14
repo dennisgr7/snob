@@ -418,10 +418,23 @@ async fn run_accounts(
     printing: Printing,
     tally: &mut Tally,
 ) {
-    for account in watched {
+    for (index, account) in watched.iter().enumerate() {
         // Ctrl+C stops the run rather than only the account it landed in, not
         // walking every remaining account after the user asked it to stop.
         if app.cancel().is_canceled() {
+            break;
+        }
+        // A pause between two accounts, as a person takes going from one
+        // profile to the next (`DWELL_MS`, 1.5 to 4 s): back to back, two
+        // accounts' first requests would leave one after the other with no
+        // time between them a reader takes. Only ever slower; nothing is
+        // waited against a test server (`IgClient::is_live`).
+        if index > 0
+            && app
+                .client()
+                .dwell_before_a_list(&snob_ig::pace::Pace::default())
+                .await
+        {
             break;
         }
         // Read around the tick rather than out of the report it returns.
@@ -585,6 +598,11 @@ fn warn_about_refusals(tick: &TickReport) {
         .filter_map(|l| l.skipped.map(|s| (l.kind, s)))
     {
         ui::warn(&refusal_line(kind, skipped));
+    }
+    if let Some(line) = tick.posts_skipped().and_then(|skipped| {
+        super::say::posts_refusal_line(tick.report.username.as_deref(), skipped)
+    }) {
+        ui::warn(&line);
     }
 }
 

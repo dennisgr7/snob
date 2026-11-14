@@ -1829,3 +1829,427 @@ async fn a_posts_likers_are_one_get_from_its_page_and_nothing_follows() {
     let found = world.audit(&server, &[]).await;
     assert!(found.is_empty(), "{found:?}");
 }
+
+/// What the monitor watches of an account whose posts alone are watched.
+fn posts_only(name: Option<&str>) -> snob_cli::engine::watch::Watched {
+    use snob_cli::engine::watch::{PostsWatch, Watched};
+    let watched = match name {
+        Some(name) => Watched::asking(name.to_string()),
+        None => Watched::own(),
+    };
+    watched.watching(false, Some(PostsWatch::default()))
+}
+
+/// An hour and a minute go by for the posts the monitor read, so the next
+/// run is allowed to read them again (`watch_posts::READ_AT_MOST_EVERY`).
+fn an_hour_passes(root: &std::path::Path) {
+    common::open_db(root)
+        .conn()
+        .execute(
+            "UPDATE watch_post_marks SET read_at = read_at - 3660, baseline_at = baseline_at - 3660",
+            [],
+        )
+        .unwrap();
+}
+
+/// The new posts a tick found, by pk, in the grid's order.
+fn news_of(tick: &snob_cli::engine::watch::TickReport) -> Vec<u64> {
+    tick.report
+        .posts
+        .as_ref()
+        .expect("the posts were looked at")
+        .news
+        .iter()
+        .map(|post| post.pk.get())
+        .collect()
+}
+
+/// A tick on `watched` through a new app over the database under `root`,
+/// committed.
+async fn tick_and_commit(
+    server: &MockServer,
+    world: &World,
+    root: &std::path::Path,
+    watched: &snob_cli::engine::watch::Watched,
+) -> snob_cli::engine::watch::TickReport {
+    let mut app = app_on(server, world, root);
+    let tick = snob_cli::engine::watch::tick(&mut app, watched)
+        .await
+        .unwrap();
+    snob_cli::engine::watch::commit(&mut app, &tick, None).unwrap();
+    tick
+}
+
+/// The first run on an account's posts reads one page, takes what it holds
+/// as what is known, and reports nothing.
+#[tokio::test]
+async fn the_first_run_on_posts_lays_a_baseline_and_reports_none() {
+    use snob_core::watch::posts::Basis;
+
+    let world = World::new();
+    world.person(ig::SOMEONE, |p| p.posts = 15);
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+
+    let tick = tick_and_commit(&server, &world, tmp.path(), &posts_only(Some("someone"))).await;
+    let posts = tick.report.posts.as_ref().expect("a report on the posts");
+    assert_eq!(posts.basis, Basis::Baseline);
+    assert!(posts.news.is_empty());
+    assert_eq!(posts.pages, 1);
+    assert!(!tick.report.has_changes());
+    assert_eq!(
+        queries_since(&server, 0)
+            .await
+            .iter()
+            .filter(|q| q.contains("ProfilePosts"))
+            .count(),
+        1,
+        "one page of the grid"
+    );
+
+    let db = common::open_db(tmp.path());
+    let pk = Pk::new(ig::SOMEONE);
+    let mark = snob_store::store::watch_posts::mark(db.conn(), pk)
+        .unwrap()
+        .expect("the baseline is on record");
+    assert_eq!(mark.reported_at, None);
+    assert_eq!(
+        snob_store::store::watch_posts::newest(db.conn(), pk, 100)
+            .unwrap()
+            .len(),
+        12
+    );
+}
+
+/// A post published after the baseline is news on the next run, and on no
+/// run after it.
+#[tokio::test]
+async fn a_post_published_since_is_reported_once_and_never_again() {
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let watched = posts_only(Some("someone"));
+    tick_and_commit(&server, &world, tmp.path(), &watched).await;
+
+    world.person(ig::SOMEONE, |p| p.newer = 2);
+    an_hour_passes(tmp.path());
+    let tick = tick_and_commit(&server, &world, tmp.path(), &watched).await;
+    assert_eq!(
+        news_of(&tick),
+        [
+            ig::newer_post(ig::SOMEONE, 1),
+            ig::newer_post(ig::SOMEONE, 0)
+        ]
+    );
+    assert!(tick.report.has_changes());
+    assert_eq!(tick.report.change_count(), 2);
+    assert_eq!(tick.report.list_change_count(), 0);
+
+    an_hour_passes(tmp.path());
+    let tick = tick_and_commit(&server, &world, tmp.path(), &watched).await;
+    assert!(news_of(&tick).is_empty());
+    assert!(!tick.report.has_changes());
+}
+
+/// A run that finds no new post costs the profile, opened as the app opens
+/// one (four reads), and one page of the grid; with the lists of somebody
+/// else watched too, the profile the lists opened is the one the grid
+/// follows, and the grid is the one read more.
+#[tokio::test]
+async fn a_run_with_no_new_post_costs_the_profile_and_one_page() {
+    use snob_cli::engine::watch::{Consent, PostsWatch, Watched};
+
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let watched = posts_only(Some("someone"));
+    tick_and_commit(&server, &world, tmp.path(), &watched).await;
+
+    an_hour_passes(tmp.path());
+    let since = common::requests(&server).await;
+    let tick = tick_and_commit(&server, &world, tmp.path(), &watched).await;
+    assert_eq!(tick.requests, 5, "{:?}", sent_since(&server, since).await);
+    let mut opened = OPENED.to_vec();
+    opened.push("PolarisProfilePostsQuery");
+    assert_eq!(relay_since(&server, since).await, opened);
+
+    let other = tempfile::tempdir().unwrap();
+    let both =
+        Watched::consented("someone".into(), Consent).watching(true, Some(PostsWatch::default()));
+    tick_and_commit(&server, &world, other.path(), &both).await;
+    an_hour_passes(other.path());
+    let since = common::requests(&server).await;
+    let tick = tick_and_commit(&server, &world, other.path(), &both).await;
+    assert_eq!(tick.requests, 5, "{:?}", sent_since(&server, since).await);
+    assert_eq!(relay_since(&server, since).await, opened);
+}
+
+/// An old post the owner pinned sits on top of the grid: it is never news,
+/// and a read that knows it still goes on to the page that holds a post it
+/// knows below it.
+#[tokio::test]
+async fn a_pinned_old_post_is_never_news_and_never_stops_the_read() {
+    let world = World::new();
+    world.person(ig::SOMEONE, |p| {
+        p.posts = 30;
+        p.pinned = vec![20];
+    });
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let watched = posts_only(Some("someone"));
+    tick_and_commit(&server, &world, tmp.path(), &watched).await;
+
+    // Fourteen new posts: the first page is the pinned one and eleven of
+    // them, the second the other three and posts seen before. The pin is
+    // kept on the same post as the new ones push it down the grid.
+    world.person(ig::SOMEONE, |p| {
+        p.newer = 14;
+        p.pinned = vec![20 + 14];
+    });
+    an_hour_passes(tmp.path());
+    let tick = tick_and_commit(&server, &world, tmp.path(), &watched).await;
+    let news = news_of(&tick);
+    assert_eq!(news.len(), 14, "{news:?}");
+    assert!(!news.contains(&ig::post_pk(ig::SOMEONE, 20)));
+    let posts = tick.report.posts.as_ref().unwrap();
+    assert_eq!(posts.pages, 2, "the pinned post stopped nothing");
+    assert!(posts.complete);
+}
+
+/// When the owner deletes posts, the older ones behind them move up the
+/// grid with pks never seen; they are older than everything seen, and are
+/// not news.
+#[tokio::test]
+async fn a_post_that_moved_up_after_a_deletion_is_not_news() {
+    let world = World::new();
+    world.person(ig::SOMEONE, |p| p.posts = 15);
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let watched = posts_only(Some("someone"));
+    tick_and_commit(&server, &world, tmp.path(), &watched).await;
+
+    world.person(ig::SOMEONE, |p| p.deleted = vec![0, 1, 2]);
+    an_hour_passes(tmp.path());
+    let tick = tick_and_commit(&server, &world, tmp.path(), &watched).await;
+    assert!(news_of(&tick).is_empty());
+    let posts = tick.report.posts.as_ref().unwrap();
+    assert_eq!(posts.pages, 1);
+    assert!(posts.complete);
+}
+
+/// More new posts than three pages hold: the three are read and reported,
+/// and the report says the read did not reach what was known.
+#[tokio::test]
+async fn more_new_posts_than_three_pages_says_the_read_is_not_complete() {
+    let world = World::new();
+    world.person(ig::SOMEONE, |p| p.posts = 15);
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let watched = posts_only(Some("someone"));
+    tick_and_commit(&server, &world, tmp.path(), &watched).await;
+
+    world.person(ig::SOMEONE, |p| p.newer = 40);
+    an_hour_passes(tmp.path());
+    let tick = tick_and_commit(&server, &world, tmp.path(), &watched).await;
+    let posts = tick.report.posts.as_ref().unwrap();
+    assert_eq!(posts.pages, 3);
+    assert_eq!(posts.news.len(), 36);
+    assert!(!posts.complete);
+}
+
+/// A private account the viewer does not follow is said hidden, from its
+/// profile, and its grid is never asked for. Nothing else was looked at, so
+/// the run is an error.
+#[tokio::test]
+async fn a_private_account_not_followed_is_said_hidden_and_its_grid_is_not_asked_for() {
+    use snob_cli::engine::watch_posts::PostsSkipped;
+
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = app_on(&server, &world, tmp.path());
+    let tick = snob_cli::engine::watch::tick(&mut app, &posts_only(Some("ghost")))
+        .await
+        .unwrap();
+    assert_eq!(tick.posts_skipped(), Some(PostsSkipped::Hidden));
+    assert_eq!(tick.outcome(), snob_cli::exit::ExitCode::Error);
+    assert!(
+        !queries_since(&server, 0)
+            .await
+            .iter()
+            .any(|q| q.contains("Posts")),
+        "the grid was asked for"
+    );
+}
+
+/// In a cooldown nothing is sent for the posts, not even the profile.
+#[tokio::test]
+async fn posts_are_not_read_in_a_cooldown() {
+    use snob_cli::engine::watch_posts::PostsSkipped;
+
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let (paths, budget) = common::budget_at(tmp.path());
+    let app_of = || {
+        common::app_web(
+            &server,
+            &world,
+            snob_store::store::Store::open(&paths).unwrap(),
+            budget.clone(),
+            snob_cli::app::Viewer {
+                pk: common::ME,
+                username: Some("me".into()),
+            },
+        )
+    };
+    let watched = posts_only(Some("someone"));
+    let mut app = app_of();
+    let first = snob_cli::engine::watch::tick(&mut app, &watched)
+        .await
+        .unwrap();
+    snob_cli::engine::watch::commit(&mut app, &first, None).unwrap();
+    snob_store::store::Store::open(&paths)
+        .unwrap()
+        .conn()
+        .execute("UPDATE watch_post_marks SET read_at = read_at - 3660", [])
+        .unwrap();
+
+    common::start_cooldown(&budget, common::HOUR);
+    let since = common::requests(&server).await;
+    let mut app = app_of();
+    let tick = snob_cli::engine::watch::tick(&mut app, &watched)
+        .await
+        .unwrap();
+    assert_eq!(tick.posts_skipped(), Some(PostsSkipped::Cooldown));
+    assert_eq!(tick.outcome(), snob_cli::exit::ExitCode::RateLimited);
+    assert!(sent_since(&server, since).await.is_empty());
+}
+
+/// Posts read less than an hour ago are not read again, and that is no
+/// failure: the run sends nothing and ends well.
+#[tokio::test]
+async fn posts_read_less_than_an_hour_ago_are_not_read_again() {
+    use snob_cli::engine::watch_posts::PostsSkipped;
+
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let watched = posts_only(Some("someone"));
+    tick_and_commit(&server, &world, tmp.path(), &watched).await;
+
+    let since = common::requests(&server).await;
+    let tick = tick_and_commit(&server, &world, tmp.path(), &watched).await;
+    assert_eq!(tick.posts_skipped(), Some(PostsSkipped::ReadRecently));
+    assert_eq!(tick.requests, 0);
+    assert_eq!(tick.outcome(), snob_cli::exit::ExitCode::Ok);
+    assert!(sent_since(&server, since).await.is_empty());
+}
+
+/// An entry that watches posts alone walks no list, so it needs no answer
+/// to read somebody else's: one built with the question still to ask runs
+/// with nobody there.
+#[tokio::test]
+async fn a_posts_only_entry_walks_no_list_and_asks_no_consent() {
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let watched = posts_only(Some("someone"));
+    assert!(watched.may_run_unattended());
+
+    let tick = tick_and_commit(&server, &world, tmp.path(), &watched).await;
+    assert!(tick.lists.is_empty());
+    assert!(tick.report.followers.is_none() && tick.report.following.is_none());
+    assert!(tick.looked());
+    let sent = sent_since(&server, 0).await;
+    assert!(
+        !sent.iter().any(|p| p.contains("/friendships/")),
+        "{sent:?}"
+    );
+    assert!(world.audit(&server, &[]).await.is_empty());
+}
+
+/// A push-back on the grid ends the posts of that run, with no retry, and
+/// what the lists concluded is still reported and committed; the posts'
+/// receipt does not move.
+#[tokio::test]
+async fn a_push_back_on_the_grid_still_reports_what_the_lists_found() {
+    use snob_cli::engine::watch::{Consent, PostsWatch, Watched};
+    use snob_cli::engine::watch_posts::PostsSkipped;
+    use wiremock::matchers::{body_string_contains, method, path};
+
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let both =
+        Watched::consented("someone".into(), Consent).watching(true, Some(PostsWatch::default()));
+    tick_and_commit(&server, &world, tmp.path(), &both).await;
+    let read_before = snob_store::store::watch_posts::mark(
+        common::open_db(tmp.path()).conn(),
+        Pk::new(ig::SOMEONE),
+    )
+    .unwrap()
+    .unwrap()
+    .read_at;
+    an_hour_passes(tmp.path());
+
+    wiremock::Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .and(body_string_contains("PolarisProfilePostsQuery"))
+        .respond_with(wiremock::ResponseTemplate::new(429).set_body_string("{}"))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let tick = tick_and_commit(&server, &world, tmp.path(), &both).await;
+    assert!(matches!(
+        tick.posts_skipped(),
+        Some(PostsSkipped::Incomplete(_, _))
+    ));
+    assert!(tick.report.posts.is_none());
+    assert!(
+        tick.lists.iter().all(|list| list.skipped.is_none()),
+        "{:?}",
+        tick.lists
+    );
+    assert_eq!(tick.outcome(), snob_cli::exit::ExitCode::Ok);
+    let posts_asked = queries_since(&server, 0)
+        .await
+        .iter()
+        .filter(|q| q.as_str() == "PolarisProfilePostsQuery")
+        .count();
+    assert_eq!(posts_asked, 2, "the baseline's, and the one refused, once");
+    assert_eq!(
+        snob_store::store::watch_posts::mark(
+            common::open_db(tmp.path()).conn(),
+            Pk::new(ig::SOMEONE)
+        )
+        .unwrap()
+        .unwrap()
+        .read_at,
+        read_before - std::time::Duration::from_secs(3660),
+        "only the hour that went by moved it"
+    );
+}
+
+/// A tick whose report was never committed, as a process killed before
+/// its commit leaves it, wrote nothing: the next one finds the same posts
+/// and reports them.
+#[tokio::test]
+async fn a_tick_killed_before_its_commit_reports_the_same_posts_next_time() {
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let watched = posts_only(Some("someone"));
+    tick_and_commit(&server, &world, tmp.path(), &watched).await;
+
+    world.person(ig::SOMEONE, |p| p.newer = 1);
+    an_hour_passes(tmp.path());
+    let mut app = app_on(&server, &world, tmp.path());
+    let lost = snob_cli::engine::watch::tick(&mut app, &watched)
+        .await
+        .unwrap();
+    drop(app);
+    let again = tick_and_commit(&server, &world, tmp.path(), &watched).await;
+    assert_eq!(news_of(&lost), [ig::newer_post(ig::SOMEONE, 0)]);
+    assert_eq!(news_of(&again), news_of(&lost));
+}

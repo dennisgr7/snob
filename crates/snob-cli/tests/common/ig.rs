@@ -142,6 +142,9 @@ pub struct Person {
     /// The posts it pinned, each by its place in its grid counted from its
     /// newest (0): its grid serves them first, in this order, however old.
     pub pinned: Vec<u64>,
+    /// The posts it deleted or archived, by their number in [`post_pk`]:
+    /// gone from its grid and its count, so the older ones move up.
+    pub deleted: Vec<u64>,
 }
 
 impl Person {
@@ -161,6 +164,7 @@ impl Person {
             posts: 3,
             newer: 0,
             pinned: Vec::new(),
+            deleted: Vec::new(),
         }
     }
 }
@@ -1624,7 +1628,7 @@ impl State {
             "category": null,
             "follower_count": self.followers(pk).len(),
             "following_count": self.following(pk).len(),
-            "media_count": person.posts + person.newer,
+            "media_count": person.posts + person.newer - person.deleted.len() as u64,
             "profile_pic_url": self.media(&format!("{pk}-small")),
             "hd_profile_pic_url_info": person
                 .full_size_picture
@@ -1648,7 +1652,9 @@ impl State {
             .rev()
             .map(|k| NEWER_FROM + k)
             .chain(0..person.posts)
-            .map(|n| {
+            .filter(|n| !person.deleted.contains(n))
+            .enumerate()
+            .map(|(place, n)| {
                 let media = post_pk(pk, n);
                 let code = code_of(media);
                 let picture = |name: &str| {
@@ -1682,8 +1688,11 @@ impl State {
                     "usertags": null,
                     "coauthor_producers": [],
                     "user": { "pk": pk.to_string(), "username": person.username },
+                    // By its place, as `Person::pinned` names it and
+                    // `grid_of` serves it, so a post keeps its pin only
+                    // while the newer ones that push it down say so.
                     "timeline_pinned_user_ids":
-                        if person.pinned.contains(&n) { vec![pk] } else { Vec::new() },
+                        if person.pinned.contains(&(place as u64)) { vec![pk] } else { Vec::new() },
                     "image_versions2": picture(&media.to_string()),
                     "video_versions": null,
                     "carousel_media": null,
@@ -2320,7 +2329,9 @@ impl State {
             "profile_pic_url_hd": self.media(&format!("{pk}-hd")),
             "edge_followed_by": { "count": followers.len() },
             "edge_follow": { "count": self.following(pk).len() },
-            "edge_owner_to_timeline_media": { "count": person.posts + person.newer },
+            "edge_owner_to_timeline_media": {
+                "count": person.posts + person.newer - person.deleted.len() as u64
+            },
             "edge_mutual_followed_by": {
                 "count": mutual.len(),
                 "edges": mutual.iter().take(3).map(|pk| json!({ "node": { "username": self.account(*pk).username } })).collect::<Vec<_>>(),
