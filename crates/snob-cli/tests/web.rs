@@ -2571,7 +2571,7 @@ fn saving_to(name: &str, dir: &std::path::Path) -> snob_cli::engine::watch::Watc
         false,
         Some(PostsWatch {
             save_to: Some(dir.to_path_buf()),
-            quality: Some(snob_cli::cli::Quality::Compat),
+            quality: Some(snob_store::config::VideoQuality::Compat),
         }),
     )
 }

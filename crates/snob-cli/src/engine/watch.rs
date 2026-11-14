@@ -137,7 +137,7 @@ pub struct PostsWatch {
     /// Where their photos and videos are saved; `None`, nowhere.
     pub save_to: Option<std::path::PathBuf>,
     /// What a saved video is; `None`, the best ffmpeg can join when found.
-    pub quality: Option<crate::cli::Quality>,
+    pub quality: Option<snob_store::config::VideoQuality>,
 }
 
 /// A recorded answer to "may this walk somebody else's lists?".

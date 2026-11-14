@@ -10,6 +10,10 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// Environment variables no process started for an agent, a job or a browser
+/// inherits. AGENTS.md names it `jobs::NEVER_INHERITED`, where it is re-exported.
+pub const NEVER_INHERITED: &[&str] = &["SNOB_IGNORE_COOLDOWN", "SNOB_MCP_KEY", "SNOB_MCP_TOKEN"];
+
 /// A process just started, as far as the command that started it can tell.
 pub(crate) struct Started {
     /// Whether it left the job the command was in.
@@ -39,7 +43,7 @@ pub(crate) fn spawn(
 /// compares names, without case: `snob_mcp_key` is the same variable.
 #[cfg(windows)]
 fn never_inherited(name: &std::ffi::OsStr) -> bool {
-    crate::jobs::NEVER_INHERITED
+    crate::detach::NEVER_INHERITED
         .iter()
         .any(|kept| name.eq_ignore_ascii_case(kept))
 }
@@ -47,7 +51,7 @@ fn never_inherited(name: &std::ffi::OsStr) -> bool {
 /// Takes `jobs::NEVER_INHERITED` out of what `command` passes on.
 #[cfg(unix)]
 pub(crate) fn without_what_is_never_inherited(command: &mut std::process::Command) {
-    for name in crate::jobs::NEVER_INHERITED {
+    for name in crate::detach::NEVER_INHERITED {
         command.env_remove(name);
     }
 }
@@ -469,7 +473,7 @@ mod tests {
             .filter(|(_, value)| value.is_none())
             .map(|(name, _)| name)
             .collect();
-        for name in crate::jobs::NEVER_INHERITED {
+        for name in crate::detach::NEVER_INHERITED {
             assert!(removed.contains(&std::ffi::OsStr::new(name)), "{name}");
         }
     }

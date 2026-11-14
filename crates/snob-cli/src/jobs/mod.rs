@@ -35,9 +35,7 @@ pub const SCHEMA: u32 = 1;
 /// call's child (`commands::mcp::child`), for the same reason.
 pub const GRACE: Duration = Duration::from_secs(30);
 
-/// Environment variables an agent's run never inherits: a call's child
-/// (`commands::mcp::child`) and a job's walk (`supervise`).
-pub const NEVER_INHERITED: &[&str] = &["SNOB_IGNORE_COOLDOWN", "SNOB_MCP_KEY", "SNOB_MCP_TOKEN"];
+pub use crate::detach::NEVER_INHERITED;
 
 /// How long a job may wait for its supervisor before it counts as lost: it
 /// is started at once, so a job still queued after this never will be.

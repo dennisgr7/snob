@@ -2451,6 +2451,15 @@ pub enum Quality {
     Compat,
 }
 
+impl From<Quality> for snob_store::config::VideoQuality {
+    fn from(quality: Quality) -> Self {
+        match quality {
+            Quality::Best => Self::Best,
+            Quality::Compat => Self::Compat,
+        }
+    }
+}
+
 #[derive(Args, Debug)]
 // What `--mcp-write-cap` needs beside it: a run on an agent's yes, which the
 // cap counts toward, or the check made before that yes is asked for.

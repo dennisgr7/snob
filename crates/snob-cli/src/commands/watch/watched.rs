@@ -1,7 +1,7 @@
 //! Which accounts a run watches, and on whose say-so.
 
 use snob_core::Pk;
-use snob_store::config::{AccountConfig, VideoQuality, WatchConfig};
+use snob_store::config::{AccountConfig, WatchConfig};
 
 use crate::engine::watch::{PostsWatch, Watched};
 
@@ -87,10 +87,7 @@ fn entry_named<'a>(name: &str, configured: Option<&'a WatchConfig>) -> Option<&'
 fn posts_of(account: &AccountConfig) -> Option<PostsWatch> {
     account.posts.as_ref().map(|posts| PostsWatch {
         save_to: posts.save_to.clone(),
-        quality: posts.quality.map(|quality| match quality {
-            VideoQuality::Best => crate::cli::Quality::Best,
-            VideoQuality::Compat => crate::cli::Quality::Compat,
-        }),
+        quality: posts.quality,
     })
 }
 
@@ -434,7 +431,7 @@ consent = { agreed_at = 1700 }
             typed[0].posts(),
             Some(&PostsWatch {
                 save_to: Some(std::path::PathBuf::from(dir)),
-                quality: Some(crate::cli::Quality::Compat),
+                quality: Some(snob_store::config::VideoQuality::Compat),
             })
         );
 

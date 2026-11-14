@@ -245,7 +245,7 @@ pub(crate) fn videos_of(video: &VideoArgs, action: &MediaActionArgs) -> Result<V
         }
         return Ok(Videos::Compat { say_how: false });
     }
-    Videos::resolve(video.quality, video.ffmpeg.as_deref())
+    Videos::resolve(video.quality.map(Into::into), video.ffmpeg.as_deref())
 }
 
 /// The sentence for a post number the grid does not hold.

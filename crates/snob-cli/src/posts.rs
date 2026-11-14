@@ -26,8 +26,8 @@ use snob_ig::model::dash;
 use snob_ig::model::post::{Comment, CommentsPage, LikedBy, Media, Named as NamedAccount};
 use snob_ig::pace::{PAGES_PER_SITTING, Pace};
 use snob_ig::shortcode::{self, CommentPk, MediaPk, Opens, Shortcode};
+use snob_store::config::VideoQuality;
 
-use crate::cli::Quality;
 use crate::exit::{ExitCode, ExitError};
 use crate::ffmpeg::{self, Ffmpeg};
 use crate::media::{
@@ -411,7 +411,7 @@ fn best_of(item: &Media, width: Option<u32>) -> Option<Best> {
     })
 }
 
-/// What a run saves a post's videos as ([`crate::cli::Quality`]).
+/// What a run saves a post's videos as (`--quality`, or `quality` in `watch.toml`).
 #[derive(Debug, Clone)]
 pub enum Videos {
     /// The progressive file; `say_how` when it is so because no ffmpeg was
@@ -425,13 +425,13 @@ impl Videos {
     /// What `asked` and `named` (`--ffmpeg`) make of this run: best when
     /// ffmpeg is found and nothing else was asked, and `--quality best`
     /// with no ffmpeg refused before anything is asked of Instagram.
-    pub fn resolve(asked: Option<Quality>, named: Option<&Path>) -> Result<Self> {
+    pub fn resolve(asked: Option<VideoQuality>, named: Option<&Path>) -> Result<Self> {
         let found = Ffmpeg::find(named).map(std::sync::Arc::new);
         match (asked, found) {
-            (Some(Quality::Compat), _) => Ok(Self::Compat { say_how: false }),
+            (Some(VideoQuality::Compat), _) => Ok(Self::Compat { say_how: false }),
             (_, Some(ffmpeg)) => Ok(Self::Best(ffmpeg)),
             (None, None) => Ok(Self::Compat { say_how: true }),
-            (Some(Quality::Best), None) => Err(ExitError::new(
+            (Some(VideoQuality::Best), None) => Err(ExitError::new(
                 ExitCode::Error,
                 "--quality best joins a video's tracks with ffmpeg, and none was found",
             )

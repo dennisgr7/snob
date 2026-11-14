@@ -362,7 +362,7 @@ pub fn posts_of(
     } else if shown == Some(false) {
         (Verdict::Warned, Some(Problem::PostsHidden))
     } else if entry.save_to.is_some()
-        && entry.quality == Some(crate::cli::Quality::Best)
+        && entry.quality == Some(snob_store::config::VideoQuality::Best)
         && crate::ffmpeg::Ffmpeg::find(None).is_none()
     {
         (Verdict::Failed, Some(Problem::NoFfmpeg))
