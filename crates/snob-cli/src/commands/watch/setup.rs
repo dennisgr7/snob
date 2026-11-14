@@ -70,7 +70,11 @@ pub async fn setup(
     // The address goes down with it. What somebody agrees to when they answer
     // for a stranger is read later as the authority for two different acts, and
     // the wizard is holding the second one at the moment it asks.
-    let accounts = ask_accounts(answers.url.as_deref())?;
+    let own = account.and_then(|a| {
+        crate::account::username(&Registry::load(paths).unwrap_or_default(), a.pk())
+            .map(str::to_string)
+    });
+    let accounts = ask_accounts(answers.url.as_deref(), own.as_deref())?;
 
     config.webhook = answers.url.as_ref().map(|url| config::WebhookConfig {
         url: url.clone(),
@@ -450,21 +454,28 @@ fn ask_schedule() -> Result<WatchConfig> {
 
     match choice {
         0 => {
-            config.every = Some(interval_of(&ui::prompt_line(
+            config.every = Some(asked_until_it_holds(
                 "How often? (for example 6h)",
-            )?)?)
+                interval_of,
+            )?)
         }
-        1 => {
+        1 => loop {
             let days = ui::prompt_line("Which days? (mon,thu -- or blank for every day)")?;
             let times = ui::prompt_line("At what times? (09:00 or 09:00,21:00)")?;
-            let (on, at) = calendar_of(&days, &times)?;
-            config.on = on;
-            config.at = at;
-        }
+            match calendar_of(&days, &times) {
+                Ok((on, at)) => {
+                    config.on = on;
+                    config.at = at;
+                    break;
+                }
+                Err(e) => ui::warn(&format!("{e:#}; once more")),
+            }
+        },
         _ => {
-            config.cron = Some(cron_of(&ui::prompt_line(
+            config.cron = Some(asked_until_it_holds(
                 "The expression? (for example 0 9 * * 1,4)",
-            )?)?);
+                cron_of,
+            )?);
         }
     }
 
@@ -514,16 +525,21 @@ fn ask_jitter(schedule: &schedule::Schedule) -> Result<Option<std::time::Duratio
         return Ok(None);
     }
 
-    let typed = ui::prompt_line(&format!(
+    let question = format!(
         "How far may a run be pushed later, so it does not land on the same second every \
          time? (blank for {}, \"0\" for none, at most {})",
         duration::format(schedule.jitter()),
         duration::format(room)
-    ))?;
+    );
+    asked_until_it_holds(&question, |typed| jitter_of(schedule, typed))
+}
+
+/// What a jitter answer means against `schedule`: blank is the schedule's own,
+/// and anything else has to fit in its room.
+fn jitter_of(schedule: &schedule::Schedule, typed: &str) -> Result<Option<std::time::Duration>> {
     if typed.trim().is_empty() {
         return Ok(None);
     }
-
     let wanted = duration::parse(typed.trim()).map_err(|e| anyhow::anyhow!(e))?;
     // Through the clamp a run applies, rather than a comparison written again
     // here. A value this schedule cannot absorb is refused now instead of
@@ -533,10 +549,25 @@ fn ask_jitter(schedule: &schedule::Schedule) -> Result<Option<std::time::Duratio
             "{} is more room than this schedule has. At most {} can be taken out of the gap \
              between two runs without costing the next one.",
             duration::format(wanted),
-            duration::format(room)
+            duration::format(room_for(schedule))
         );
     }
     Ok(Some(wanted))
+}
+
+/// Asks `question` until `holds` takes the answer, saying each time what was
+/// wrong with it: one mistyped answer used to end the whole wizard, after
+/// every question before it had been answered and nothing written. Input that
+/// is not there at all (standard input closed) still ends it, since asking
+/// again would read nothing again.
+fn asked_until_it_holds<T>(question: &str, holds: impl Fn(&str) -> Result<T>) -> Result<T> {
+    loop {
+        let answer = ui::prompt_line(question)?;
+        match holds(&answer) {
+            Ok(value) => return Ok(value),
+            Err(e) => ui::warn(&format!("{e:#}; once more")),
+        }
+    }
 }
 
 /// The most this schedule could absorb, asked of the schedule.
@@ -651,10 +682,12 @@ fn ask_webhook() -> Result<WebhookAnswers> {
         });
     }
 
-    let url = ui::prompt_line("Where? (https://n8n.local/webhook/snob)")?;
     // Not echoed, as nowhere else an address that does not parse is
     // (`webhook::shown_str`): the person has just typed it.
-    let parsed = url::Url::parse(url.trim()).context("what was typed is not an address")?;
+    let (url, parsed) = asked_until_it_holds("Where? (https://n8n.local/webhook/snob)", |url| {
+        let parsed = url::Url::parse(url.trim()).context("what was typed is not an address")?;
+        Ok((url.to_string(), parsed))
+    })?;
 
     // Headers whose values are not secret go in the file; the Authorization
     // value goes to the keyring and nothing about it is written here. An empty
@@ -664,7 +697,11 @@ fn ask_webhook() -> Result<WebhookAnswers> {
     // The question is asked rather than assumed away: `X-Api-Key` on an n8n
     // instance is the ordinary case.
     let mut typed = Vec::new();
-    if ui::confirm("Does it need any other headers?", false)? {
+    if ui::confirm(
+        "Does it need any other headers? (written into watch.toml as they are; a token goes \
+         in the next question, which keeps it in the keyring)",
+        false,
+    )? {
         loop {
             let line = ui::prompt_line(
                 "Name: value (blank when there are no more, a name typed twice keeps the last)",
@@ -674,10 +711,11 @@ fn ask_webhook() -> Result<WebhookAnswers> {
                 break;
             }
             let Some((name, value)) = line.split_once(':') else {
-                bail!(
+                ui::warn(&format!(
                     "\"{}\" is not a header; write it as \"Name: value\"",
                     printable(line)
-                );
+                ));
+                continue;
             };
             // Everything typed here is written into `watch.toml` in the clear
             // -- that is the file's contract, "no secret is in it" -- and the
@@ -685,10 +723,11 @@ fn ask_webhook() -> Result<WebhookAnswers> {
             // keyring instead. Accepted here, it would sit readable on disk
             // and silently shadow the stored one at every send.
             if name.trim().eq_ignore_ascii_case("authorization") {
-                bail!(
+                ui::warn(
                     "an Authorization header is a secret and is not written into watch.toml. \
-                     Answer the next question instead: it stores the value in the system keyring."
+                     Answer the next question instead: it stores the value in the system keyring.",
                 );
+                continue;
             }
             typed.push((name.trim().to_string(), value.trim().to_string()));
         }
@@ -706,23 +745,31 @@ fn ask_webhook() -> Result<WebhookAnswers> {
 
     let mut token = None;
     if ui::confirm("Does it need an Authorization header?", false)? {
-        let value = ui::prompt_secret("The header value (for example \"Bearer abc123\")")?;
-        if value.trim().is_empty() {
-            bail!("an Authorization value cannot be empty");
+        loop {
+            let value = ui::prompt_secret("The header value (for example \"Bearer abc123\")")?;
+            if value.trim().is_empty() {
+                ui::warn("an Authorization value cannot be empty; once more");
+                continue;
+            }
+            token = Some(Secret::new(value.to_string()));
+            break;
         }
-        token = Some(Secret::new(value.to_string()));
     }
 
     let signing_key = if ui::confirm(
         "Sign the body, so the receiver can check it came from here?",
         true,
     )? {
-        let value = ui::prompt_secret("A shared secret (at least 32 characters, random)")?;
-        // The same validator `--sign-with` runs, literally: one floor, one
-        // trim, one sentence, so a key the flag accepts is a key the wizard
-        // accepts and the other way round.
-        let value = crate::cli::signing_secret(&value).map_err(|why| anyhow::anyhow!(why))?;
-        Some(Secret::new(value))
+        loop {
+            let value = ui::prompt_secret("A shared secret (at least 32 characters, random)")?;
+            // The same validator `--sign-with` runs, literally: one floor, one
+            // trim, one sentence, so a key the flag accepts is a key the wizard
+            // accepts and the other way round.
+            match crate::cli::signing_secret(&value) {
+                Ok(value) => break Some(Secret::new(value)),
+                Err(why) => ui::warn(&format!("{why}; once more")),
+            }
+        }
     } else {
         None
     };
@@ -764,7 +811,31 @@ fn last_of_each(typed: Vec<(String, String)>) -> Vec<(String, String)> {
     headers.into_iter().collect()
 }
 
-fn ask_accounts(webhook: Option<&str>) -> Result<Vec<Answered>> {
+/// Why `name` is not taken as another account to watch, if it is not: not a
+/// username at all (the rule clap holds the command line to,
+/// `possible_username`), the own account under either of its names (it is
+/// already the first entry, and a second would be walked twice), or one
+/// already answered for.
+fn refused_name(name: &str, own: Option<&str>, answered: &[Answered]) -> Option<String> {
+    if !snob_core::model::possible_username(name) {
+        return Some(format!(
+            "\"{}\" cannot be a username: letters, digits, dots and underscores only",
+            printable(name)
+        ));
+    }
+    if name.eq_ignore_ascii_case("self") || own.is_some_and(|own| own.eq_ignore_ascii_case(name)) {
+        return Some("that is your own account, which is watched already".to_string());
+    }
+    if answered
+        .iter()
+        .any(|entry| entry.target.eq_ignore_ascii_case(name))
+    {
+        return Some(format!("@{} is in the list already", printable(name)));
+    }
+    None
+}
+
+fn ask_accounts(webhook: Option<&str>, own_name: Option<&str>) -> Result<Vec<Answered>> {
     let mut own = Answered::lists("self", None);
     if ui::confirm("Report your own new posts too?", false)? {
         own.posts = Some(ask_posts()?);
@@ -777,6 +848,10 @@ fn ask_accounts(webhook: Option<&str>) -> Result<Vec<Answered>> {
             let name = crate::engine::target::clean(name.trim());
             if name.is_empty() {
                 break;
+            }
+            if let Some(why) = refused_name(name, own_name, &accounts) {
+                ui::warn(&why);
+                continue;
             }
             let what = ui::menu::choose(
                 &format!("What of @{} should be watched?", printable(name)),
@@ -1543,6 +1618,38 @@ lists = false
             "{}",
             cost.sentence()
         );
+    }
+
+    /// A name is refused while the person is still there when it cannot be
+    /// a username, is the own account, or was answered for already.
+    #[test]
+    fn a_name_that_cannot_be_watched_is_asked_again() {
+        let answered = [
+            Answered::lists("self", None),
+            Answered::lists("friend", Some(Epoch::new(1))),
+        ];
+        assert!(refused_name("john doe", Some("me"), &answered).is_some());
+        assert!(refused_name("self", Some("me"), &answered).is_some());
+        assert!(refused_name("ME", Some("me"), &answered).is_some());
+        assert!(refused_name("Friend", Some("me"), &answered).is_some());
+        assert_eq!(refused_name("other.one", Some("me"), &answered), None);
+    }
+
+    /// A jitter answer is checked against the room the schedule has, and
+    /// blank leaves it to the schedule.
+    #[test]
+    fn a_jitter_answer_holds_or_says_why_not() {
+        let schedule =
+            schedule::Schedule::every(std::time::Duration::from_secs(6 * 3_600)).unwrap();
+        assert_eq!(jitter_of(&schedule, " ").unwrap(), None);
+        assert_eq!(
+            jitter_of(&schedule, "10m").unwrap(),
+            Some(std::time::Duration::from_secs(600))
+        );
+        assert!(jitter_of(&schedule, "soon").is_err());
+        // A grid whose gap is the floor itself has no room at all.
+        let tight = schedule::Schedule::cron("*/15 * * * *").unwrap();
+        assert!(jitter_of(&tight, "10m").is_err());
     }
 
     #[test]
