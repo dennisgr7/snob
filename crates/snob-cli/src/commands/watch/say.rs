@@ -357,9 +357,15 @@ fn describe_lists(report: &WatchReport, refused: bool) -> Vec<String> {
         if refused {
             return vec![format!("Nothing could be looked at for {who} this time.")];
         }
+        // The command names the account: a bare "snob followers" walks the
+        // viewer's own, which is not the one that has nothing stored.
+        let command = match (report.is_self, report.username.as_deref()) {
+            (false, Some(name)) => format!("snob followers {}", printable(name)),
+            _ => "snob followers".to_string(),
+        };
         return vec![format!(
             "Nothing has been walked for {who} yet, so there is nothing to compare.\n\
-             Run \"snob followers\" once and this will have something to say from then on."
+             Run \"{command}\" once and this will have something to say from then on."
         )];
     }
 
@@ -985,6 +991,22 @@ mod tests {
         assert!(refused.contains("could not be read this time"), "{refused}");
         let whole = describe(&report, false).join("\n");
         assert!(!whole.contains("could not be read"), "{whole}");
+    }
+
+    /// An account with nothing stored is told the command that walks it, not
+    /// one that walks the viewer's own.
+    #[test]
+    fn nothing_stored_names_the_command_for_that_account() {
+        let other = WatchReport {
+            account_pk: Pk::new(9001),
+            username: Some("someone".into()),
+            is_self: false,
+            ..report_with(None, vec![])
+        };
+        let text = describe(&other, false).join("\n");
+        assert!(text.contains("\"snob followers someone\""), "{text}");
+        let own = describe(&report_with(None, vec![]), false).join("\n");
+        assert!(own.contains("\"snob followers\" once"), "{own}");
     }
 
     /// Posts read within the hour are said to be, rather than read as an
