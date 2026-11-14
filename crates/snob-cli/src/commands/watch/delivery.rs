@@ -12,7 +12,6 @@
 
 use anyhow::{Context, Result, bail};
 use snob_core::secret::Secret;
-use snob_core::watch::Changes;
 use snob_core::{Epoch, Pk};
 use snob_ig::pace::CancelToken;
 use snob_store::config::{WatchConfig, WebhookConfig, WebhookFormat};
@@ -379,19 +378,17 @@ pub(super) async fn deliver(
     tick: &TickReport,
     delivery: Option<&Delivery>,
 ) -> Result<()> {
-    let changes = tick.report.changes();
-
     // Silence when nothing happened, unless somebody asked to hear it anyway.
     // An automation where every message means something is the point of that;
     // a heartbeat is for the opposite case, where the absence of messages is
     // the signal and "quiet" has to be told from "stopped".
-    let body = match delivery.and_then(|d| Some((d, event_for(&changes, d.heartbeat)?))) {
+    let news = tick.report.has_changes();
+    let body = match delivery.and_then(|d| Some((d, event_for(news, d.heartbeat)?))) {
         Some((delivery, event)) => {
             let run_id = run_id(snob_core::clock::now(), tick.report.account_pk);
             // What a person reads of it, as the terminal prints it: the
             // summary a chat service is sent, and `summary` in the JSON.
-            let refused = tick.lists.iter().any(|list| list.skipped.is_some());
-            let summary = super::say::describe(&tick.report, refused).join("\n");
+            let summary = super::say::describe_tick(tick).join("\n");
             // Made once, here, and stored as the string that goes on the
             // wire. `serde_json` may render one value two ways, and the
             // signature covers bytes — so a retry that rendered it again could
@@ -559,8 +556,11 @@ fn describe_when(at: Epoch, now: Epoch) -> String {
 /// a handful of messages a week into forty-eight a day, which is the opposite
 /// of what "nothing is sent when nothing changed" promises -- and it is the
 /// point of `--heartbeat` that the *absence* of a message means something.
-fn event_for(changes: &Changes, heartbeat: bool) -> Option<&'static str> {
-    let news = !changes.is_empty();
+///
+/// `news` is whether the report holds a change of a list, a rename or a new
+/// post (`WatchReport::has_changes`): a run whose only news is a post is sent
+/// as one with a change, heartbeat or not.
+fn event_for(news: bool, heartbeat: bool) -> Option<&'static str> {
     (news || heartbeat).then(|| event(news))
 }
 
@@ -704,7 +704,7 @@ mod tests {
     /// for the opposite.
     #[test]
     fn a_quiet_run_says_nothing_unless_a_heartbeat_was_asked_for() {
-        let quiet = report_with(None, vec![]).changes();
+        let quiet = report_with(None, vec![]).has_changes();
         let moved = report_with(
             Some(list(
                 Basis::Compare {
@@ -719,16 +719,32 @@ mod tests {
             )),
             vec![],
         )
-        .changes();
+        .has_changes();
 
-        assert_eq!(event_for(&quiet, false), None, "silence means something");
-        assert_eq!(event_for(&quiet, true), Some("watch.heartbeat"));
-        assert_eq!(event_for(&moved, false), Some("watch.changes"));
+        assert_eq!(event_for(quiet, false), None, "silence means something");
+        assert_eq!(event_for(quiet, true), Some("watch.heartbeat"));
+        assert_eq!(event_for(moved, false), Some("watch.changes"));
         assert_eq!(
-            event_for(&moved, true),
+            event_for(moved, true),
             Some("watch.changes"),
             "a run with news is news, not a heartbeat"
         );
+    }
+
+    /// A run whose only news is a post is sent as news, with no heartbeat
+    /// asked for.
+    #[test]
+    fn a_run_with_only_new_posts_is_sent_without_a_heartbeat() {
+        let mut report = report_with(None, vec![]);
+        report.posts = Some(crate::commands::watch::fixtures::posts_report(vec![
+            crate::commands::watch::fixtures::post(1, "new"),
+        ]));
+        assert_eq!(
+            event_for(report.has_changes(), false),
+            Some("watch.changes")
+        );
+        report.posts = Some(crate::commands::watch::fixtures::posts_report(Vec::new()));
+        assert_eq!(event_for(report.has_changes(), false), None);
     }
 
     /// The id a receiver deduplicates on is unique, and the column is `UNIQUE`

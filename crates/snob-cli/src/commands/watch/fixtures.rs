@@ -66,6 +66,40 @@ pub(in crate::commands::watch) fn list(
     }
 }
 
+/// Post `n` of `someone`, a photo taken `n` seconds after 1,790,000,000 and
+/// captioned `caption`, as the grid would describe it.
+pub(in crate::commands::watch) fn post(n: u64, caption: &str) -> crate::posts::Post {
+    let media = serde_json::json!({
+        "pk": (3_800_000_000_000_000_000u64 + n).to_string(),
+        "media_type": 1,
+        "taken_at": 1_790_000_000 + n as i64,
+        "caption": { "text": caption },
+        "user": { "pk": "9001", "username": "someone" },
+        "image_versions2": { "candidates": [
+            { "url": format!("https://x.cdninstagram.com/{n}.jpg"), "width": 1080, "height": 1350 },
+        ]},
+    });
+    crate::posts::Post::from_media(
+        &serde_json::from_value::<snob_ig::model::post::Media>(media).unwrap(),
+        "someone",
+    )
+}
+
+/// A comparison of an account's posts that found `news`, read in one page.
+pub(in crate::commands::watch) fn posts_report(
+    news: Vec<crate::posts::Post>,
+) -> crate::engine::watch_posts::PostsReport {
+    crate::engine::watch_posts::PostsReport {
+        basis: snob_core::watch::posts::Basis::Compared,
+        since: Some(Epoch::new(1_699_913_600)),
+        until: Epoch::new(1_700_000_000),
+        news,
+        pages: 1,
+        complete: true,
+        saved: Vec::new(),
+    }
+}
+
 /// `pk` known in `db` as `name`, so rows that point at the account have
 /// something to point at.
 pub(in crate::commands::watch) fn known_account(

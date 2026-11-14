@@ -16,9 +16,10 @@ use snob_core::watch::{Basis, ListDiff};
 
 use crate::engine::Provenance;
 use crate::engine::check::Problem;
-use crate::engine::watch::{Skipped, WatchReport};
-use crate::engine::watch_posts::PostsSkipped;
+use crate::engine::watch::{Skipped, TickReport, WatchReport};
+use crate::engine::watch_posts::{PostsReport, PostsSkipped, SavedPost};
 use crate::report;
+use snob_core::watch::posts::Basis as PostsBasis;
 
 /// Why a list was not compared, said in a sentence.
 ///
@@ -163,14 +164,158 @@ pub(super) fn given_up_sentence(given_up: usize) -> String {
     )
 }
 
+/// What a tick found, as a person reads it: [`describe`], with what is owed
+/// to the posts when they were watched and not looked at.
+pub(super) fn describe_tick(tick: &TickReport) -> Vec<String> {
+    let posts_skipped = tick.posts_skipped();
+    // A list refused, or the posts: either way this run speaks for less than
+    // it watches. Posts read within the hour are no refusal.
+    let refused = tick.lists.iter().any(|list| list.skipped.is_some())
+        || posts_skipped.is_some_and(|skipped| skipped != PostsSkipped::ReadRecently);
+    if tick.lists.is_empty() && posts_skipped == Some(PostsSkipped::ReadRecently) {
+        let who = crate::app::label(tick.report.account_pk, tick.report.username.as_deref());
+        return vec![format!(
+            "The posts of {who} were read less than an hour ago, so they were not read again \
+             this time."
+        )];
+    }
+    describe(&tick.report, refused)
+}
+
 /// The answer as a person reads it.
 ///
 /// Returned as lines rather than printed, so a test can read them without
 /// capturing standard output.
+///
+/// The lists first, then the posts. An account whose posts alone were
+/// reported says nothing about its lists, which it does not watch.
 pub(super) fn describe(report: &WatchReport, refused: bool) -> Vec<String> {
+    let lists_reported = report.followers.is_some() || report.following.is_some();
+    let mut lines = if lists_reported || report.posts.is_none() {
+        describe_lists(report, refused)
+    } else {
+        Vec::new()
+    };
+    if let Some(posts) = &report.posts {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.extend(posts_lines(report, posts));
+    }
+    lines
+}
+
+/// What the posts of `report`'s account came to.
+fn posts_lines(report: &WatchReport, posts: &PostsReport) -> Vec<String> {
+    let who = crate::app::label(report.account_pk, report.username.as_deref());
+    if posts.basis == PostsBasis::Baseline {
+        return vec![format!(
+            "The posts of {who} have never been reported on, so there is nothing to compare \
+             them against. The next run is the first that can say anything."
+        )];
+    }
+    let mut lines = Vec::new();
+    if posts.news.is_empty() {
+        lines.push(format!("No new posts from {who} since the last report."));
+    } else {
+        let since = posts
+            .since
+            .map(|since| format!(" since {}", report::stored_on(since)))
+            .unwrap_or_default();
+        lines.push(format!("New posts from {who}{since}: {}", posts.news.len()));
+        for post in &posts.news {
+            lines.push(format!(
+                "  {}  {}  {}",
+                report::stored_on(post.taken_at),
+                kind_words(post.kind),
+                post.link()
+            ));
+            let headline = post.headline();
+            if !headline.trim().is_empty() {
+                lines.push(format!("    {}", one_line(headline)));
+            }
+            if let Some(saved) = posts.saved_of(post.pk) {
+                lines.extend(saved_lines(saved));
+            }
+        }
+    }
+    if !posts.complete {
+        let name = report
+            .username
+            .as_deref()
+            .map(printable)
+            .unwrap_or_default();
+        lines.push(format!(
+            "Only the newest {} posts were read, and none of them was one seen before: posts \
+             from before them may have gone unreported. \"snob posts {name} --pages 10\" \
+             reads further back.",
+            posts.news.len()
+        ));
+    }
+    lines
+}
+
+/// What a post is, in a few words.
+fn kind_words(kind: crate::posts::PostKind) -> String {
+    match kind {
+        crate::posts::PostKind::Carousel(n) => format!("carousel of {n}"),
+        other => other.label(),
+    }
+}
+
+/// The most of a caption a line holds: about what a notification shows on
+/// one line.
+const CAPTION_CHARS: usize = 80;
+
+/// The first line of a caption, cut to [`CAPTION_CHARS`].
+fn one_line(caption: &str) -> String {
+    let text = printable(caption);
+    if text.chars().count() <= CAPTION_CHARS {
+        return text;
+    }
+    let cut: String = text.chars().take(CAPTION_CHARS - 1).collect();
+    format!("{}\u{2026}", cut.trim_end())
+}
+
+/// What was saved of one post, and what was not.
+fn saved_lines(saved: &SavedPost) -> Vec<String> {
+    let mut lines = Vec::new();
+    let directory = printable(&saved.directory);
+    if !saved.files.is_empty() {
+        let files = saved.files.len();
+        lines.push(format!(
+            "    saved {files} {} to {directory}",
+            if files == 1 { "file" } else { "files" }
+        ));
+    }
+    if saved.failed > 0 {
+        lines.push(format!(
+            "    {} could not be saved; the next run tries again while the post is on the page",
+            plural_files(saved.failed)
+        ));
+    }
+    if saved.left > 0 {
+        lines.push(format!(
+            "    {} left for the next run, past what one run saves",
+            plural_files(saved.left)
+        ));
+    }
+    lines
+}
+
+fn plural_files(n: usize) -> String {
+    if n == 1 {
+        "1 file".to_string()
+    } else {
+        format!("{n} files")
+    }
+}
+
+/// The lists' part of [`describe`].
+fn describe_lists(report: &WatchReport, refused: bool) -> Vec<String> {
     let who = crate::app::label(report.account_pk, report.username.as_deref());
 
-    if !report.has_anything_stored() {
+    if report.followers.is_none() && report.following.is_none() {
         // A run in which every list was refused concluded nothing, and that is
         // not the same as an account nothing has ever been walked for: two
         // complete captures may be on disk. The reason comes from the refusal
@@ -355,7 +500,7 @@ pub(super) fn earliest_since(report: &WatchReport) -> Option<Epoch> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::watch::fixtures::{list, report_with, user};
+    use crate::commands::watch::fixtures::{list, post, posts_report, report_with, user};
     use crate::engine::watch::ListReport;
     use snob_core::model::ListKind;
     use snob_core::watch::{Basis, ListDiff, Rename};
@@ -679,5 +824,112 @@ mod tests {
             !lines.join("\n").contains('\u{202e}'),
             "a bidi override reached the terminal"
         );
+    }
+
+    /// An account somebody else owns, whose posts alone are reported.
+    fn school(posts: crate::engine::watch_posts::PostsReport) -> WatchReport {
+        WatchReport {
+            account_pk: Pk::new(9001),
+            username: Some("school".into()),
+            is_self: false,
+            posts: Some(posts),
+            ..report_with(None, vec![])
+        }
+    }
+
+    #[test]
+    fn new_posts_are_listed_with_their_dates_and_links() {
+        let mut posts = posts_report(vec![post(2, "Open day this Friday\nmore"), post(1, "")]);
+        posts.saved = vec![SavedPost {
+            pk: posts.news[0].pk,
+            directory: "/srv/media/school".into(),
+            files: vec!["someone-a.jpg".into(), "someone-b.jpg".into()],
+            failed: 1,
+            left: 0,
+        }];
+        let lines = describe(&school(posts), false);
+        let text = lines.join("\n");
+        assert!(text.starts_with("New posts from @school since "), "{text}");
+        assert!(lines[0].ends_with(": 2"), "{text}");
+        assert!(
+            lines[1].contains("photo  https://www.instagram.com/p/"),
+            "{text}"
+        );
+        assert_eq!(lines[2], "    Open day this Friday", "only the first line");
+        assert_eq!(lines[3], "    saved 2 files to /srv/media/school");
+        assert!(lines[4].contains("1 file could not be saved"), "{text}");
+        assert!(
+            lines[5].starts_with("  "),
+            "the second post, with no caption line"
+        );
+        assert_eq!(lines.len(), 6, "{text}");
+        assert!(
+            !text.contains("followers"),
+            "its lists are not watched: {text}"
+        );
+    }
+
+    #[test]
+    fn a_baseline_of_posts_says_the_next_run_is_the_first_that_can_speak() {
+        let mut posts = posts_report(Vec::new());
+        posts.basis = snob_core::watch::posts::Basis::Baseline;
+        posts.since = None;
+        let text = describe(&school(posts), false).join("\n");
+        assert!(
+            text.contains("The posts of @school have never been reported on"),
+            "{text}"
+        );
+        assert!(
+            text.contains("The next run is the first that can say anything"),
+            "{text}"
+        );
+
+        let quiet = describe(&school(posts_report(Vec::new())), false).join("\n");
+        assert_eq!(quiet, "No new posts from @school since the last report.");
+    }
+
+    #[test]
+    fn an_incomplete_read_says_so_and_how_to_read_further() {
+        let mut posts = posts_report(vec![post(1, "a")]);
+        posts.complete = false;
+        let text = describe(&school(posts), false).join("\n");
+        assert!(text.contains("may have gone unreported"), "{text}");
+        assert!(text.contains("\"snob posts school --pages 10\""), "{text}");
+        assert!(
+            !text.contains("posts @school"),
+            "no at sign to be typed back: {text}"
+        );
+    }
+
+    #[test]
+    fn a_long_caption_is_cut_to_a_line() {
+        let long = "word ".repeat(40);
+        let lines = describe(&school(posts_report(vec![post(1, &long)])), false);
+        let caption = lines[2].trim_start();
+        assert_eq!(caption.chars().count(), CAPTION_CHARS);
+        assert!(caption.ends_with('\u{2026}'), "{caption}");
+    }
+
+    /// Posts read within the hour are said to be, rather than read as an
+    /// account nothing was ever walked for.
+    #[test]
+    fn posts_read_within_the_hour_are_said_to_be() {
+        use crate::engine::watch::TickPosts;
+        let mut tick = crate::engine::watch::TickReport::for_test(
+            WatchReport {
+                account_pk: Pk::new(9001),
+                username: Some("school".into()),
+                is_self: false,
+                ..report_with(None, vec![])
+            },
+            0,
+            snob_core::Epoch::new(1_700_000_000),
+        );
+        tick.posts = Some(TickPosts {
+            skipped: Some(PostsSkipped::ReadRecently),
+        });
+        let text = describe_tick(&tick).join("\n");
+        assert!(text.contains("less than an hour ago"), "{text}");
+        assert!(!text.contains("snob followers"), "{text}");
     }
 }

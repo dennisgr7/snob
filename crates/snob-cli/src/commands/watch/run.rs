@@ -23,7 +23,7 @@ use crate::report;
 use crate::ui;
 
 use super::delivery::{Delivery, deliver, drain};
-use super::say::{describe, refusal_line, say_what_was_given_up};
+use super::say::{describe_tick, refusal_line, say_what_was_given_up};
 use super::wire::{failed_tick_json, json_line, tick_json};
 
 /// One run: each viewer's entries read as that viewer, then what every
@@ -575,7 +575,7 @@ async fn tick_one(
     if printing.json {
         crate::ui::say!("{}", json_line(&tick_json(&tick)));
     } else if printing.watching || tick.report.has_changes() {
-        for line in describe(&tick.report, tick.lists.iter().any(|l| l.skipped.is_some())) {
+        for line in describe_tick(&tick) {
             crate::ui::say!("{line}");
         }
     }

@@ -1724,6 +1724,78 @@ async fn the_own_counters_come_from_the_hover_card_through_the_browser() {
     assert!(found.is_empty(), "{found:?}");
 }
 
+/// The monitor watching somebody's posts alone, through the browser: the
+/// first run lays the baseline and sends nothing, and a post published after
+/// it reaches the webhook on the next run, with no list walked and no
+/// consent asked for.
+#[tokio::test]
+async fn watch_once_reports_a_new_post_to_the_webhook() {
+    let Some(_alone) = a_browser_alone().await else {
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let (world, instagram) = fake_instagram().await;
+    let receiver = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(url_path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&receiver)
+        .await;
+    logged_in(tmp.path(), &instagram, SESSIONID, "the login failed: ");
+
+    let config = tmp.path().join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("watch.toml"),
+        format!(
+            "schema = 2\nevery = \"6h\"\n\n[webhook]\nurl = \"{}/hook\"\n\n\
+             [[account]]\ntarget = \"someone\"\nlists = false\n[account.posts]\n",
+            receiver.uri()
+        ),
+    )
+    .unwrap();
+
+    let out = snob(tmp.path(), &instagram, &["watch", "once", "--json"], None);
+    assert!(out.status.success(), "{}", told(tmp.path(), &out));
+    assert!(
+        receiver
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty(),
+        "a baseline is not news"
+    );
+
+    world.person(ig::SOMEONE, |p| p.newer = 1);
+    // An hour goes by for the posts, so the next run may read them again.
+    snob_store::store::Store::open(
+        &AppPaths::rooted_at(tmp.path()).account(snob_core::Pk::new(42)),
+    )
+    .unwrap()
+    .conn()
+    .execute("UPDATE watch_post_marks SET read_at = read_at - 3660", [])
+    .unwrap();
+    let out = snob(tmp.path(), &instagram, &["watch", "once", "--json"], None);
+    assert!(out.status.success(), "{}", told(tmp.path(), &out));
+
+    let sent = receiver.received_requests().await.unwrap_or_default();
+    assert_eq!(sent.len(), 1, "one report");
+    let body: serde_json::Value = serde_json::from_slice(&sent[0].body).unwrap();
+    assert_eq!(body["event"], "watch.changes", "{body}");
+    assert_eq!(body["counts"]["posts_new"], 1, "{body}");
+    assert_eq!(
+        body["events"]["posts_new"][0]["pk"],
+        ig::newer_post(ig::SOMEONE, 0).to_string(),
+        "{body}"
+    );
+    assert_eq!(body["lists"]["followers"], serde_json::Value::Null);
+    let walked = snobs_requests(&instagram)
+        .await
+        .iter()
+        .any(|r| r.url.path().contains("/friendships/"));
+    assert!(!walked, "no list was walked");
+}
+
 /// Two accounts ask through the one owner, each from its own browser: every
 /// Relay form carries its own account's fbid, tokens and counter, which the
 /// fake refuses to see crossed.
