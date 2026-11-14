@@ -49,7 +49,7 @@ use tokio::task::{AbortHandle, JoinSet};
 use url::Url;
 
 use super::{InFlight, Running, Server, Settings, child, key};
-use crate::cli::ConfirmInChat;
+use crate::args::ConfirmInChat;
 use crate::exit::{ExitCode, ExitError};
 use crate::ui;
 
@@ -237,7 +237,7 @@ pub async fn serve(
     // (`Server::consent` asks a form first), so whoever holds the key can
     // confirm a write whatever this says, which [`writes_warning`] tells.
     let in_chat = settings.in_chat.unwrap_or(ConfirmInChat::Lists);
-    let closing = crate::interrupt::install();
+    let closing = snob_engine::interrupt::install();
     let server = Server::new(launch, &settings, in_chat, closing.clone())?;
     let in_flight = Arc::clone(&server.in_flight);
 

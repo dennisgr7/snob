@@ -4,6 +4,6 @@
 
 pub use snob_engine::jobs::*;
 
-pub(crate) mod argv;
+pub mod argv;
 pub mod dispatch;
 pub mod start;

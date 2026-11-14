@@ -155,7 +155,7 @@ fn said(doc: &Value, status: TaskStatus) -> String {
                 .get("eta_seconds")
                 .and_then(|eta| Some((eta.get("least")?.as_u64()?, eta.get("most")?.as_u64()?)))
                 .map(|(least, most)| {
-                    format!(", with {} left", crate::report::time_left(least, most))
+                    format!(", with {} left", crate::sentences::time_left(least, most))
                 })
                 .unwrap_or_default();
             format!("The walk of the {list} goes on at a human pace{read}{left}.")

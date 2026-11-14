@@ -15,19 +15,24 @@
 //!   `pages.rs`); a list that may be walked runs as a job (`job.rs`), and a
 //!   client that takes MCP Tasks gets a task for it (`tasks.rs`).
 
+// What the server reads of the engine, by the names it has always used.
+use snob_engine::{exe, exit, jobs, posts, random, sentences};
+
 pub mod answer;
+pub mod args;
 pub mod child;
 pub mod config;
-#[cfg(feature = "mcp-http")]
+#[cfg(feature = "http")]
 pub mod http;
 pub mod job;
-#[cfg(feature = "mcp-http")]
+#[cfg(feature = "http")]
 pub mod key;
 pub mod limits;
 pub mod pages;
 pub mod seal;
 pub mod tasks;
 pub mod tools;
+mod ui;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,7 +51,7 @@ use rmcp::{RoleServer, ServerHandler, ServiceError, ServiceExt};
 use serde_json::{Value, json};
 use snob_ig::pace::CancelToken;
 
-use crate::cli::{ConfirmInChat, ConfirmedVia};
+use crate::args::{ConfirmInChat, ConfirmedVia};
 use crate::exit::ExitCode;
 use child::Launch;
 use tools::{About, Run};
@@ -120,7 +125,7 @@ impl Waits {
 /// [`tools::SAVE_WITHIN`], which is under what a call that asks is given for
 /// its answer alone.
 pub fn longest_call(max_wait: Duration) -> Duration {
-    let job = Duration::from_secs(tools::MOST_WAIT_SECONDS) + crate::jobs::start::SUPERVISOR_WITHIN;
+    let job = Duration::from_secs(tools::MOST_WAIT_SECONDS) + crate::jobs::SUPERVISOR_WITHIN;
     let asked = ANSWER_WITHIN + max_wait.max(job);
     let rest = Duration::from_millis(snob_ig::pace::SITTING_PAUSE_MS.1);
     let profile = max_wait + rest;
@@ -331,7 +336,7 @@ impl Server {
 /// stateless call over HTTP (2026-07-28) sends none either**, and its chat
 /// ticket is bound to the command alone ([`chat_binding`]).
 fn session_of(context: &RequestContext<RoleServer>) -> Option<String> {
-    #[cfg(feature = "mcp-http")]
+    #[cfg(feature = "http")]
     {
         context
             .extensions
@@ -340,7 +345,7 @@ fn session_of(context: &RequestContext<RoleServer>) -> Option<String> {
             .and_then(|id| id.to_str().ok())
             .map(str::to_string)
     }
-    #[cfg(not(feature = "mcp-http"))]
+    #[cfg(not(feature = "http"))]
     {
         let _ = context;
         None

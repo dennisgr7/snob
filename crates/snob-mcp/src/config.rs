@@ -19,7 +19,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use url::{Host, Url};
 
-use crate::cli::{ConfirmInChat, McpClient, McpConfigArgs};
+use crate::args::{ConfirmInChat, McpClient, McpConfigArgs};
 use crate::exit::ExitCode;
 use crate::ui;
 
@@ -657,7 +657,7 @@ mod tests {
 
     /// Two homes would drift: the key's and the server's modules are behind
     /// `mcp-http`, and what this refuses and points at is not.
-    #[cfg(feature = "mcp-http")]
+    #[cfg(feature = "http")]
     #[test]
     fn the_key_prefix_and_the_path_are_the_servers() {
         assert_eq!(super::super::KEY_PREFIX, super::super::key::PREFIX);

@@ -1047,9 +1047,9 @@ mod tests {
             args: vec![],
             ask: None,
             answers,
-            spends: crate::commands::mcp::tools::Spends::Nothing,
+            spends: crate::tools::Spends::Nothing,
             page: None,
-            run: crate::commands::mcp::tools::Run::Inline,
+            run: crate::tools::Run::Inline,
             acting_as: None,
             records: true,
         }
@@ -1059,7 +1059,7 @@ mod tests {
     fn grid_at(offset: usize) -> Plan {
         Plan {
             args: vec!["posts".into()],
-            page: Some(crate::commands::mcp::tools::Page {
+            page: Some(crate::tools::Page {
                 offset,
                 of: "the grid".into(),
                 held_only: true,
@@ -1301,7 +1301,7 @@ mod tests {
     /// A list's plan given `limit`, for the page at `offset`.
     fn limited_at(offset: usize, limit: Option<usize>) -> Plan {
         Plan {
-            page: Some(crate::commands::mcp::tools::Page {
+            page: Some(crate::tools::Page {
                 offset,
                 of: "the call".into(),
                 held_only: false,

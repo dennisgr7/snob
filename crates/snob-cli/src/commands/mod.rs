@@ -12,7 +12,7 @@ pub mod lists;
 pub mod login;
 pub mod logout;
 #[cfg(feature = "mcp")]
-pub mod mcp;
+pub use snob_mcp as mcp;
 pub mod pfp;
 pub mod post;
 pub mod posts;

@@ -21,7 +21,7 @@ use snob_core::secret::Secret;
 use snob_store::secrets::{Kind, SecretStore, Stored};
 use zeroize::Zeroize as _;
 
-use crate::cli::{McpKeyCommand, McpKeyNewArgs, McpKeyShowArgs};
+use crate::args::{McpKeyCommand, McpKeyNewArgs, McpKeyShowArgs};
 use crate::exit::{ExitCode, ExitError};
 use crate::ui;
 

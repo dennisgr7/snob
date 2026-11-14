@@ -260,7 +260,9 @@ pub fn standing(doc: &Value, cancel: bool) -> (Answer, String) {
         let left = doc
             .get("eta_seconds")
             .and_then(|eta| Some((eta.get("least")?.as_u64()?, eta.get("most")?.as_u64()?)))
-            .map(|(least, most)| format!(", with {} left", crate::report::time_left(least, most)))
+            .map(|(least, most)| {
+                format!(", with {} left", crate::sentences::time_left(least, most))
+            })
             .unwrap_or_default();
         let mut said = format!(
             "The walk goes on as job {id}{left}. Call snob_job with \"job_id\": \"{id}\" to hear \

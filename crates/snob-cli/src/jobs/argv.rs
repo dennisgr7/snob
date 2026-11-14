@@ -12,19 +12,19 @@ use snob_core::model::ListKind;
 use crate::cli::{Cli, Command, ListArgs};
 
 /// A list command a job may run, checked.
-pub(crate) struct Checked {
+pub struct Checked {
     /// The command line, as it will be run: what was given, less
     /// `--no-progress`, which would otherwise silence the progress the job is
     /// read by (`--progress-json` wins over it in `progress.rs` as well).
-    pub(crate) args: Vec<String>,
+    pub args: Vec<String>,
     /// The command, by the name the help gives it.
-    pub(crate) command: &'static str,
+    pub command: &'static str,
     /// The lists it walks, in order.
-    pub(crate) kinds: &'static [ListKind],
+    pub kinds: &'static [ListKind],
     /// Whose lists, as typed less a leading `@`; `None` is the viewer's own.
-    pub(crate) target: Option<String>,
+    pub target: Option<String>,
     /// What clap made of it, for the estimate.
-    pub(crate) list: ListArgs,
+    pub list: ListArgs,
 }
 
 /// The flags a job's command may carry, beside the account it names.
@@ -52,7 +52,7 @@ const TAKES_A_VALUE: &[&str] = &[
 ];
 
 /// Checks `args`, a command line with no program name, as one a job may run.
-pub(crate) fn check(args: &[String]) -> Result<Checked, String> {
+pub fn check(args: &[String]) -> Result<Checked, String> {
     let Some(first) = args.first() else {
         return Err("a job needs a command to run".into());
     };
@@ -156,7 +156,7 @@ pub(crate) fn check(args: &[String]) -> Result<Checked, String> {
 }
 
 /// [`check`], as the jobs read a stored command line (`jobs::Check`).
-pub(crate) fn walk_of(args: &[String]) -> Result<super::Walk, String> {
+pub fn walk_of(args: &[String]) -> Result<super::Walk, String> {
     let checked = check(args)?;
     Ok(super::Walk {
         max_pages: checked.list.walk.max_pages,

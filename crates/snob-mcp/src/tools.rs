@@ -18,7 +18,7 @@
 use serde_json::{Map, Value, json};
 use snob_store::paths::JobId;
 
-use crate::cli::ConfirmedVia;
+use crate::args::ConfirmedVia;
 use crate::exit::ExitCode;
 
 /// How long a call that starts a walk waits for it to end, when the call
@@ -1129,7 +1129,7 @@ impl Plan {
             _ => 0,
         };
         let mut line = vec![
-            crate::jobs::start::COMMAND.to_string(),
+            crate::jobs::COMMAND.to_string(),
             "start".to_string(),
             format!("--wait={wait}s"),
             format!("--tool={tool}"),
@@ -1149,7 +1149,7 @@ impl Plan {
     /// would meet (`too_many_jobs`, `job_stopping`, `walked_elsewhere`).
     pub fn check_line(&self) -> Vec<String> {
         let mut line = vec![
-            crate::jobs::start::COMMAND.to_string(),
+            crate::jobs::COMMAND.to_string(),
             "start".to_string(),
             "--check".to_string(),
             "--".to_string(),
@@ -1221,7 +1221,7 @@ pub struct Confirmed<'a> {
 
 /// How a client is named (`commands::common::client_label`, its one home: a
 /// job records its client the same way, and jobs build without this module).
-pub use crate::commands::common::client_label;
+pub use snob_engine::app::client_label;
 
 /// What a command may send to Instagram.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2119,7 +2119,7 @@ fn job(name: &str, args: &Map<String, Value>) -> Result<Plan, String> {
         acting_as: None,
         records: true,
     };
-    let command = crate::jobs::start::COMMAND.to_string();
+    let command = crate::jobs::COMMAND.to_string();
     match name {
         "snob_job" => {
             no_more(args, &["job_id", "wait_seconds", "offset"])?;
@@ -2290,7 +2290,7 @@ mod tests {
             .globals()
             .into_iter()
             .chain(as_other.command_line(None));
-        let parsed = <crate::cli::Cli as clap::Parser>::try_parse_from(
+        let parsed = <snob_cli::cli::Cli as clap::Parser>::try_parse_from(
             std::iter::once("snob".to_string()).chain(line),
         );
         assert!(parsed.is_ok(), "{parsed:?}");
@@ -2402,7 +2402,7 @@ mod tests {
             .globals()
             .into_iter()
             .chain(signed_out.command_line(Some(&confirmed)));
-        let parsed = <crate::cli::Cli as clap::Parser>::try_parse_from(
+        let parsed = <snob_cli::cli::Cli as clap::Parser>::try_parse_from(
             std::iter::once("snob".to_string()).chain(line),
         );
         assert!(parsed.is_ok(), "{parsed:?}");
@@ -2484,7 +2484,7 @@ mod tests {
             assert!(plan.ask.is_none());
             assert_eq!(plan.spends, Spends::Nothing);
             assert_eq!(plan.command_line(None), plan.args, "no --spend-alone");
-            let parsed = <crate::cli::Cli as clap::Parser>::try_parse_from(
+            let parsed = <snob_cli::cli::Cli as clap::Parser>::try_parse_from(
                 std::iter::once("snob".to_string()).chain(plan.args.iter().cloned()),
             );
             assert!(parsed.is_ok(), "{parsed:?}");
@@ -2560,7 +2560,7 @@ mod tests {
             ]
         );
         for plan in [&stories, &tray, &one] {
-            let parsed = <crate::cli::Cli as clap::Parser>::try_parse_from(
+            let parsed = <snob_cli::cli::Cli as clap::Parser>::try_parse_from(
                 std::iter::once("snob".to_string()).chain(plan.args.iter().cloned()),
             );
             assert!(parsed.is_ok(), "{parsed:?}");
@@ -2623,7 +2623,7 @@ mod tests {
         assert!(all.ask.is_none());
         assert_eq!(all.spends, Spends::Reads);
         assert_eq!(all.run, Run::Inline);
-        let parsed = <crate::cli::Cli as clap::Parser>::try_parse_from(
+        let parsed = <snob_cli::cli::Cli as clap::Parser>::try_parse_from(
             std::iter::once("snob".to_string()).chain(all.args.iter().cloned()),
         );
         assert!(parsed.is_ok(), "{parsed:?}");
@@ -2713,7 +2713,7 @@ mod tests {
                 "--mcp-write-cap=3"
             ]
         );
-        let parsed = <crate::cli::Cli as clap::Parser>::try_parse_from(
+        let parsed = <snob_cli::cli::Cli as clap::Parser>::try_parse_from(
             std::iter::once("snob".to_string()).chain(line.iter().cloned()),
         );
         assert!(parsed.is_ok(), "{parsed:?}");
@@ -3120,7 +3120,7 @@ mod tests {
             .unwrap();
         assert!(
             list.description
-                .contains(&format!("up to {}", crate::commands::mcp::answer::PAGE)),
+                .contains(&format!("up to {}", crate::answer::PAGE)),
             "{}",
             list.description
         );
@@ -3178,7 +3178,7 @@ mod tests {
             "the walk is given it by its supervisor"
         );
         // And what the job runs is a command a job may run.
-        assert!(crate::jobs::argv::check(&line[after + 1..]).is_ok());
+        assert!(snob_cli::jobs::argv::check(&line[after + 1..]).is_ok());
 
         for refused in [json!(51), json!(-1), json!(1.5), json!("20")] {
             assert!(
@@ -3529,7 +3529,7 @@ mod tests {
                 "--no-interactive"
             ]
         );
-        let parsed = <crate::cli::Cli as clap::Parser>::try_parse_from(
+        let parsed = <snob_cli::cli::Cli as clap::Parser>::try_parse_from(
             std::iter::once("snob".to_string()).chain(plan.args.iter().cloned()),
         );
         assert!(parsed.is_ok(), "{parsed:?}");
@@ -3652,10 +3652,10 @@ mod tests {
         // gives for the pages 2,000 accounts take, as the fewest and the
         // most accounts a page can hold.
         let pages = (
-            crate::engine::walk::pages_to_walk(2_000),
-            crate::engine::walk::pages_to_walk_at_most(2_000),
+            snob_engine::engine::walk::pages_to_walk(2_000),
+            snob_engine::engine::walk::pages_to_walk_at_most(2_000),
         );
-        let (least, most) = crate::engine::estimate::walk_seconds(pages, 0, 0);
+        let (least, most) = snob_engine::engine::estimate::walk_seconds(pages, 0, 0);
         assert!(least <= 3600 && 3600 <= most, "{least} to {most}");
         let list = specs(READS)
             .into_iter()

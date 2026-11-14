@@ -313,6 +313,22 @@ fn write_stdout(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// A line of the result, on standard output -- `println!` that survives the
+/// reader leaving.
+pub fn say_line(line: std::fmt::Arguments<'_>) {
+    let stdout = std::io::stdout();
+    let mut locked = stdout.lock();
+    for step in [locked.write_fmt(line), locked.write_all(b"\n")] {
+        match step {
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return,
+            // Anything else on standard output is the terminal going away,
+            // and there is nobody left to tell.
+            Err(_) => return,
+            Ok(()) => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
