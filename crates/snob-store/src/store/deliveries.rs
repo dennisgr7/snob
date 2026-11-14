@@ -249,12 +249,35 @@ pub fn failed(
     permanent: bool,
     now: Epoch,
 ) -> Result<Outcome, StoreError> {
-    let (attempts, created_at): (i64, Epoch) = conn.query_row(
-        "SELECT attempts, created_at FROM watch_deliveries WHERE id = ?1",
-        params![id],
-        |row| Ok((row.get(0)?, Epoch::new(row.get(1)?))),
-    )?;
-    let attempts = attempts + 1;
+    // **One transaction, begun by the write that counts the attempt**: a
+    // `watch deliver` and a run's drain trying one row at once each read the
+    // count the other left, never the same one twice. Inside a transaction
+    // of the caller's, that one is it.
+    let alone = if conn.is_autocommit() {
+        Some(conn.unchecked_transaction()?)
+    } else {
+        None
+    };
+    let counted: Option<(i64, Epoch)> = conn
+        .query_row(
+            "UPDATE watch_deliveries
+             SET attempts = attempts + 1, last_status = ?2, last_error = ?3
+             WHERE id = ?1 AND state = 'pending'
+             RETURNING attempts, created_at",
+            params![id, status.map(i64::from), error],
+            |row| Ok((row.get(0)?, Epoch::new(row.get(1)?))),
+        )
+        .optional()?;
+    // Settled meanwhile by whoever else was trying it: nothing is written,
+    // and the answer is what this attempt would have come to.
+    let (attempts, created_at) = match counted {
+        Some(counted) => counted,
+        None => conn.query_row(
+            "SELECT attempts + 1, created_at FROM watch_deliveries WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, Epoch::new(row.get(1)?))),
+        )?,
+    };
 
     let gave_up = if permanent {
         Some(GaveUp::Refused)
@@ -266,28 +289,30 @@ pub fn failed(
         None
     };
 
-    match gave_up {
+    let outcome = match gave_up {
         Some(reason) => {
             conn.execute(
                 "UPDATE watch_deliveries
-                 SET state = 'expired', settled_at = ?2, next_try_at = NULL,
-                     attempts = ?3, last_status = ?4, last_error = ?5
+                 SET state = 'expired', settled_at = ?2, next_try_at = NULL
                  WHERE id = ?1 AND state = 'pending'",
-                params![id, now.get(), attempts, status.map(i64::from), error],
+                params![id, now.get()],
             )?;
-            Ok(Outcome::GaveUp(reason))
+            Outcome::GaveUp(reason)
         }
         None => {
             let next = now + Duration::from_secs(backoff(attempts) as u64);
             conn.execute(
-                "UPDATE watch_deliveries
-                 SET attempts = ?2, next_try_at = ?3, last_status = ?4, last_error = ?5
+                "UPDATE watch_deliveries SET next_try_at = ?2
                  WHERE id = ?1 AND state = 'pending'",
-                params![id, attempts, next.get(), status.map(i64::from), error],
+                params![id, next.get()],
             )?;
-            Ok(Outcome::Retrying(next))
+            Outcome::Retrying(next)
         }
+    };
+    if let Some(alone) = alone {
+        alone.commit()?;
     }
+    Ok(outcome)
 }
 
 /// How long to wait before attempt number `attempts + 1`: doubling, capped.
@@ -385,6 +410,50 @@ mod tests {
     #[test]
     fn the_age_a_report_stops_being_news_at_is_the_documented_one() {
         assert_eq!(MAX_AGE_SECS, 7 * 24 * 3_600);
+    }
+
+    /// A `watch deliver` typed while a run drains the queue tries the same
+    /// row from another process. Each attempt is one, however they fall:
+    /// read and written back apart, two that read the same count wrote the
+    /// same one, and the report was tried once more than it said.
+    #[test]
+    fn two_processes_failing_one_report_each_count_their_attempt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("snob.db");
+        let db = Store::open_at(&path).unwrap();
+        users::ensure(db.conn(), ME).unwrap();
+        accounts::upsert(db.conn(), ME, true).unwrap();
+        let id = queued(&db, "run-1", Epoch::new(1_000));
+        let each = 20;
+
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                scope.spawn(|| {
+                    let other = Store::open_at(&path).unwrap();
+                    for _ in 0..each {
+                        failed(
+                            other.conn(),
+                            id,
+                            Some(503),
+                            "busy",
+                            false,
+                            Epoch::new(1_001),
+                        )
+                        .unwrap();
+                    }
+                });
+            }
+        });
+
+        let attempts: i64 = db
+            .conn()
+            .query_row(
+                "SELECT attempts FROM watch_deliveries WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(attempts, 2 * each);
     }
 
     fn queued(db: &Store, run_id: &str, at: Epoch) -> i64 {
