@@ -35,6 +35,15 @@ pub(super) async fn deliver(
     // so it is neither sent nor counted as owed.
     settle_all(paths);
 
+    // Shared with the runs, and meaningless here: what is owed goes in the
+    // shape and the event it was queued as.
+    if args.delivery.heartbeat || args.delivery.webhook_format.is_some() {
+        ui::warn(
+            "--heartbeat and --webhook-format change what a run makes, and a delivery sends \
+             what was made: they do nothing here",
+        );
+    }
+
     let configured = config::load(paths)?;
     let Some(delivery) = delivery_from(&args.delivery, configured.as_ref(), &secrets)? else {
         return Err(ExitError::new(
