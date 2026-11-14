@@ -64,6 +64,27 @@ pub(crate) fn pk_from_sql(value: i64) -> Pk {
     Pk::new(value as u64)
 }
 
+/// A count as its column holds it. No count this tool keeps comes near the
+/// ceiling; one past it is stored as the ceiling rather than wrapped.
+#[inline]
+pub(crate) fn count_to_sql(count: u64) -> i64 {
+    i64::try_from(count).unwrap_or(i64::MAX)
+}
+
+/// A count back out of its column: `None` for a negative one, which only a
+/// damaged file holds and a cast would turn into eighteen quintillion.
+///
+/// **Not known, never an error.** Every count read this way informs an
+/// estimate or the cache's judgment of freshness, and each has a "not known"
+/// its callers already meet (a counter never polled, a size Instagram did not
+/// declare), which sends them to ask Instagram again and write the number
+/// anew. An error would stop every command that opens the list over a number
+/// none of them needs.
+#[inline]
+pub(crate) fn count_from_sql(value: i64) -> Option<u64> {
+    u64::try_from(value).ok()
+}
+
 pub struct Store {
     conn: Connection,
 }
