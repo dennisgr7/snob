@@ -1,18 +1,10 @@
-//! Rate control that persists across runs.
+//! Rate control that persists across runs: the budget outlives the process,
+//! so running a command twice does not spend twice unnoticed.
 //!
-//! An in-memory limiter is no good here: the budget has to outlive the process,
-//! because running the command twice in a row must not spend twice without
-//! anyone noticing. No Rust crate does this over local storage, so it is
-//! hand-written.
-//!
-//! The algorithm is GCRA, an exact token bucket expressed as a single integer:
-//! instead of storing how many tokens are left and when they were refilled, it
-//! stores the theoretical instant from which the next request is legitimate.
-//! Integer arithmetic, no floating-point drift, and no row to update per tick.
-//!
-//! The daily ceiling on accounts read off lists is not a bucket: it promises
-//! at most so many in any 24 hours, so it is a log of what each page carried,
-//! summed over the last day (`account_reads`).
+//! GCRA, a token bucket kept as one integer: the theoretical instant from
+//! which the next request is legitimate. The daily ceiling on accounts read
+//! off lists is not a bucket but a log summed over the last day
+//! (`account_reads`), since it promises at most so many in any 24 hours.
 
 use std::time::Duration;
 
@@ -29,120 +21,57 @@ use super::StoreError;
 use super::shared::Shared;
 use crate::paths::AccountPaths;
 
-/// A storage failure said in the budget's terms.
-///
-/// One line per fallible call, because no `From` impl can do it for a `?`:
-/// `RateBudgetError` lives in `snob_core::budget` and `rusqlite::Error` in
-/// rusqlite, so an impl here would be between two foreign types. What is lost
-/// is brevity; what is gained is that the crate boundary is visible at every
-/// place a storage failure crosses it.
+/// A storage failure said in the budget's terms: no `From` can be written
+/// between two foreign types.
 fn budget_err<E: std::fmt::Display>(e: E) -> RateBudgetError {
     RateBudgetError(e.to_string())
 }
 
-/// Bucket names, as stored in `rate_budget.bucket`.
-///
-/// Constants rather than inline literals: each is read in several places, and
-/// missing one of them silently restarts the budget.
-const PACE_BUCKET: &str = "pace";
-const DAILY_BUCKET: &str = "daily";
-const WRITE_BUCKET: &str = "writes";
 /// A day, the window the accounts ceiling is stated over.
 const DAY_MS: i64 = 86_400_000;
 /// The only value of `cooldowns.scope`. A cooldown covers the whole session.
 const SESSION_SCOPE: &str = "session";
 
-/// Sustained pace: one request every 3.83 seconds. The number is a reference
-/// cadence the bucket keeps, not the cadence snob reads at: it is what
-/// InstagramUnfollowers, the project that gave snob the idea, averages per
-/// page. That pauses 1,250 ms before a request and 1,150 ms after a page, and
-/// then a long 10,000 ms pause every seventh page, so its mean per page is
-/// 1250 + 1150 + 10000/7 = 3,829 ms; the long pause belongs in the average.
+/// Sustained pace: one request every 3.83 seconds, a reference cadence and not
+/// the one snob reads at. It is what InstagramUnfollowers averages per page:
+/// 1,250 ms before a request, 1,150 ms after a page and 10,000 ms every
+/// seventh page, 1250 + 1150 + 10000/7 = 3,829 ms.
 ///
-/// snob's own walker steps one to three seconds between pages and rests five
-/// to fifteen minutes every forty (`snob_ig::pace::Pace::default`), faster
-/// than this within a sitting and far slower across one. The tolerance below
-/// absorbs the sitting: from rest, request `k` goes without a wait while it
-/// is sent no sooner than `(k - 20)` emissions in, so at a steady two-second
-/// step about forty-two go through before the bucket starts pacing, and at a
-/// steady one second, the safe direction, about twenty-eight. A sitting's
-/// rest refills it. So within one walker this bucket paces only a run of
-/// unusually short steps; what it bounds is the combined rate of several
-/// processes sharing the budget, the case the project explicitly supports,
-/// where it is the only thing holding that rate down. A change to
-/// `Pace::default`'s step or sitting means revisiting this constant: the two
-/// are one decision written in two files, and
-/// `a_sitting_at_two_seconds_a_step_fits_the_pace_bucket` checks them
-/// together.
+/// The walker steps faster than this within a sitting and rests far longer
+/// across one (`snob_ig::pace::Pace::default`); the tolerance below absorbs a
+/// sitting, and a sitting's rest refills it. What the bucket bounds is the
+/// combined rate of several processes sharing the budget. It is one decision
+/// with `Pace::default`, checked together by
+/// `a_sitting_at_two_seconds_a_step_fits_the_pace_bucket`.
 ///
-/// Revisited for the requests the app sends around a list (2026-10-01):
-/// when each page is followed by its `show_many`, which goes only once the
-/// page has shown the token it needs, a page is two requests a step apart,
-/// and the bucket starts pacing a sitting after about fourteen pages instead
-/// of forty. That is slower, the safe direction, and is left so: the
-/// constant is not lowered to let the extra request through. The
-/// navigation before a list and the reads that open a profile are a few
-/// requests an action, which the tolerance absorbs.
+/// Revisited 2026-10-01 for the `show_many` the app sends after each page: a
+/// page is then two requests, and the bucket paces a sitting after about
+/// fourteen pages instead of forty. Slower, the safe direction, so left as is.
 pub const PACE_EMISSION_MS: i64 = 3_830;
-/// Burst tolerance of the pace bucket: twenty requests.
-///
-/// Twenty emissions, deliberately: it is what lets a sitting at the walker's
-/// mean step through without the bucket pacing it. A walker steps faster
-/// than the emission within a sitting, so the tolerance decides how many of
-/// its pages go out before the bucket starts pacing them: about forty-two at
-/// two seconds a step, against the forty a sitting holds, and about
-/// twenty-eight at one second. A change to it moves those numbers, and
-/// `a_sitting_at_two_seconds_a_step_fits_the_pace_bucket` with them; a
-/// narrower tolerance would start pacing an ordinary sitting, which is a
-/// design change rather than a tuning.
+/// Burst tolerance of the pace bucket: twenty emissions, which lets a sitting
+/// at the walker's mean step through unpaced (about forty-two pages at two
+/// seconds a step against the forty a sitting holds, twenty-eight at one).
 pub const PACE_BURST_MS: i64 = PACE_EMISSION_MS * 20;
 
 /// Daily ceiling of roughly two thousand requests.
 pub const DAILY_EMISSION_MS: i64 = 43_200;
 pub const DAILY_BURST_MS: i64 = 86_400_000;
 
-/// Sustained pace of **writes**: one follow or unfollow every fifteen minutes,
-/// which is ninety-six a day if somebody keeps it up around the clock.
+/// Sustained pace of **writes**: one follow or unfollow every fifteen
+/// minutes, paid on top of the pace and daily buckets every request pays.
 ///
-/// This is a third bucket rather than a smaller emission on the existing two,
-/// because a write is a request *and* something else. It pays the pace bucket
-/// and the daily bucket like every other request — it costs Instagram the same
-/// — and then it pays this one on top, which is the constraint that has nothing
-/// to do with volume.
-///
-/// Where the number comes from, since `pace.rs`'s numbers come from the web
-/// app's recorded cadence and the owner's decision, and this one has
-/// neither. The public field reports for 2026 put an established account at
-/// 100 to 150 follow actions a day and a new account at 10 to 30, and they
-/// agree on something more useful than either figure:
-/// **what a service reacts to is the burst, not the daily total.** A hundred
-/// unfollows inside half an hour is refused on an account whose day's count
-/// would have passed without comment. So the design target is not a daily
-/// ceiling at all — it is a floor under the gap between two writes, and ninety-
-/// six a day is what falls out of it rather than what was aimed at.
-///
-/// Fifteen minutes is also below the rate a person clicking the button would
-/// produce, which is the point: the ceiling that matters is not the one snob
-/// enforces on itself but the one the account has already used up elsewhere.
-/// This bucket knows nothing about the follows made in the app on the same
-/// account today, so it has to leave room for them.
+/// Public field reports for 2026 put an established account at 100 to 150
+/// follow actions a day and a new one at 10 to 30, and agree that **what a
+/// service reacts to is the burst, not the daily total**. So this is a floor
+/// under the gap between two writes; ninety-six a day is what falls out of
+/// it. It also leaves room for the follows made in the app, which this
+/// bucket cannot see.
 const WRITE_EMISSION_MS: i64 = 900_000;
 
-/// Burst tolerance of the write bucket: **three** writes back to back, and then
-/// the fifteen minutes apply.
-///
-/// Two emissions, not three. A GCRA tolerance of *n* intervals lets *n + 1*
-/// through before it throttles — the *n* that fit ahead plus the one emitted on
-/// pace, which is the arithmetic `FIT_IN_A_ROW` in the tests below spells out
-/// for the pace bucket. Written as three it would allow four, and the sentence
-/// above would be wrong about the constant underneath it.
-///
-/// Deliberately tight, and the reason is the shape of the thing rather than the
-/// size of it. Twenty was right for reads, where a burst is a walk going
-/// through pages of one list, which is the cost of one question. Three writes in
-/// a row is about as many decisions as a person makes at a sitting; past that it
-/// is no longer somebody tidying their following list, which is the only use
-/// this budget is sized for.
+/// Burst tolerance of the write bucket: **three** writes back to back, then
+/// the fifteen minutes apply. Two emissions, since a GCRA tolerance of *n*
+/// intervals lets *n + 1* through. About as many decisions as a person makes
+/// at a sitting.
 const WRITE_BURST_MS: i64 = WRITE_EMISSION_MS * 2;
 
 /// About the most writes the write bucket lets through in any 24 hours: the
@@ -151,30 +80,46 @@ const WRITE_BURST_MS: i64 = WRITE_EMISSION_MS * 2;
 /// promise nothing the bucket does not already stop.
 pub const WRITES_IN_A_DAY: u32 = (DAY_MS / WRITE_EMISSION_MS) as u32 + 3;
 
+/// One GCRA bucket: its name in `rate_budget.bucket`, what a request costs in
+/// time, and how far ahead one may run.
+#[derive(Clone, Copy)]
+struct Bucket {
+    name: &'static str,
+    emission: i64,
+    burst: i64,
+}
+
+const PACE: Bucket = Bucket {
+    name: "pace",
+    emission: PACE_EMISSION_MS,
+    burst: PACE_BURST_MS,
+};
+const DAILY: Bucket = Bucket {
+    name: "daily",
+    emission: DAILY_EMISSION_MS,
+    burst: DAILY_BURST_MS,
+};
+const WRITES: Bucket = Bucket {
+    name: "writes",
+    emission: WRITE_EMISSION_MS,
+    burst: WRITE_BURST_MS,
+};
+
 /// Slack before deciding the system clock has gone backwards.
 pub(crate) const CLOCK_SKEW_TOLERANCE_MS: i64 = 5_000;
 
 const MAX_COOLDOWN_MS: i64 = 24 * 3600 * 1000;
 
-/// Escape hatch environment variable. Deliberately absent from the help: it
-/// exists so a bug of ours cannot lock anyone out, not for skipping the limit
-/// out of convenience.
+/// The escape hatch, absent from the help: it exists so that a bug of ours
+/// cannot lock anyone out.
 const IGNORE_COOLDOWN_ENV: &str = "SNOB_IGNORE_COOLDOWN";
 
-/// Whether the escape hatch is open.
 fn ignoring_cooldowns() -> bool {
     std::env::var(IGNORE_COOLDOWN_ENV).is_ok_and(|value| is_affirmative(&value))
 }
 
-/// Whether a variable's value means yes.
-///
-/// The switch takes an answer rather than merely existing. This is the one
-/// thing that turns off the protection the whole project is built around, and
-/// `SNOB_IGNORE_COOLDOWN=0` meaning "yes, ignore it" is the kind of surprise
-/// that only shows up later as an account in trouble.
-///
-/// Split from the read above so a test can drive it without setting a variable
-/// the rest of the suite is reading at the same time.
+/// Whether a variable's value means yes: `SNOB_IGNORE_COOLDOWN=0` must not
+/// turn the protection off.
 fn is_affirmative(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
@@ -182,14 +127,9 @@ fn is_affirmative(value: &str) -> bool {
     )
 }
 
-/// The core of the algorithm, isolated so it can be tested without a database.
-///
-/// `emission` is what a request costs in time and `burst` how far ahead one may
-/// run. Returns the new theoretical instant and the wait.
-///
-/// Two of the four are moments and two are lengths of time, which is exactly
-/// the pair a bare `i64` could not tell apart: typed, `decide(now, tat, burst,
-/// emission)` does not compile.
+/// The core of the algorithm. `emission` is what a request costs in time and
+/// `burst` how far ahead one may run; returns the new theoretical instant and
+/// the wait.
 fn decide(tat: EpochMs, now: EpochMs, emission: i64, burst: i64) -> (EpochMs, i64) {
     let tat = tat.max(now);
     let wait = ((tat - Duration::from_millis(burst as u64)) - now).max(0);
@@ -197,44 +137,28 @@ fn decide(tat: EpochMs, now: EpochMs, emission: i64, burst: i64) -> (EpochMs, i6
 }
 
 pub struct SqliteRateBudget {
-    /// Behind a `Mutex` because the trait exposes `&self` and opening a
-    /// transaction needs `&mut Connection`. There is never real contention:
-    /// reservations within a process are sequential, and coordination between
-    /// processes is SQLite's job.
+    /// Behind a `Mutex` because the trait exposes `&self` and a transaction
+    /// needs `&mut Connection`; there is never real contention.
     conn: std::sync::Mutex<Connection>,
-    /// `shared.db`, and the account this budget is, so that its push-backs
-    /// reach the others and theirs reach it. `None` in tests, and
-    /// when `shared.db` cannot be opened: the account's own cooldown must still
-    /// be read and recorded, by an older build too.
+    /// `shared.db` and the account this budget is, so that push-backs reach
+    /// the other accounts and theirs reach it. `None` in tests, and when
+    /// `shared.db` cannot be opened: the account's own cooldown still works.
     shared: Option<(Pk, std::sync::Mutex<Shared>)>,
 }
 
 impl SqliteRateBudget {
-    /// Opens its **own** connection to the same file, with the store's settings.
-    ///
-    /// Not sharing the store's connection is deliberate: this way the
-    /// two-process case is the same as the two-connection case, so what runs is
-    /// what gets tested, and the budget's borrow cannot clash with the
-    /// transaction that inserts pages.
-    ///
-    /// But separate must not mean differently configured. `trusted_schema` and
-    /// the defensive flag are about the file rather than about a handle, so one
-    /// undefended connection leaves the file undefended and cancels what the
-    /// store set. The same goes for `secure_delete` and the WAL size bound —
-    /// and this is the connection that enforces the bound, because it commits
-    /// an `IMMEDIATE` transaction before every single request and is therefore
-    /// the one that checkpoints.
+    /// Opens its **own** connection to the account's file, so that two
+    /// processes and two connections are the same case, with the store's
+    /// settings: `trusted_schema`, the defensive flag, `secure_delete` and
+    /// the log's bound are about the file, and one undefended connection
+    /// would cancel them. The store must have been opened first: it is what
+    /// makes the schema.
     pub fn open(paths: &AccountPaths) -> Result<Self, StoreError> {
-        // The store must have been opened first: it is what creates the schema.
         let conn = Connection::open(paths.db_file())?;
         super::configure(&conn)?;
 
-        // The one setting this connection does not want from `configure`.
-        // Under WAL, `synchronous = NORMAL` skips the fsync at commit, so a
-        // power cut can lose the last transactions. Here those are the cooldown
-        // writes, and losing one brings the account out of a block early — the
-        // single direction `start_cooldown` must never be wrong in. One fsync
-        // against a pace of one request every 3.83 seconds costs nothing.
+        // `NORMAL` under WAL skips the fsync at commit, and a power cut could
+        // lose a cooldown write, bringing the account out of a block early.
         conn.pragma_update(None, "synchronous", "FULL")?;
         let shared = match Shared::open(paths) {
             Ok(shared) => Some((paths.pk(), std::sync::Mutex::new(shared))),
@@ -282,37 +206,17 @@ impl SqliteRateBudget {
 
     fn reserve_bucket(
         tx: &rusqlite::Transaction<'_>,
-        bucket: &str,
-        emission: i64,
-        burst: i64,
+        bucket: Bucket,
         now: EpochMs,
     ) -> Result<i64, RateBudgetError> {
-        // The two columns are `INTEGER` and become moments here, at the row
-        // boundary, the way an account id does through `pk_from_sql`.
-        let row: Option<(EpochMs, EpochMs)> = tx
-            .query_row(
-                "SELECT tat_ms, updated_at_ms FROM rate_budget WHERE bucket = ?1",
-                params![bucket],
-                |row| Ok((EpochMs::new(row.get(0)?), EpochMs::new(row.get(1)?))),
-            )
-            .optional()
-            .map_err(budget_err)?;
-
-        let stored_tat = match row {
-            // If the clock went backwards the stored instant means nothing any
-            // more: the wait would come out as hours. It is reset. That is not
-            // a free pass, because it still grants no burst beyond tolerance.
-            Some((_, updated))
-                if now + Duration::from_millis(CLOCK_SKEW_TOLERANCE_MS as u64) < updated =>
-            {
-                tracing::warn!(bucket, "the system clock went backwards; budget reset");
-                now
-            }
-            Some((tat, _)) => tat,
-            None => now,
-        };
-
-        let (new_tat, wait) = decide(stored_tat, now, emission, burst);
+        let (stored, reset) = Self::stored_tat(tx, bucket, now)?;
+        if reset {
+            tracing::warn!(
+                bucket = bucket.name,
+                "the system clock went backwards; budget reset"
+            );
+        }
+        let (new_tat, wait) = decide(stored, now, bucket.emission, bucket.burst);
 
         tx.execute(
             "INSERT INTO rate_budget (bucket, tat_ms, emission_ms, burst_ms, updated_at_ms)
@@ -322,128 +226,102 @@ impl SqliteRateBudget {
                  emission_ms = excluded.emission_ms,
                  burst_ms = excluded.burst_ms,
                  updated_at_ms = excluded.updated_at_ms",
-            params![bucket, new_tat.get(), emission, burst, now.get()],
+            params![
+                bucket.name,
+                new_tat.get(),
+                bucket.emission,
+                bucket.burst,
+                now.get()
+            ],
         )
         .map_err(budget_err)?;
 
         Ok(wait)
     }
 
-    /// The body of both reservations, so that the two cannot come apart.
+    /// The body of both reservations. Every one charges the pace and daily
+    /// buckets, a write the write bucket as well, **all of them whichever
+    /// wait wins**, in one `IMMEDIATE` transaction so that two processes
+    /// cannot interleave between the charges.
     ///
-    /// Every reservation charges the pace bucket and the daily one; a write
-    /// charges the write bucket as well. The answer is the longest of the waits
-    /// they hand back, and **all of the buckets are charged whichever wait
-    /// wins** — a request held back by one budget still spends the others,
-    /// because it is still going to be sent.
-    ///
-    /// **A reservation is not given back**, even when the process waiting
-    /// out its turn is stopped or killed before it sends: a follow killed
-    /// while it waits for the write bucket has spent that turn, and the next
-    /// one waits behind it. That errs on the slow side by one request at
-    /// most, which is the side the pace is allowed to err on; giving a turn
-    /// back would need its release to be written by a process that may never
-    /// get to write it, and two processes could then both believe the same
-    /// turn was theirs.
-    ///
-    /// One transaction for all of them, and it is `IMMEDIATE` for the reason
-    /// spelled out below. Charging the write bucket in a second transaction
-    /// would let two processes interleave between the two, which is exactly the
-    /// case a shared budget exists for.
+    /// **A reservation is not given back**, even when the process waiting out
+    /// its turn is killed before it sends: that errs on the slow side by one
+    /// request, and a release would have to be written by a process that may
+    /// never get to write it.
     fn reserve_buckets(&self, write: bool) -> Result<Duration, RateBudgetError> {
         let now = now_ms();
 
-        // BEGIN IMMEDIATE rather than the default deferred one: with deferred,
-        // two processes read, both try to write, and the second gets
-        // SQLITE_BUSY when upgrading the transaction, at which point
-        // busy_timeout can no longer help and it fails outright. Taking the
-        // write lock up front makes the processes serialize.
+        // `IMMEDIATE`: with a deferred transaction two processes read, both
+        // try to write, and the second gets `SQLITE_BUSY` on the upgrade,
+        // where `busy_timeout` no longer helps.
         let mut conn = self.conn();
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(budget_err)?;
 
-        let pace_wait =
-            Self::reserve_bucket(&tx, PACE_BUCKET, PACE_EMISSION_MS, PACE_BURST_MS, now)?;
-        let daily_wait =
-            Self::reserve_bucket(&tx, DAILY_BUCKET, DAILY_EMISSION_MS, DAILY_BURST_MS, now)?;
-        let write_wait = if write {
-            Self::reserve_bucket(&tx, WRITE_BUCKET, WRITE_EMISSION_MS, WRITE_BURST_MS, now)?
-        } else {
-            0
-        };
+        let mut wait =
+            Self::reserve_bucket(&tx, PACE, now)?.max(Self::reserve_bucket(&tx, DAILY, now)?);
+        if write {
+            wait = wait.max(Self::reserve_bucket(&tx, WRITES, now)?);
+        }
 
         tx.commit().map_err(budget_err)?;
 
-        Ok(Duration::from_millis(
-            pace_wait.max(daily_wait).max(write_wait).max(0) as u64,
-        ))
+        Ok(Duration::from_millis(wait.max(0) as u64))
     }
 
-    /// The wait `bucket` would hand back at `now`, charged nothing: what
-    /// [`Self::reserve_bucket`] decides, without writing it down.
-    fn bucket_wait(
-        conn: &Connection,
-        bucket: &str,
-        emission: i64,
-        burst: i64,
-        now: EpochMs,
-    ) -> Result<i64, RateBudgetError> {
-        Ok(decide(Self::stored_tat(conn, bucket, now)?, now, emission, burst).1)
-    }
-
-    /// The longest wait any of `buckets` (name, emission, burst) would hand
-    /// back now, charged nothing: what `write_wait` and `read_wait` share.
-    fn longest_wait(&self, buckets: &[(&str, i64, i64)]) -> Result<Duration, RateBudgetError> {
+    /// The longest wait any of `buckets` would hand back now, charged
+    /// nothing: what [`Self::reserve_bucket`] decides, without writing it.
+    fn longest_wait(&self, buckets: &[Bucket]) -> Result<Duration, RateBudgetError> {
         let now = now_ms();
         let conn = self.conn();
         let mut wait = 0;
-        for &(bucket, emission, burst) in buckets {
-            wait = wait.max(Self::bucket_wait(&conn, bucket, emission, burst, now)?);
+        for &bucket in buckets {
+            let (tat, _) = Self::stored_tat(&conn, bucket, now)?;
+            wait = wait.max(decide(tat, now, bucket.emission, bucket.burst).1);
         }
         Ok(Duration::from_millis(wait.max(0) as u64))
     }
 
-    /// The theoretical instant `bucket` holds at `now`, as the next charge
-    /// would read it: `now` for a bucket never charged, and for one written
-    /// by a clock that has since gone backwards.
+    /// The theoretical instant `bucket` holds at `now`, and whether it was
+    /// reset: `now` for a bucket never charged, and for one written by a
+    /// clock that has since gone backwards, whose stored instant would make
+    /// the wait hours. No free pass: it grants no burst beyond the tolerance.
     fn stored_tat(
         conn: &Connection,
-        bucket: &str,
+        bucket: Bucket,
         now: EpochMs,
-    ) -> Result<EpochMs, RateBudgetError> {
+    ) -> Result<(EpochMs, bool), RateBudgetError> {
         let row: Option<(EpochMs, EpochMs)> = conn
             .query_row(
                 "SELECT tat_ms, updated_at_ms FROM rate_budget WHERE bucket = ?1",
-                params![bucket],
+                params![bucket.name],
                 |row| Ok((EpochMs::new(row.get(0)?), EpochMs::new(row.get(1)?))),
             )
             .optional()
             .map_err(budget_err)?;
-        let stored_tat = match row {
-            // A clock that went backwards resets the bucket when it is next
-            // charged, as `reserve_bucket` says.
+        Ok(match row {
             Some((_, updated))
                 if now + Duration::from_millis(CLOCK_SKEW_TOLERANCE_MS as u64) < updated =>
             {
-                now
+                (now, true)
             }
-            Some((tat, _)) => tat,
-            None => now,
-        };
-        Ok(stored_tat)
+            Some((tat, _)) => (tat, false),
+            None => (now, false),
+        })
     }
 
     /// What `bucket` would let through at `now` without a wait, and when the
     /// next one goes without one. Charges nothing.
     fn bucket_state(
         conn: &Connection,
-        bucket: &str,
-        emission: i64,
-        burst: i64,
+        bucket: Bucket,
         now: EpochMs,
     ) -> Result<BucketState, RateBudgetError> {
-        let tat = Self::stored_tat(conn, bucket, now)?.max(now);
+        let Bucket {
+            emission, burst, ..
+        } = bucket;
+        let tat = Self::stored_tat(conn, bucket, now)?.0.max(now);
         // Request `k` from here waits nothing while `tat + k * emission` is
         // no further ahead of `now` than the tolerance: `decide`, unrolled.
         let room = now.get() + burst - tat.get();
@@ -612,11 +490,10 @@ pub fn state(
     shared: Option<&Shared>,
     now: EpochMs,
 ) -> Result<BudgetState, RateBudgetError> {
-    let bucket =
-        |name, emission, burst| SqliteRateBudget::bucket_state(conn, name, emission, burst, now);
-    let pace = bucket(PACE_BUCKET, PACE_EMISSION_MS, PACE_BURST_MS)?;
-    let daily = bucket(DAILY_BUCKET, DAILY_EMISSION_MS, DAILY_BURST_MS)?;
-    let writes = bucket(WRITE_BUCKET, WRITE_EMISSION_MS, WRITE_BURST_MS)?;
+    let bucket = |bucket| SqliteRateBudget::bucket_state(conn, bucket, now);
+    let pace = bucket(PACE)?;
+    let daily = bucket(DAILY)?;
+    let writes = bucket(WRITES)?;
     let brake = match shared {
         Some(shared) => common_brake(&shared.pushbacks(now).map_err(budget_err)?, now),
         None => None,
@@ -667,19 +544,12 @@ impl RateBudget for SqliteRateBudget {
     /// The longest of the three waits a write would be handed now: the
     /// buckets `reserve_buckets` charges for one, read and not charged.
     fn write_wait(&self) -> Result<Duration, RateBudgetError> {
-        self.longest_wait(&[
-            (PACE_BUCKET, PACE_EMISSION_MS, PACE_BURST_MS),
-            (DAILY_BUCKET, DAILY_EMISSION_MS, DAILY_BURST_MS),
-            (WRITE_BUCKET, WRITE_EMISSION_MS, WRITE_BURST_MS),
-        ])
+        self.longest_wait(&[PACE, DAILY, WRITES])
     }
 
     /// The same for a read, which pays the first two.
     fn read_wait(&self) -> Result<Duration, RateBudgetError> {
-        self.longest_wait(&[
-            (PACE_BUCKET, PACE_EMISSION_MS, PACE_BURST_MS),
-            (DAILY_BUCKET, DAILY_EMISSION_MS, DAILY_BURST_MS),
-        ])
+        self.longest_wait(&[PACE, DAILY])
     }
 
     /// How long until the last day holds room for `accounts` more: the moment
@@ -779,10 +649,8 @@ impl RateBudget for SqliteRateBudget {
     }
 
     /// Reads the sitting and writes the next one in one `IMMEDIATE`
-    /// transaction, for the reason `start_cooldown` gives: two processes
-    /// walking the same account at once would otherwise both read page
-    /// thirty-nine and both write forty, and the one rest drawn would be
-    /// whichever wrote last.
+    /// transaction: two processes walking one account would otherwise both
+    /// read page thirty-nine and both write forty.
     fn sitting_page(&self, at: EpochMs, rule: SittingRule) -> Result<Sitting, RateBudgetError> {
         let mut conn = self.conn();
         let tx = conn
@@ -838,21 +706,13 @@ impl RateBudget for SqliteRateBudget {
         super::answers::recent_waits(&self.conn(), since, n).map_err(budget_err)
     }
 
-    /// Reads the previous cooldown and writes the next one in **one**
-    /// transaction, and never lets the result end sooner than what was already
-    /// there.
-    ///
-    /// Both halves matter for the same reason `reserve` takes the write lock up
-    /// front: other snob processes share this file — the monitor, a command in
-    /// another terminal, the owner recording a push-back. Two processes reading
-    /// `strikes = 1` at the same instant would both write `strikes = 2`, losing
-    /// one escalation. And an unconditional write would let a two-hour throttle
-    /// recorded ten minutes into a twelve-hour action block replace it,
-    /// bringing the account out of the more serious block early, which is the
-    /// one direction this table must never be wrong in.
+    /// Reads the previous cooldown and writes the next in **one** transaction
+    /// (two processes reading `strikes = 1` would both write 2), and never
+    /// lets the result end sooner than what was already there: a two-hour
+    /// throttle must not replace a twelve-hour action block.
     fn start_cooldown(&self, reason: &str, minimum: Duration) -> Result<EpochMs, RateBudgetError> {
         let now = now_ms();
-        let base = minimum.as_millis() as i64;
+        let base = i64::try_from(minimum.as_millis()).unwrap_or(i64::MAX);
 
         let mut conn = self.conn();
         let tx = conn
@@ -874,10 +734,11 @@ impl RateBudget for SqliteRateBudget {
             .optional()
             .map_err(budget_err)?;
 
-        // Reoffending within the next day doubles the penalty.
+        // Reoffending within the next day doubles the penalty. `strikes` comes
+        // from disk, so it is held to a shift that cannot overflow.
         let (length, strikes) = match previous {
             Some((set_at, strikes, _)) if now - set_at < MAX_COOLDOWN_MS => {
-                let next = strikes + 1;
+                let next = strikes.max(0).saturating_add(1);
                 let escalated = base.saturating_mul(1 << (next - 1).min(5));
                 (escalated.min(MAX_COOLDOWN_MS), next)
             }
