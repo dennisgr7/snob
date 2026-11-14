@@ -15,22 +15,22 @@ use std::path::{Path, PathBuf};
 pub const NEVER_INHERITED: &[&str] = &["SNOB_IGNORE_COOLDOWN", "SNOB_MCP_KEY", "SNOB_MCP_TOKEN"];
 
 /// A process just started, as far as the command that started it can tell.
-pub(crate) struct Started {
+pub struct Started {
     /// Whether it left the job the command was in.
-    pub(crate) left_job: bool,
+    pub left_job: bool,
     process: platform::Process,
 }
 
 impl Started {
     /// Whether it has already left.
-    pub(crate) fn gone(&self) -> bool {
+    pub fn gone(&self) -> bool {
         self.process.gone()
     }
 }
 
 /// Starts `program` with `args`, detached, its output appended to `stdout` (the
 /// null device when there is none) and its errors to `stderr`.
-pub(crate) fn spawn(
+pub fn spawn(
     program: &Path,
     args: &[OsString],
     stdout: Option<&Path>,

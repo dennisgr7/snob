@@ -3047,8 +3047,8 @@ dependencies = [
  "rust_xlsxwriter",
  "serde",
  "serde_json",
- "sha2",
  "snob-core",
+ "snob-engine",
  "snob-ig",
  "snob-store",
  "supports-hyperlinks",
@@ -3060,7 +3060,6 @@ dependencies = [
  "webpki-root-certs",
  "windows-sys 0.61.2",
  "wiremock",
- "zbus",
  "zeroize",
  "zip",
  "zune-jpeg",
@@ -3077,6 +3076,32 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror",
+ "zeroize",
+]
+
+[[package]]
+name = "snob-engine"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "chrono",
+ "fastrand",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "snob-core",
+ "snob-ig",
+ "snob-store",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "windows-sys 0.61.2",
+ "wiremock",
+ "zbus",
  "zeroize",
 ]
 

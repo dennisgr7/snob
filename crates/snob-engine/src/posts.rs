@@ -369,7 +369,7 @@ impl Post {
 
     /// Each item by its number and the address of its small picture, for
     /// `media::small_pictures`.
-    pub(crate) fn thumbs(&self) -> Vec<(usize, Option<String>)> {
+    pub fn thumbs(&self) -> Vec<(usize, Option<String>)> {
         self.items
             .iter()
             .enumerate()
@@ -378,7 +378,7 @@ impl Post {
     }
 
     /// Item `index` (zero-based) as a file to download.
-    pub(crate) fn file(&self, index: usize) -> Named {
+    pub fn file(&self, index: usize) -> Named {
         Named {
             number: index + 1,
             stem: self.stem(index),
@@ -450,7 +450,7 @@ impl Videos {
 
     /// `files` made ready to save as this says: each video's best tracks kept,
     /// with the ffmpeg that joins them, or dropped.
-    pub(crate) fn prepare(&self, files: Vec<Named>) -> Vec<Named> {
+    pub fn prepare(&self, files: Vec<Named>) -> Vec<Named> {
         if matches!(self, Self::Compat { say_how: true }) && files.iter().any(|f| f.best.is_some())
         {
             host::info(&format!(
@@ -1218,7 +1218,7 @@ pub struct Bounds {
 /// made when it is not there, so one file is never written over a name, and
 /// nothing is, since every file goes in under a name of its own
 /// (`media::save_named`).
-pub(crate) async fn save_telling(
+pub async fn save_telling(
     client: &IgClient,
     post: &Post,
     files: Vec<Named>,
@@ -1315,7 +1315,7 @@ pub(crate) async fn save_telling(
 }
 
 /// The files of every item of `posts`, in order.
-pub(crate) fn files_of(posts: &[&Post]) -> Vec<Named> {
+pub fn files_of(posts: &[&Post]) -> Vec<Named> {
     let mut number = 0;
     let mut files = Vec::new();
     for post in posts {

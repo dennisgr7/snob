@@ -104,7 +104,7 @@ fn without_colors(line: &str) -> String {
 
 /// What a command said, less the records of the log among it
 /// ([`is_log_record`]): the lines its reader is meant to read.
-pub(crate) fn sentences(lines: Vec<&str>) -> Vec<&str> {
+pub fn sentences(lines: Vec<&str>) -> Vec<&str> {
     let kept: Vec<&str> = lines
         .iter()
         .copied()

@@ -55,25 +55,24 @@ mcp-http = [
 # a build that wants neither leaves both out with `--no-default-features`.
 # Its cost is measured in AGENTS.md, under "Costs worth knowing".
 preview = ["dep:zune-jpeg"]
-testing = ["snob-ig/testing"]
+testing = ["snob-engine/testing", "snob-ig/testing"]
 
 [dependencies]
 snob-core.workspace = true
 snob-store.workspace = true
 snob-ig.workspace = true
+# Everything the commands do that is not the command line: the walks, the
+# browser, the owner, jobs, downloads, updates (`snob_engine`).
+snob-engine.workspace = true
 clap.workspace = true
-# `net` and `io-util` for the loopback page `headless::identity` serves for
-# one question and for the owner's socket and named pipe (`owner::socket`);
-# both were already compiled in through reqwest. `sync` for the
-# channels `cdp::connection`'s dispatcher answers callers on -- also already
-# compiled in, through hyper, and named here because this crate uses it
-# directly.
+# `net` and `io-util` for the MCP server over HTTP (`commands::mcp::http`)
+# and `sync` for the channels the commands and views answer on; all already
+# compiled in through the engine.
 tokio = { workspace = true, features = ["net", "io-util", "sync"] }
 anyhow.workspace = true
 serde_json.workspace = true
 # Already in the tree through snob-core, so this costs no extra compilation.
-# Used for one derive: the envelope `cdp::reply_to` reads the message id off
-# without building the whole document.
+# Used for one derive in `cli`.
 serde.workspace = true
 console.workspace = true
 # Keys for the interactive views, and the terminal modes around them (raw mode,
@@ -130,34 +129,22 @@ zeroize.workspace = true
 # one — but the roll is made here and handed to `schedule::wake_at`, which
 # reads no randomness of its own and can therefore be tested.
 fastrand.workspace = true
-# The monitor's webhook address is parsed and inspected before anything is
-# posted to it, and `Url::host()` is what tells an IPv6 loopback from a domain
-# -- the string form keeps the brackets the syntax requires, so `[::1]` does
-# not parse as an address. The tests also point the client at a mock server
-# with it.
+# The monitor's webhook address as `watch setup` takes it, the addresses
+# `snob mcp --public-url` and `--remote` take, and the mock servers the
+# tests point clients at, are parsed as URLs, which is what tells an IPv6
+# loopback from a domain.
 url.workspace = true
-# Already in the tree through snob-core, where it signs the monitor's
-# webhook. Here it checks a downloaded release against its `SHA256SUMS`
-# (`update::github`), as the install scripts do.
-sha2.workspace = true
-# Already in the tree through snob-store. The tab's guard reads a paused
-# request's form, which the browser may hand over in base64 pieces
-# (`headless::guard`).
+# Already in the tree through snob-store. A picture drawn in the terminal's
+# own pixels goes out in base64 (`ui::graphics`).
 base64.workspace = true
 
-# Launching the browser with the debugging protocol on a pipe. Windows needs the
-# handle-inheritance blob and the job object; Unix needs `dup2`. Neither is
-# reachable through `std::process::Command`, and the reasoning is in
-# `src/pipe.rs`.
+# The MCP server's children in a process group of their own (Windows) and its
+# socket admitting this user alone (Unix): `commands::mcp`.
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-
-# Asking logind to hold off idle sleep while a walk reads (`src/power/`).
-[target.'cfg(target_os = "linux")'.dependencies]
-zbus.workspace = true
 
 [dev-dependencies]
 # The clock stopped and moved by hand, for the relay's timeouts; already a

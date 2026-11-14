@@ -141,7 +141,7 @@ pub(crate) fn run_again(exe: &Path) -> std::io::Error {
 }
 
 /// Where a step's output goes.
-pub(crate) enum Output<'a> {
+pub enum Output<'a> {
     /// Appended to the log, for a step nobody watches.
     Log(&'a Path),
     /// Onto standard error, for one a person watches (`snob update`):
@@ -150,7 +150,7 @@ pub(crate) enum Output<'a> {
 }
 
 /// Runs `steps` in order, stopping at the first that fails.
-pub(crate) fn run_steps(steps: &[Step], output: &Output<'_>) -> anyhow::Result<()> {
+pub fn run_steps(steps: &[Step], output: &Output<'_>) -> anyhow::Result<()> {
     for step in steps {
         let mut command = Command::new(&step.program);
         command.args(&step.args).stdin(Stdio::null());

@@ -148,8 +148,8 @@ impl ListOutcome {
 
     /// A walked-or-stored outcome with every other field at its plainest: one
     /// request, epoch zero, account and capture 1.
-    #[cfg(test)]
-    pub(crate) fn for_test(provenance: Provenance, reason: StopReason) -> Self {
+    #[doc(hidden)]
+    pub fn for_test(provenance: Provenance, reason: StopReason) -> Self {
         Self {
             provenance,
             reason,

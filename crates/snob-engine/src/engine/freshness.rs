@@ -86,7 +86,7 @@ fn is_still_good(
 /// A stored list that still answers, if there is one — for a caller that
 /// already holds today's counter and wants to know whether opening the list
 /// will cost anything before asking anybody about spending.
-pub(crate) fn fresh_members(
+pub fn fresh_members(
     app: &App,
     account: snob_core::Pk,
     kind: ListKind,

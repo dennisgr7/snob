@@ -138,7 +138,7 @@ pub async fn release(paths: &AppPaths, pk: Option<Pk>) {
 /// removed and write that session into it. **Every session the account has now**, the one
 /// stored and any a login replaced while a walk still held it: only a later login's own is
 /// let in again (`AccountPaths::admit_session`).
-pub(crate) fn sign_out(paths: &AppPaths, leaving: &[Pk]) {
+pub fn sign_out(paths: &AppPaths, leaving: &[Pk]) {
     for pk in leaving {
         if let Err(e) = paths.account(*pk).sign_out() {
             crate::host::warn(&format!(
@@ -154,7 +154,7 @@ pub(crate) fn sign_out(paths: &AppPaths, leaving: &[Pk]) {
 /// the account's directory is gone, as `purge` leaves it, or was made again
 /// since and no login let this session in there
 /// (`AccountPaths::refuses_session`).
-pub(crate) fn signed_out(paths: &AppPaths, session: &Session) -> bool {
+pub fn signed_out(paths: &AppPaths, session: &Session) -> bool {
     paths
         .account(session.ds_user_id)
         .refuses_session(session.created_at)
@@ -165,7 +165,7 @@ pub(crate) fn signed_out(paths: &AppPaths, session: &Session) -> bool {
 /// out, such a process closes its own within [`SIGN_OUT_LOOK`] and the request
 /// it has in flight, and a browser closing writes into its profile, which would
 /// make a removed one again.
-pub(crate) async fn let_go_of(profiles: &[PathBuf]) {
+pub async fn let_go_of(profiles: &[PathBuf]) {
     use crate::headless::profile::in_use;
     let held = |path: &PathBuf| {
         in_use(path)

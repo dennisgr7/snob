@@ -485,8 +485,8 @@ pub fn settle_account(paths: &snob_store::paths::AccountPaths, at: Epoch) -> usi
 impl TickReport {
     /// A report that never ran, for a test that only cares what it looks like,
     /// read as the account it reports on.
-    #[cfg(test)]
-    pub(crate) fn for_test(report: WatchReport, requests: u32, at: Epoch) -> Self {
+    #[doc(hidden)]
+    pub fn for_test(report: WatchReport, requests: u32, at: Epoch) -> Self {
         Self {
             viewer: Viewer {
                 pk: report.account_pk,

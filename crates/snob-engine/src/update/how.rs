@@ -13,7 +13,7 @@ use super::REPO;
 
 /// How snob is installed here.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Method {
+pub enum Method {
     /// Homebrew or Linuxbrew, through the tap this repository is: `brew` is
     /// the prefix's own, so a scheduler with a bare `PATH` finds it too.
     Homebrew { brew: PathBuf },
@@ -37,7 +37,7 @@ pub(crate) enum Method {
 
 /// Who puts a new version in place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Applies {
+pub enum Applies {
     /// snob, over its own binary.
     Itself,
     /// The package manager, run by snob.
@@ -51,10 +51,10 @@ pub(crate) enum Applies {
 /// One program run to fetch or put in place a version, with its arguments
 /// and what it is told in its environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Step {
-    pub(crate) program: PathBuf,
-    pub(crate) args: Vec<OsString>,
-    pub(crate) env: Vec<(&'static str, &'static str)>,
+pub struct Step {
+    pub program: PathBuf,
+    pub args: Vec<OsString>,
+    pub env: Vec<(&'static str, &'static str)>,
 }
 
 impl Step {
@@ -92,7 +92,7 @@ impl Method {
         }
     }
 
-    pub(crate) fn applies(&self) -> Applies {
+    pub fn applies(&self) -> Applies {
         match self {
             Method::Script => Applies::Itself,
             Method::Homebrew { .. }
@@ -107,7 +107,7 @@ impl Method {
     /// What fetches `version` ahead of putting it in place, where the manager
     /// can: its bottle or archive lands in its own cache, and the upgrade later
     /// is quick.
-    pub(crate) fn prefetch(&self) -> Vec<Step> {
+    pub fn prefetch(&self) -> Vec<Step> {
         match self {
             // The formula is read from the tap, which only `brew update`
             // brings forward; the upgrade after it then need not update
@@ -125,7 +125,7 @@ impl Method {
     }
 
     /// What puts `version` in place, for a manager's install.
-    pub(crate) fn apply(&self, version: &str) -> Vec<Step> {
+    pub fn apply(&self, version: &str) -> Vec<Step> {
         match self {
             Method::Homebrew { brew } => vec![
                 Step::of(brew, &["upgrade", "--quiet", "--formula", FORMULA])
@@ -161,7 +161,7 @@ impl Method {
 
     /// The command a person types to update this install, `deb` being the
     /// downloaded package when there is one.
-    pub(crate) fn by_hand(&self, deb: Option<&Path>) -> Option<String> {
+    pub fn by_hand(&self, deb: Option<&Path>) -> Option<String> {
         Some(match self {
             Method::Homebrew { .. } => "brew upgrade snob".to_string(),
             Method::Scoop { .. } => "scoop update snob".to_string(),
@@ -345,7 +345,7 @@ pub(crate) fn real_exe() -> std::io::Result<PathBuf> {
 }
 
 /// How this binary was installed.
-pub(crate) fn this_binary() -> Method {
+pub fn this_binary() -> Method {
     match real_exe() {
         Ok(real) => detect(&real, &System),
         Err(_) => Method::Unknown,

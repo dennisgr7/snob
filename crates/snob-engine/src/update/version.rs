@@ -3,7 +3,7 @@
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Version(u64, u64, u64);
+pub struct Version(u64, u64, u64);
 
 impl Version {
     /// `text` as a version, or `None` when it is anything but three numbers.
@@ -21,7 +21,7 @@ impl Version {
     }
 
     /// This build's version, `None` for a pre-release build.
-    pub(crate) fn current() -> Option<Self> {
+    pub fn current() -> Option<Self> {
         Self::parse(env!("CARGO_PKG_VERSION"))
     }
 }

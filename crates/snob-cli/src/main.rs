@@ -786,12 +786,13 @@ fn log_filter(
             .with_target("snob_ig", Level::DEBUG)
             .with_target("snob_core", Level::DEBUG)
             .with_target("snob_store", Level::DEBUG)
-            .with_target("snob_cli", Level::DEBUG);
+            .with_target("snob_cli", Level::DEBUG)
+            .with_target("snob_engine", Level::DEBUG);
     }
     let quiet = || {
         let quiet = Targets::new().with_default(Level::WARN);
         if owner {
-            quiet.with_target("snob_cli::owner::server", Level::INFO)
+            quiet.with_target("snob_engine::owner::server", Level::INFO)
         } else {
             quiet
         }
@@ -840,13 +841,13 @@ mod filter_tests {
         let quiet = log_filter(false, None, false);
         assert!(quiet.would_enable("snob_ig::client", &Level::WARN));
         assert!(!quiet.would_enable("snob_ig::client", &Level::INFO));
-        assert!(!quiet.would_enable("snob_cli::owner::server", &Level::INFO));
+        assert!(!quiet.would_enable("snob_engine::owner::server", &Level::INFO));
 
         // The owner says when it starts, and otherwise no more than a command.
         let owner = log_filter(false, None, true);
-        assert!(owner.would_enable("snob_cli::owner::server", &Level::INFO));
-        assert!(!owner.would_enable("snob_cli::owner::server", &Level::DEBUG));
-        assert!(!owner.would_enable("snob_cli::headless", &Level::INFO));
+        assert!(owner.would_enable("snob_engine::owner::server", &Level::INFO));
+        assert!(!owner.would_enable("snob_engine::owner::server", &Level::DEBUG));
+        assert!(!owner.would_enable("snob_engine::headless", &Level::INFO));
 
         let chosen = log_filter(false, Some("snob_store=debug,warn"), false);
         assert!(chosen.would_enable("snob_store::secrets", &Level::DEBUG));

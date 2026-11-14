@@ -17,12 +17,12 @@
 //! **One integrity check: the release's `SHA256SUMS`**, the same one the
 //! install scripts make, over HTTPS to GitHub's hosts only.
 
-pub(crate) mod apply;
-pub(crate) mod github;
-pub(crate) mod how;
+pub mod apply;
+pub mod github;
+pub mod how;
 pub(crate) mod running;
-pub(crate) mod state;
-pub(crate) mod version;
+pub mod state;
+pub mod version;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -83,7 +83,7 @@ pub fn enabled(sandboxed: bool) -> bool {
 /// Whether `snob update` may run here, which a person asking for it settles
 /// for everything [`enabled`] leaves to the automatic update (`CI`,
 /// `SNOB_NO_UPDATE_CHECK`) but not for a build snob cannot replace.
-pub(crate) fn may_update_by_hand(sandboxed: bool) -> anyhow::Result<()> {
+pub fn may_update_by_hand(sandboxed: bool) -> anyhow::Result<()> {
     use crate::exit::{ExitCode, ExitError};
     let refused = |why: &str| -> anyhow::Result<()> {
         Err(ExitError::new(ExitCode::Error, why.to_string()).into())
@@ -126,13 +126,13 @@ fn test_origin() -> Option<github::Origin> {
     None
 }
 
-pub(crate) fn origin() -> github::Origin {
+pub fn origin() -> github::Origin {
     test_origin().unwrap_or_else(github::Origin::github)
 }
 
 /// The binary that is running, every link followed: the file a script
 /// install replaces.
-pub(crate) fn this_exe() -> std::io::Result<PathBuf> {
+pub fn this_exe() -> std::io::Result<PathBuf> {
     how::real_exe()
 }
 
@@ -263,7 +263,7 @@ fn apply_when_alone(files: &Files, state: &State, globals: &[OsString]) {
 }
 
 /// Checks the staged binary is the one downloaded, and puts it at `exe`.
-pub(crate) fn put_in_place(exe: &Path, staged: &state::Staged) -> anyhow::Result<()> {
+pub fn put_in_place(exe: &Path, staged: &state::Staged) -> anyhow::Result<()> {
     let (Some(file), Some(sha256)) = (&staged.file, &staged.sha256) else {
         anyhow::bail!("the downloaded version has no file to apply");
     };
@@ -276,7 +276,7 @@ pub(crate) fn put_in_place(exe: &Path, staged: &state::Staged) -> anyhow::Result
     Ok(())
 }
 
-pub(crate) fn note_applied(files: &Files, to: &str) {
+pub fn note_applied(files: &Files, to: &str) {
     let from = env!("CARGO_PKG_VERSION").to_string();
     let to = to.to_string();
     let _ = state::change(files, |s| {
@@ -292,7 +292,7 @@ pub(crate) fn note_applied(files: &Files, to: &str) {
     let _ = std::fs::remove_dir_all(files.staged_dir());
 }
 
-pub(crate) fn note_failure(files: &Files, message: &str) {
+pub fn note_failure(files: &Files, message: &str) {
     let message = message.to_string();
     let _ = state::change(files, |s| {
         s.error = Some(state::Failure {
@@ -399,10 +399,7 @@ pub async fn fetch(paths: &AppPaths) -> anyhow::Result<()> {
 
 /// Asks GitHub, writes down what it said, and returns the newest version
 /// when it is newer than this one.
-pub(crate) async fn check(
-    files: &Files,
-    origin: &github::Origin,
-) -> anyhow::Result<Option<Version>> {
+pub async fn check(files: &Files, origin: &github::Origin) -> anyhow::Result<Option<Version>> {
     let (etag, latest) = state::change(files, |s| {
         s.last_check = Some(state::now());
         (s.etag.clone(), s.latest.clone())
@@ -430,7 +427,7 @@ pub(crate) async fn check(
 
 /// Fetches `version` ahead of applying it, as `method` allows, and writes it
 /// down as staged.
-pub(crate) async fn stage(
+pub async fn stage(
     files: &Files,
     origin: &github::Origin,
     version: Version,
@@ -541,7 +538,7 @@ pub fn report(paths: &AppPaths, sandboxed: bool) -> Value {
 
 /// [`report`], `current` being the version installed: this process's, or the
 /// one `snob update` has just put in its place.
-pub(crate) fn report_as(paths: &AppPaths, sandboxed: bool, current: Option<Version>) -> Value {
+pub fn report_as(paths: &AppPaths, sandboxed: bool, current: Option<Version>) -> Value {
     let files = Files::of(paths);
     let state = state::load(&files);
     let method = how::this_binary();

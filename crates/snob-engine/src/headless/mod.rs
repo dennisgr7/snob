@@ -47,12 +47,12 @@ use crate::cdp::Cdp;
 mod guard;
 mod identity;
 mod listen;
-pub(crate) mod profile;
+pub mod profile;
 mod tab;
 pub(crate) mod write_back;
 
 use identity::{machine_hints, metadata};
-pub(crate) use profile::ProfileMark;
+pub use profile::ProfileMark;
 use profile::sync_cookies;
 use tab::{fetch, navigate, navigate_and_read};
 
@@ -1523,7 +1523,7 @@ async fn running_build(cdp: &Cdp, browser: &crate::browser::Browser) -> Result<(
 
 /// A browser without a window, for a login watched from another machine
 /// (`crate::relay`), on the tab it opened.
-pub(crate) struct RemoteLogin {
+pub struct RemoteLogin {
     pub cdp: Cdp,
     /// The DevTools session of its tab.
     pub tab: String,
@@ -1542,7 +1542,7 @@ pub(crate) struct RemoteLogin {
 /// **Without the guard** (`guard`): what the person does here is a login, with
 /// its own posts — the form, a two-factor code, a challenge — and none of them
 /// is a call of snob's to judge.
-pub(crate) async fn for_a_remote_login(
+pub async fn for_a_remote_login(
     browser: &crate::browser::Browser,
     profile: &std::path::Path,
     paths: &AppPaths,

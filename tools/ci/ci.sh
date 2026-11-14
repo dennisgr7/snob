@@ -25,4 +25,5 @@ dbus-run-session -- bash -c '
   echo "" | gnome-keyring-daemon --unlock --components=secrets
   cargo test --workspace --locked --target '"$target"'
   cargo test -p snob-cli --features testing --locked --target '"$target"'
+  cargo test -p snob-engine --features testing --locked --target '"$target"'
 '

@@ -45,7 +45,7 @@ const POLL_FOR_READY: Duration = Duration::from_millis(100);
 const REALTIME_HOSTS: &str = "*edge-chat*";
 
 /// How long an ordinary browser command may take before the call gives up.
-pub(crate) const CALL_TIMEOUT: Duration = Duration::from_secs(20);
+pub const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Instagram's login page, on the site every client points at: Instagram, or
 /// in a testing build the fake the tests serve (`snob_ig::client::site`).

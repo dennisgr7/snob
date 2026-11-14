@@ -34,7 +34,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub(crate) fn of(media_type: u8) -> Self {
+    pub fn of(media_type: u8) -> Self {
         match media_type {
             1 => Self::Photo,
             2 => Self::Video,
@@ -44,7 +44,7 @@ impl Kind {
 
     /// What the printed listings and the views write for it: different
     /// shapes, and the words in them are one decision.
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::Photo => "photo",
             Self::Video => "video",
@@ -78,7 +78,7 @@ const THUMB_WIDTH: u32 = 640;
 /// The picture a view draws small, of the `candidates` Instagram offers for one
 /// item (a video's are its cover): the narrowest at least [`THUMB_WIDTH`] wide,
 /// and when none is, the widest; on a tie, the one listed first.
-pub(crate) fn thumb_among(candidates: &[PictureVersion]) -> Option<String> {
+pub fn thumb_among(candidates: &[PictureVersion]) -> Option<String> {
     let width = |v: &&PictureVersion| v.width.unwrap_or(0);
     candidates
         .iter()
@@ -110,7 +110,7 @@ pub(crate) const MOST_SMALL_PICTURES: usize = 4 * 1024 * 1024;
 ///
 /// **In the JSON, never on standard output as bytes**, and never an address:
 /// what is handed on is the picture, which names nobody and expires nowhere.
-pub(crate) async fn small_pictures(
+pub async fn small_pictures(
     client: &IgClient,
     wanted: Vec<(usize, Option<String>)>,
 ) -> Result<Vec<serde_json::Value>> {
@@ -169,10 +169,7 @@ fn picture_type(bytes: &[u8]) -> Option<&'static str> {
 
 /// A listing's JSON document with `pictures` beside what it lists
 /// ([`small_pictures`]).
-pub(crate) fn with_pictures(
-    text: String,
-    pictures: Option<Vec<serde_json::Value>>,
-) -> Result<String> {
+pub fn with_pictures(text: String, pictures: Option<Vec<serde_json::Value>>) -> Result<String> {
     let Some(pictures) = pictures else {
         return Ok(text);
     };
@@ -186,7 +183,7 @@ pub(crate) fn with_pictures(
 }
 
 /// The accounts a story tags, `@a @b`, for a table cell.
-pub(crate) fn mentions_of(story: &Story) -> String {
+pub fn mentions_of(story: &Story) -> String {
     story
         .mentions
         .iter()
@@ -197,11 +194,11 @@ pub(crate) fn mentions_of(story: &Story) -> String {
 
 /// When a story was posted, and what is left of it: the two time columns of
 /// the printed listing and of the browser, read off the same clock code.
-pub(crate) fn posted_of(story: &Story) -> String {
+pub fn posted_of(story: &Story) -> String {
     sentences::stored_on(story.taken_at)
 }
 
-pub(crate) fn left_of(story: &Story) -> String {
+pub fn left_of(story: &Story) -> String {
     remaining(story.expiring_at)
 }
 
@@ -234,7 +231,7 @@ fn countdown(seconds: i64) -> String {
 }
 
 /// What [`save_story`] found: the file it wrote, or the one already there.
-pub(crate) enum Saved {
+pub enum Saved {
     Now(PathBuf),
     Already(PathBuf),
 }
@@ -244,7 +241,7 @@ pub(crate) enum Saved {
 /// **Nothing is fetched for a story already on disk.**
 ///
 /// **The file is written to `<stem>.<pid>.part` and renamed at the end.**
-pub(crate) async fn save_story(
+pub async fn save_story(
     client: &IgClient,
     stem_base: &str,
     items: &[Story],
@@ -361,7 +358,7 @@ fn already_saved(dir: &Path, stem: &str) -> Option<PathBuf> {
 }
 
 /// Downloads all of them into a directory.
-pub(crate) async fn download_many(
+pub async fn download_many(
     client: std::sync::Arc<IgClient>,
     stem_base: String,
     items: Vec<Story>,
@@ -389,7 +386,7 @@ pub(crate) async fn download_many(
 /// its best tracks and the ffmpeg that joins them, when it is to be saved
 /// from those ([`save_file`]).
 #[derive(Debug, Clone)]
-pub(crate) struct Named {
+pub struct Named {
     pub number: usize,
     pub stem: String,
     pub url: Option<String>,
@@ -425,7 +422,7 @@ impl Best {
 /// `file` saved into `dir`: from its best tracks, joined by ffmpeg, when it has
 /// them and an ffmpeg to join them; from its progressive file otherwise, and
 /// when the join fails, which is said on standard error.
-pub(crate) async fn save_file(client: &IgClient, file: &Named, dir: &Path) -> Result<Saved> {
+pub async fn save_file(client: &IgClient, file: &Named, dir: &Path) -> Result<Saved> {
     let (saved, said) = save_file_saying(client, file, dir).await?;
     if let Some(said) = said {
         host::warn(&said);
@@ -470,7 +467,7 @@ pub(crate) async fn save_file_saying(
 
 /// [`save_file`] into `path`, replacing it as `-o` does, but only with a
 /// file that arrived whole.
-pub(crate) async fn save_file_to(client: &IgClient, file: &Named, path: &Path) -> Result<()> {
+pub async fn save_file_to(client: &IgClient, file: &Named, path: &Path) -> Result<()> {
     let (best, said) = joinable(file);
     if let Some(said) = said {
         host::warn(&said);
@@ -596,7 +593,7 @@ fn place(part: &Path, dir: &Path, stem: &str) -> Result<Saved> {
 /// [`download_many`] for any set of files of the CDN, each under the name it
 /// carries: into `destination`, three at a time, past the ones that fail,
 /// said at the end as so many of the `noun`.
-pub(crate) async fn download_named(
+pub async fn download_named(
     client: std::sync::Arc<IgClient>,
     files: Vec<Named>,
     destination: Option<&Path>,
@@ -678,7 +675,7 @@ pub(crate) async fn download_named(
 const STORY_DOWNLOADS_IN_FLIGHT: usize = 3;
 
 /// Whether a failed download was the user stopping it.
-pub(crate) fn was_canceled(e: &anyhow::Error) -> bool {
+pub fn was_canceled(e: &anyhow::Error) -> bool {
     e.chain()
         .any(|cause| matches!(cause.downcast_ref::<IgError>(), Some(IgError::Canceled)))
 }
@@ -705,7 +702,7 @@ pub(crate) fn ends_the_run(e: &IgError) -> bool {
 }
 
 /// [`ends_the_run`], for an error with its context around it.
-pub(crate) fn stopped_the_run(e: &anyhow::Error) -> bool {
+pub fn stopped_the_run(e: &anyhow::Error) -> bool {
     e.chain()
         .any(|cause| cause.downcast_ref::<IgError>().is_some_and(ends_the_run))
 }
@@ -738,7 +735,7 @@ pub(crate) fn best_weight(file: &Named) -> u64 {
 }
 
 /// The bytes of one story, from the CDN.
-pub(crate) async fn bytes_of(client: &IgClient, story: &Story) -> Result<Vec<u8>> {
+pub async fn bytes_of(client: &IgClient, story: &Story) -> Result<Vec<u8>> {
     let url = story
         .url
         .as_deref()
@@ -747,7 +744,7 @@ pub(crate) async fn bytes_of(client: &IgClient, story: &Story) -> Result<Vec<u8>
 }
 
 /// What arrived, read from the bytes rather than from the URL.
-pub(crate) fn extension_of(bytes: &[u8]) -> &'static str {
+pub fn extension_of(bytes: &[u8]) -> &'static str {
     let webp = bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP");
     match bytes {
         _ if bytes.get(4..8) == Some(b"ftyp") => "mp4",
@@ -758,12 +755,7 @@ pub(crate) fn extension_of(bytes: &[u8]) -> &'static str {
 }
 
 /// `someone-3.mp4`, next to whatever is already there.
-pub(crate) fn default_name(
-    dir: &Path,
-    username: &str,
-    number: usize,
-    extension: &str,
-) -> Result<PathBuf> {
+pub fn default_name(dir: &Path, username: &str, number: usize, extension: &str) -> Result<PathBuf> {
     files::default_path(dir, &format!("{}-{number}", printable(username)), extension)
 }
 

@@ -25,7 +25,7 @@ pub fn program() -> std::io::Result<PathBuf> {
 
 /// The stable path to this binary, warning with `consequence` when the best
 /// there is sits in a directory named after this version.
-pub(crate) fn to_print(consequence: &str) -> std::io::Result<PathBuf> {
+pub fn to_print(consequence: &str) -> std::io::Result<PathBuf> {
     let current = program()?;
     let path_var = std::env::var_os("PATH");
     let exe = stable_exe(

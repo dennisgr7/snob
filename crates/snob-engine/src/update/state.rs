@@ -12,12 +12,12 @@ use serde::{Deserialize, Serialize};
 use snob_store::paths::AppPaths;
 
 /// Which shape of the file this is.
-pub(crate) const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 1;
 
 /// How much the updater does on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Auto {
+pub enum Auto {
     /// Nothing: no check, no download, no notice.
     Off,
     /// Check once a day and say when a version is out.
@@ -31,7 +31,7 @@ pub(crate) enum Auto {
 }
 
 impl Auto {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Auto::Off => "off",
             Auto::Notify => "notify",
@@ -43,52 +43,52 @@ impl Auto {
 
 /// A version downloaded and checked, waiting to be applied.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Staged {
-    pub(crate) version: String,
+pub struct Staged {
+    pub version: String,
     /// The new binary (a script install's) or package (the `.deb`), when
     /// snob downloaded it; none when the package manager holds it.
-    pub(crate) file: Option<PathBuf>,
+    pub file: Option<PathBuf>,
     /// The file's SHA-256, checked again before it is applied.
-    pub(crate) sha256: Option<String>,
+    pub sha256: Option<String>,
     /// When it was staged, in seconds since the epoch.
-    pub(crate) at: i64,
+    pub at: i64,
 }
 
 /// The last version applied.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Applied {
-    pub(crate) from: String,
-    pub(crate) to: String,
-    pub(crate) at: i64,
+pub struct Applied {
+    pub from: String,
+    pub to: String,
+    pub at: i64,
     /// Whether a person has been told, once.
     #[serde(default)]
-    pub(crate) told: bool,
+    pub told: bool,
 }
 
 /// The last thing that went wrong, until something goes right.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Failure {
-    pub(crate) at: i64,
-    pub(crate) message: String,
+pub struct Failure {
+    pub at: i64,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub(crate) struct State {
-    pub(crate) schema: u32,
-    pub(crate) auto: Auto,
+pub struct State {
+    pub schema: u32,
+    pub auto: Auto,
     /// When GitHub was last asked, whatever it answered.
-    pub(crate) last_check: Option<i64>,
+    pub last_check: Option<i64>,
     /// GitHub's tag for the answer it gave, so an unchanged one costs it
     /// nothing to give again.
-    pub(crate) etag: Option<String>,
+    pub etag: Option<String>,
     /// The newest version GitHub has named.
-    pub(crate) latest: Option<String>,
-    pub(crate) staged: Option<Staged>,
-    pub(crate) applied: Option<Applied>,
-    pub(crate) error: Option<Failure>,
+    pub latest: Option<String>,
+    pub staged: Option<Staged>,
+    pub applied: Option<Applied>,
+    pub error: Option<Failure>,
     /// The version a person was last told about, so each is said once.
-    pub(crate) told: Option<String>,
+    pub told: Option<String>,
 }
 
 impl Default for State {
@@ -110,25 +110,25 @@ impl Default for State {
 /// Where the updater keeps its files: all of them in the data directory, so
 /// `snob purge` takes them with it.
 #[derive(Debug, Clone)]
-pub(crate) struct Files {
+pub struct Files {
     data: PathBuf,
 }
 
 impl Files {
-    pub(crate) fn of(paths: &AppPaths) -> Self {
+    pub fn of(paths: &AppPaths) -> Self {
         Self {
             data: paths.data_dir().to_path_buf(),
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn at(data: &Path) -> Self {
+    pub fn at(data: &Path) -> Self {
         Self {
             data: data.to_path_buf(),
         }
     }
 
-    pub(crate) fn state(&self) -> PathBuf {
+    pub fn state(&self) -> PathBuf {
         self.data.join("update.json")
     }
 
@@ -139,34 +139,34 @@ impl Files {
 
     /// Held by the one process that checks and downloads, for as long as it
     /// does.
-    pub(crate) fn fetch_lock(&self) -> PathBuf {
+    pub fn fetch_lock(&self) -> PathBuf {
         self.data.join("update-fetch.lock")
     }
 
     /// Held shared by every snob that counts as running, and alone by the
     /// one that applies a version (`running`).
-    pub(crate) fn running_lock(&self) -> PathBuf {
+    pub fn running_lock(&self) -> PathBuf {
         self.data.join("running.lock")
     }
 
     /// The updater's own directory.
-    pub(crate) fn dir(&self) -> PathBuf {
+    pub fn dir(&self) -> PathBuf {
         self.data.join("update")
     }
 
     /// The one version downloaded and waiting.
-    pub(crate) fn staged_dir(&self) -> PathBuf {
+    pub fn staged_dir(&self) -> PathBuf {
         self.dir().join("staged")
     }
 
     /// What the background check and a package manager's upgrade said.
-    pub(crate) fn log(&self) -> PathBuf {
+    pub fn log(&self) -> PathBuf {
         self.dir().join("update.log")
     }
 }
 
 /// The state as stored, or a fresh one.
-pub(crate) fn load(files: &Files) -> State {
+pub fn load(files: &Files) -> State {
     read(&files.state())
 }
 
@@ -182,10 +182,7 @@ fn read(path: &Path) -> State {
 
 /// Reads the state, lets `edit` change it, and writes it back, all under
 /// `update.lock`. Returns what `edit` returned and the state as written.
-pub(crate) fn change<T>(
-    files: &Files,
-    edit: impl FnOnce(&mut State) -> T,
-) -> std::io::Result<(T, State)> {
+pub fn change<T>(files: &Files, edit: impl FnOnce(&mut State) -> T) -> std::io::Result<(T, State)> {
     snob_store::paths::create_private_dir(&files.data).map_err(std::io::Error::other)?;
     let _held = snob_store::paths::lock_file(&files.state_lock())?;
     let mut state = read(&files.state());
@@ -200,7 +197,7 @@ pub(crate) fn change<T>(
 }
 
 /// Now, in seconds since the epoch.
-pub(crate) fn now() -> i64 {
+pub fn now() -> i64 {
     snob_core::clock::now_ms().get() / 1000
 }
 

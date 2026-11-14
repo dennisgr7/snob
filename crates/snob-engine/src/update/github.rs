@@ -27,7 +27,7 @@ const MOST_HOPS: usize = 3;
 
 /// Where releases are asked about and downloaded from.
 #[derive(Debug, Clone)]
-pub(crate) struct Origin {
+pub struct Origin {
     /// The API, for the latest release.
     pub(crate) api: Url,
     /// Where a release's files are, by tag and name.

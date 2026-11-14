@@ -112,7 +112,7 @@ pub fn spend_alone() {
 
 /// The refusal of a run given `--spend-alone` while another holds the
 /// account: exit 1, with `busy` as the reason a program reads.
-pub(crate) fn held_elsewhere() -> anyhow::Error {
+pub fn held_elsewhere() -> anyhow::Error {
     crate::exit::ExitError::new(
         crate::exit::ExitCode::Error,
         "another snob started by an agent is using this account on Instagram, and only one \
