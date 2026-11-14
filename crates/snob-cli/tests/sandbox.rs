@@ -1159,6 +1159,34 @@ async fn a_run_that_began_late_says_so() {
     assert_eq!(line["run"]["late"], false, "{line}");
 }
 
+/// With several accounts signed in and none active, the monitor's
+/// subcommands that act as no account still answer: `watch status`,
+/// `watch unit` and `watch deliver` read every account's database, or none.
+#[tokio::test]
+async fn the_monitors_own_subcommands_need_no_active_account() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    log_in(tmp.path(), &instagram);
+    configure(tmp.path(), "schema = 2\nevery = \"6h\"\n");
+    let paths = snob_store::paths::AppPaths::rooted_at(tmp.path());
+    snob_store::registry::Registry::update(&paths, |registry| {
+        registry.upsert(Pk::new(7), "other", snob_core::Epoch::new(1_700_000_000));
+        registry.active = None;
+    })
+    .unwrap();
+
+    for args in [&["watch", "status"][..], &["watch", "unit", "cron"][..]] {
+        let out = snob(tmp.path(), None, args);
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+    }
+    let out = snob(tmp.path(), None, &["watch", "deliver"]);
+    assert!(
+        stderr(&out).contains("nowhere to deliver to"),
+        "it got as far as the webhook: {}",
+        stderr(&out)
+    );
+}
+
 /// `watch unit schtasks` prints the PowerShell that registers the task,
 /// with this binary's path, and warns that a file with no webhook leaves the
 /// reports where nobody reads them.

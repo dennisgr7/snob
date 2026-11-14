@@ -752,7 +752,21 @@ async fn dispatch(
             boxed(|| commands::follow::run(args, verb, secrets, &account)).await
         }
         Command::Watch(args) => {
-            let account = resolved()?;
+            use snob_cli::cli::WatchCommand;
+            // `status`, `deliver` and `unit` act as no account: they read
+            // every account's database, or none. With several signed in and
+            // none active, the account they would be handed cannot be
+            // settled, which is no reason to refuse them; an account named
+            // with --account or SNOB_ACCOUNT that is not here still is.
+            let needs_none = matches!(
+                args.command,
+                Some(WatchCommand::Status(_) | WatchCommand::Deliver(_) | WatchCommand::Unit(_))
+            );
+            let account = if needs_none && !named {
+                resolved().ok().flatten()
+            } else {
+                resolved()?
+            };
             boxed(|| commands::watch::run(args, store, paths, account)).await
         }
         Command::Import(command) => commands::import::run(command),
