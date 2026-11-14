@@ -128,8 +128,10 @@ pub(super) async fn once(
 /// run (`scheduled::seed_for`), so a timer that asks every quarter of an hour
 /// runs on the schedule `snob watch` would keep, a quarter of an hour late
 /// at most. The jitter is not rolled: the timer's own cadence already keeps
-/// runs off the second the grid names. Not due is said on standard error and
-/// costs nothing: no session is read and nothing is sent.
+/// runs off the second the grid names. Not due costs nothing: no session is
+/// read and nothing is sent, and it is said on standard error **only to a
+/// terminal**: a timer asks 96 times a day, and each line would be one more in
+/// its journal, or one more mail from cron. The trace says it at `debug`.
 ///
 /// **A timer keeps nothing between two looks**, so the first look is written
 /// down (`Shared::ask_since`) and a calendar that has never run counts the
@@ -147,10 +149,13 @@ fn is_due(paths: &AppPaths, configured: Option<&config::WatchConfig>) -> Result<
     match schedule::due_asked_since(&schedule, last_run, asked_since, now, &chrono::Local) {
         Due::Now { .. } => Ok(true),
         Due::At(at) => {
-            ui::info(&format!(
-                "Not due yet: the next run is on {}.",
-                report::stored_on(at)
-            ));
+            use std::io::IsTerminal as _;
+            let said = format!("Not due yet: the next run is on {}.", report::stored_on(at));
+            if std::io::stderr().is_terminal() {
+                ui::info(&said);
+            } else {
+                tracing::debug!("{said}");
+            }
             Ok(false)
         }
         Due::Never => Err(anyhow::anyhow!(

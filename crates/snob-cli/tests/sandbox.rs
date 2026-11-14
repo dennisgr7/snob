@@ -824,7 +824,9 @@ async fn a_run_asked_for_before_it_is_due_sends_nothing() {
             &["watch", "once", "--when-due"],
         );
         assert!(out.status.success(), "{}", stderr(&out));
-        assert!(stderr(&out).contains("Not due yet"), "{}", stderr(&out));
+        // Said to a terminal only: a timer's journal would get it 96 times a
+        // day.
+        assert!(!stderr(&out).contains("Not due yet"), "{}", stderr(&out));
     }
 
     // The first ask started it: the next run is six hours on.
@@ -891,13 +893,15 @@ async fn a_calendar_never_run_is_due_at_the_timers_next_look() {
     let said = json(&snob(tmp.path(), None, &["watch", "status", "--json"]));
     assert_eq!(said["next_run"]["due_now"], true, "{said}");
 
+    let before = instagram.received_requests().await.unwrap().len();
     let out = snob(
         tmp.path(),
         Some(&instagram),
         &["watch", "once", "--when-due"],
     );
     assert!(out.status.success(), "{}", stderr(&out));
-    assert!(!stderr(&out).contains("Not due yet"), "{}", stderr(&out));
+    let ran = instagram.received_requests().await.unwrap().len();
+    assert!(ran > before, "the run was due, and asked: {}", stderr(&out));
 
     // And having run, the moment is served: the next look waits for tomorrow.
     let out = snob(
@@ -906,7 +910,11 @@ async fn a_calendar_never_run_is_due_at_the_timers_next_look() {
         &["watch", "once", "--when-due"],
     );
     assert!(out.status.success(), "{}", stderr(&out));
-    assert!(stderr(&out).contains("Not due yet"), "{}", stderr(&out));
+    assert_eq!(
+        instagram.received_requests().await.unwrap().len(),
+        ran,
+        "not due, so nothing is sent"
+    );
 }
 
 /// A run that failed before any account wrote its row is not run again at
@@ -949,7 +957,6 @@ async fn a_run_that_failed_is_not_run_again_at_the_next_look() {
         &["watch", "once", "--when-due"],
     );
     assert!(!out.status.success(), "{}", stderr(&out));
-    assert!(!stderr(&out).contains("Not due yet"), "{}", stderr(&out));
     let after_the_run = instagram.received_requests().await.unwrap().len();
     assert!(after_the_run > before, "the run asked about the account");
 
@@ -959,7 +966,6 @@ async fn a_run_that_failed_is_not_run_again_at_the_next_look() {
         &["watch", "once", "--when-due"],
     );
     assert!(out.status.success(), "{}", stderr(&out));
-    assert!(stderr(&out).contains("Not due yet"), "{}", stderr(&out));
     assert_eq!(
         instagram.received_requests().await.unwrap().len(),
         after_the_run,
