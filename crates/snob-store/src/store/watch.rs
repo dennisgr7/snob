@@ -191,14 +191,14 @@ pub fn last_runs(conn: &Connection) -> Result<Vec<Run>, StoreError> {
 /// it, so that a restart does not start the interval again.
 pub fn last_started(conn: &Connection) -> Result<Option<Epoch>, StoreError> {
     let started = conn
-        .query_row(
-            "SELECT started_at FROM watch_runs ORDER BY started_at DESC, id DESC LIMIT 1",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
+        .query_row(LAST_STARTED, [], |row| row.get::<_, i64>(0))
         .optional()?;
     Ok(started.map(Epoch::new))
 }
+
+/// Read off the end of `watch_runs_started` (`021_lookup_indexes.sql`).
+const LAST_STARTED: &str =
+    "SELECT started_at FROM watch_runs ORDER BY started_at DESC, id DESC LIMIT 1";
 
 /// One receipt, with what it is a receipt for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -502,8 +502,14 @@ pub fn renames_between(
     after: Epoch,
     until: Epoch,
 ) -> Result<Vec<Rename>, StoreError> {
-    let mut stmt = conn.prepare(
-        "SELECT h.pk, h.id, h.username,
+    let mut stmt = conn.prepare(RENAMES_BETWEEN)?;
+    let ids = serde_json::to_string(snapshots).unwrap_or_else(|_| "[]".into());
+    moved(stmt.query_map(params![ids, after.get(), until.get()], row_to_rename)?)
+}
+
+/// `?1` the captures, as a JSON array of ids, `?2` and `?3` the window. The
+/// window is sought in `username_history_changed` (`021_lookup_indexes.sql`).
+const RENAMES_BETWEEN: &str = "SELECT h.pk, h.id, h.username,
                 coalesce(
                   (SELECT n.username FROM username_history n
                    WHERE n.pk = h.pk AND n.changed_at > ?3
@@ -521,11 +527,7 @@ pub fn renames_between(
              SELECT 1 FROM snapshot_members m, json_each(?1) j
              WHERE m.user_pk = h.pk AND m.snapshot_id = j.value
            )
-         ORDER BY h.changed_at, h.id",
-    )?;
-    let ids = serde_json::to_string(snapshots).unwrap_or_else(|_| "[]".into());
-    moved(stmt.query_map(params![ids, after.get(), until.get()], row_to_rename)?)
-}
+         ORDER BY h.changed_at, h.id";
 
 #[cfg(test)]
 mod tests {
@@ -1250,6 +1252,18 @@ mod tests {
             )
             .unwrap();
         assert_eq!(members, 0, "the members go with the capture");
+    }
+
+    #[test]
+    fn the_monitors_last_start_and_a_window_of_renames_are_sought() {
+        let db = Store::in_memory().unwrap();
+        let last = crate::store::plan(db.conn(), LAST_STARTED);
+        assert!(last.contains("watch_runs_started"), "{last}");
+        assert!(!last.contains("TEMP B-TREE"), "it is sorted: {last}");
+
+        let renames = crate::store::plan(db.conn(), RENAMES_BETWEEN);
+        assert!(renames.contains("username_history_changed"), "{renames}");
+        assert!(!renames.contains("SCAN h"), "{renames}");
     }
 
     /// The rule the whole of retention has to respect. Taking the marked

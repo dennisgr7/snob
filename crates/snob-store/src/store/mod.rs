@@ -193,6 +193,24 @@ fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<(), StoreError>
     Ok(())
 }
 
+/// How SQLite would run `sql`, one step a line, for the tests that hold a
+/// statement to its index.
+#[cfg(test)]
+pub(crate) fn plan(conn: &Connection, sql: &str) -> String {
+    let mut statement = conn
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .expect("the statement compiles");
+    let unbound = vec![rusqlite::types::Null; statement.parameter_count()];
+    statement
+        .query_map(rusqlite::params_from_iter(unbound), |row| {
+            row.get::<_, String>(3)
+        })
+        .expect("the plan is read")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("every step is text")
+        .join("\n")
+}
+
 /// What the migration runner counts up to. `0` on a database that has none.
 fn user_version(conn: &Connection) -> Result<i64, StoreError> {
     Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?)
