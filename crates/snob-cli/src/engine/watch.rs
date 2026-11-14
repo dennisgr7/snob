@@ -1174,13 +1174,17 @@ fn list_report(app: &App, pk: Pk, kind: ListKind, snapshot_id: i64) -> Result<Op
             //
             // Within one process this is impossible: pruning a marked capture
             // sets the mark to NULL and `Basis::decide` answers `Baseline`. It
-            // takes a second process's `prune` landing in between.
-            let Some(_) = snapshots::find_usable(conn, before)? else {
+            // takes a second process's `prune` landing in between, **and the
+            // three reads are one moment for that reason**: inside one read
+            // transaction (rolled back when it drops, having written nothing)
+            // the capture found is the capture whose members are read.
+            let moment = conn.unchecked_transaction()?;
+            let Some(_) = snapshots::find_usable(&moment, before)? else {
                 return Ok(None);
             };
             ListDiff::between(
-                &snapshots::members(conn, before)?,
-                &snapshots::members(conn, after)?,
+                &snapshots::members(&moment, before)?,
+                &snapshots::members(&moment, after)?,
             )
         }
     };
