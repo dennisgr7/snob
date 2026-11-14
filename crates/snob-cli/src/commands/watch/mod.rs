@@ -90,7 +90,7 @@ pub async fn run(
         Some(WatchCommand::Setup(args)) => setup::setup(args, secrets, paths, account).await,
         Some(WatchCommand::Status(args)) => status::status(args, paths, account),
         Some(WatchCommand::Deliver(args)) => deliver(args, secrets, paths).await,
-        Some(WatchCommand::Unit(args)) => unit(args),
+        Some(WatchCommand::Unit(args)) => unit(args, paths),
         // With nobody signed in there is nobody to read any entry as, and a
         // service started then would read the entries that name no viewer as
         // nobody for as long as it ran.

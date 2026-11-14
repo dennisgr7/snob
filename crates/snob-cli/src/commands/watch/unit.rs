@@ -27,7 +27,7 @@ const ASK_EVERY_MINUTES: u32 = 15;
 /// What every unit runs, after the binary.
 const RUN: [&str; 3] = ["watch", "once", "--when-due"];
 
-pub(super) fn unit(args: WatchUnitArgs) -> Result<ExitCode> {
+pub(super) fn unit(args: WatchUnitArgs, paths: &snob_store::paths::AppPaths) -> Result<ExitCode> {
     let exe = crate::exe::to_print(
         "a scheduler started from it stops working once an upgrade removes that directory; \
          print the unit again after an upgrade",
@@ -40,8 +40,23 @@ pub(super) fn unit(args: WatchUnitArgs) -> Result<ExitCode> {
          not sends nothing. Add --account <name> before \"watch\" if this computer signs in \
          more than one account.",
     );
+    // A file that cannot be read is `watch check`'s to explain; this only
+    // warns when it can tell.
+    let configured = snob_store::config::load(paths).ok().flatten();
+    if configured.is_some_and(|config| config.webhook.is_none()) {
+        ui::warn(NO_WEBHOOK);
+    }
     Ok(ExitCode::Ok)
 }
+
+/// Said when `watch.toml` names no webhook. A run on a timer prints its
+/// reports on standard output and moves the monitor on, so `watch diff`
+/// stops showing them; what the scheduler does with that output is a log
+/// at best (systemd's journal, cron's mail where a mail agent is set up),
+/// and nothing at all for a launch agent or a scheduled task.
+const NO_WEBHOOK: &str = "watch.toml names no [webhook], so the reports these runs make are \
+     printed where the scheduler keeps a run's output, if it keeps any, and \"snob watch diff\" \
+     no longer shows them once a run has made them. Set one with \"snob watch setup\".";
 
 /// The unit for `kind`, running `exe`.
 fn render(kind: UnitKind, exe: &str) -> String {
@@ -92,7 +107,10 @@ fn systemd(exe: &str) -> String {
          \n\
          # Then: systemctl --user daemon-reload\n\
          #       systemctl --user enable --now snob-watch.timer\n\
-         # and, to run while you are logged out: loginctl enable-linger\n",
+         # and, to run while you are logged out: loginctl enable-linger\n\
+         # Logged out, the keyring is usually locked: a session saved with\n\
+         # \"snob login --no-keyring\" works there; the webhook's token and\n\
+         # signing key live only in the keyring.\n",
         run = RUN.join(" "),
     )
 }
@@ -105,7 +123,8 @@ fn cron(exe: &str) -> String {
         "# crontab -e, and add:\n\
          */{ASK_EVERY_MINUTES} * * * * {quoted} {run}\n\
          # cron starts it with no session bus, where the system keyring may be out of\n\
-         # reach: a session saved with \"snob login --no-keyring\" works there.\n",
+         # reach: a session saved with \"snob login --no-keyring\" works there; the\n\
+         # webhook's token and signing key live only in the keyring.\n",
         run = RUN.join(" "),
     )
 }
@@ -248,6 +267,16 @@ mod tests {
                 "{line}"
             );
         }
+    }
+
+    /// Where the keyring cannot be reached, the notes say what still works
+    /// and what is left out.
+    #[test]
+    fn the_notes_say_where_the_keyring_is_out_of_reach() {
+        assert!(systemd("/usr/bin/snob").contains("--no-keyring"));
+        assert!(systemd("/usr/bin/snob").contains("signing key"));
+        assert!(cron("/usr/bin/snob").contains("signing key"));
+        assert!(NO_WEBHOOK.contains("[webhook]"));
     }
 
     /// A laptop's task: the scheduler's defaults would keep it from starting
