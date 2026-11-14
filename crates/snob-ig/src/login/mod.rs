@@ -87,7 +87,8 @@ pub fn session_from_cookies(
     {
         return Err(LoginError::MismatchedAccount {
             from_sessionid: session.ds_user_id,
-            from_cookie: from_cookie.trim().to_string(),
+            // Printed in the refusal, and written by whatever set the cookie.
+            from_cookie: snob_core::model::printable(from_cookie.trim()),
         });
     }
 
@@ -193,6 +194,20 @@ mod tests {
             session_from_cookies(&mismatched, UA),
             Err(LoginError::MismatchedAccount { .. })
         ));
+    }
+
+    #[test]
+    fn a_mismatched_cookie_is_said_without_what_a_terminal_would_act_on() {
+        let mismatched = BrowserCookies {
+            ds_user_id: Some("99\u{1b}[2K\u{1b}[A\u{202e}".into()),
+            ..cookies()
+        };
+        let refusal = session_from_cookies(&mismatched, UA).unwrap_err();
+        let LoginError::MismatchedAccount { from_cookie, .. } = &refusal else {
+            panic!("{refusal:?}");
+        };
+        assert_eq!(from_cookie, "99[2K[A");
+        assert!(!refusal.to_string().contains('\u{1b}'), "{refusal}");
     }
 
     /// The cookie is a cross-check, not a source. Without it the sessionid
