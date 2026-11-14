@@ -218,7 +218,17 @@ fn next_after_asked_since<Tz: TimeZone>(
         // hour past a moment the row already trails — and the thing that keeps
         // this monotonic if a calendar is ever strange enough to snap somewhere
         // unhelpful.
-        (Some(moment), Some(last)) => (moment + step).max(last),
+        //
+        // **The interval is added on the wall clock**, as the grid is read:
+        // `--every 1w --on mon --at 09:00` served on the Monday before a
+        // spring-forward put the floor at 10:00 local the Monday after, past
+        // 09:00, and the loop slept another week (three with `--every 2w`)
+        // while a timer ran at 10:00, off the grid. The floor is never closer
+        // than `MIN_GAP_SECS` of real time, which an addition across the hour
+        // that never happens could otherwise shorten.
+        (Some(moment), Some(last)) => on_the_wall_clock(moment, step, zone)
+            .max(moment + Duration::from_secs(super::MIN_GAP_SECS.unsigned_abs()))
+            .max(last),
         _ => now,
     };
 
@@ -298,6 +308,27 @@ fn next_after_asked_since<Tz: TimeZone>(
     minutes_on_named_days(calendar, zone, first, Direction::Forward)
         .find(|candidate| allowed(candidate))
         .map(|(minute, _)| Epoch::new(minute * 60))
+}
+
+/// `moment` and `step` later on the wall clock of `zone`: the same local time
+/// a day on for a day, whatever the zone did in between. Where that local
+/// time does not exist (the hour a spring-forward skips), or the sum does not
+/// fit, `step` of real time instead, which is what it always was.
+fn on_the_wall_clock<Tz: TimeZone>(moment: Epoch, step: Duration, zone: &Tz) -> Epoch {
+    let real = moment + step;
+    let Some(local) = zone.timestamp_opt(moment.get(), 0).single() else {
+        return real;
+    };
+    let Some(later) = i64::try_from(step.as_secs())
+        .ok()
+        .and_then(chrono::TimeDelta::try_seconds)
+        .and_then(|delta| local.naive_local().checked_add_signed(delta))
+    else {
+        return real;
+    };
+    zone.from_local_datetime(&later)
+        .earliest()
+        .map_or(real, |at| Epoch::new(at.timestamp()))
 }
 
 /// The moment on the grid that a run recorded at `last` was serving.
@@ -707,6 +738,39 @@ mod tests {
                 east(SUMMER)
             }
         }
+    }
+
+    /// A weekly floor on a calendar holds the same local time across a
+    /// spring-forward: the run served on a Sunday at 09:00 is next due on the
+    /// Monday at 09:00 local, not at 10:00, past the moment, and a week late.
+    #[test]
+    fn an_interval_beside_a_calendar_keeps_its_hour_across_a_spring_forward() {
+        let schedule = Schedule::calendar(&[], &[(9, 0)])
+            .unwrap()
+            .and_every(Duration::from_secs(24 * 3_600))
+            .unwrap();
+        // Sunday 09:00 local, five hours behind UTC; the clocks go forward
+        // that night, so Monday 09:00 local is four hours behind.
+        let sunday_nine = at(-hours(10));
+        let monday_nine = at(hours(13));
+        let last = sunday_nine + secs(30);
+        assert_eq!(
+            next_after(&schedule, Some(last), last + secs(60), &SpringsForward),
+            Some(monday_nine),
+            "the floor is Monday 09:00 on the wall clock, which the grid names"
+        );
+        assert!(
+            matches!(
+                due(
+                    &schedule,
+                    Some(last),
+                    monday_nine + secs(120),
+                    &SpringsForward
+                ),
+                Due::Now { missed: 0 }
+            ),
+            "and a timer looking at 09:02 runs it then"
+        );
     }
 
     #[test]
