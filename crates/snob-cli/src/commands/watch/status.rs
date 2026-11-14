@@ -768,7 +768,8 @@ fn health(
     if owed.given_up > 0 {
         at_least(Verdict::Warned);
         notes.push(format!(
-            "{} report(s) were given up on for being too old to be news",
+            "{} report(s) were given up on, too old, out of attempts or with no request that \
+             could be sent",
             owed.given_up
         ));
     }

@@ -69,7 +69,7 @@ pub struct Swept {
     /// Captures deleted because nothing needs them any more, and posts the
     /// monitor no longer needs to remember.
     pub captures: usize,
-    /// Reports abandoned because they grew too old to be news.
+    /// Reports abandoned by this sweep because they grew too old to be news.
     pub given_up: usize,
 }
 

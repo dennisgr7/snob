@@ -286,10 +286,13 @@ fn owed_to(
 /// Records that a report arrived.
 pub fn delivered(conn: &Connection, id: i64, status: u16, at: Epoch) -> Result<(), StoreError> {
     conn.execute(
+        // `state = 'pending'`: a `watch deliver` and a run's drain can try one
+        // row at the same time, and the second to finish must not undo what
+        // the first settled.
         "UPDATE watch_deliveries
          SET state = 'delivered', settled_at = ?2, next_try_at = NULL,
              attempts = attempts + 1, last_status = ?3, last_error = NULL
-         WHERE id = ?1",
+         WHERE id = ?1 AND state = 'pending'",
         params![id, at.get(), status as i64],
     )?;
     Ok(())
@@ -356,7 +359,7 @@ pub fn failed(
                 "UPDATE watch_deliveries
                  SET state = 'expired', settled_at = ?2, next_try_at = NULL,
                      attempts = ?3, last_status = ?4, last_error = ?5
-                 WHERE id = ?1",
+                 WHERE id = ?1 AND state = 'pending'",
                 params![id, now.get(), attempts, status.map(i64::from), error],
             )?;
             Ok(Outcome::GaveUp(reason))
@@ -366,7 +369,7 @@ pub fn failed(
             conn.execute(
                 "UPDATE watch_deliveries
                  SET attempts = ?2, next_try_at = ?3, last_status = ?4, last_error = ?5
-                 WHERE id = ?1",
+                 WHERE id = ?1 AND state = 'pending'",
                 params![id, attempts, next.get(), status.map(i64::from), error],
             )?;
             Ok(Outcome::Retrying(next))
@@ -443,6 +446,8 @@ pub fn owed(conn: &Connection, destination: Option<&str>) -> Result<Owed, StoreE
            count(*) FILTER (WHERE state = 'pending' AND destination = ?1),
            count(*) FILTER (WHERE state = 'pending'
              AND (?1 IS NULL OR destination <> ?1)),
+           -- Every way a report is settled without arriving: too old, out of
+           -- attempts, or refused before it was sent (`GaveUp`).
            count(*) FILTER (WHERE state = 'expired')
          FROM watch_deliveries",
         params![destination],
@@ -605,6 +610,20 @@ mod tests {
 
     /// A failure that waiting can fix is waited on, and it is not tried again
     /// in the meantime.
+    /// Two tries of one row at once, a `watch deliver` and a run's drain: the
+    /// one that failed, finishing second, does not undo the one that
+    /// arrived.
+    #[test]
+    fn a_failure_finishing_after_a_delivery_leaves_it_delivered() {
+        let db = store();
+        let id = queued(&db, "run-1", Epoch::new(1_000));
+        delivered(db.conn(), id, 200, Epoch::new(1_001)).unwrap();
+        failed(db.conn(), id, Some(500), "down", false, Epoch::new(1_002)).unwrap();
+        assert_eq!(state(db.conn(), id).unwrap().as_deref(), Some("delivered"));
+        failed(db.conn(), id, None, "no request", true, Epoch::new(1_003)).unwrap();
+        assert_eq!(state(db.conn(), id).unwrap().as_deref(), Some("delivered"));
+    }
+
     #[test]
     fn a_temporary_failure_is_retried_later_and_not_sooner() {
         let db = store();

@@ -181,9 +181,12 @@ pub(super) fn given_up_sentence(given_up: usize) -> String {
     } else {
         ("reports were", "what they said is")
     };
+    // Every way a report is settled without arriving (`deliveries::GaveUp`):
+    // too old, out of attempts, or no request to send.
     format!(
-        "{given_up} {subject} given up on for being too old to be news; \
-         {what} not reported a second time."
+        "{given_up} {subject} given up on, for being too old to be news, for running out of \
+         attempts, or for having no request that could be sent; {what} not reported a second \
+         time."
     )
 }
 
