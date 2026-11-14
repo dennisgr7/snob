@@ -1214,8 +1214,9 @@ reaches a server already listening: no command, no key, see "Over HTTP").
   to the webhook's address without waiting out each row's backoff
   (`deliveries::owed_now`), and exits 1 the same way; `watch unit` prints
   (never installs) a systemd service and timer, a crontab line, a launch
-  agent or a `schtasks` command that all run `watch once --when-due` every
-  15 minutes, so the schedule is translated nowhere: the run asks the
+  agent or the PowerShell that registers a scheduled task (the value is
+  still `schtasks`; a `schtasks /TR` line only parses in `cmd.exe`), all
+  running `watch once --when-due` every 15 minutes, so the schedule is translated nowhere: the run asks the
   scheduled mode's evaluator (`schedule::due`, from `scheduled::seed_for`)
   and, not due, reads no session and sends nothing; `watch status` says
   when that evaluator next comes round (`next_run` in `--json`), from the

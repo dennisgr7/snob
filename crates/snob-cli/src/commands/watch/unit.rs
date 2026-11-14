@@ -147,15 +147,35 @@ fn launchd(exe: &str) -> String {
     )
 }
 
-/// One `schtasks` command, for the user who types it, while signed in: the
-/// keyring snob uses there is this user's Credential Manager.
+/// A scheduled task, registered by the user who pastes it, while signed in:
+/// the keyring snob uses there is this user's Credential Manager.
+///
+/// **Written for PowerShell**, the console Windows opens by default, with the
+/// Task Scheduler's own cmdlets, which are the same in Windows PowerShell 5.1
+/// and in PowerShell 7. A `schtasks /TR "\"...\" ..."` line only parses in
+/// `cmd.exe`: PowerShell does not read a backslash as an escape, so the path
+/// and its arguments reached `schtasks` split in pieces, and `rem` is no
+/// command there. In single quotes PowerShell expands nothing, `$` and a
+/// backtick included, and a single quote is written twice.
+///
+/// The settings are the ones a person on a laptop would expect: the task's
+/// defaults start it only on mains power and stop it on battery, and a run
+/// still going when the next look comes is left to finish rather than joined
+/// by a second one (`IgnoreNew`). A trigger that repeats with no end is one
+/// `-RepetitionInterval` and no `-RepetitionDuration`.
 fn schtasks(exe: &str) -> String {
+    let quoted = |text: &str| format!("'{}'", text.replace('\'', "''"));
     format!(
-        "rem Run once, in a terminal of the user snob signs in as:\n\
-         schtasks /Create /TN \"snob watch\" /SC MINUTE /MO {ASK_EVERY_MINUTES} /F /TR \
-         \"\\\"{}\\\" {run}\"\n",
-        exe.replace('"', ""),
-        run = RUN.join(" "),
+        "# Run once, in PowerShell, signed in as the user snob signs in as:\n\
+         $action = New-ScheduledTaskAction -Execute {exe} -Argument {run}\n\
+         $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) \
+         -RepetitionInterval (New-TimeSpan -Minutes {ASK_EVERY_MINUTES})\n\
+         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries \
+         -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew\n\
+         Register-ScheduledTask -TaskName 'snob watch' -Action $action -Trigger $trigger \
+         -Settings $settings -Force\n",
+        exe = quoted(exe),
+        run = quoted(&RUN.join(" ")),
     )
 }
 
@@ -193,8 +213,51 @@ mod tests {
         assert!(cron(EXE).contains("'/opt/snob 100\\%/bin/snob' watch once"));
         assert!(launchd("/a&b/snob").contains("<string>/a&amp;b/snob</string>"));
         assert!(
-            schtasks(r"C:\Program Files\snob\snob.exe")
-                .contains(r#"/TR "\"C:\Program Files\snob\snob.exe\" watch once --when-due""#)
+            schtasks(r"C:\Users\o'brien\snob.exe")
+                .contains(r"-Execute 'C:\Users\o''brien\snob.exe'")
         );
+    }
+
+    /// The task is one PowerShell reads as written: the path whole, spaces
+    /// and all, in single quotes, where a backslash is a backslash, and the
+    /// arguments as one string beside it.
+    #[test]
+    fn the_windows_task_is_one_powershell_takes_with_a_path_that_has_spaces() {
+        let task = schtasks(r"C:\Program Files\snob\snob.exe");
+        assert!(
+            task.contains(
+                r"New-ScheduledTaskAction -Execute 'C:\Program Files\snob\snob.exe' -Argument 'watch once --when-due'"
+            ),
+            "{task}"
+        );
+        assert!(task.contains("New-TimeSpan -Minutes 15"), "{task}");
+        assert!(
+            task.contains("Register-ScheduledTask -TaskName 'snob watch'"),
+            "{task}"
+        );
+        // Nothing only cmd.exe reads: no `rem`, no backslash before a quote,
+        // and every line that is not a command is a PowerShell comment.
+        assert!(!task.contains("rem "), "{task}");
+        assert!(!task.contains("\\\""), "{task}");
+        assert!(!task.contains("schtasks"), "{task}");
+        for line in task.lines() {
+            assert!(
+                line.starts_with('#')
+                    || line.starts_with('$')
+                    || line.starts_with("Register-ScheduledTask"),
+                "{line}"
+            );
+        }
+    }
+
+    /// A laptop's task: the scheduler's defaults would keep it from starting
+    /// on battery and stop it when the charger is pulled.
+    #[test]
+    fn the_windows_task_may_start_and_go_on_running_on_battery() {
+        let task = schtasks(r"C:\snob\snob.exe");
+        assert!(task.contains("-AllowStartIfOnBatteries"), "{task}");
+        assert!(task.contains("-DontStopIfGoingOnBatteries"), "{task}");
+        assert!(task.contains("-MultipleInstances IgnoreNew"), "{task}");
+        assert!(task.contains("-Settings $settings"), "{task}");
     }
 }

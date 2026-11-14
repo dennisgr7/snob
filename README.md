@@ -152,8 +152,8 @@ can read:
   sends what a receiver that was down is still owed, at once, with no
   request to Instagram.
 - `snob watch unit` prints what to give the system's scheduler (a systemd
-  timer, a crontab line, a launch agent or a `schtasks` command; installs
-  nothing). Each runs `snob watch once --when-due` every 15 minutes, which
+  timer, a crontab line, a launch agent or a Windows scheduled task, as
+  PowerShell commands; installs nothing). Each runs `snob watch once --when-due` every 15 minutes, which
   runs only when the schedule in `watch.toml` says so and otherwise sends
   nothing.
 - `snob mcp` is an MCP server for AI agents, on standard input and output:

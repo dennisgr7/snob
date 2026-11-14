@@ -1820,8 +1820,9 @@ pub enum WatchCommand {
                       in watch.toml says it is due, so the schedule is kept in one place and \
                       a run that is not due sends nothing.\n\n\
                       With no argument, the unit for this system: systemd on Linux, launchd \
-                      on macOS, schtasks on Windows. The path printed is one that survives an \
-                      upgrade where the installer keeps one."
+                      on macOS, schtasks on Windows, which prints the PowerShell commands that \
+                      register a scheduled task, allowed to run on battery. The path printed is \
+                      one that survives an upgrade where the installer keeps one."
     )]
     Unit(WatchUnitArgs),
 }
