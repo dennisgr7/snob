@@ -1,11 +1,7 @@
 //! The monitor's own tables: what has been reported, and what each run did.
 //!
-//! The distinction this file exists to keep is between a *capture* and a
-//! *receipt*. `snapshots` records that a list was walked; `watch_marks` records
-//! that a walk was reported. They come apart the moment anybody runs
-//! `snob followers` by hand between two ticks, and the whole correctness of the
-//! diff rests on reading the receipt rather than guessing at it from the
-//! captures.
+//! `snapshots` records that a list was walked; `watch_marks` that a walk was
+//! reported. The diff reads the receipt, never guesses it from the captures.
 
 use std::time::Duration;
 
@@ -22,9 +18,8 @@ pub struct Mark {
     /// The capture that was reported against. `None` once it has been pruned,
     /// which means the baseline is gone and the next run has to lay a new one.
     pub snapshot_id: Option<i64>,
-    /// When the report was made. What gets shown to a person; the rename window
-    /// is bounded by [`rename_cursor`] instead, for the reason the
-    /// column's comment in `002_watch.sql` gives.
+    /// When the report was made. The rename window is bounded by
+    /// [`rename_cursor`] instead.
     pub compared_at: Epoch,
 }
 
@@ -46,24 +41,13 @@ pub fn mark(conn: &Connection, account_pk: Pk, kind: ListKind) -> Result<Option<
     Ok(mark)
 }
 
-/// How long a capture is kept once nothing needs it.
-///
-/// A monitor on a six-hour schedule leaves four captures a day per list, each
-/// holding a row per account. On a thousand-follower account that is millions
-/// of rows a year, for a history nobody reads: the diff only ever compares
-/// against the last reported capture, and everything older is there in case
-/// somebody wants to look back. Thirty days is enough to look back over.
-///
-/// The posts the monitor has seen are kept as long, so what it remembers has
-/// one rule (`watch_posts::prune`).
+/// How long a capture is kept once nothing needs it: thirty days to look back
+/// over, since the diff only compares against the last reported capture. The
+/// posts the monitor has seen are kept as long (`watch_posts::prune`).
 pub(super) const KEEP_FOR_SECS: i64 = 30 * 24 * 3_600;
 
-/// What one sweep of the retention rules settled.
-///
-/// Two numbers rather than one, because they are read by different people.
-/// `captures` is housekeeping and belongs in a trace. `given_up` is a report
-/// that will never be delivered now — the change it carried is gone, and the
-/// run it happens inside is the last moment anybody can be told.
+/// What one sweep of the retention rules settled. `captures` is housekeeping;
+/// `given_up` is news lost for good, which somebody has to be told.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Swept {
     /// Captures deleted because nothing needs them any more, and posts the
@@ -73,23 +57,11 @@ pub struct Swept {
     pub given_up: usize,
 }
 
-/// Removes captures nothing needs any more.
-///
-/// Three things are kept whatever their age, and each is load-bearing:
-///
-/// - **The capture every mark points at.** It is the baseline of the next diff.
-///   Deleting it sets `watch_marks.snapshot_id` to NULL, and the next run then
-///   lays a new baseline and reports nothing — one silently missed report per
-///   pruned mark.
-/// - **The newest complete capture of each account and list**, which is what
-///   the cache serves and what a crossing reads.
-/// - **Anything an interrupted walk could still be resumed from**, which is any
-///   incomplete capture: `delete_partials` already clears those when a walk
-///   starts, and taking one here would end a resume somebody is mid-way through.
-///
-/// `secure_delete` is on for the whole connection — `store::configure` says it
-/// is there for "whatever the monitor ends up expiring", which is this — so the
-/// rows go rather than being unlinked with their contents still readable.
+/// Removes captures nothing needs any more. Kept whatever their age: the
+/// capture every mark points at (the baseline of the next diff; deleting it
+/// is one silently missed report), the newest complete capture of each
+/// account and list (what the cache serves), and every incomplete one (a
+/// resume may be under way; `delete_partials` clears those).
 pub fn prune(conn: &Connection, now: Epoch) -> Result<Swept, StoreError> {
     let cutoff = now - Duration::from_secs(KEEP_FOR_SECS as u64);
 
@@ -110,34 +82,16 @@ pub fn prune(conn: &Connection, now: Epoch) -> Result<Swept, StoreError> {
         params![cutoff.get()],
     )?;
 
-    // The outbox expires its own. A report too old to be news stops being owed,
-    // and a settled one stops being kept — both are the outbox's rules, written
-    // where the rest of them are, so the age bound is spelled once.
-    // The count comes back out, because it is the one thing this sweep does
-    // that somebody has to be told about. `expire_stale` marks the row rather
-    // than deleting it, so `status` can still say what became of it — but the
-    // moment it fires a set of arrivals and departures is thrown away for
-    // good, and a run that said nothing would let the health verdict go from
-    // `warning` to `ok` at exactly the moment the news was lost.
+    // The outbox's own rules, in its own module. The count of reports given
+    // up comes back out: that is news lost, not housekeeping.
     let given_up = super::deliveries::expire_stale(conn, now)?;
     super::deliveries::forget_settled(conn, now)?;
 
-    // Runs are a log, and `--every 30m` over three accounts writes some fifty
-    // thousand rows a year.
-    //
-    // **The newest of each account is kept whatever its age**, like the newest
-    // capture of each list above it: `watch::status::health` reads `last_runs`
-    // and decides from it whether the monitor is working. Without that row a
-    // monitor whose session expired would go, after thirty days, from "the
-    // last run ended in no_session" and exit 1 to "it has not run yet" and
-    // exit 0 — a probe polling that exit code would watch it turn green while
-    // nothing has been fixed. `settle` reaches `prune` on the no-session branch
-    // of `once`, which records no run of its own, so the table can go a month
-    // without gaining a row.
+    // The newest run of each account is kept whatever its age: `status` reads
+    // it to decide whether the monitor works, and a run that ended in
+    // `no_session` must not age into "it has not run yet".
     conn.execute(
-        // Through the view, which is the same question `last_runs` asks, so a
-        // tie between two runs recorded in the same second is broken the same
-        // way in both: prune keeps the row `status` reads.
+        // Through the view `last_runs` reads, so both break a tie alike.
         "DELETE FROM watch_runs
          WHERE started_at < ?1
            AND id NOT IN (SELECT id FROM newest_run)",
@@ -152,9 +106,7 @@ pub fn prune(conn: &Connection, now: Epoch) -> Result<Swept, StoreError> {
     })
 }
 
-/// How long the run log is kept. **Thirty days**: long enough for `status` to
-/// describe a bad week, short enough that a monitor on a half-hourly schedule
-/// does not accumulate rows forever.
+/// How long the run log is kept: enough for `status` to describe a bad week.
 const KEEP_RUNS_FOR_SECS: i64 = 30 * 24 * 3_600;
 
 /// What one run of the monitor did.
@@ -164,18 +116,9 @@ pub struct Run {
     pub started_at: Epoch,
     pub finished_at: Option<Epoch>,
     pub requests: u32,
-    /// What came of it: the same vocabulary as the README's table and as `$?`,
-    /// so a caller is told the same thing by the same name wherever it reads
-    /// it. `snob-cli` exits with the same type as its `ExitCode`, which is why
-    /// the vocabulary is `snob_core::watch` and not either end.
-    ///
-    /// Typed here rather than at each reader: compared back against string
-    /// literals, one respelling would make every recorded cooldown match
-    /// nothing — silently, because a string that matches nothing is a perfectly
-    /// good string. It is parsed once, in the row mapping below, and a token
-    /// this build does not know arrives as
-    /// [`RecordedOutcome::Unknown`](snob_core::watch::RecordedOutcome::Unknown)
-    /// rather than as a value that quietly compares unequal to everything.
+    /// What came of it, in the vocabulary of `snob_core::watch`, parsed once
+    /// in the row mapping; a token this build does not know arrives as
+    /// [`RecordedOutcome::Unknown`].
     pub outcome: Option<RecordedOutcome>,
     pub changes: u32,
     /// Why the run drew no conclusion about the account's posts, as a
@@ -190,15 +133,9 @@ pub struct Run {
     pub began_at: Option<Epoch>,
 }
 
-/// Records a run, whatever came of it.
-///
-/// **Including the ones that reported nothing**, which is the whole reason this
-/// table is not just `watch_marks` again. A mark only moves when a list was
-/// actually compared, so a monitor sitting in a cooldown for two days moves
-/// nothing — and from outside that is identical to a monitor that was killed on
-/// Monday. `snob watch status` needs to tell those apart, and this is what lets
-/// it: the marks say when something was last *reported*, this says when the
-/// thing last *ran*.
+/// Records a run, whatever came of it, the ones that reported nothing
+/// included: the marks say when something was last reported, this says when
+/// the monitor last ran.
 pub fn record_run(conn: &Connection, run: &Run) -> Result<i64, StoreError> {
     conn.execute(
         "INSERT INTO watch_runs
@@ -210,9 +147,6 @@ pub fn record_run(conn: &Connection, run: &Run) -> Result<i64, StoreError> {
             run.started_at.get(),
             run.finished_at.map(Epoch::get),
             run.requests,
-            // The token the enum spells, which is what the column's CHECK
-            // constraint accepts. An `Unknown` only ever arrives by being read
-            // back, so writing one is a row this build did not invent.
             run.outcome.as_ref().map(RecordedOutcome::as_str),
             run.changes,
             run.posts_skipped,
@@ -223,24 +157,11 @@ pub fn record_run(conn: &Connection, run: &Run) -> Result<i64, StoreError> {
     Ok(conn.last_insert_rowid())
 }
 
-/// The most recent run of every account that has ever run, newest row per
-/// account.
-///
-/// The set of accounts comes from this table and not from the marks, which is
-/// the point. A mark only moves when a list was actually compared, so an account
-/// whose every tick was refused — a fresh setup whose first runs met a cooldown,
-/// a stranger who went private, a first tick where both walks came back short —
-/// has rows here and no mark at all, and asking about the marks' accounts
-/// would answer "it has not run yet" about a monitor that had been running all
-/// week. That is the exact inversion of what this table exists for.
-///
-/// One query rather than one per account, which is also what the index on
-/// `(account_pk, started_at DESC)` is for.
+/// The newest run of every account that ever ran. The accounts come from this
+/// table, not from the marks: one whose every run was refused has no mark.
 pub fn last_runs(conn: &Connection) -> Result<Vec<Run>, StoreError> {
     let mut stmt = conn.prepare(
-        // The view rather than the window function again: `prune` exempts
-        // exactly these rows from the thirty-day sweep, and a tie-break that
-        // means one thing here and another there deletes the row this displays.
+        // The view `prune` exempts from its sweep, so both break a tie alike.
         "SELECT account_pk, started_at, finished_at, requests, outcome, changes, posts_skipped,
                 due_at, began_at
          FROM newest_run
@@ -252,7 +173,6 @@ pub fn last_runs(conn: &Connection) -> Result<Vec<Run>, StoreError> {
             started_at: Epoch::new(row.get(1)?),
             finished_at: row.get::<_, Option<i64>>(2)?.map(Epoch::new),
             requests: row.get(3)?,
-            // Parsed here, once, so no reader has to know the column is text.
             outcome: row
                 .get::<_, Option<String>>(4)?
                 .as_deref()
@@ -266,15 +186,9 @@ pub fn last_runs(conn: &Connection) -> Result<Vec<Run>, StoreError> {
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
-/// When the monitor last started a run, for any account.
-///
-/// Not per account, unlike [`last_runs`], and that is the question being asked:
-/// one loop covers every watched account, so "when did this last run" is one
-/// moment. The scheduled loop seeds its `--every` clock from it.
-///
-/// It has to: a clock that started again at every process start would never
-/// reach the first run of `--every 24h` on a machine powered on from eight to
-/// six, or under a supervisor restarting more often than the interval.
+/// When the monitor last started a run, for any account: one loop covers
+/// every watched account. The scheduled loop seeds its `--every` clock from
+/// it, so that a restart does not start the interval again.
 pub fn last_started(conn: &Connection) -> Result<Option<Epoch>, StoreError> {
     let started = conn
         .query_row(
@@ -296,10 +210,6 @@ pub struct AccountMark {
 }
 
 /// Every receipt there is, newest first.
-///
-/// What `snob watch status` reads. It is the only way to tell a monitor that
-/// has been running and finding nothing from one that stopped weeks ago, and
-/// those look identical from outside.
 pub fn all_marks(conn: &Connection) -> Result<Vec<AccountMark>, StoreError> {
     let mut stmt = conn.prepare(
         "SELECT account_pk, kind, snapshot_id, compared_at
@@ -318,11 +228,8 @@ pub fn all_marks(conn: &Connection) -> Result<Vec<AccountMark>, StoreError> {
     let mut marks = Vec::new();
     for row in rows {
         let (pk, kind, snapshot_id, compared_at) = row?;
-        // The column has a CHECK that only allows the two, so anything else
-        // means the file was written by something that is not this program.
-        // Skipped rather than guessed at: reporting a row as "followers"
-        // because it could not be read would answer about a list nobody asked
-        // about.
+        // Skipped rather than guessed at: a default would answer about a list
+        // nobody asked about.
         let Ok(kind) = kind.parse::<ListKind>() else {
             tracing::warn!(kind, "a watch mark names a list this version does not know");
             continue;
@@ -337,15 +244,8 @@ pub fn all_marks(conn: &Connection) -> Result<Vec<AccountMark>, StoreError> {
     Ok(marks)
 }
 
-/// The newest row in the rename history, as an id.
-///
-/// Read once when a report is made and stored on the mark, so that the next
-/// report asks for everything after it. Anything filed later has a larger id by
-/// construction, which is what makes "already reported" a decidable question
-/// rather than a comparison of two whole-second timestamps.
-///
-/// Zero on an empty history, which is also what a mark that has never reported
-/// carries — so the first window is "everything", with no special case.
+/// The newest id in the rename history; zero when it is empty. Ids rather
+/// than whole-second timestamps make "already reported" decidable.
 pub fn history_head(conn: &Connection) -> Result<i64, StoreError> {
     let head = conn.query_row(
         "SELECT coalesce(MAX(id), 0) FROM username_history",
@@ -355,41 +255,15 @@ pub fn history_head(conn: &Connection) -> Result<i64, StoreError> {
     Ok(head)
 }
 
-/// Records that everything up to this capture has been reported.
+/// Records that everything up to this capture has been reported. Runs inside
+/// the caller's transaction ([`commit_report`]); `at` is one moment for every
+/// list of a report.
 ///
-/// Takes a `&Connection` rather than opening its own transaction: the caller
-/// has to put this and the queued notice in **one** transaction, and why is
-/// `engine::watch`'s to explain. `at` is passed in so every list marked by one
-/// report carries the same moment, leaving no sliver between two lists in which
-/// a rename is filed and then belongs to neither report.
-///
-/// **The upsert is unconditional and there is no lease over it, on purpose.**
-/// Two runs overlap whenever a walk outlasts the interval, or `snob watch once`
-/// is typed while the loop is mid-tick: the earlier run can commit last and put
-/// the mark back on the older capture, and one arrival is reported twice under
-/// two `run_id`s, which receivers deduplicate on. No ordering here can *lose* a
-/// window; what it costs is duplicates. Two one-line clauses look like fixes
-/// and are not:
-///
-/// - `WHERE excluded.compared_at > watch_marks.compared_at` orders nothing:
-///   `tick` stamps `at` **before** the comparison, so a long walk that started
-///   first stamps a later moment than a short run that committed first. It
-///   also drops a legitimate re-mark inside the same whole second, silently,
-///   since `clock::now()` counts seconds.
-/// - `WHERE excluded.snapshot_id >= watch_marks.snapshot_id` is monotone, but
-///   `snapshot_id` is **nullable**, by `ON DELETE SET NULL`, the state `prune`
-///   documents. Against NULL the update is declined and that list can never be
-///   marked again: a monitor gone permanently quiet. `watch_marks.snapshot_id
-///   IS NULL OR …` is the spelling that is actually safe.
-///
-/// Neither is taken: by the time the mark regresses both runs have queued and
-/// drained a report, so a guard suppresses only the *third* copy, and a
-/// `DO UPDATE … WHERE` that declines fails without saying so, on the one
-/// statement that retires a report. Only a per-account run lease shaped like
-/// `snapshots.claimed_by` would prevent the first two copies.
-/// `a_quiet_run_moves_the_moment_without_moving_the_capture` and
-/// `a_receipt_whose_capture_was_pruned_can_be_marked_again` are the two
-/// tripwires for whoever tries.
+/// **Unconditional on purpose.** Two overlapping runs can put the mark back on
+/// the older capture, which costs a duplicate report (receivers deduplicate
+/// on `run_id`) and never loses a window. A `WHERE` on `compared_at` orders
+/// nothing (`at` is stamped before the comparison), and one on `snapshot_id`
+/// would refuse for ever a mark whose capture was pruned to NULL.
 fn set_mark(
     conn: &Connection,
     account_pk: Pk,
@@ -408,15 +282,8 @@ fn set_mark(
     Ok(())
 }
 
-/// How far along the rename history this account has been reported.
-///
-/// Zero when it never has, which is also what an empty history reads as -- so
-/// the first window is "everything", with no special case.
-///
-/// One number per account, not one per list: both ways of reading two numbers
-/// that should be one are wrong. The oldest re-announces a window a list
-/// refused for a week had already had sent, and the newest skips that window
-/// for anybody in only one list.
+/// How far along the rename history this account has been reported; zero
+/// when it never has. One number per account, not one per list.
 pub fn rename_cursor(conn: &Connection, account_pk: Pk) -> Result<i64, StoreError> {
     let cursor = conn
         .query_row(
@@ -428,13 +295,9 @@ pub fn rename_cursor(conn: &Connection, account_pk: Pk) -> Result<i64, StoreErro
     Ok(cursor.unwrap_or(0))
 }
 
-/// Records that the rename history has been reported up to `cursor`.
-///
-/// Called **only when a window was actually read**. A run with two unmoved
-/// counters -- the documented common case, one request and nothing to report
-/// -- compares nothing and looks for no renames; moving the cursor to the
-/// global head then would step over a rename filed in between by another
-/// walk, which nothing could ever report.
+/// Records that the rename history has been reported up to `cursor`. Only
+/// when a window was actually read: moving it otherwise steps over a rename
+/// another walk filed meanwhile.
 fn set_rename_cursor(
     conn: &Connection,
     account_pk: Pk,
@@ -452,7 +315,6 @@ fn set_rename_cursor(
     Ok(())
 }
 
-/// The key the interval seed was stored under.
 const INTERVAL_SEED: &str = "interval_seeded_at";
 
 /// When an interval schedule started counting, as an account's database kept
@@ -469,19 +331,9 @@ pub fn interval_seeded_at(conn: &Connection) -> Result<Option<Epoch>, StoreError
 }
 
 /// Which renames in the open window have already gone out for this account.
-///
-/// The cursor answers "how far have I scanned", and it is the wrong tool for
-/// "what have I already said". A tick that reads a window while one list is
-/// refused announces what it can see and must not move the cursor, so the next
-/// tick reads the identical window — and re-announces the identical renames
-/// under a fresh `run_id`, which is what a receiver deduplicates on.
-///
-/// A watermark of "announced" cannot stand in for this, and `007_renames_sent`
-/// records why at length: the rename that was never found sits below such a
-/// mark too, so the one run that could finally see it is the one forbidden to.
-///
-/// Bounded by the open window, so on an account whose lists are all readable
-/// this is empty.
+/// The cursor says how far was scanned; a run with one list refused announces
+/// what it sees without moving it, and must not announce it again
+/// (`007_renames_sent.sql`).
 pub fn renames_already_sent(
     conn: &Connection,
     account_pk: Pk,
@@ -493,65 +345,47 @@ pub fn renames_already_sent(
 }
 
 /// Files the renames this report is announcing, so no later one repeats them.
-///
-/// Written in the same transaction as the report and the marks, for the reason
-/// [`commit_report`] gives about all three: a row that went out and was not
-/// recorded is a change announced twice, and one recorded without going out is
-/// a change announced never.
 fn record_renames_sent(
     conn: &Connection,
     account_pk: Pk,
     history_ids: &[i64],
     at: Epoch,
 ) -> Result<(), StoreError> {
+    if history_ids.is_empty() {
+        return Ok(());
+    }
+    let mut insert = conn.prepare(
+        "INSERT INTO watch_renames_sent (account_pk, history_id, sent_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(account_pk, history_id) DO NOTHING",
+    )?;
     for id in history_ids {
-        conn.execute(
-            "INSERT INTO watch_renames_sent (account_pk, history_id, sent_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(account_pk, history_id) DO NOTHING",
-            params![pk_to_sql(account_pk), id, at.get()],
-        )?;
+        insert.execute(params![pk_to_sql(account_pk), id, at.get()])?;
     }
     Ok(())
 }
 
-/// A report on its way to somewhere, ready to be made durable.
-///
-/// The bytes rather than the events, because the signature covers bytes and a
-/// retry has to send the same string.
+/// A report ready to be made durable: the bytes, since the signature covers
+/// bytes and a retry sends the same string.
 pub struct Queued<'a> {
     pub run_id: &'a str,
     pub body: &'a str,
-    /// Where it is addressed, and what [`super::deliveries::due`] filters on, so
-    /// a later run cannot drain it through a client pointed somewhere else.
-    ///
-    /// **Not an `Option`.** A report with nowhere to go is never queued at all.
+    /// Where it is addressed, which [`super::deliveries::due`] filters on. A
+    /// report with nowhere to go is never queued.
     pub destination: &'a str,
     /// The event and the type it goes as; `None` is snob's JSON, its event
     /// read from the body.
     pub form: Option<&'a super::deliveries::Form>,
 }
 
-/// Commits a report: queues it, and moves the marks it makes stale.
+/// Commits a report in **one transaction**: queues it, then moves the marks
+/// it makes stale. The report has to be durable with the mark that retires
+/// it, or a process killed in between loses a window for good; delivery is
+/// at-least-once, deduplicated on `run_id`.
 ///
-/// **One transaction, and the order inside it is the point.** A change that has
-/// been reported is one the next run will not find, because the next run
-/// compares against the mark this moves. So the report has to be durable before
-/// the mark that retires it — and both have to land together, or a process
-/// killed in between loses a window nobody will ever report.
-///
-/// The direction it fails in is deliberate. If the queue row commits and the
-/// send never happens, the report goes out late. If the mark moved without the
-/// row, the report is gone. At-least-once is the only defensible choice here,
-/// which is why every report carries an id the receiver can deduplicate on.
-///
-/// `marks` names only the lists this report actually spoke about. A list that
-/// was refused is left out by the caller and its mark stays where it was.
-///
-/// `posts` is what the report concluded about the account's posts, `None`
-/// when it concluded nothing about them. Written here and nowhere else, for
-/// the same reason as the marks: a post reported and not recorded is reported
-/// again, one recorded and not reported is never reported at all.
+/// `marks` names only the lists the report spoke about, `posts` what it
+/// concluded about the account's posts (written nowhere else), and
+/// `rename_cursor` is `None` when no rename window was read.
 #[expect(
     clippy::too_many_arguments,
     reason = "everything one report commits, in the one transaction that has to hold it"
@@ -589,16 +423,11 @@ pub fn commit_report(
         super::watch_posts::write(&tx, account_pk, posts, at)?;
     }
 
-    // `None` when this report read no rename window — every list was refused, or
-    // every one was laying a baseline. Advancing it then files renames as
-    // reported that nothing looked at, and they can never be reported again.
     if let Some(cursor) = rename_cursor {
         set_rename_cursor(&tx, account_pk, cursor, at)?;
     }
 
-    // What this report is announcing, so no later one repeats it — and, once
-    // the cursor has closed the window over them, dropped, because a row below
-    // the cursor is never read again anyway.
+    // Rows below the cursor are never read again, so they go.
     record_renames_sent(&tx, account_pk, renames_sent, at)?;
     if let Some(cursor) = rename_cursor {
         tx.execute(
@@ -611,32 +440,11 @@ pub fn commit_report(
     Ok(queued)
 }
 
-/// Renames filed in an interval, for the accounts in one capture.
-///
-/// Scoped to the capture's members on purpose. `username_history` accumulates
-/// every account this tool has ever seen, including people who left years ago
-/// and accounts that only ever turned up in somebody else's list; reporting all
-/// of them would bury the handful the user actually follows.
-///
-/// The window is everything filed **after** `since`, which is the id the last
-/// report stopped at. Ids rather than timestamps because `changed_at` is in
-/// whole seconds: a rename filed in the same second as a report is neither
-/// clearly inside the last window nor clearly inside the next, so a timestamp
-/// bound either announces it twice or loses it. The id decides.
-///
-/// `from` is the name they had at the start of the window — the **earliest**
-/// entry in it, not the latest, so somebody who changed their name twice is
-/// reported as one move from where they started rather than only their last
-/// hop. `to` is what they are called *now*, read from `users`: if they have
-/// renamed again since, that is still the true and more useful answer, because
-/// the reader is going to go and look them up.
-///
-/// `head` closes the window at the top, and it is not decoration. The caller
-/// reads it before comparing and files it as the point reached, and the
-/// database is shared between processes, so a rename filed by an ordinary
-/// `snob followers` between the two reads would otherwise be announced under
-/// this run's `run_id` and again under the next one's: two ids for one event,
-/// and `run_id` is what a receiver deduplicates on.
+/// Renames filed after history id `since` and up to `head`, among the members
+/// of one capture, each account once: `from` is the earliest name in the
+/// window, `to` the name it has now. Ids, not timestamps, bound the window
+/// (`changed_at` is in whole seconds), and `head` closes it so that a rename
+/// another process files meanwhile is not announced under two `run_id`s.
 pub fn renames_since(
     conn: &Connection,
     snapshot_id: i64,
@@ -656,38 +464,38 @@ pub fn renames_since(
          ORDER BY h.id",
     )?;
 
-    let rows = stmt.query_map(params![snapshot_id, since, head], |row| {
-        Ok(Rename {
-            pk: pk_from_sql(row.get(0)?),
-            history_id: row.get(1)?,
-            from: row.get(2)?,
-            to: row.get(3)?,
-            at: Epoch::new(row.get(4)?),
-        })
-    })?;
-
-    // A name that has not actually moved is not a rename. The query cannot rule
-    // this out on its own: somebody who changed their name and changed it back
-    // has two history rows and a current name equal to the first one, and
-    // reporting "@someone is now @someone" is noise that reads as a bug.
-    Ok(rows
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .filter(|r| r.from != r.to)
-        .collect())
+    moved(stmt.query_map(params![snapshot_id, since, head], row_to_rename)?)
 }
 
-/// The renames among the members of `snapshots` noticed after `after` and
-/// up to `until`, each once: the name it had when the window opened and the
-/// one it has when it closes. For `snob changes`, which compares two
-/// captures of the reader's choosing and answers for the window between
-/// them, so unlike [`renames_since`] it keeps no cursor and has no `head`:
-/// it records nothing, and the same question asked twice gets one answer.
+/// One row of either rename query: the pk, the history id, the old name, the
+/// new one and when.
+fn row_to_rename(row: &rusqlite::Row<'_>) -> rusqlite::Result<Rename> {
+    Ok(Rename {
+        pk: pk_from_sql(row.get(0)?),
+        history_id: row.get(1)?,
+        from: row.get(2)?,
+        to: row.get(3)?,
+        at: Epoch::new(row.get(4)?),
+    })
+}
+
+/// The renames among `rows`: a name changed and changed back is none.
+fn moved(rows: impl Iterator<Item = rusqlite::Result<Rename>>) -> Result<Vec<Rename>, StoreError> {
+    let mut renames = Vec::new();
+    for rename in rows {
+        let rename = rename?;
+        if rename.from != rename.to {
+            renames.push(rename);
+        }
+    }
+    Ok(renames)
+}
+
+/// The renames among the members of `snapshots` noticed after `after` and up
+/// to `until`, each once, for `snob changes`: no cursor, nothing recorded.
 ///
-/// `username_history` files the name an account **had** when a walk saw a
-/// new one, so the first row in the window is the old name, and the new one
-/// is the first row filed after the window, or the current name when there
-/// is none. A name changed and changed back is no rename.
+/// `username_history` files the name an account **had**, so the new name is
+/// the first row filed after the window, or the current one.
 pub fn renames_between(
     conn: &Connection,
     snapshots: &[i64],
@@ -716,20 +524,7 @@ pub fn renames_between(
          ORDER BY h.changed_at, h.id",
     )?;
     let ids = serde_json::to_string(snapshots).unwrap_or_else(|_| "[]".into());
-    let rows = stmt.query_map(params![ids, after.get(), until.get()], |row| {
-        Ok(Rename {
-            pk: pk_from_sql(row.get(0)?),
-            history_id: row.get(1)?,
-            from: row.get(2)?,
-            to: row.get(3)?,
-            at: Epoch::new(row.get(4)?),
-        })
-    })?;
-    Ok(rows
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .filter(|r| r.from != r.to)
-        .collect())
+    moved(stmt.query_map(params![ids, after.get(), until.get()], row_to_rename)?)
 }
 
 #[cfg(test)]

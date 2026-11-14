@@ -1,10 +1,7 @@
-//! What every account shares: `data/shared.db`.
-//!
-//! The push-backs any account received, so that each account's budget can see
-//! the others' and stop with them ([`snob_core::budget::common_brake`]). A file
-//! of its own, with a migration chain of its own, because an account's
-//! database is only ever opened as that account and this one is read by all
-//! of them.
+//! What every account shares: `data/shared.db`, with a migration chain of its
+//! own. The push-backs any account received, so that each account's budget
+//! sees the others' and stops with them ([`snob_core::budget::common_brake`]),
+//! and the monitor's moments, which are the machine's.
 
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -32,29 +29,21 @@ const KEPT: Duration = Duration::from_secs(2 * 24 * 3600);
 /// The `meta` key the interval seed is kept under.
 const INTERVAL_SEED: &str = "interval_seeded_at";
 
-/// The `meta` key under which `snob watch once --when-due` writes when a timer
-/// first asked it whether a run is due. What a calendar that has never run
-/// counts its owed moments from (`schedule::due_asked_since`): a timer keeps
-/// nothing between two looks, so without it a first run would be owed only
-/// within the very minute the calendar names.
+/// When a timer first asked `snob watch once --when-due` whether a run is
+/// due: what a calendar that never ran counts its owed moments from
+/// (`schedule::due_asked_since`).
 const ASKED_SINCE: &str = "monitor_asked_since";
 
-/// The `meta` key under which the monitor writes when it last started a run,
-/// before any of its work. A run that fails on every account it covers may
-/// write no row in any `watch_runs` (an account never resolved has no row in
-/// `accounts` to hang one on), and a timer reading only those rows would find
-/// the run still due at every look after it.
+/// When the monitor last started a run, written before its work: a run that
+/// fails on every account may write no row in any `watch_runs`, and would be
+/// due again at every look.
 const STARTED_AT: &str = "monitor_started_at";
 
-/// The `meta` key under which the monitor writes since when it has held a due
-/// run back for a critical battery. A row in an existing table rather than a
-/// column: it is one value for the machine, and it needs no migration.
+/// Since when the monitor has held a due run back for a critical battery.
 const WAITING_FOR_POWER: &str = "monitor_waiting_for_power_since";
 
-/// The `meta` key under which the monitor writes when it last looked at the
-/// battery while holding that run. What tells a monitor still waiting from a
-/// marker left behind by one that was stopped, killed, or went down with the
-/// machine: those never get to say that power is back.
+/// When it last looked at the battery while holding that run, which tells a
+/// monitor still waiting from a marker left by one that was killed.
 const WAITING_FOR_POWER_SEEN: &str = "monitor_waiting_for_power_seen";
 
 /// A due run held back for a critical battery, as the monitor wrote it down.
@@ -72,9 +61,8 @@ pub struct Shared {
 
 impl Shared {
     /// Opens `shared.db`, creating it on first use.
-    ///
-    /// With the store's settings, and `synchronous = FULL` for the reason
-    /// `SqliteRateBudget::open` gives: losing a push-back lets the other
+    /// Opens `shared.db`, creating it on first use. `synchronous = FULL` as
+    /// in `SqliteRateBudget::open`: losing a push-back lets the other
     /// accounts out of a brake early.
     pub fn open(paths: &AppPaths) -> Result<Self, StoreError> {
         paths.ensure_dirs()?;
@@ -141,67 +129,70 @@ impl Shared {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// When an interval schedule started counting, if it was written down.
-    ///
-    /// One machine, one monitor: every account's runs count from it.
-    pub fn interval_seeded_at(&self) -> Result<Option<Epoch>, StoreError> {
-        let at = super::meta_get(&self.conn, INTERVAL_SEED)?;
+    /// A moment kept in `meta` under `key`; `None` when absent or unreadable.
+    fn moment(&self, key: &str) -> Result<Option<Epoch>, StoreError> {
+        let at = super::meta_get(&self.conn, key)?;
         Ok(at.and_then(|at| at.parse().ok()).map(Epoch::new))
     }
 
-    /// Writes the seed down unless one already is, and answers with the one
-    /// kept: a later start must never move the moment the interval counts
-    /// from, and of two starts racing, either is right.
-    pub fn seed_interval(&self, at: Epoch) -> Result<Epoch, StoreError> {
+    /// Writes `at` under `key` unless a moment is already there, and answers
+    /// with the one kept: of two writers racing, either is right.
+    fn keep_first(&self, key: &str, at: Epoch) -> Result<Epoch, StoreError> {
         self.conn.execute(
             "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
-            params![INTERVAL_SEED, at.get().to_string()],
+            params![key, at.get().to_string()],
         )?;
-        Ok(self.interval_seeded_at()?.unwrap_or(at))
+        Ok(self.moment(key)?.unwrap_or(at))
+    }
+
+    /// When an interval schedule started counting, if it was written down.
+    /// One machine, one monitor: every account's runs count from it.
+    pub fn interval_seeded_at(&self) -> Result<Option<Epoch>, StoreError> {
+        self.moment(INTERVAL_SEED)
+    }
+
+    /// Writes the seed down unless one already is, and answers with the one
+    /// kept: a later start never moves the moment the interval counts from.
+    pub fn seed_interval(&self, at: Epoch) -> Result<Epoch, StoreError> {
+        self.keep_first(INTERVAL_SEED, at)
     }
 
     /// Since when a timer has been asking whether a run is due, if one ever
     /// asked.
     pub fn asked_since(&self) -> Result<Option<Epoch>, StoreError> {
-        let at = super::meta_get(&self.conn, ASKED_SINCE)?;
-        Ok(at.and_then(|at| at.parse().ok()).map(Epoch::new))
+        self.moment(ASKED_SINCE)
     }
 
     /// Writes down that a timer asked at `at`, unless one already did, and
-    /// answers with the moment kept: the first ask is the one that counts, as
-    /// with [`Self::seed_interval`], and of two asks racing either is right.
+    /// answers with the moment kept.
     pub fn ask_since(&self, at: Epoch) -> Result<Epoch, StoreError> {
-        self.conn.execute(
-            "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
-            params![ASKED_SINCE, at.get().to_string()],
-        )?;
-        Ok(self.asked_since()?.unwrap_or(at))
+        self.keep_first(ASKED_SINCE, at)
     }
 
     /// When the monitor last started a run, if it ever wrote one down.
     pub fn monitor_last_started(&self) -> Result<Option<Epoch>, StoreError> {
-        let at = super::meta_get(&self.conn, STARTED_AT)?;
-        Ok(at.and_then(|at| at.parse().ok()).map(Epoch::new))
+        self.moment(STARTED_AT)
     }
 
     /// Writes down that the monitor started a run at `at`. Never moved back:
-    /// of two runs racing, the later start is the one kept.
+    /// of two runs racing, the later start is the one kept, in one statement.
     pub fn monitor_started(&self, at: Epoch) -> Result<(), StoreError> {
-        let kept = self.monitor_last_started()?.map_or(at, |was| was.max(at));
-        super::meta_set(&self.conn, STARTED_AT, &kept.get().to_string())
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value
+             WHERE CAST(meta.value AS INTEGER) < CAST(excluded.value AS INTEGER)",
+            params![STARTED_AT, at.get().to_string()],
+        )?;
+        Ok(())
     }
 
     /// The run that is due being held back for a critical battery; `None`
     /// while it is not.
     pub fn waiting_for_power(&self) -> Result<Option<PowerWait>, StoreError> {
-        let read = |key| -> Result<Option<Epoch>, StoreError> {
-            let at = super::meta_get(&self.conn, key)?;
-            Ok(at.and_then(|at| at.parse().ok()).map(Epoch::new))
-        };
-        let Some(since) = read(WAITING_FOR_POWER)? else {
+        let Some(since) = self.moment(WAITING_FOR_POWER)? else {
             return Ok(None);
         };
-        let seen = read(WAITING_FOR_POWER_SEEN)?.unwrap_or(since);
+        let seen = self.moment(WAITING_FOR_POWER_SEEN)?.unwrap_or(since);
         Ok(Some(PowerWait { since, seen }))
     }
 
@@ -209,10 +200,7 @@ impl Shared {
     /// The moment it started waiting is kept from the first call; the moment
     /// it last looked moves with every one.
     pub fn wait_for_power(&self, now: Epoch) -> Result<(), StoreError> {
-        self.conn.execute(
-            "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
-            params![WAITING_FOR_POWER, now.get().to_string()],
-        )?;
+        self.keep_first(WAITING_FOR_POWER, now)?;
         super::meta_set(&self.conn, WAITING_FOR_POWER_SEEN, &now.get().to_string())
     }
 

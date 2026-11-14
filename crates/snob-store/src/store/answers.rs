@@ -1,15 +1,13 @@
 //! How long Instagram's answers took to arrive, kept for a week.
 //!
-//! One row per answer of the API read (`snob_core::budget::AnswerTime`),
-//! written as it arrives by the pacer, through `SqliteRateBudget`. The pace
-//! reads the last few back to lengthen its waits when they were slow
-//! ([`recent_waits`], `snob_core::budget::SlowRule`), and `snob status` shows
-//! the last day ([`last_day`]). What policy there is lives in `snob-core` and
-//! `snob-ig`; this module only stores and sums.
+//! One row per answer (`snob_core::budget::AnswerTime`), written by the pacer
+//! through `SqliteRateBudget`. The pace reads the last few back
+//! ([`recent_waits`], `SlowRule`) and `snob status` shows the last day. The
+//! policy lives in `snob-core` and `snob-ig`; this only stores and sums.
 
 use std::time::Duration;
 
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use snob_core::EpochMs;
 use snob_core::budget::{AnswerTime, Via};
 
@@ -19,10 +17,8 @@ use super::rate_budget::CLOCK_SKEW_TOLERANCE_MS;
 /// The window `snob status` shows.
 pub const DAY_MS: i64 = 86_400_000;
 
-/// How long a row is kept: long enough that the answers before a push-back
-/// are still there when somebody looks into it days later, short enough
-/// that the table stays a few thousand rows (the request budget lets about
-/// two thousand through in a day).
+/// How long a row is kept: the answers before a push-back are still there
+/// days later, and the table stays a few thousand rows.
 const KEPT_MS: i64 = 7 * DAY_MS;
 
 /// Records `answer`, pruning what is older than a week and what is stamped
@@ -116,24 +112,16 @@ pub fn last_day(conn: &Connection, now: EpochMs) -> Result<AnswersDay, StoreErro
             params![since],
             |row| Ok((row.get::<_, String>(0)?, EpochMs::new(row.get(1)?))),
         )
-        .map(Some)
-        .or_else(none_if_no_row)?;
+        .optional()?;
     day.via = conn
         .query_row(
             "SELECT via FROM answers WHERE at_ms > ?1 ORDER BY at_ms DESC LIMIT 1",
             params![since],
             |row| row.get::<_, String>(0),
         )
-        .map(|via| Via::parse(&via))
-        .or_else(none_if_no_row)?;
+        .optional()?
+        .and_then(|via| Via::parse(&via));
     Ok(day)
-}
-
-fn none_if_no_row<T>(e: rusqlite::Error) -> Result<Option<T>, rusqlite::Error> {
-    match e {
-        rusqlite::Error::QueryReturnedNoRows => Ok(None),
-        e => Err(e),
-    }
 }
 
 /// The value at percentile `p` of `sorted`, by nearest rank.
