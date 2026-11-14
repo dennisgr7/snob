@@ -93,13 +93,28 @@ pub(crate) fn replace(exe: &Path, new: &Path) -> std::io::Result<()> {
     if old.exists() {
         std::fs::remove_file(&old)?;
     }
-    std::fs::rename(exe, &old)?;
-    if let Err(e) = std::fs::copy(new, exe) {
-        let _ = std::fs::remove_file(exe);
-        let _ = std::fs::rename(&old, exe);
-        return Err(e);
+    // Written whole beside the binary and renamed in: a copy cut short (a
+    // kill, the power) leaves the old binary where it was, never half of the
+    // new one under its name.
+    let mut staged = exe.file_name().unwrap_or_default().to_os_string();
+    staged.push(".new");
+    let staged = exe.with_file_name(staged);
+    let placed = (|| {
+        std::fs::copy(new, &staged)?;
+        // `FlushFileBuffers` wants a handle opened for writing.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&staged)?
+            .sync_all()?;
+        std::fs::rename(exe, &old)?;
+        std::fs::rename(&staged, exe).inspect_err(|_| {
+            let _ = std::fs::rename(&old, exe);
+        })
+    })();
+    if placed.is_err() {
+        let _ = std::fs::remove_file(&staged);
     }
-    Ok(())
+    placed
 }
 
 /// Removes the `.old` an update on Windows left, once nothing runs from it;
@@ -176,6 +191,23 @@ pub(crate) fn shown(step: &Step) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A new binary that cannot be copied leaves the old one in place, under
+    /// its own name, and nothing staged beside it.
+    #[test]
+    fn a_replacement_that_cannot_be_made_leaves_the_old_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = tmp.path().join(EXE);
+        std::fs::write(&exe, "old").unwrap();
+
+        assert!(replace(&exe, &tmp.path().join("missing")).is_err());
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old");
+        let left: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, [EXE.to_string()]);
+    }
 
     /// The swap leaves the new binary at the name and nothing else beside it
     /// (on Windows, the `.old` until a later start sweeps it).
