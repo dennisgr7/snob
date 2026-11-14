@@ -260,11 +260,17 @@ fn configure(conn: &Connection) -> Result<(), StoreError> {
     // it bounds how much of that survives.
     conn.pragma_update(None, "journal_size_limit", 4 * 1024 * 1024)?;
 
-    // The schema of a file at a guessable path is executable content, and
-    // nothing here needs a virtual table or a function in the schema.
+    defend(conn)?;
+    Ok(())
+}
+
+/// The two settings every connection gets, one that only reads included:
+/// they change nothing in the file. The schema of a file at a guessable path
+/// is executable content, and nothing here needs a virtual table or a
+/// function in the schema.
+pub(crate) fn defend(conn: &Connection) -> rusqlite::Result<()> {
     conn.pragma_update(None, "trusted_schema", "OFF")?;
     conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
-
     Ok(())
 }
 
@@ -314,8 +320,7 @@ pub(crate) fn read_only(
         rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
         in_use,
     )?;
-    conn.pragma_update(None, "trusted_schema", "OFF")?;
-    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+    defend(&conn)?;
     conn.pragma_update(None, "query_only", "ON")?;
     reject_newer_schema(&conn, path, known)?;
     if usize::try_from(user_version(&conn)?).is_ok_and(|found| found == known) {

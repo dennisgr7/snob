@@ -288,6 +288,10 @@ fn recorded_owner(db: &Path) -> Result<Option<Pk>, LayoutError> {
                 source,
             }
         })?;
+    crate::store::defend(&conn).map_err(|source| LayoutError::Database {
+        path: db.to_path_buf(),
+        source,
+    })?;
     Ok(crate::store::accounts::own(&conn)?)
 }
 
@@ -396,6 +400,10 @@ fn checkpoint(db: &Path) -> Result<(), LayoutError> {
     let conn =
         Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(failed)?;
     conn.busy_timeout(BUSY).map_err(failed)?;
+    // Not `store::configure`: it sets the journal mode and the rest of what a
+    // connection that will write wants, and this one folds the log into a
+    // file the move must otherwise leave as an older snob wrote it.
+    crate::store::defend(&conn).map_err(failed)?;
     let busy: i64 = match conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0)) {
         Ok(busy) => busy,
         Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy) => 1,
