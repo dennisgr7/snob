@@ -125,6 +125,26 @@ pub(super) fn problem_line(problem: &Problem) -> String {
         Problem::NotPosted => "--no-webhook, so nothing was posted; the address and the headers \
              were still checked"
             .to_string(),
+        Problem::PostsNeedABrowser => {
+            "its posts are read from the browser, and SNOB_NO_BROWSER is \
+             set: runs will read its lists and skip its posts"
+                .to_string()
+        }
+        Problem::PostsHidden => "its posts are not shown to you: the account is private and you \
+             do not follow it"
+            .to_string(),
+        Problem::NoFfmpeg => "quality = \"best\" joins a video's tracks with ffmpeg, and none \
+             was found, so every run refuses to start; install it, or say \"compat\""
+            .to_string(),
+        Problem::CannotSaveTo(dir) => format!(
+            "{} cannot be made or written, so the new posts would be reported and not saved",
+            printable(dir)
+        ),
+        Problem::FirstRunLaysThePostsBaseline => {
+            "the first run takes the posts on its grid as seen and reports none; the \
+             runs after it report what is new"
+                .to_string()
+        }
         // Not this module's sentence and not rewritten into one: it is what the
         // schedule parser, the store, Instagram or the user's own receiver
         // said, and that text is the only thing identifying the cause.
@@ -534,6 +554,11 @@ mod tests {
             Problem::CountersUnknowable,
             Problem::FirstRunLaysTheBaseline,
             Problem::NotPosted,
+            Problem::PostsNeedABrowser,
+            Problem::PostsHidden,
+            Problem::NoFfmpeg,
+            Problem::CannotSaveTo("/srv/media".to_string()),
+            Problem::FirstRunLaysThePostsBaseline,
         ] {
             assert!(!problem_line(&problem).is_empty(), "{problem:?}");
         }

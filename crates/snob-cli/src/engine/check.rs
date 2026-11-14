@@ -16,7 +16,10 @@
 //!
 //! What it does spend is bounded and named: one request per configured
 //! account for its counters, and, without a browser, one to check the
-//! session. From the browser the session is checked off the tab's document
+//! session. An account whose posts are watched costs nothing more: whether
+//! they are shown is read off the profile already asked for, and the rest
+//! (a browser, ffmpeg, the directory, the baseline) is asked of this
+//! machine. From the browser the session is checked off the tab's document
 //! for nothing. A `POST` to the user's own
 //! webhook is not an Instagram request at all.
 //!
@@ -134,6 +137,19 @@ pub enum Problem {
     FirstRunLaysTheBaseline,
     /// `--no-webhook`, so the address was checked and not used.
     NotPosted,
+    /// The account's posts are watched, and a grid is read from the browser
+    /// only: `SNOB_NO_BROWSER` is set.
+    PostsNeedABrowser,
+    /// The account is private and the viewer does not follow it, so its
+    /// posts are not shown.
+    PostsHidden,
+    /// `quality = "best"` and no ffmpeg on this machine: every run refuses.
+    NoFfmpeg,
+    /// The directory the posts are saved in cannot be made or written.
+    CannotSaveTo(String),
+    /// Nothing of the account's posts has been seen yet, so the first run
+    /// lays their baseline and reports none.
+    FirstRunLaysThePostsBaseline,
     /// Whatever the schedule parser, the store, Instagram or the user's own
     /// server said, carried through unchanged.
     Foreign(String),
@@ -161,6 +177,9 @@ pub enum What {
         /// Whether an unattended run may read it, which for somebody else's
         /// account means a recorded answer.
         may_run_unattended: bool,
+        /// Whether its followers and following are watched, or only its
+        /// posts.
+        lists: bool,
     },
     /// The address a report would be posted to.
     Webhook {
@@ -172,6 +191,15 @@ pub enum What {
     Baseline {
         /// When the newest capture of each list was taken. Empty means none.
         taken_at: Vec<(snob_core::model::ListKind, Epoch)>,
+    },
+    /// The posts of one configured account, when they are watched.
+    Posts {
+        /// As the file spells it. `None` is the session's own account.
+        target: Option<String>,
+        /// Where they are saved, as the file says.
+        save_to: Option<String>,
+        /// When their baseline was laid, if it was.
+        baseline_at: Option<Epoch>,
     },
 }
 
@@ -394,12 +422,87 @@ pub async fn with_a_session(
         // take its first-run warning and `setup`'s offer to lay a baseline down
         // with it. No compile error, and no failing test: the report would
         // simply be one line shorter.
-        let (checked, pk) = account_of(app, account, session_works).await;
+        let (checked, pk, shown) = account_of(app, account, session_works).await;
         report.checked.push(checked);
-        if let Some(pk) = pk {
+        if let Some(pk) = pk
+            && account.lists()
+        {
             report.checked.push(baseline_of(app, pk));
         }
+        if account.posts().is_some() {
+            report.checked.push(posts_of(app, account, pk, shown));
+        }
     }
+}
+
+/// What a run would make of `watched`'s posts, asked of what is known here and
+/// of whether the profile just read shows them (`shown`); no request.
+///
+/// In the order a run meets them: no browser, posts not shown, no ffmpeg for
+/// `quality = "best"` (the one that stops a run, so a failure), a directory
+/// that cannot be made (saves would fail; the report still goes out), and no
+/// baseline yet. **The directory is not made**: `check` writes nothing.
+pub fn posts_of(
+    app: &App,
+    watched: &super::watch::Watched,
+    pk: Option<Pk>,
+    shown: Option<bool>,
+) -> Checked {
+    let entry = watched.posts().cloned().unwrap_or_default();
+    let baseline_at = pk.and_then(|pk| {
+        snob_store::store::watch_posts::mark(app.db().conn(), pk)
+            .ok()
+            .flatten()
+            .map(|mark| mark.baseline_at)
+    });
+    let what = What::Posts {
+        target: watched.name().map(str::to_string),
+        save_to: entry
+            .save_to
+            .as_ref()
+            .map(|dir| dir.to_string_lossy().into_owned()),
+        baseline_at,
+    };
+    let (verdict, problem) = if !app.client().has_page() {
+        (Verdict::Warned, Some(Problem::PostsNeedABrowser))
+    } else if shown == Some(false) {
+        (Verdict::Warned, Some(Problem::PostsHidden))
+    } else if entry.save_to.is_some()
+        && entry.quality == Some(crate::cli::Quality::Best)
+        && crate::ffmpeg::Ffmpeg::find(None).is_none()
+    {
+        (Verdict::Failed, Some(Problem::NoFfmpeg))
+    } else if let Some(dir) = entry.save_to.as_deref()
+        && !could_be_made(dir)
+    {
+        (
+            Verdict::Warned,
+            Some(Problem::CannotSaveTo(dir.to_string_lossy().into_owned())),
+        )
+    } else if baseline_at.is_none() {
+        (Verdict::Warned, Some(Problem::FirstRunLaysThePostsBaseline))
+    } else {
+        (Verdict::Ok, None)
+    };
+    Checked {
+        what,
+        verdict,
+        problem,
+    }
+}
+
+/// Whether `dir` is a directory that can be written, or could be made under
+/// the nearest one that is, without making anything.
+fn could_be_made(dir: &std::path::Path) -> bool {
+    let mut at = Some(dir);
+    while let Some(here) = at {
+        if here.exists() {
+            return here.is_dir()
+                && std::fs::metadata(here).is_ok_and(|meta| !meta.permissions().readonly());
+        }
+        at = here.parent();
+    }
+    false
 }
 
 /// The line something gets when a cooldown means it was not asked about.
@@ -432,6 +535,7 @@ fn not_asked_about(account: &super::watch::Watched, held: Held) -> Checked {
         followers: None,
         following: None,
         may_run_unattended,
+        lists: account.lists(),
     };
 
     if may_run_unattended {
@@ -452,11 +556,14 @@ fn not_asked_about(account: &super::watch::Watched, held: Held) -> Checked {
 /// of the `What::Account` this function had just built — through a catch-all
 /// that cannot fire, which is the shape that stops being true quietly. Handed
 /// back, the compiler is what keeps the two in step.
+///
+/// The third value is whether the profile shows the account's posts to the
+/// viewer, when the profile was read: its own, public, or followed.
 async fn account_of(
     app: &App,
     watched: &super::watch::Watched,
     ask: bool,
-) -> (Checked, Option<Pk>) {
+) -> (Checked, Option<Pk>, Option<bool>) {
     let target = watched.name().map(str::to_string);
     let may_run_unattended = watched.may_run_unattended();
 
@@ -466,6 +573,7 @@ async fn account_of(
         followers: None,
         following: None,
         may_run_unattended,
+        lists: watched.lists(),
     };
 
     // A session that does not work cannot answer about anybody, and asking
@@ -477,6 +585,7 @@ async fn account_of(
                 verdict: Verdict::Warned,
                 problem: Some(Problem::SessionSilent),
             },
+            None,
             None,
         );
     }
@@ -522,6 +631,7 @@ async fn account_of(
                             problem: Some(Problem::NoUsername),
                         },
                         None,
+                        None,
                     );
                 }
                 Err(e) => {
@@ -531,6 +641,7 @@ async fn account_of(
                             verdict: Verdict::Failed,
                             problem: Some(Problem::Foreign(crate::report::what_instagram_said(&e))),
                         },
+                        None,
                         None,
                     );
                 }
@@ -547,12 +658,16 @@ async fn account_of(
     };
     match app.client().profile_named(&name, known).await {
         Ok(profile) => {
+            let shown = profile.id == app.viewer().pk
+                || profile.is_private != Some(true)
+                || profile.followed_by_viewer == Some(true);
             what = What::Account {
                 target,
                 pk: Some(profile.id),
                 followers: profile.follower_count(),
                 following: profile.following_count(),
                 may_run_unattended,
+                lists: watched.lists(),
             };
             // Counters that cannot be known are the preflight's own subject.
             // Half of what `check` is for is finding the truncation wall before
@@ -584,6 +699,7 @@ async fn account_of(
                     problem,
                 },
                 Some(profile.id),
+                Some(shown),
             )
         }
         Err(e) => (
@@ -592,6 +708,7 @@ async fn account_of(
                 verdict: Verdict::Failed,
                 problem: Some(Problem::Foreign(crate::report::what_instagram_said(&e))),
             },
+            None,
             None,
         ),
     }
@@ -662,8 +779,18 @@ pub async fn webhook_of(
 /// A list counts only once a mark says it was reported on, which is what
 /// [`reported_baseline`] puts into `taken_at` — so two captures nobody has ever
 /// reported on are still no baseline, whichever of the two readers is asking.
+///
+/// The posts of an account count too: a first run on them reports nothing
+/// either.
 fn wants_a_baseline(what: &What) -> bool {
     matches!(what, What::Baseline { taken_at } if taken_at.len() < 2)
+        || matches!(
+            what,
+            What::Posts {
+                baseline_at: None,
+                ..
+            }
+        )
 }
 
 /// When the capture a run would compare against was taken, if there is one.

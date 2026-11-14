@@ -1,0 +1,12 @@
+-- Why a run drew no conclusion about the account's posts, beside the rest of
+-- what the run did: `snob watch status` says when the last run of an account
+-- whose posts are watched could not look at them for a reason that will not
+-- lift by itself (a private account, no browser), which the run's outcome
+-- does not carry when its lists were read.
+--
+-- The words of `run.posts.skipped` in a report (`PostsSkipped::as_str`):
+-- 'not_verified', 'incomplete', 'hidden' or 'no_browser'. NULL for a run that
+-- looked at the posts, one of an account whose posts are not watched, and
+-- every run before this. No CHECK, so a word a newer build writes reads back
+-- here as the word it is.
+ALTER TABLE watch_runs ADD COLUMN posts_skipped TEXT;

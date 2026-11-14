@@ -131,7 +131,7 @@ pub async fn setup(
 
     offer_the_baseline(&report, &secrets, paths, account).await?;
 
-    ui::info("Start it with \"snob watch\", or put \"snob watch once\" on a timer.");
+    ui::info("Start it with \"snob watch\", or print a timer for it with \"snob watch unit\".");
     Ok(ExitCode::Ok)
 }
 
@@ -159,7 +159,7 @@ fn existing_to_replace(paths: &AppPaths, dry_run: bool) -> Result<Option<WatchCo
 /// With no account in use the answers have no viewer to be told apart by, so
 /// they replace the whole list, or a later run would read an entry twice.
 fn entries_to_write(
-    answered: Vec<(String, Option<Epoch>)>,
+    answered: Vec<Answered>,
     in_use: Option<Pk>,
     replaced: Option<&WatchConfig>,
 ) -> Vec<config::AccountConfig> {
@@ -170,14 +170,42 @@ fn entries_to_write(
             in_use.is_some() && entry.viewer.is_some_and(|viewer| Some(viewer) != in_use)
         })
         .cloned();
-    let answered = answered.into_iter().map(|(target, consent)| {
-        config::AccountConfig::lists_of(
-            target,
+    let answered = answered.into_iter().map(|answer| config::AccountConfig {
+        lists: answer.lists,
+        posts: answer.posts,
+        ..config::AccountConfig::lists_of(
+            answer.target,
             in_use,
-            consent.map(|agreed_at| config::ConsentConfig { agreed_at }),
+            answer
+                .consent
+                .map(|agreed_at| config::ConsentConfig { agreed_at }),
         )
     });
     others.chain(answered).collect()
+}
+
+/// One account as the wizard was told to watch it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Answered {
+    /// The username, or `self`.
+    target: String,
+    /// When somebody agreed to its lists being read; `None` for the own
+    /// account and for one whose lists are not watched.
+    consent: Option<Epoch>,
+    lists: bool,
+    posts: Option<config::PostsConfig>,
+}
+
+impl Answered {
+    /// An account whose lists alone are watched.
+    fn lists(target: &str, consent: Option<Epoch>) -> Self {
+        Self {
+            target: target.to_string(),
+            consent,
+            lists: true,
+            posts: None,
+        }
+    }
 }
 
 /// What taking the baseline now would walk, over every account it covers.
@@ -211,13 +239,26 @@ struct BaselineCost {
     /// nobody — is walked all the same, so it is counted and said rather than
     /// folded in as zero.
     uncounted: usize,
+    /// How many accounts' posts the first capture reads, a profile and a page
+    /// each.
+    posts: usize,
 }
+
+/// What laying an account's posts baseline sends, from the browser: its
+/// profile as the app opens one (the profile query and three reads beside it,
+/// `client/ask.rs`), the route lookup the first time its name is seen, and the
+/// first page of its grid. Six, the most it is.
+const POSTS_BASELINE_REQUESTS: u64 = 6;
 
 impl BaselineCost {
     /// The sentence somebody agrees to, naming what it covers.
     fn sentence(&self) -> String {
+        let posts = match self.posts {
+            0 => String::new(),
+            n => format!(", and reading the newest posts of {n} account{}", plural(n)),
+        };
         let mut line = format!(
-            "Taking it now means walking {} followers and {} following across {} account{}: \
+            "Taking it now means walking {} followers and {} following across {} account{}{posts}: \
              roughly {} requests, {}.",
             self.followers,
             self.following,
@@ -283,11 +324,23 @@ fn baseline_cost(report: &crate::engine::check::CheckReport, browser: bool) -> B
         pages: 0,
         requests: 0,
         uncounted: 0,
+        posts: 0,
     };
     for checked in &report.checked {
+        if let What::Posts {
+            baseline_at: None, ..
+        } = &checked.what
+        {
+            // Their profile and one page of their grid: five requests, six the
+            // first time the name is looked up, said as the higher.
+            cost.posts += 1;
+            cost.requests += POSTS_BASELINE_REQUESTS;
+            continue;
+        }
         let What::Account {
             followers,
             following,
+            lists: true,
             ..
         } = &checked.what
         else {
@@ -711,28 +764,91 @@ fn last_of_each(typed: Vec<(String, String)>) -> Vec<(String, String)> {
     headers.into_iter().collect()
 }
 
-fn ask_accounts(webhook: Option<&str>) -> Result<Vec<(String, Option<Epoch>)>> {
-    let mut accounts = vec![("self".to_string(), None)];
+fn ask_accounts(webhook: Option<&str>) -> Result<Vec<Answered>> {
+    let mut own = Answered::lists("self", None);
+    if ui::confirm("Report your own new posts too?", false)? {
+        own.posts = Some(ask_posts()?);
+    }
+    let mut accounts = vec![own];
 
     if ui::confirm("Also watch somebody else's account?", false)? {
-        ui::warn(
-            "reading somebody else's lists is a heavier request than reading your own, and \
-             Instagram is readier to refuse it. A scheduled run cannot ask, so the answer is \
-             recorded in the file.",
-        );
         loop {
             let name = ui::prompt_line("Whose? (their username, or blank to stop)")?;
             let name = crate::engine::target::clean(name.trim());
             if name.is_empty() {
                 break;
             }
-            if !ui::confirm(&consent_question(name, webhook), false)? {
+            let what = ui::menu::choose(
+                &format!("What of @{} should be watched?", printable(name)),
+                &["Their followers and following", "Their new posts", "Both"],
+            )?;
+            let Some(what) = what else {
                 continue;
-            }
-            accounts.push((name.to_string(), Some(snob_core::clock::now())));
+            };
+            let (lists, posts) = (what != 1, what != 0);
+            // Reading their posts asks no consent, as `snob posts` does not;
+            // walking their lists does, and the answer is what is recorded.
+            let consent = if lists {
+                ui::warn(
+                    "reading somebody else's lists is a heavier request than reading your \
+                     own, and Instagram is readier to refuse it. A scheduled run cannot ask, \
+                     so the answer is recorded in the file.",
+                );
+                if !ui::confirm(&consent_question(name, webhook), false)? {
+                    continue;
+                }
+                Some(snob_core::clock::now())
+            } else {
+                None
+            };
+            accounts.push(Answered {
+                target: name.to_string(),
+                consent,
+                lists,
+                posts: if posts { Some(ask_posts()?) } else { None },
+            });
         }
     }
     Ok(accounts)
+}
+
+/// Where an account's new posts are saved, asked until the answer is blank
+/// (nothing saved) or a whole path: a run on a timer starts in a directory of
+/// its own, so a relative one would land wherever that is.
+fn ask_posts() -> Result<config::PostsConfig> {
+    loop {
+        let answer = ui::prompt_line(
+            "Save their photos and videos in which directory? (a whole path, or blank to \
+             save nothing)",
+        )?;
+        match save_to_of(&answer) {
+            Ok(save_to) => {
+                return Ok(config::PostsConfig {
+                    save_to,
+                    quality: None,
+                });
+            }
+            Err(why) => ui::warn(&why),
+        }
+    }
+}
+
+/// What a directory answer means: blank is nothing saved, a whole path is
+/// that directory, and anything else is asked again.
+fn save_to_of(answer: &str) -> std::result::Result<Option<std::path::PathBuf>, String> {
+    let answer = answer.trim();
+    if answer.is_empty() {
+        return Ok(None);
+    }
+    let dir = std::path::PathBuf::from(answer);
+    if dir.is_absolute() {
+        Ok(Some(dir))
+    } else {
+        Err(format!(
+            "{} is not a whole path; write it from the root of a drive",
+            printable(answer)
+        ))
+    }
 }
 
 /// The question the recorded consent is an answer to.
@@ -847,6 +963,7 @@ evry = \"6h\"
                 followers,
                 following,
                 may_run_unattended: true,
+                lists: true,
             },
             verdict: Verdict::Ok,
             problem: None,
@@ -912,6 +1029,7 @@ evry = \"6h\"
             requests: crate::engine::walk::requests_to_walk(followers, true)
                 + crate::engine::walk::requests_to_walk(following, true),
             uncounted: 0,
+            posts: 0,
         };
 
         let one_sitting = cost(300, 180).sentence();
@@ -1251,7 +1369,10 @@ agreed_at = 6
         );
 
         let written = entries_to_write(
-            vec![("self".into(), None), ("new".into(), Some(Epoch::new(9)))],
+            vec![
+                Answered::lists("self", None),
+                Answered::lists("new", Some(Epoch::new(9))),
+            ],
             Some(Pk::new(2)),
             Some(&existing),
         );
@@ -1313,8 +1434,8 @@ viewer = 1
 
         let written = entries_to_write(
             vec![
-                ("self".into(), None),
-                ("friend".into(), Some(Epoch::new(9))),
+                Answered::lists("self", None),
+                Answered::lists("friend", Some(Epoch::new(9))),
             ],
             None,
             Some(&existing),
@@ -1325,6 +1446,114 @@ viewer = 1
             .map(|entry| (entry.target.as_str(), entry.viewer))
             .collect();
         assert_eq!(shape, [("self", None), ("friend", None)]);
+    }
+
+    /// An account whose posts alone are watched is written with no consent
+    /// and `lists = false`, and an entry of another viewer keeps its posts.
+    #[test]
+    fn a_posts_only_answer_is_written_as_one_and_others_keep_their_posts() {
+        let existing = watch_toml(
+            r#"
+schema = 2
+every = "6h"
+
+[[account]]
+target = "school"
+viewer = 1
+lists = false
+[account.posts]
+"#,
+        );
+        let dir = if cfg!(windows) {
+            r"D:\media"
+        } else {
+            "/srv/media"
+        };
+        let written = entries_to_write(
+            vec![Answered {
+                target: "club".into(),
+                consent: None,
+                lists: false,
+                posts: Some(config::PostsConfig {
+                    save_to: Some(dir.into()),
+                    quality: None,
+                }),
+            }],
+            Some(Pk::new(2)),
+            Some(&existing),
+        );
+        assert_eq!(written.len(), 2);
+        assert!(
+            !written[0].lists && written[0].posts.is_some(),
+            "kept as it was"
+        );
+        assert!(!written[1].lists);
+        assert_eq!(written[1].consent, None);
+        let text = config::template(
+            &WatchConfig {
+                accounts: written.clone(),
+                ..existing
+            },
+            false,
+            |_| None,
+        );
+        assert_eq!(watch_toml(&text).accounts, written, "{text}");
+    }
+
+    /// The offer counts the posts it will read, and not the lists of an
+    /// account whose lists are not watched.
+    #[test]
+    fn the_offer_counts_the_posts_it_reads_and_not_the_lists_it_leaves_alone() {
+        use crate::engine::check::{CheckReport, Checked, What};
+
+        let report = CheckReport {
+            checked: vec![
+                Checked {
+                    what: What::Account {
+                        target: Some("school".into()),
+                        pk: Some(Pk::new(7)),
+                        followers: Some(5_000),
+                        following: Some(10),
+                        may_run_unattended: true,
+                        lists: false,
+                    },
+                    verdict: Verdict::Ok,
+                    problem: None,
+                },
+                Checked {
+                    what: What::Posts {
+                        target: Some("school".into()),
+                        save_to: None,
+                        baseline_at: None,
+                    },
+                    verdict: Verdict::Warned,
+                    problem: None,
+                },
+            ],
+        };
+        let cost = baseline_cost(&report, true);
+        assert_eq!((cost.accounts, cost.followers, cost.posts), (0, 0, 1));
+        assert_eq!(cost.requests, POSTS_BASELINE_REQUESTS);
+        assert!(
+            cost.sentence().contains("the newest posts of 1 account"),
+            "{}",
+            cost.sentence()
+        );
+    }
+
+    #[test]
+    fn a_directory_answer_is_blank_or_a_whole_path() {
+        assert_eq!(save_to_of("  "), Ok(None));
+        assert!(
+            save_to_of("media").is_err(),
+            "a relative path is asked again"
+        );
+        let whole = if cfg!(windows) {
+            r"D:\media"
+        } else {
+            "/srv/media"
+        };
+        assert_eq!(save_to_of(whole), Ok(Some(whole.into())));
     }
 
     #[test]

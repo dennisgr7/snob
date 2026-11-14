@@ -518,6 +518,7 @@ fn record_failed_run(
             requests,
             outcome: Some(outcome.into()),
             changes: 0,
+            posts_skipped: None,
         },
     );
     if let Err(e) = record {

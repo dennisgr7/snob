@@ -46,7 +46,7 @@ pub(super) fn check_json(
                     "session",
                     serde_json::json!({ "viewer": viewer, "storage": backend }),
                 ),
-                What::Account { target, pk, followers, following, may_run_unattended } => (
+                What::Account { target, pk, followers, following, may_run_unattended, lists } => (
                     "account",
                     serde_json::json!({
                         "target": target,
@@ -54,6 +54,7 @@ pub(super) fn check_json(
                         "followers": followers,
                         "following": following,
                         "may_run_unattended": may_run_unattended,
+                        "lists": lists,
                     }),
                 ),
                 What::Webhook { destination, status, signed } => (
@@ -70,6 +71,16 @@ pub(super) fn check_json(
                         "lists": taken_at.iter()
                             .map(|(kind, at)| serde_json::json!({ "kind": kind.as_str(), "taken_at": at }))
                             .collect::<Vec<_>>(),
+                    }),
+                ),
+                // Additive: a line of its own for an account whose posts are
+                // watched, beside its `account` line.
+                What::Posts { target, save_to, baseline_at } => (
+                    "posts",
+                    serde_json::json!({
+                        "target": target.as_deref().map(printable),
+                        "save_to": save_to,
+                        "baseline_at": baseline_at,
                     }),
                 ),
             };
@@ -240,6 +251,10 @@ pub(super) fn event(has_changes: bool) -> &'static str {
 ///
 /// Here and not in `status`, for the reason the header of this file gives: it
 /// is the output a monitoring system is most likely to parse.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one document's worth of what status read, each part its own key"
+)]
 pub(super) fn status_json(
     configured: bool,
     config_path: &std::path::Path,
@@ -247,6 +262,7 @@ pub(super) fn status_json(
     health: &super::status::Health,
     last_runs: &[RunOf],
     marks: &[MarkOf],
+    posts: &[super::status::PostsOf],
     next: Option<super::status::NextRun>,
 ) -> serde_json::Value {
     use super::status::NextRun;
@@ -297,6 +313,7 @@ pub(super) fn status_json(
             "outcome": run.outcome.as_ref().map(|outcome| outcome.as_str()),
             "requests": run.requests,
             "changes": run.changes,
+            "posts_skipped": run.posts_skipped,
         })).collect::<Vec<_>>(),
         "accounts": marks.iter().map(|MarkOf { mark: m, viewer, .. }| serde_json::json!({
             "viewer": viewer.json(),
@@ -304,6 +321,17 @@ pub(super) fn status_json(
             "kind": m.kind.as_str(),
             "last_reported_at": m.compared_at,
             "has_baseline": m.snapshot_id.is_some(),
+        })).collect::<Vec<_>>(),
+        // Additive: one row per account whose posts have a baseline, beside
+        // `accounts`, which is about the lists.
+        "posts": posts.iter().map(|of| serde_json::json!({
+            "viewer": of.viewer.json(),
+            "pk": of.mark.account_pk,
+            "baseline_at": of.mark.baseline_at,
+            "read_at": of.mark.read_at,
+            "read_at_iso": iso(of.mark.read_at),
+            "last_reported_at": of.mark.reported_at,
+            "owed_files": of.owed,
         })).collect::<Vec<_>>(),
     })
 }

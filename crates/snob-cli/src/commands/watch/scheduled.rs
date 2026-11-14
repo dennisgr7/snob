@@ -533,6 +533,7 @@ mod tests {
                     requests: 0,
                     outcome: None,
                     changes: 0,
+                    posts_skipped: None,
                 },
             )
             .unwrap();
@@ -587,6 +588,7 @@ mod tests {
                 requests: 0,
                 outcome: None,
                 changes: 0,
+                posts_skipped: None,
             },
         )
         .unwrap();

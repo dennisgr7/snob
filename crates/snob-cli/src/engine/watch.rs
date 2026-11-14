@@ -453,6 +453,9 @@ pub fn commit(
             requests: tick.requests,
             outcome: Some(tick.outcome().into()),
             changes: tick.report.change_count() as u32,
+            posts_skipped: tick
+                .posts_skipped()
+                .map(|skipped| skipped.as_str().to_string()),
         },
     );
     if let Err(e) = record {

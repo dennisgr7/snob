@@ -61,6 +61,7 @@ pub fn status(
             &health,
             &recorded.runs,
             &recorded.marks,
+            &recorded.posts,
             next,
         );
         crate::ui::say!("{}", serde_json::to_string_pretty(&document)?);
@@ -209,6 +210,15 @@ pub(super) struct MarkOf {
     pub(super) viewer: Viewer,
 }
 
+/// The receipt for one account's posts, with what to call it, whose database
+/// holds it, and how many of its new posts still owe a file.
+pub(super) struct PostsOf {
+    pub(super) mark: snob_store::store::watch_posts::Mark,
+    who: String,
+    pub(super) viewer: Viewer,
+    pub(super) owed: usize,
+}
+
 /// What every account's database says the monitor did.
 ///
 /// **Every database, not the account in use's.** A run reads each entry as its
@@ -223,6 +233,7 @@ struct Recorded {
     owed: deliveries::Owed,
     runs: Vec<RunOf>,
     marks: Vec<MarkOf>,
+    posts: Vec<PostsOf>,
     reported: Vec<HalfRead>,
 }
 
@@ -317,6 +328,14 @@ impl Recorded {
                 mark,
             });
         }
+        for mark in snob_store::store::watch_posts::all_marks(conn)? {
+            self.posts.push(PostsOf {
+                who: who(mark.account_pk)?,
+                viewer: viewer.clone(),
+                owed: snob_store::store::watch_posts::pending_saves(conn, mark.account_pk)?.len(),
+                mark,
+            });
+        }
         for (pk, kinds) in seen {
             self.reported.push(HalfRead {
                 who: who(pk)?,
@@ -377,6 +396,29 @@ impl Recorded {
                     mark.kind,
                     report::stored_on(mark.compared_at)
                 ));
+            }
+            for PostsOf {
+                mark, who, owed, ..
+            } in self.posts.iter().filter(|of| of.viewer.pk == viewer.pk)
+            {
+                reported = true;
+                let last = match mark.reported_at {
+                    Some(at) => format!("a new one last reported on {}", report::stored_on(at)),
+                    None => "none new reported yet".to_string(),
+                };
+                let mut line = format!(
+                    "  {who}: posts seen since {}, last read on {}, {last}",
+                    report::stored_on(mark.baseline_at),
+                    report::stored_on(mark.read_at),
+                );
+                if *owed > 0 {
+                    line.push_str(&format!(
+                        "; {owed} still owe{} a file, saved by a run that finds {} on its pages",
+                        if *owed == 1 { "s" } else { "" },
+                        if *owed == 1 { "it" } else { "them" }
+                    ));
+                }
+                lines.push(format!("{line}."));
             }
             if !reported {
                 lines.push("  It has not reported on anything yet.".to_string());
@@ -599,6 +641,22 @@ fn health(
         run, who, watched, ..
     } in runs
     {
+        // Posts that a run could not look at for a reason that does not lift
+        // by itself, while its lists were read and the outcome says `ok`.
+        if *watched
+            && let Some(why) = run.posts_skipped.as_deref()
+            && matches!(why, "hidden" | "no_browser")
+        {
+            at_least(Verdict::Warned);
+            notes.push(format!(
+                "{who}'s posts could not be read on its last run ({})",
+                if why == "hidden" {
+                    "the account is private and not followed"
+                } else {
+                    "SNOB_NO_BROWSER is set, and a grid is read from the browser"
+                }
+            ));
+        }
         let Some(code) = run.outcome.as_ref().filter(|c| **c != RunOutcome::Ok) else {
             continue;
         };
@@ -1115,6 +1173,7 @@ target = "self"
             // with any misspelling.
             outcome: Some(outcome.into()),
             changes: 0,
+            posts_skipped: None,
         }
     }
 
@@ -1920,6 +1979,7 @@ every = \"6h\"
             &health,
             &recorded.runs,
             &recorded.marks,
+            &recorded.posts,
             None,
         );
         let viewers: Vec<_> = document["last_runs"]
@@ -1933,5 +1993,48 @@ every = \"6h\"
             [(1.into(), 1.into()), (2.into(), 2.into())],
             "{document}"
         );
+    }
+
+    /// A run that read the lists and could not look at the posts, for a
+    /// reason that does not lift by itself, is worth a note though its
+    /// outcome is `ok`; one that skipped them within the hour is not.
+    #[test]
+    fn posts_a_run_could_not_read_are_noted() {
+        let configured = watch_toml("schema = 1\nevery = \"6h\"\n");
+        let hidden = watch_store::Run {
+            posts_skipped: Some("hidden".into()),
+            ..ran(ExitCode::Ok)
+        };
+        let found = health(
+            Some(&configured),
+            &[of(&hidden)],
+            &[],
+            Default::default(),
+            NOW,
+            None,
+        );
+        assert_eq!(found.verdict, Verdict::Warned);
+        assert!(
+            found
+                .notes
+                .iter()
+                .any(|n| n.contains("posts could not be read")),
+            "{:?}",
+            found.notes
+        );
+
+        let recent = watch_store::Run {
+            posts_skipped: Some("not_verified".into()),
+            ..ran(ExitCode::Ok)
+        };
+        let found = health(
+            Some(&configured),
+            &[of(&recent)],
+            &[],
+            Default::default(),
+            NOW,
+            None,
+        );
+        assert_eq!(found.verdict, Verdict::Ok, "{:?}", found.notes);
     }
 }

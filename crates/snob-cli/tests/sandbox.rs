@@ -967,6 +967,111 @@ async fn a_run_that_failed_is_not_run_again_at_the_next_look() {
     );
 }
 
+/// `watch status` says, for an account whose posts are watched, since when
+/// they have been seen, when they were last read and when a new one was last
+/// reported, and how many still owe a file; and `watch check` says, with no
+/// browser, that they would not be read.
+#[tokio::test]
+async fn watch_status_says_when_an_accounts_posts_were_last_read() {
+    use snob_store::store::watch_posts;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    log_in(tmp.path(), &instagram);
+    configure(
+        tmp.path(),
+        "schema = 2\nevery = \"6h\"\n\n[[account]]\ntarget = \"self\"\nlists = false\n\
+         [account.posts]\n",
+    );
+    {
+        let mut db = snob_store::store::Store::open_at(&database(tmp.path())).unwrap();
+        snob_store::store::users::ensure(db.conn(), PK).unwrap();
+        snob_store::store::accounts::upsert(db.conn(), PK, true).unwrap();
+        let seen = |pk: u64, taken_at: i64| watch_posts::Seen {
+            media_pk: pk,
+            code: format!("C{pk}"),
+            taken_at: snob_core::Epoch::new(taken_at),
+            pinned: false,
+        };
+        let commit = |db: &mut snob_store::store::Store, posts: &watch_posts::Commit, at: i64| {
+            snob_store::store::watch::commit_report(
+                db,
+                PK,
+                &[],
+                snob_core::Epoch::new(at),
+                None,
+                &[],
+                Some(posts),
+                None,
+            )
+            .unwrap();
+        };
+        commit(
+            &mut db,
+            &watch_posts::Commit {
+                seen: vec![seen(1, 100)],
+                floor: snob_core::Epoch::new(100),
+                has_files: true,
+                ..Default::default()
+            },
+            1_700_000_000,
+        );
+        commit(
+            &mut db,
+            &watch_posts::Commit {
+                seen: vec![seen(2, 200)],
+                news: vec![2],
+                floor: snob_core::Epoch::new(200),
+                has_files: true,
+                ..Default::default()
+            },
+            1_700_003_600,
+        );
+    }
+
+    let said = json(&snob(tmp.path(), None, &["watch", "status", "--json"]));
+    let posts = &said["posts"][0];
+    assert_eq!(posts["pk"], 42, "{said}");
+    assert_eq!(posts["baseline_at"], 1_700_000_000, "{said}");
+    assert_eq!(posts["read_at"], 1_700_003_600, "{said}");
+    assert_eq!(posts["last_reported_at"], 1_700_003_600, "{said}");
+    assert_eq!(posts["owed_files"], 1, "{said}");
+
+    let out = snob(tmp.path(), None, &["watch", "status"]);
+    let text = stdout(&out);
+    assert!(text.contains("posts seen since"), "{text}");
+    assert!(text.contains("1 still owes a file"), "{text}");
+
+    let checked = json(&snob(
+        tmp.path(),
+        Some(&instagram),
+        &["watch", "check", "--json", "--no-webhook"],
+    ));
+    let line = checked["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["what"] == "posts")
+        .unwrap_or_else(|| panic!("a line for the posts: {checked}"))
+        .clone();
+    assert_eq!(line["verdict"], "warning", "{checked}");
+    assert!(
+        line["problem"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("SNOB_NO_BROWSER"),
+        "{checked}"
+    );
+    assert!(
+        !checked["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| check["what"] == "baseline"),
+        "the lists are not watched, so their baseline is not asked about: {checked}"
+    );
+}
+
 /// A stranger's lists are not read on an answer nobody gave.
 ///
 /// The domain rule, asserted of the program rather than of a function: an

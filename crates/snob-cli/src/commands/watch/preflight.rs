@@ -289,6 +289,23 @@ pub(super) fn describe_check(report: &crate::engine::check::CheckReport) -> Vec<
                     None => "nothing stored yet".to_string(),
                 },
             ),
+            What::Posts {
+                target,
+                save_to,
+                baseline_at,
+            } => (
+                format!("{} posts", crate::app::target_label(target.as_deref())),
+                [
+                    baseline_at.map(|at| format!("seen since {}", report::stored_on(at))),
+                    save_to
+                        .as_deref()
+                        .map(|dir| format!("saved to {}", printable(dir))),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", "),
+            ),
         };
 
         let mark = match checked.verdict {

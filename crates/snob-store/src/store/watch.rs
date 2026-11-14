@@ -178,6 +178,10 @@ pub struct Run {
     /// rather than as a value that quietly compares unequal to everything.
     pub outcome: Option<RecordedOutcome>,
     pub changes: u32,
+    /// Why the run drew no conclusion about the account's posts, as a
+    /// report's `run.posts.skipped` says it; `None` when it looked at them or
+    /// does not watch them.
+    pub posts_skipped: Option<String>,
 }
 
 /// Records a run, whatever came of it.
@@ -191,8 +195,9 @@ pub struct Run {
 /// thing last *ran*.
 pub fn record_run(conn: &Connection, run: &Run) -> Result<i64, StoreError> {
     conn.execute(
-        "INSERT INTO watch_runs (account_pk, started_at, finished_at, requests, outcome, changes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO watch_runs
+             (account_pk, started_at, finished_at, requests, outcome, changes, posts_skipped)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             pk_to_sql(run.account_pk),
             run.started_at.get(),
@@ -203,6 +208,7 @@ pub fn record_run(conn: &Connection, run: &Run) -> Result<i64, StoreError> {
             // back, so writing one is a row this build did not invent.
             run.outcome.as_ref().map(RecordedOutcome::as_str),
             run.changes,
+            run.posts_skipped,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -226,7 +232,7 @@ pub fn last_runs(conn: &Connection) -> Result<Vec<Run>, StoreError> {
         // The view rather than the window function again: `prune` exempts
         // exactly these rows from the thirty-day sweep, and a tie-break that
         // means one thing here and another there deletes the row this displays.
-        "SELECT account_pk, started_at, finished_at, requests, outcome, changes
+        "SELECT account_pk, started_at, finished_at, requests, outcome, changes, posts_skipped
          FROM newest_run
          ORDER BY account_pk",
     )?;
@@ -242,6 +248,7 @@ pub fn last_runs(conn: &Connection) -> Result<Vec<Run>, StoreError> {
                 .as_deref()
                 .map(RecordedOutcome::from_token),
             changes: row.get(5)?,
+            posts_skipped: row.get(6)?,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
@@ -533,7 +540,10 @@ pub struct Queued<'a> {
 /// when it concluded nothing about them. Written here and nowhere else, for
 /// the same reason as the marks: a post reported and not recorded is reported
 /// again, one recorded and not reported is never reported at all.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "everything one report commits, in the one transaction that has to hold it"
+)]
 pub fn commit_report(
     store: &mut super::Store,
     account_pk: Pk,
@@ -882,6 +892,7 @@ mod tests {
                     requests: 1,
                     outcome: Some(RunOutcome::Ok.into()),
                     changes: 0,
+                    posts_skipped: None,
                 },
             )
             .unwrap();
@@ -912,6 +923,31 @@ mod tests {
             last_runs(db.conn()).unwrap().len(),
             1,
             "and the reader still finds it"
+        );
+    }
+
+    /// Why a run skipped the posts is kept with the run and read back with
+    /// the newest one, through the view, which takes a new column as it comes.
+    #[test]
+    fn why_a_run_skipped_the_posts_is_read_back_with_it() {
+        let mut db = Store::in_memory().unwrap();
+        account_with_capture(&mut db, Pk::new(7), &[user(1, "one")]);
+        record_run(
+            db.conn(),
+            &Run {
+                account_pk: Pk::new(7),
+                started_at: Epoch::new(1_000),
+                finished_at: Some(Epoch::new(1_000)),
+                requests: 1,
+                outcome: None,
+                changes: 0,
+                posts_skipped: Some("no_browser".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            last_runs(db.conn()).unwrap()[0].posts_skipped.as_deref(),
+            Some("no_browser")
         );
     }
 
@@ -1309,6 +1345,7 @@ mod tests {
                     requests: 0,
                     outcome: Some(RunOutcome::NoSession.into()),
                     changes: 0,
+                    posts_skipped: None,
                 },
             )
             .unwrap();
@@ -1576,6 +1613,7 @@ mod tests {
                     requests: 1,
                     outcome: Some(RunOutcome::Ok.into()),
                     changes: 0,
+                    posts_skipped: None,
                 },
             )
             .unwrap();
@@ -1616,6 +1654,7 @@ mod tests {
                     requests: 1,
                     outcome: Some(RunOutcome::Ok.into()),
                     changes,
+                    posts_skipped: None,
                 },
             )
             .unwrap();
