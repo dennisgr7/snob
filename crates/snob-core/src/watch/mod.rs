@@ -9,6 +9,7 @@
 
 pub mod diff;
 pub mod outcome;
+pub mod posts;
 pub mod schedule;
 pub mod sign;
 
