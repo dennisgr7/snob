@@ -7,7 +7,7 @@
 //! keeps its tasks in memory, aborts one after five minutes and lists none.
 //!
 //! **Never asked inside a task**: a call that needs a yes is asked before its
-//! job starts (`mod.rs`, `consent`), so no task is ever `input_required`, and
+//! job starts (`lib.rs`, `consent`), so no task is ever `input_required`, and
 //! `tasks/update` has nothing to answer.
 
 use std::time::Duration;

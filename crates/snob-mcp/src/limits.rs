@@ -1,15 +1,12 @@
-//! How many tool calls `snob mcp` runs at once, and how many it takes in a minute.
+//! How many tool calls `snob mcp` runs at once, and how many it takes in a
+//! minute: a few, and **only one that may reach Instagram**; reading what is
+//! stored, an estimate and the status go on beside it.
 //!
-//! So a server runs a few calls at a time, and **only one that may reach Instagram**;
-//! reading what is stored, an estimate and the status go on beside it.
-//!
-//! **Taken before anything is asked**, so nobody says yes to a call that is then
-//! refused, and no ticket is spent on one; so is every other refusal that costs nothing
-//! to know, the account's jobs among them, whose walks run in processes of their own and
-//! hold none of these permits once the call that started them has answered (`mod.rs`,
-//! `Server::refused_ahead`, which lists what can still refuse after the yes). **Never
-//! queued**: a call over a limit answers `busy` at once, and the agent calls again when
-//! the other has finished.
+//! **Taken before anything is asked**, so nobody says yes to a call that is
+//! then refused and no ticket is spent on one. **Never queued**: a call over a
+//! limit answers `busy` at once. A job's walk holds none of these once the
+//! call that started it has answered; `Server::refused_ahead` asks its
+//! account's jobs.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -30,8 +27,8 @@ const SPENDING: usize = 1;
 const WRITES: usize = 1;
 
 /// Calls taken in one [`WINDOW`]. It also bounds the tickets alive at once: one
-/// is handed out per call at most, each good for ten minutes, so at most 600
-/// are, under the 4096 `seal.rs` keeps.
+/// is handed out per call at most, each good for ten minutes, which eleven
+/// windows can touch, so at most 660 are, under the 4096 `seal.rs` keeps.
 const RATE: u32 = 60;
 
 /// The window [`RATE`] is counted in.

@@ -146,7 +146,7 @@ pub struct Settings {
     /// `--allow-writes`.
     pub writes: bool,
     /// `--downloads-dir`: the directory a post's files are saved into,
-    /// absolute (`cli::downloads_dir`). `None`: no download is offered.
+    /// absolute (`args::downloads_dir`). `None`: no download is offered.
     pub downloads: Option<String>,
     /// `--confirm-in-chat`, which each transport resolves for itself when
     /// it was not given.
@@ -559,8 +559,9 @@ impl ServerHandler for Server {
                 .into());
             }
         }
-        // Before the person is asked anything: a yes to a call that will not
-        // run is a question wasted.
+        // **Every refusal that costs nothing to know comes before the person is
+        // asked**, in this order: a yes to a call that will not run is a
+        // question wasted, and its ticket would be spent on nothing.
         if self.launch.upgraded() {
             return Ok(refusal(
                 "upgraded",
@@ -569,16 +570,10 @@ impl ServerHandler for Server {
             )
             .into());
         }
-        // Before the person is asked, too: a yes to a call then refused as busy
-        // is a question wasted, and the ticket it came back with would be spent
-        // on nothing.
         let _permits = match self.limits.take(plan.spends) {
             Ok(permits) => permits,
             Err(busy) => return Ok(refusal("busy", &busy.why()).into()),
         };
-        // Before the person is asked, too: what would refuse the call once
-        // it has its yes that this server's permits do not see, the
-        // account's jobs (`refused_ahead`).
         if plan.ask.is_some()
             && plan.spends != tools::Spends::Nothing
             && let Some(refused) = self.refused_ahead(&plan, &request.name, &context).await?
@@ -969,9 +964,9 @@ struct Asked<'a> {
 }
 
 impl Server {
-    /// Asks the person, in whichever way the client can be asked, in the
-    /// order the header gives: the token a yes in the chat came back with,
-    /// then a form, then the chat.
+    /// Asks the person, in whichever way the client can be asked, in this
+    /// order: the token a yes in the chat came back with, then a form, then
+    /// the chat.
     async fn consent(
         &self,
         asked: &Asked<'_>,

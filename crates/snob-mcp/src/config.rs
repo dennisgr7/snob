@@ -69,7 +69,7 @@ pub fn run(
     ui::info(whereto);
     if args.allow_writes {
         // The real gate on a write: the yes snob is handed may have been
-        // typed by the agent itself (`mod.rs`, `consent`), and the client's
+        // typed by the agent itself (`lib.rs`, `consent`), and the client's
         // own prompt before a tool runs is the one an agent cannot answer.
         ui::info(
             "Keep snob_follow and snob_unfollow on \"ask\" in the client's tool permissions: \
