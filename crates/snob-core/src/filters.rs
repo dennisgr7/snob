@@ -1,15 +1,13 @@
 //! Filtering of account lists.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use crate::model::User;
 
-/// URL fragments that identify Instagram's default avatar.
-///
-/// This is the only way to tell that someone has no picture: the API does not
-/// say so, it hands back the URL of the generic image as if it were theirs. The
-/// values live here rather than buried in the logic because when Instagram
-/// changes its default avatar this stops matching and a new one has to be added.
+/// URL fragments that identify Instagram's default avatar: the only way to
+/// tell that someone has no picture, since the API hands the generic image's
+/// URL back as if it were theirs. When Instagram changes it, add the new one.
 pub const DEFAULT_AVATAR_HASHES: [&str; 2] = [
     "44884218_345707102882519_2446069589734326272_n",
     "464760996_1254146839119862_3605321457742435801_n",
@@ -24,11 +22,9 @@ pub enum Attribute {
 }
 
 impl Attribute {
-    /// Whether an account has it.
-    ///
-    /// Returns `false` when the data is unknown. That is deliberate: hiding
-    /// someone over an attribute they may not have is worse than showing them
-    /// needlessly, because in the first case the user never sees them at all.
+    /// Whether an account has it. **`false` when the data is unknown**:
+    /// hiding someone over an attribute they may not have is worse than
+    /// showing them needlessly.
     pub fn matches(self, u: &User) -> bool {
         match self {
             Self::Verified => u.is_verified.unwrap_or(false),
@@ -58,24 +54,26 @@ impl Filter {
     }
 
     pub fn allows(&self, u: &User) -> bool {
-        // The emptiness check is not redundant with `apply`'s: that one fires
-        // only when the whole filter is empty, and `scan::summarize` calls this
-        // directly, three times per account, over both lists. Without it every
-        // one of those allocates a lowercased copy of a name to look it up in a
-        // set that has nothing in it.
-        if !self.excluded.is_empty() && self.excluded.contains(&u.username.to_lowercase()) {
+        !self.excludes(&u.username)
+            && !self.hide.iter().any(|a| a.matches(u))
+            && self.only.iter().all(|a| a.matches(u))
+    }
+
+    /// Asked per account of every list, so a name already in lowercase (as
+    /// Instagram's are) is looked up as it is, with no copy made.
+    fn excludes(&self, username: &str) -> bool {
+        if self.excluded.is_empty() {
             return false;
         }
-        if self.hide.iter().any(|a| a.matches(u)) {
-            return false;
-        }
-        // Several entries in `only` are ANDed: `--only verified,private` means
-        // verified AND private. That is the reading needed to narrow a list
-        // down, because OR is what you already get by not filtering at all.
-        if !self.only.is_empty() && !self.only.iter().all(|a| a.matches(u)) {
-            return false;
-        }
-        true
+        let lowercased = if username
+            .bytes()
+            .all(|b| b.is_ascii() && !b.is_ascii_uppercase())
+        {
+            Cow::Borrowed(username)
+        } else {
+            Cow::Owned(username.to_lowercase())
+        };
+        self.excluded.contains(&*lowercased)
     }
 
     pub fn apply(&self, users: Vec<User>) -> Vec<User> {
@@ -86,25 +84,13 @@ impl Filter {
     }
 }
 
-/// Reads a list of usernames, one per line.
+/// Reads a list of usernames, one per line, tolerating a leading at sign,
+/// surrounding space, blank lines and `#` comments.
 ///
-/// Tolerates a leading at sign, surrounding space, blank lines and comments,
-/// because a hand-written file will have them.
-///
-/// **And a byte-order mark, which is the one that is not obvious.** `str::trim`
-/// trims by the `White_Space` property and U+FEFF is not in it — it is `Cf`,
-/// the same category the invisible characters in a name are. So the first key
-/// out of a file written by PowerShell 5.1's `Set-Content -Encoding UTF8`, or
-/// by Notepad, would be `"\u{feff}alice"`, which no username can equal. Every
-/// line after it works, so the file looks right: exit 0, no warning, and the
-/// one person it was written to hide in the answer. Stripped here rather than
-/// in the reader so the next caller inherits it.
-///
-/// The `@` comes off **before** the last trim, not after it. Stripped last,
-/// `@ alice` would produce the key `" alice"`, which no username can equal --
-/// the same silent miss as the byte-order mark above, exit 0 and the name in
-/// the answer -- and an entry that is nothing but the sign is dropped rather
-/// than kept as an empty key.
+/// **And a byte-order mark**, which `str::trim` does not remove (U+FEFF is
+/// `Cf`, not `White_Space`): the first name of a file written by Notepad or
+/// PowerShell 5.1 would otherwise match nobody, silently. The `@` comes off
+/// before the last trim, so `@ alice` is `alice`.
 pub fn parse_username_list(contents: &str) -> HashSet<String> {
     contents
         .trim_start_matches('\u{feff}')

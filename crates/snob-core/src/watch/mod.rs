@@ -1,11 +1,7 @@
-//! The monitor: what changed since the last time anybody looked.
+//! The monitor's domain: what changed between two captures, and when to look.
 //!
-//! Everything in here is domain. It takes lists and moments and answers what
-//! moved between them; it opens no database, makes no request and reads no
-//! clock. The orchestration — deciding when to look, going and looking, and
-//! telling somebody — is `snob-cli`'s, and the split is the same one the rest
-//! of the project already keeps between what a thing *is* and how it is
-//! presented.
+//! Lists and moments in, changes out; no database, no request, no clock. Going
+//! and looking, and telling somebody, is `snob-cli`'s.
 
 pub mod diff;
 pub mod outcome;
@@ -17,11 +13,7 @@ pub use diff::{Basis, ListDiff, Rename};
 pub use outcome::{RecordedOutcome, RunOutcome};
 pub use schedule::{Due, Schedule, ScheduleError, Weekday};
 
-/// Everything one run found about one account.
-///
-/// The two lists and the renames travel together because they are one answer to
-/// one question — "what changed?" — and a caller that had to assemble them from
-/// three separate calls is a caller that can report two of the three.
+/// Everything one run found about one account's lists.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Changes {
     pub followers: ListDiff,
@@ -35,11 +27,8 @@ impl Changes {
         self.followers.is_empty() && self.following.is_empty() && self.renamed.is_empty()
     }
 
-    /// How many individual changes this is.
-    ///
-    /// What `watch_runs.changes` stores and what decides whether a webhook is
-    /// called at all, so it is counted in one place rather than at each of
-    /// them.
+    /// How many individual changes this is: what `watch_runs.changes` stores
+    /// and what decides whether a webhook is called.
     pub fn len(&self) -> usize {
         self.followers.len() + self.following.len() + self.renamed.len()
     }

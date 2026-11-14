@@ -1,45 +1,17 @@
-//! What time it is, in the two units this project counts in.
+//! What time it is, in the two units this project counts in: **seconds are the
+//! domain unit ([`Epoch`]) and milliseconds the rate-control unit
+//! ([`EpochMs`])**, and nothing converts between them by hand.
 //!
-//! Two functions, two types and a rule: **seconds are the domain unit and
-//! milliseconds are the rate-control unit**, and nothing converts between them
-//! by hand. A capture's `taken_at`, a run's `started_at` and a rename's `at` are
-//! [`Epoch`]; a cooldown's `until_ms` and the budget's theoretical arrival time
-//! are [`EpochMs`], because a pace of one request every 3.83 seconds cannot be
-//! expressed in whole seconds at all.
-//!
-//! Here rather than in storage because `snob-ig` reads a clock too, to say how
-//! long is left of a cooldown, and must not depend on the persistence crate to
-//! do it.
+//! The one module of this crate that does I/O: it reads the system clock.
 
 use std::time::Duration;
 
 /// A moment, in seconds since the Unix epoch.
 ///
-/// A type of its own rather than an alias for `i64`, for the reason
-/// [`Pk`](crate::Pk) is one: a moment, a count and a length of time are all
-/// sixty-four-bit numbers, and only one of them is a point on the calendar.
-/// The second half of the same argument is [`EpochMs`]: a `_ms` suffix on a
-/// name is a convention and not a rule, and milliseconds handed to something
-/// expecting seconds are a moment in 57840 AD that no test would print.
-///
-/// What it deliberately does **not** have is as much of the point as what it
-/// has. No `Deref` to `i64` and no `From<Epoch> for i64`: with either,
-/// `taken_at + 1`, `taken_at == max_age_secs` and `until_ms - taken_at` would
-/// all go on compiling. No `Add<i64>` either, for the same reason — the number
-/// added to a moment is a length of time, so it is a [`Duration`] and says so.
-/// And no conversion between it and [`EpochMs`] except [`EpochMs::to_epoch`],
-/// which is a sentence a reader can see.
-///
-/// [`Display`](std::fmt::Display) writes the bare number, and
-/// `#[serde(transparent)]` makes the JSON a bare number in both directions.
-/// SQLite keeps its `INTEGER` columns and goes through [`Epoch::get`] and
-/// [`Epoch::new`] at the row boundary, for the reason [`Pk`](crate::Pk) gives
-/// for having no `ToSql` impl.
-///
-/// `Default` is the epoch itself: the zero `#[serde(default)]` gives a
-/// `taken_at` Instagram left out, and `unwrap_or_default` a `taken_at` column
-/// the view it is read through cannot return as NULL. It is not a sentinel
-/// anything tests for.
+/// **No `Deref`, no `From<Epoch> for i64`, no `Add<i64>`, on purpose**: what
+/// is added to a moment is a [`Duration`], and the only way to an [`EpochMs`]
+/// and back is [`EpochMs::to_epoch`]. Serialized as the bare number. `Default`
+/// is the epoch itself, for `#[serde(default)]`; nothing tests for it.
 #[derive(
     Debug,
     Clone,
@@ -56,13 +28,8 @@ use std::time::Duration;
 #[serde(transparent)]
 pub struct Epoch(i64);
 
-/// A moment, in milliseconds since the Unix epoch.
-///
-/// Everything [`Epoch`]'s own doc says applies here; what is worth saying twice
-/// is that the two are different types and the compiler is what keeps them
-/// apart. This is the rate-control unit and it stays inside the budget, the
-/// pacer and the cooldown: [`EpochMs::to_epoch`] is where it becomes something
-/// a person is shown.
+/// A moment, in milliseconds since the Unix epoch: the unit of the budget, the
+/// pacer and the cooldown. Otherwise as [`Epoch`].
 #[derive(
     Debug,
     Clone,
@@ -80,56 +47,38 @@ pub struct Epoch(i64);
 pub struct EpochMs(i64);
 
 impl Epoch {
-    /// The moment this number names. `const` so it can build a constant, which
-    /// `From` cannot.
     pub const fn new(seconds: i64) -> Self {
         Self(seconds)
     }
 
-    /// The number back out, for the places that need one: a SQLite parameter,
-    /// a `chrono` constructor, an arithmetic mean of two moments.
     pub const fn get(self) -> i64 {
         self.0
     }
 }
 
 impl EpochMs {
-    /// The moment this number names. `const` so it can build a constant, which
-    /// `From` cannot.
     pub const fn new(milliseconds: i64) -> Self {
         Self(milliseconds)
     }
 
-    /// The number back out, for a SQLite parameter and for a wait computed
-    /// against another one.
     pub const fn get(self) -> i64 {
         self.0
     }
 
-    /// The same moment in the unit every timestamp this tool reports uses.
-    ///
-    /// `Pacer::cooldown` answers in milliseconds while `created_at` and
-    /// `validated_at` next to it in `whoami`'s object are in seconds, so
-    /// something has to convert — and the date printed at the person and that
-    /// JSON field are the same cooldown, which is why they may not do their own
-    /// arithmetic. This is the one place that does it.
-    ///
-    /// `div_euclid` rather than `/`, so a moment before the epoch floors instead
-    /// of rounding towards zero into the wrong second.
+    /// The same moment in seconds, floored (`div_euclid`, so a moment before
+    /// the epoch does not round towards zero). The one place that converts.
     pub const fn to_epoch(self) -> Epoch {
         Epoch(self.0.div_euclid(1_000))
     }
 
-    /// [`EpochMs::to_epoch`] rounded up, for a moment that means "not
-    /// before": the end of a cooldown, when a bucket frees up. Rounded down,
-    /// a script that waits until it would wake up to a second early and be
-    /// refused.
+    /// [`EpochMs::to_epoch`] rounded up, for a moment that means "not before"
+    /// (the end of a cooldown): rounded down, a script that waits until it
+    /// would wake up to a second early and be refused.
     pub const fn to_epoch_not_before(self) -> Epoch {
         Epoch(self.0.div_euclid(1_000) + (self.0.rem_euclid(1_000) > 0) as i64)
     }
 }
 
-/// The bare number, which is what a JSON value, a label and a log line all want.
 impl std::fmt::Display for Epoch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.0, f)
@@ -142,10 +91,8 @@ impl std::fmt::Display for EpochMs {
     }
 }
 
-/// A moment plus a length of time is a moment.
-///
-/// Saturating, so an absurd length stops at the end of time instead of
-/// panicking a debug build or wrapping into the past in release.
+/// Saturating: an absurd length stops at the end of time and neither panics
+/// nor wraps into the past.
 impl std::ops::Add<Duration> for Epoch {
     type Output = Self;
 
@@ -154,7 +101,6 @@ impl std::ops::Add<Duration> for Epoch {
     }
 }
 
-/// A moment minus a length of time is a moment.
 impl std::ops::Sub<Duration> for Epoch {
     type Output = Self;
 
@@ -163,14 +109,9 @@ impl std::ops::Sub<Duration> for Epoch {
     }
 }
 
-/// A moment minus a moment is a length of time — **signed**, in seconds.
-///
-/// Not a [`Duration`], and the difference is not a preference. A [`Duration`]
-/// cannot be negative, so the conversion would have to saturate at zero, and
-/// every one of these differences is somewhere a negative answer means
-/// something: a stored capture dated in the future is a clock that went
-/// backwards, and `gap_between` takes the larger of two subtractions in
-/// opposite orders precisely so the sign decides which one wins.
+/// A moment minus a moment, **signed**, in seconds: a negative answer means a
+/// clock that went backwards, which callers handle and a [`Duration`] could
+/// not say.
 impl std::ops::Sub for Epoch {
     type Output = i64;
 
@@ -195,9 +136,7 @@ impl std::ops::Sub<Duration> for EpochMs {
     }
 }
 
-/// Signed milliseconds, for the same reason the seconds version is signed: the
-/// budget compares a stored theoretical arrival time against now, and "the
-/// clock went backwards" is a case it handles rather than one it rules out.
+/// Signed milliseconds, as the seconds version is signed.
 impl std::ops::Sub for EpochMs {
     type Output = i64;
 
@@ -206,8 +145,6 @@ impl std::ops::Sub for EpochMs {
     }
 }
 
-/// A length of time as a number this arithmetic can use. Saturating at the top,
-/// because a [`Duration`] counts to 584 billion years and a moment does not.
 fn whole_seconds(length: Duration) -> i64 {
     i64::try_from(length.as_secs()).unwrap_or(i64::MAX)
 }

@@ -3,20 +3,15 @@
 //!
 //! **A post is news when its pk was never seen and it was taken after the
 //! floor**, the newest `taken_at` seen in any earlier read. The pk alone is not
-//! enough: when the owner deletes or archives three posts of the first page,
-//! the three behind them move up with pks this monitor never saw, and the same
-//! happens to an old post newly pinned or brought back from the archive. All of
-//! those are older than the floor, so they are written down as seen and said
-//! nothing about. The floor is Instagram's time, never this machine's clock, so
-//! a clock running ahead cannot swallow a post. The pk is still asked, for two
-//! posts taken in the same second and so nothing is said twice.
+//! enough: after a deletion the posts behind move up with pks never seen, and
+//! so does an old post newly pinned or brought back from the archive; all are
+//! older than the floor, so they are written down as seen and not reported.
+//! The floor is Instagram's time, never this machine's clock.
 //!
-//! What this cannot tell, and does not try to: a post shared with this account
-//! as a collaboration and accepted days later carries its old `taken_at`, and
-//! reads exactly as a post brought back from the archive. It is not reported
-//! (AGENTS.md, "Known walls").
+//! A collaboration accepted days later carries its old `taken_at` and is not
+//! reported (AGENTS.md, "Known walls").
 //!
-//! Pure: no clock, no database, no network. The reading is `snob-cli`'s.
+//! Pure: no clock, no database, no network.
 
 use std::collections::HashSet;
 
@@ -45,9 +40,7 @@ pub struct Read<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Basis {
     /// Nothing was ever seen of this account: what was read becomes what is
-    /// known, and nothing is news. The same rule as a list's first run, for
-    /// the same reason: a first run that announced every post on the grid
-    /// would be noise.
+    /// known, and nothing is news, as on a list's first run.
     Baseline,
     /// What was read was compared against what was seen before.
     Compared,
@@ -62,10 +55,10 @@ pub struct Compared {
     /// The floor after this read: never lower than the one before.
     pub floor: Epoch,
     /// Whether the read reached back to what was known. `false` when it read
-    /// every page it was allowed and found neither a post seen before, one
-    /// at or under the floor, nor the end of the grid: posts older than what
-    /// it read and newer than the floor may be missing, and they are never
-    /// reported, since the floor moves past them.
+    /// every page it was allowed and found neither a post seen before, one at
+    /// or under the floor, nor the end of the grid: older posts newer than
+    /// the floor may be missing, and are never reported, since the floor
+    /// moves past them.
     pub complete: bool,
 }
 
@@ -91,8 +84,8 @@ pub fn compare(known: &HashSet<u64>, floor: Option<Epoch>, read: &Read<'_>) -> C
         .map(|post| post.pk)
         .collect();
 
-    // A pinned post says nothing about where the read reached: it sits on the
-    // first page whatever its age.
+    // A pinned post sits on the first page whatever its age, so it says
+    // nothing about where the read reached.
     let reached_the_known = read
         .posts
         .iter()
