@@ -6,7 +6,7 @@
 //! them. The first decides a run, the other two bound the floor and the
 //! jitter.
 
-use chrono::{DateTime, Datelike, TimeZone, Timelike};
+use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Timelike};
 
 use super::parse::FieldSet;
 
@@ -80,6 +80,14 @@ impl Calendar {
         self.times.allows(at.hour(), at.minute()) && self.allows_day(at)
     }
 
+    /// [`allows`](Self::allows), for a reading of the wall clock rather than
+    /// a moment: one the clocks may have jumped over, which no moment reads.
+    /// What the search asks about the minutes a spring-forward skips
+    /// (`next::named_or_jumped_over`).
+    pub(super) fn allows_local(&self, local: &NaiveDateTime) -> bool {
+        self.times.allows(local.hour(), local.minute()) && self.allows_day(local)
+    }
+
     /// Whether this moment falls on a day the calendar names, whatever the
     /// time of day.
     ///
@@ -87,7 +95,7 @@ impl Calendar {
     /// this answers `false` for has no minute `allows` could accept, so the
     /// search steps over it whole rather than asking about each of its
     /// minutes.
-    pub(super) fn allows_day<Tz: TimeZone>(&self, at: &DateTime<Tz>) -> bool {
+    pub(super) fn allows_day(&self, at: &impl Datelike) -> bool {
         if !self.months.contains(at.month()) {
             return false;
         }

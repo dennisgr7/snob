@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, MappedLocalTime, TimeZone};
+use chrono::{DateTime, MappedLocalTime, NaiveDateTime, TimeDelta, TimeZone};
 
 use crate::Epoch;
 
@@ -211,8 +211,9 @@ fn next_after_asked_since<Tz: TimeZone>(
     //
     // The addition saturates here too, for the reason given at the top of this
     // function.
-    let served = last_run.map(|last| moment_served(calendar, last, zone));
-    let floor = match (served, last_run) {
+    let served_at = last_run.map(|last| served_at(calendar, last, zone));
+    let served = served_at.map(|(moment, _)| moment);
+    let floor = match (served_at, last_run) {
         // Never earlier than the row the last run wrote, whatever the snap
         // decided. A no-op in every ordinary case — the floor is a quarter of an
         // hour past a moment the row already trails — and the thing that keeps
@@ -226,7 +227,7 @@ fn next_after_asked_since<Tz: TimeZone>(
         // while a timer ran at 10:00, off the grid. The floor is never closer
         // than `MIN_GAP_SECS` of real time, which an addition across the hour
         // that never happens could otherwise shorten.
-        (Some(moment), Some(last)) => on_the_wall_clock(moment, step, zone)
+        (Some((moment, reading)), Some(last)) => on_the_wall_clock(moment, reading, step, zone)
             .max(moment + Duration::from_secs(super::MIN_GAP_SECS.unsigned_abs()))
             .max(last),
         _ => now,
@@ -234,15 +235,17 @@ fn next_after_asked_since<Tz: TimeZone>(
 
     // The candidates come from `minutes_on_named_days`, which converts each
     // instant to local time once. A local time that does not exist — the hour
-    // a spring-forward skips — is never produced by that direction: going from
-    // an instant to a local time is never ambiguous either, chrono answers
-    // `Single` unconditionally and only fails outside the representable range.
-    // Ambiguity is a property of the other direction, and it is asked about
-    // below, in `already_run_at_this_wall_clock` — which is the reason for the
-    // order here: the calendar first, the reverse conversion only for a minute
-    // the calendar names.
+    // a spring-forward skips — is never produced by that direction, so it is
+    // asked about from the minute after the jump (`named_or_jumped_over`),
+    // which is where it runs. Going from an instant to a local time is never
+    // ambiguous either, chrono answers `Single` unconditionally and only fails
+    // outside the representable range. Ambiguity is a property of the other
+    // direction, and it is asked about below, in
+    // `already_run_at_this_wall_clock` — which is the reason for the order
+    // here: the calendar first, the reverse conversion only for a minute the
+    // calendar names.
     let allowed = |(minute, at): &(i64, DateTime<Tz>)| {
-        calendar.allows(at)
+        named_or_jumped_over(calendar, *minute, at, zone)
             && !already_run_at_this_wall_clock(zone, Epoch::new(minute * 60), at, last_run)
     };
 
@@ -311,24 +314,36 @@ fn next_after_asked_since<Tz: TimeZone>(
 }
 
 /// `moment` and `step` later on the wall clock of `zone`: the same local time
-/// a day on for a day, whatever the zone did in between. Where that local
-/// time does not exist (the hour a spring-forward skips), or the sum does not
-/// fit, `step` of real time instead, which is what it always was.
-fn on_the_wall_clock<Tz: TimeZone>(moment: Epoch, step: Duration, zone: &Tz) -> Epoch {
+/// a day on for a day, whatever the zone did in between. Counted from
+/// `reading`, the time the moment served, where it has one: a run at 03:00
+/// for a 02:30 the clocks skipped counts from 02:30. Where that local
+/// time does not exist (the hour a spring-forward skips), the first minute
+/// after the jump, which is where [`named_or_jumped_over`] runs a moment the
+/// jump took: `step` of real time from 02:30 the day before is 03:30, past
+/// it, and the run would be a day late. Where the sum does not fit, `step`
+/// of real time, which is what it always was.
+fn on_the_wall_clock<Tz: TimeZone>(
+    moment: Epoch,
+    reading: Option<NaiveDateTime>,
+    step: Duration,
+    zone: &Tz,
+) -> Epoch {
     let real = moment + step;
-    let Some(local) = zone.timestamp_opt(moment.get(), 0).single() else {
+    let Some(local) = reading.or_else(|| {
+        zone.timestamp_opt(moment.get(), 0)
+            .single()
+            .map(|at| at.naive_local())
+    }) else {
         return real;
     };
     let Some(later) = i64::try_from(step.as_secs())
         .ok()
         .and_then(chrono::TimeDelta::try_seconds)
-        .and_then(|delta| local.naive_local().checked_add_signed(delta))
+        .and_then(|delta| local.checked_add_signed(delta))
     else {
         return real;
     };
-    zone.from_local_datetime(&later)
-        .earliest()
-        .map_or(real, |at| Epoch::new(at.timestamp()))
+    first_reading_at_or_after(later, zone).unwrap_or(real)
 }
 
 /// The moment on the grid that a run recorded at `last` was serving.
@@ -346,11 +361,108 @@ fn on_the_wall_clock<Tz: TimeZone>(moment: Epoch, step: Duration, zone: &Tz) -> 
 /// Deliberately asks `Calendar::allows` and not the fuller predicate the search
 /// uses: a repeated wall-clock hour is refused for a run that has *not* happened
 /// yet, and this is looking at one that has.
+///
+/// The search asks [`served_at`], which gives the reading beside it; the
+/// moment alone is what the tests pin.
+#[cfg(test)]
 fn moment_served<Tz: TimeZone>(calendar: &Calendar, last: Epoch, zone: &Tz) -> Epoch {
+    served_at(calendar, last, zone).0
+}
+
+/// [`moment_served`], with the reading of the wall clock it served
+/// ([`reading_served`]); `None` beside `last` itself when the calendar names
+/// nothing.
+fn served_at<Tz: TimeZone>(
+    calendar: &Calendar,
+    last: Epoch,
+    zone: &Tz,
+) -> (Epoch, Option<NaiveDateTime>) {
     let from = last.get().div_euclid(60);
     minutes_on_named_days(calendar, zone, from, Direction::Backward)
-        .find(|(_, at)| calendar.allows(at))
-        .map_or(last, |(minute, _)| Epoch::new(minute * 60))
+        .find_map(|(minute, at)| {
+            reading_served(calendar, minute, &at, zone)
+                .map(|reading| (Epoch::new(minute * 60), Some(reading)))
+        })
+        .unwrap_or((last, None))
+}
+
+/// The longest stretch of the wall clock a zone has jumped over at once:
+/// Samoa skipped the whole of 2011-12-30. A transition is an hour almost
+/// everywhere; this only bounds how many skipped minutes one minute after a
+/// jump asks about.
+const LONGEST_JUMP_MINUTES: i64 = 24 * 60;
+
+/// Whether the calendar names this minute, or a time of the wall clock the
+/// clocks jumped over to reach it: whether [`reading_served`] has one.
+fn named_or_jumped_over<Tz: TimeZone>(
+    calendar: &Calendar,
+    minute: i64,
+    at: &DateTime<Tz>,
+    zone: &Tz,
+) -> bool {
+    reading_served(calendar, minute, at, zone).is_some()
+}
+
+/// The reading of the wall clock a run at this minute serves: the minute's
+/// own when the calendar names it, else the latest the clocks jumped over to
+/// reach it that the calendar names, else none.
+///
+/// **A time a spring-forward skips runs at the first minute after the jump**,
+/// as cron and systemd's timers run it: `--at 02:30` on the night the clocks
+/// go from 02:00 to 03:00 runs at 03:00 that night, not the next day. Read
+/// only as instants, that 02:30 is a time no instant reads, so the day would
+/// pass with no run in it. A minute is the one after a jump when the minute
+/// before it reads more than a minute earlier on the wall clock; each reading
+/// in between is asked about on the date it has. A fall-back reads earlier,
+/// not later, and asks nothing more.
+///
+/// The reading, not the minute, is what an interval beside the calendar
+/// counts from ([`on_the_wall_clock`]): `--every 1d --at 02:30` served at
+/// 03:00 on the short night is next due at 02:30 the night after, not at
+/// 03:00, half an hour past it and a day late.
+///
+/// The minute after the jump is found on its own date by the day walk, so a
+/// jump across midnight into a day the calendar does not name (Samoa's, the
+/// one there has been) is not asked about.
+fn reading_served<Tz: TimeZone>(
+    calendar: &Calendar,
+    minute: i64,
+    at: &DateTime<Tz>,
+    zone: &Tz,
+) -> Option<NaiveDateTime> {
+    let reads = at.naive_local();
+    if calendar.allows(at) {
+        return Some(reads);
+    }
+    let before = minute
+        .checked_sub(1)
+        .and_then(|earlier| earlier.checked_mul(60))
+        .and_then(|seconds| zone.timestamp_opt(seconds, 0).single())?;
+    let mut skipped = before.naive_local() + TimeDelta::minutes(1);
+    let mut served = None;
+    let mut asked = 0;
+    while skipped < reads && asked < LONGEST_JUMP_MINUTES {
+        if calendar.allows_local(&skipped) {
+            served = Some(skipped);
+        }
+        skipped += TimeDelta::minutes(1);
+        asked += 1;
+    }
+    served
+}
+
+/// The instant the wall clock first reads `local` or a later time: `local`
+/// itself when it exists (the first showing, where it shows twice), else the
+/// first minute after the jump that skipped it.
+fn first_reading_at_or_after<Tz: TimeZone>(local: NaiveDateTime, zone: &Tz) -> Option<Epoch> {
+    let mut reading = local;
+    for _ in 0..=LONGEST_JUMP_MINUTES {
+        if let Some(at) = zone.from_local_datetime(&reading).earliest() {
+            return Some(Epoch::new(at.timestamp()));
+        }
+        reading = reading.checked_add_signed(TimeDelta::minutes(1))?;
+    }
+    None
 }
 
 /// Whether this instant is the **second** showing of a wall-clock time the last
@@ -452,9 +564,10 @@ pub fn due_moment<Tz: TimeZone>(
     let Some(calendar) = &schedule.calendar else {
         return last_run.map(|last| last + step);
     };
-    let served = last_run.map(|last| moment_served(calendar, last, zone));
-    let floor = match (served, last_run) {
-        (Some(moment), Some(last)) => on_the_wall_clock(moment, step, zone)
+    let served_at = last_run.map(|last| served_at(calendar, last, zone));
+    let served = served_at.map(|(moment, _)| moment);
+    let floor = match (served_at, last_run) {
+        (Some((moment, reading)), Some(last)) => on_the_wall_clock(moment, reading, step, zone)
             .max(moment + Duration::from_secs(super::MIN_GAP_SECS.unsigned_abs()))
             .max(last),
         _ => Epoch::new(i64::MIN),
@@ -474,7 +587,7 @@ pub fn due_moment<Tz: TimeZone>(
     )
     .take_while(|(minute, _)| *minute >= earliest)
     .find(|(minute, at)| {
-        calendar.allows(at)
+        named_or_jumped_over(calendar, *minute, at, zone)
             && !already_run_at_this_wall_clock(zone, Epoch::new(minute * 60), at, last_run)
     })
     .map(|(minute, _)| Epoch::new(minute * 60).max(floor))
@@ -1589,7 +1702,7 @@ mod tests {
             let Some(at) = zone.timestamp_opt(seconds, 0).single() else {
                 return false;
             };
-            calendar.allows(&at)
+            reference_names(calendar, *minute, zone)
                 && !already_run_at_this_wall_clock(zone, Epoch::new(seconds), &at, last_run)
         };
         let earliest = match served {
@@ -1624,12 +1737,112 @@ mod tests {
         (0..)
             .take(horizon as usize)
             .map(|back| from - back)
-            .find(|minute| {
-                zone.timestamp_opt(minute * 60, 0)
-                    .single()
-                    .is_some_and(|at| calendar.allows(&at))
-            })
+            .find(|minute| reference_names(calendar, *minute, zone))
             .map_or(last, |minute| Epoch::new(minute * 60))
+    }
+
+    /// Whether the calendar names this minute, or a reading of the wall clock
+    /// between it and the minute before, which the clocks jumped over: its own
+    /// copy, a minute of the wall clock at a time.
+    fn reference_names<Tz: TimeZone>(calendar: &Calendar, minute: i64, zone: &Tz) -> bool {
+        let reads = |minute: i64| {
+            zone.timestamp_opt(minute * 60, 0)
+                .single()
+                .map(|at| at.naive_local())
+        };
+        let (Some(before), Some(now)) = (reads(minute - 1), reads(minute)) else {
+            return false;
+        };
+        let mut reading = before + TimeDelta::minutes(1);
+        loop {
+            if calendar.allows_local(&reading) {
+                return true;
+            }
+            if reading >= now {
+                return false;
+            }
+            reading += TimeDelta::minutes(1);
+        }
+    }
+
+    /// A time the clocks skip runs at the minute after the jump, that night:
+    /// `--at 02:30` on the night 02:00 becomes 03:00 runs at 03:00, and the
+    /// night after at 02:30 again. In `SpringsForward` the jump is at 07:00
+    /// UTC on Monday, `at(7h)`, which reads 03:00.
+    #[test]
+    fn a_time_the_clocks_skip_runs_at_the_minute_after_the_jump() {
+        let schedule = Schedule::calendar(&[], &[(2, 30)]).unwrap();
+        // Sunday 02:30 local, five hours behind UTC.
+        let sunday = at(-hours(24) + hours(7) + 1_800);
+        let jump = at(hours(7));
+        // Tuesday 02:30 local, four hours behind UTC.
+        let tuesday = at(hours(24) + hours(6) + 1_800);
+
+        let last = sunday + secs(30);
+        assert_eq!(
+            next_after(&schedule, Some(last), last + secs(60), &SpringsForward),
+            Some(jump),
+            "Monday's run is at 03:00, the minute the clocks jumped to"
+        );
+        assert_eq!(
+            due(&schedule, Some(last), jump + secs(7 * 60), &SpringsForward),
+            Due::Now { missed: 0 },
+            "a timer looking at 03:07 runs it then"
+        );
+        assert_eq!(
+            due_moment(
+                &schedule,
+                Some(last),
+                None,
+                jump + secs(7 * 60),
+                &SpringsForward
+            ),
+            Some(jump),
+            "and it was due at 03:00, so it is not late"
+        );
+
+        let ran = jump + secs(30);
+        assert_eq!(
+            next_after(&schedule, Some(ran), ran + secs(60), &SpringsForward),
+            Some(tuesday),
+            "served once on Monday, next at 02:30 on Tuesday"
+        );
+        assert_eq!(
+            due(&schedule, Some(ran), jump + secs(40 * 60), &SpringsForward),
+            Due::At(tuesday),
+            "and not again on Monday"
+        );
+        assert_eq!(
+            due(&schedule, Some(last), tuesday + secs(60), &SpringsForward),
+            Due::Now { missed: 1 },
+            "a machine off through Monday counts Monday's run as missed"
+        );
+    }
+
+    /// An interval beside the calendar counts from the 02:30 a run at 03:00
+    /// served, not from 03:00: a day on is 02:30 on Tuesday, not 03:00, half
+    /// an hour past it and a day late.
+    #[test]
+    fn an_interval_counts_from_the_skipped_time_a_run_served() {
+        let schedule = Schedule::calendar(&[], &[(2, 30)])
+            .unwrap()
+            .and_every(Duration::from_secs(24 * 3_600))
+            .unwrap();
+        let sunday = at(-hours(24) + hours(7) + 1_800);
+        let jump = at(hours(7));
+        let tuesday = at(hours(24) + hours(6) + 1_800);
+
+        let last = sunday + secs(30);
+        assert_eq!(
+            next_after(&schedule, Some(last), last + secs(60), &SpringsForward),
+            Some(jump),
+            "a day on from Sunday 02:30 is the jump, which serves Monday's"
+        );
+        let ran = jump + secs(30);
+        assert_eq!(
+            next_after(&schedule, Some(ran), ran + secs(60), &SpringsForward),
+            Some(tuesday),
+        );
     }
 
     fn calendar_of(schedule: &Schedule) -> &Calendar {
@@ -1823,6 +2036,8 @@ mod tests {
             Schedule::calendar(&[Weekday::Sun, Weekday::Wed], &[(23, 30)]).unwrap(),
             Schedule::calendar(&[Weekday::Mon, Weekday::Thu], &[(1, 30)]).unwrap(),
             Schedule::cron("30 1 * * *").unwrap(),
+            Schedule::cron("30 2 * * *").unwrap(),
+            Schedule::calendar(&[Weekday::Mon, Weekday::Thu], &[(2, 15), (2, 45)]).unwrap(),
             Schedule::cron("0 9 13,17,19,21 * 5").unwrap(),
         ];
         let ten_days = 10 * 24 * 60;

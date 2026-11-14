@@ -1271,7 +1271,9 @@ reaches a server already listening: no command, no key, see "Over HTTP").
   from the previous run and `--on/--at` or `--cron` a calendar; the next run
   is on the calendar and past the floor, both (`--every 2w --on mon` is legal
   and is what cron cannot say), the interval added on the wall clock so a
-  change of the clocks moves no run off its hour. Cron day-of-month and
+  change of the clocks moves no run off its hour, and a time the clocks
+  skip (`--at 02:30` the night 02:00 becomes 03:00) runs at the minute
+  after the jump, as cron runs it (`next::reading_served`). Cron day-of-month and
   day-of-week combine with OR when both are restricted. **A run records when
   it was due, began and ended** (`watch_runs.due_at`, `began_at`,
   `finished_at`, migration 020; `engine::watch::RunTiming`): due for the
