@@ -145,6 +145,10 @@ pub struct Person {
     /// The posts it deleted or archived, by their number in [`post_pk`]:
     /// gone from its grid and its count, so the older ones move up.
     pub deleted: Vec<u64>,
+    /// How many posts each of its reels, tagged and reposts tabs holds,
+    /// whatever its grid holds: none unless a test says so. The tagged
+    /// posts and the reposts are other accounts' ([`tab_post`]).
+    pub tab_posts: u64,
 }
 
 impl Person {
@@ -165,9 +169,18 @@ impl Person {
             newer: 0,
             pinned: Vec::new(),
             deleted: Vec::new(),
+            tab_posts: 0,
         }
     }
 }
+
+/// Where the posts of a profile's tabs are numbered from in [`post_pk`],
+/// each tab a hundred past the one before, so a post of a tab is told from
+/// a post of the grid and its tab is read back from its pk.
+const TAB_FROM: u64 = 600;
+
+/// The tabs in the order their posts are numbered.
+const TABS: [&str; 3] = ["reels", "tagged", "reposts"];
 
 /// One document served: whom to, and the per-load values it carried.
 #[derive(Debug, Clone)]
@@ -1215,6 +1228,65 @@ impl Respond for Oracle {
     }
 }
 
+/// Why the variables of a tab's query are not the app's, written out here
+/// from the captures of 2026-11-13 and 2026-11-14 rather than taken from
+/// `snob_ig::web`, so the fake is an oracle of its own: every key the app
+/// sends, in its order, with the account's pk and the cursor the only
+/// values of the call's. `None` for any other operation, and for a tab's
+/// query that is the app's.
+fn tab_variables_wrong(operation: Operation, variables: Option<&str>) -> Option<String> {
+    let variables = variables.unwrap_or_default();
+    let parsed: Value = serde_json::from_str(variables).unwrap_or(Value::Null);
+    let text = |key: &str| parsed.get(key).and_then(Value::as_str).unwrap_or_default();
+    let cursor = |key: &str| Value::from(text(key)).to_string();
+    let drama = r#""__relay_internal__pv__PolarisShortDramaEnabledrelayprovider":true"#;
+    let seo = r#""__relay_internal__pv__PolarisSEOIsCrawlerrelayprovider":false"#;
+    let expected = match operation {
+        Operation::ProfileReels => {
+            let pk = text("user_id");
+            format!(
+                r#"{{"data":{{"include_feed_video":true,"page_size":12,"target_user_id":"{pk}"}},"user_id":"{pk}",{drama}}}"#
+            )
+        }
+        Operation::ProfileReelsPage => {
+            let pk = text("id");
+            format!(
+                r#"{{"after":{},"data":{{"include_feed_video":true,"page_size":12,"target_user_id":"{pk}"}},"first":3,"id":"{pk}",{drama}}}"#,
+                cursor("after")
+            )
+        }
+        Operation::ProfileTagged => {
+            format!(
+                r#"{{"count":12,"user_id":"{}",{drama},{seo}}}"#,
+                text("user_id")
+            )
+        }
+        Operation::ProfileTaggedPage => format!(
+            r#"{{"after":{},"before":null,"count":12,"first":12,"last":null,"user_id":"{}",{drama},{seo}}}"#,
+            cursor("after"),
+            text("user_id")
+        ),
+        Operation::ProfileReposts => {
+            format!(r#"{{"user_id":"{}",{drama},{seo}}}"#, text("user_id"))
+        }
+        Operation::ProfileRepostsPage => format!(
+            r#"{{"max_id":{},"id":"{}",{drama},{seo}}}"#,
+            cursor("max_id"),
+            text("id")
+        ),
+        _ => return None,
+    };
+    let pk_named = ["user_id", "id"]
+        .iter()
+        .any(|key| text(key).bytes().all(|b| b.is_ascii_digit()) && !text(key).is_empty());
+    (variables != expected || !pk_named).then(|| {
+        format!(
+            "{}'s variables are not the app's: {variables}",
+            operation.friendly_name()
+        )
+    })
+}
+
 /// What `world` answers the Relay form of `request`, once `judge` has taken
 /// it: the operation's answer, or a 400 that says why not.
 fn relay_answered(
@@ -1346,6 +1418,9 @@ impl State {
         // A write's is the seed, the id this fake serves it under.
         if field(form, "doc_id") != Some(operation.doc_id()) {
             return Err(format!("{name} under another doc_id"));
+        }
+        if let Some(why) = tab_variables_wrong(operation, field(form, "variables")) {
+            return Err(why);
         }
         match operation.family() {
             Family::RelayQuery => {
@@ -1557,6 +1632,117 @@ impl State {
                     "xdt_viewer": { "user": { "id": viewer.to_string() } },
                 }, "extensions": { "is_final": true }})
             }
+            // A tab's two queries, by pk, as the captures of 2026-11-13 and
+            // 2026-11-14 shape their answers: twelve reels and then three a
+            // page by an opaque cursor; twelve tagged posts a page by the pk
+            // of the last, the word `None` at the end; twelve reposts a
+            // page by a `max_id`, while more are available.
+            Operation::ProfileReels | Operation::ProfileReelsPage => {
+                let pk = pk_in(variables, "user_id")
+                    .or_else(|| pk_in(variables, "id"))
+                    .unwrap_or_default();
+                let posts = self.tab_of(pk, "reels", viewer);
+                let (offset, size) = match operation {
+                    Operation::ProfileReels => (0, 12),
+                    _ => {
+                        let after = variables.get("after").and_then(Value::as_str);
+                        match after
+                            .and_then(|a| a.strip_prefix("AQHTreels"))
+                            .and_then(|n| n.parse::<usize>().ok())
+                        {
+                            Some(offset) => (offset, 3),
+                            None => {
+                                return json!({ "errors": [{ "message": "a cursor this tab never handed out" }] });
+                            }
+                        }
+                    }
+                };
+                let page: Vec<Value> = posts.iter().skip(offset).take(size).cloned().collect();
+                let next = offset + page.len();
+                let more = next < posts.len();
+                json!({ "data": {
+                    "fetch__XDTUserDict": {
+                        "id": pk.to_string(),
+                        "clips_connection": {
+                            "edges": page.into_iter().map(|media| json!({
+                                "__typename": "XDTClipsEdge",
+                                "node": { "__typename": "XDTClipsNode", "media": media },
+                            })).collect::<Vec<_>>(),
+                            "page_info": {
+                                "end_cursor": more.then(|| format!("AQHTreels{next}")),
+                                "has_next_page": more,
+                            },
+                        },
+                    },
+                }, "extensions": { "is_final": true }})
+            }
+            Operation::ProfileTagged | Operation::ProfileTaggedPage => {
+                let pk = pk_in(variables, "user_id").unwrap_or_default();
+                let posts = self.tab_of(pk, "tagged", viewer);
+                let offset = match operation {
+                    Operation::ProfileTagged => 0,
+                    _ => {
+                        let after = variables.get("after").and_then(Value::as_str);
+                        match posts.iter().position(|p| p["pk"].as_str() == after) {
+                            Some(at) => at + 1,
+                            None => {
+                                return json!({ "errors": [{ "message": "a cursor this tab never handed out" }] });
+                            }
+                        }
+                    }
+                };
+                let page: Vec<Value> = posts.iter().skip(offset).take(12).cloned().collect();
+                let more = offset + page.len() < posts.len();
+                let end = match (more, page.last()) {
+                    (true, Some(last)) => last["pk"].clone(),
+                    _ => json!("None"),
+                };
+                json!({ "data": {
+                    "xdt_api__v1__usertags__user_id__feed_connection": {
+                        "edges": page.into_iter().map(|node| json!({ "node": node, "cursor": "" })).collect::<Vec<_>>(),
+                        "page_info": {
+                            "end_cursor": end,
+                            "has_next_page": more,
+                            "has_previous_page": false,
+                            "start_cursor": null,
+                        },
+                    },
+                }, "extensions": { "is_final": true }})
+            }
+            Operation::ProfileReposts | Operation::ProfileRepostsPage => {
+                let pk = pk_in(variables, "user_id")
+                    .or_else(|| pk_in(variables, "id"))
+                    .unwrap_or_default();
+                let posts = self.tab_of(pk, "reposts", viewer);
+                let offset = match operation {
+                    Operation::ProfileReposts => 0,
+                    _ => {
+                        let after = variables.get("max_id").and_then(Value::as_str);
+                        match after
+                            .and_then(|a| a.strip_prefix("AQHTreposts"))
+                            .and_then(|n| n.parse::<usize>().ok())
+                        {
+                            Some(offset) => offset,
+                            None => {
+                                return json!({ "errors": [{ "message": "a max_id this tab never handed out" }] });
+                            }
+                        }
+                    }
+                };
+                let page: Vec<Value> = posts.iter().skip(offset).take(12).cloned().collect();
+                let next = offset + page.len();
+                let more = next < posts.len();
+                json!({ "data": {
+                    "fetch__XDTUserDict": {
+                        "id": pk.to_string(),
+                        "user_reposts_timeline": {
+                            "repost_grid_items": page.into_iter().map(|media| json!({ "media": media })).collect::<Vec<_>>(),
+                            "repost_more_available": more,
+                            "repost_next_max_id": more.then(|| format!("AQHTreposts{next}")),
+                        },
+                    },
+                }, "extensions": { "is_final": true }})
+            }
             Operation::Follow | Operation::Unfollow => {
                 let target = pk_in(variables, "target_user_id").unwrap_or_default();
                 let follow = operation == Operation::Follow;
@@ -1746,6 +1932,74 @@ impl State {
             .collect()
     }
 
+    /// Post `k` of tab `tab` of account `pk`, as the tab's answer shapes it
+    /// (`whole` false) or as its info does (`whole`), following the captures
+    /// of 2026-11-13 and 2026-11-14: a tab's post carries no date and no
+    /// video's address. A reel is the account's, its first with hidden
+    /// counts (the placeholder 3); a tagged post or a repost is another
+    /// account's, and a repost carries a note.
+    fn tab_post(&self, pk: u64, tab: &str, k: u64, whole: bool) -> Value {
+        let at = TABS.iter().position(|t| *t == tab).unwrap_or_default() as u64;
+        let media = post_pk(pk, TAB_FROM + at * 100 + k);
+        let author = FIRST_USER + k % USERS;
+        let mut post = json!({
+            "pk": media.to_string(),
+            "id": format!("{media}_{pk}"),
+            "code": code_of(media),
+            "media_type": 1,
+            "product_type": "feed",
+            "caption": { "text": format!("{tab} {k}") },
+            "like_count": 20 + k,
+            "comment_count": 1,
+            "like_and_view_counts_disabled": false,
+            "user": { "pk": author.to_string(), "username": format!("user{}", k % USERS) },
+            "image_versions2": { "candidates": [
+                { "url": self.media(&media.to_string()), "width": 1080, "height": 1350 },
+            ]},
+            "video_versions": null,
+            "carousel_media": null,
+            "media_notes": null,
+        });
+        match tab {
+            "reels" => {
+                post["media_type"] = json!(2);
+                post["product_type"] = json!("clips");
+                post["play_count"] = json!(100 + k);
+                post["user"] =
+                    json!({ "pk": pk.to_string(), "username": self.account(pk).username });
+                if k == 0 {
+                    post["like_count"] = json!(3);
+                    post["like_and_view_counts_disabled"] = json!(true);
+                }
+                if whole {
+                    post["video_versions"] = json!([
+                        { "type": 101, "width": 720, "height": 1280, "url": self.video(&media.to_string()) },
+                    ]);
+                }
+            }
+            "reposts" => {
+                post["media_notes"] = json!({ "items": [
+                    { "id": format!("{k}"), "text": format!("a note on repost {k}"), "user_id": "7" },
+                ]});
+            }
+            _ => {}
+        }
+        if whole {
+            post["taken_at"] = json!(1_790_000_000 - (k as i64) * 3_600);
+        }
+        post
+    }
+
+    /// The posts of tab `tab` of account `pk` that `viewer` may see.
+    fn tab_of(&self, pk: u64, tab: &str, viewer: u64) -> Vec<Value> {
+        if !self.may_see(viewer, pk) {
+            return Vec::new();
+        }
+        (0..self.account(pk).tab_posts)
+            .map(|k| self.tab_post(pk, tab, k, false))
+            .collect()
+    }
+
     /// The posts of account `pk` in its grid's order: the ones it pinned
     /// first, then the rest from the newest.
     fn grid_of(&self, pk: u64) -> Vec<Value> {
@@ -1767,7 +2021,13 @@ impl State {
         if !self.people.contains_key(&owner) || !self.may_see(viewer, owner) {
             return None;
         }
-        let _ = n;
+        // A post of one of its tabs, read by its info as a post is: whole,
+        // with its date and its video's addresses.
+        if let Some(tab) = n.checked_sub(TAB_FROM).map(|k| k / 100) {
+            let k = (n - TAB_FROM) % 100;
+            let tab = TABS.get(tab as usize)?;
+            return (k < self.account(owner).tab_posts).then(|| self.tab_post(owner, tab, k, true));
+        }
         let pk = media.to_string();
         self.posts_of(owner)
             .into_iter()

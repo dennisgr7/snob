@@ -1480,6 +1480,97 @@ async fn a_grid_is_listed_through_the_browser() {
     assert!(found.is_empty(), "{found:?}");
 }
 
+/// Another account's tabs through the browser: `--tab` reads the reels,
+/// the tagged posts or the reposts page by page, as the grid is read, the
+/// JSON naming the tab; a post of a tab looked into is read again by its
+/// info first, which carries the video the tab did not; and every call that
+/// went out is one the allowlist lets out.
+#[tokio::test]
+async fn posts_tab_reels_tagged_and_reposts_through_the_browser() {
+    let Some(_alone) = a_browser_alone().await else {
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let (world, instagram) = fake_instagram().await;
+    world.person(ig::SOMEONE, |p| p.tab_posts = 16);
+    logged_in(tmp.path(), &instagram, SESSIONID, "the login failed: ");
+
+    let out = snob(
+        tmp.path(),
+        &instagram,
+        &[
+            "posts", "someone", "--tab", "reels", "--pages", "2", "--format", "json",
+        ],
+        None,
+    );
+    assert!(out.status.success(), "{}", told(tmp.path(), &out));
+    let reels: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", told(tmp.path(), &out)));
+    assert_eq!(reels["tab"], "reels", "{reels}");
+    assert_eq!(reels["pages_read"], 2, "{reels}");
+    assert_eq!(reels["declared_posts"], serde_json::Value::Null);
+    assert_eq!(reels["posts"].as_array().map(Vec::len), Some(15), "{reels}");
+    assert_eq!(reels["posts"][0]["taken_at"], 0, "a tab says no date");
+    assert_eq!(reels["posts"][0]["likes"], serde_json::Value::Null);
+
+    for (tab, name) in [
+        ("tagged", "PolarisProfileTaggedTabContentQuery"),
+        ("reposts", "PolarisProfileRepostsTabContentWWWQuery"),
+    ] {
+        let out = snob(
+            tmp.path(),
+            &instagram,
+            &["posts", "someone", "--tab", tab, "--format", "json"],
+            None,
+        );
+        assert!(out.status.success(), "{tab}: {}", told(tmp.path(), &out));
+        let listed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(listed["tab"], tab);
+        assert_eq!(
+            listed["posts"].as_array().map(Vec::len),
+            Some(12),
+            "{listed}"
+        );
+        assert_eq!(listed["posts"][0]["owner"], "user0", "its author's");
+        assert_eq!(listed["more"], true);
+        let asked = snobs_requests(&instagram)
+            .await
+            .iter()
+            .filter(|r| {
+                url::form_urlencoded::parse(&r.body)
+                    .any(|(n, v)| n == "fb_api_req_friendly_name" && v == name)
+            })
+            .count();
+        assert_eq!(asked, 1, "{name}");
+    }
+
+    let out = snob(
+        tmp.path(),
+        &instagram,
+        &[
+            "posts", "someone", "--tab", "reels", "2", "--format", "json",
+        ],
+        None,
+    );
+    assert!(out.status.success(), "{}", told(tmp.path(), &out));
+    let inside: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        inside["post"]["items"][0]["url"]
+            .as_str()
+            .is_some_and(|url| url.ends_with(".mp4")),
+        "{inside}"
+    );
+    assert_ne!(inside["post"]["taken_at"], 0, "{inside}");
+
+    let found = world
+        .audit(
+            &instagram,
+            &["/api/v1/users/web_profile_info/", "/api/v1/feed/user/*/"],
+        )
+        .await;
+    assert!(found.is_empty(), "{found:?}");
+}
+
 /// Another account's highlights through the browser: the tray is the web
 /// client's tray query, whose entries know no count and no dates, and an
 /// entry's items are its highlights query, downloaded from the picture's

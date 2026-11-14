@@ -1789,6 +1789,239 @@ async fn a_post_opens_with_its_info_and_comments_from_its_own_page() {
     assert!(found.is_empty(), "{found:?}");
 }
 
+/// A tab is the profile, then its first query by pk from the profile's
+/// page, then the app's navigation to the tab, then its next pages from the
+/// tab's page on the tab's route; the fake's oracle answers 400 to any
+/// form or variables that are not the app's, and nothing goes out that the
+/// allowlist refuses.
+#[tokio::test]
+async fn a_tab_is_asked_by_pk_from_the_profile() {
+    use snob_cli::posts::{Fetched, read_tab};
+    use snob_ig::client::ProfileTab;
+
+    let world = World::new();
+    world.person(ig::SOMEONE, |p| p.tab_posts = 16);
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let app = app_on(&server, &world, tmp.path());
+    let (fetched, how) = read_tab(
+        app.client(),
+        "someone",
+        common::ME,
+        None,
+        ProfileTab::Reels,
+        3,
+        0,
+        &[],
+    )
+    .await
+    .unwrap();
+    let Fetched::Grid(grid) = fetched else {
+        panic!("someone's reels are shown");
+    };
+    assert_eq!(how.pages, 3);
+    assert_eq!(grid.posts.len(), 12 + 3 + 1, "twelve, then three a page");
+    assert_eq!(grid.next, None);
+    assert_eq!(grid.posts[0].owner, "someone");
+    assert!(grid.posts[0].likes_hidden, "the placeholder 3 is no count");
+    assert_eq!(grid.posts[0].taken_at, snob_core::Epoch::default());
+    assert_eq!(grid.declared, None, "no counter counts a tab");
+
+    let mut opened = OPENED.to_vec();
+    opened.extend([
+        "PolarisProfileReelsTabContentQuery",
+        "PolarisProfileReelsTabContentQuery_connection",
+        "PolarisProfileReelsTabContentQuery_connection",
+    ]);
+    assert_eq!(queries_since(&server, 0).await, opened);
+    let tab_calls: Vec<(String, String, String)> = server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|r| !ig::is_the_apps(r))
+        .filter(|r| {
+            r.url.path() == "/ajax/navigation/"
+                || url::form_urlencoded::parse(&r.body)
+                    .any(|(n, v)| n == "fb_api_req_friendly_name" && v.contains("ReelsTab"))
+        })
+        .map(|r| {
+            let form: Vec<(String, String)> =
+                url::form_urlencoded::parse(&r.body).into_owned().collect();
+            let field = |name: &str| {
+                form.iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            };
+            let referer = ig::header(r, "referer").unwrap_or_default();
+            let path = referer.split("://").nth(1).and_then(|r| r.split_once('/'));
+            (
+                field("route_url"),
+                format!("/{}", path.map(|(_, p)| p).unwrap_or_default()),
+                field("__crn"),
+            )
+        })
+        .collect();
+    let reels_route = "comet.igweb.PolarisProfileReelsTabRoute".to_string();
+    assert_eq!(tab_calls[0].1, "/someone/", "{tab_calls:?}");
+    assert_eq!(
+        tab_calls[1],
+        (
+            "/someone/reels/".to_string(),
+            "/someone/reels/".to_string(),
+            reels_route.clone()
+        ),
+        "{tab_calls:?}"
+    );
+    for next in &tab_calls[2..] {
+        assert_eq!(
+            (next.1.as_str(), &next.2),
+            ("/someone/reels/", &reels_route)
+        );
+    }
+    let found = world.audit(&server, &[]).await;
+    assert!(found.is_empty(), "{found:?}");
+}
+
+/// An account whose header says it has no posts can still have reels,
+/// tagged posts and reposts, and its tabs are asked for; its grid is not.
+/// A tagged post and a repost are their authors', and a repost's note is
+/// read.
+#[tokio::test]
+async fn an_account_with_no_posts_can_still_have_reels() {
+    use snob_cli::posts::{Fetched, read_grid, read_tab};
+    use snob_ig::client::ProfileTab;
+
+    let world = World::new();
+    world.person(ig::SOMEONE, |p| {
+        p.posts = 0;
+        p.tab_posts = 2;
+    });
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let app = app_on(&server, &world, tmp.path());
+    let (Fetched::Grid(grid), _) = read_grid(app.client(), "someone", common::ME, None, 1, 0, &[])
+        .await
+        .unwrap()
+    else {
+        panic!("someone's grid is shown");
+    };
+    assert!(grid.posts.is_empty());
+    for (tab, owner) in [
+        (ProfileTab::Reels, "someone"),
+        (ProfileTab::Tagged, "user0"),
+        (ProfileTab::Reposts, "user0"),
+    ] {
+        let (Fetched::Grid(read), how) =
+            read_tab(app.client(), "someone", common::ME, None, tab, 1, 0, &[])
+                .await
+                .unwrap()
+        else {
+            panic!("{tab:?} is shown");
+        };
+        assert_eq!(read.posts.len(), 2, "{tab:?}");
+        assert_eq!(how.pages, 1);
+        assert_eq!(read.posts[0].owner, owner, "{tab:?}");
+        assert_eq!(read.next, None, "{tab:?}");
+        let noted = tab == ProfileTab::Reposts;
+        assert_eq!(read.posts[0].notes.is_empty(), !noted, "{tab:?}");
+    }
+    let queries = queries_since(&server, 0).await;
+    assert!(
+        !queries.iter().any(|q| q == "PolarisProfilePostsQuery"),
+        "{queries:?}"
+    );
+    for name in [
+        "PolarisProfileReelsTabContentQuery",
+        "PolarisProfileTaggedTabContentQuery",
+        "PolarisProfileRepostsTabContentWWWQuery",
+    ] {
+        assert!(queries.iter().any(|q| q == name), "{name}: {queries:?}");
+    }
+    let found = world.audit(&server, &[]).await;
+    assert!(found.is_empty(), "{found:?}");
+}
+
+/// A private account the viewer does not follow is answered from its
+/// profile: none of its tabs is asked for.
+#[tokio::test]
+async fn a_private_account_not_followed_is_asked_for_no_tab() {
+    use snob_cli::posts::{Fetched, read_tab};
+    use snob_ig::client::ProfileTab;
+
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let app = app_on(&server, &world, tmp.path());
+    let (fetched, how) = read_tab(
+        app.client(),
+        "ghost",
+        common::ME,
+        None,
+        ProfileTab::Tagged,
+        1,
+        0,
+        &[],
+    )
+    .await
+    .unwrap();
+    assert!(matches!(fetched, Fetched::Hidden { .. }));
+    assert_eq!(how.pages, 0);
+    assert!(
+        !queries_since(&server, 0)
+            .await
+            .iter()
+            .any(|q| q.contains("Tab")),
+        "a tab was asked for"
+    );
+}
+
+/// A tab's posts looked into or saved are read again by their info first,
+/// which carries what the tab did not: the date and the video's address.
+#[tokio::test]
+async fn a_tabs_post_is_read_whole_by_its_info_before_it_is_saved() {
+    use snob_cli::posts::{Fetched, filled, read_tab};
+    use snob_ig::client::ProfileTab;
+
+    let world = World::new();
+    world.person(ig::SOMEONE, |p| p.tab_posts = 2);
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let app = app_on(&server, &world, tmp.path());
+    let (Fetched::Grid(grid), _) = read_tab(
+        app.client(),
+        "someone",
+        common::ME,
+        None,
+        ProfileTab::Reels,
+        1,
+        0,
+        &[],
+    )
+    .await
+    .unwrap() else {
+        panic!("someone's reels are shown");
+    };
+    // A tab hands out no video's address, and a reel's item is no copy of
+    // it, not its cover under a video's name.
+    assert_eq!(grid.posts[0].items[0].url, None);
+    assert!(grid.posts[0].items[0].thumb.is_some(), "its cover is drawn");
+    let since = common::requests(&server).await;
+    let whole = filled(app.client(), grid.posts.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(whole[0].items[0].url.as_deref().unwrap().ends_with(".mp4"));
+    assert_ne!(whole[0].taken_at, snob_core::Epoch::default());
+    let asked = sent_since(&server, since).await;
+    assert_eq!(asked.len(), 2, "one info a post: {asked:?}");
+    assert!(
+        asked.iter().all(|path| path.ends_with("/info/")),
+        "{asked:?}"
+    );
+}
+
 /// A thread's replies are one GET under its comment, from the post's page,
 /// with the app's three keys and an empty cursor; only the threads the page
 /// did not show whole are asked for, and a comment named that the post

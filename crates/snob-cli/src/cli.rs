@@ -595,7 +595,10 @@ pub enum Command {
                       next one as you scroll to it. --until <link> stops the listing at the \
                       first page that holds that post, for a reader that already has the posts \
                       from there on; give the newest few it has, since a pinned post never \
-                      stops it. Each page is one request, and opening a post \
+                      stops it. --tab reels, tagged or reposts reads that tab of the profile \
+                      instead, page by page as the grid; the grid already lists the reels \
+                      shared to it, and a profile that says it has no posts can still have \
+                      reels, reposts and tagged posts. Each page is one request, and opening a post \
                       in the view is two more: the post and its comments, as the app asks them. \
                       Videos are saved at their best when ffmpeg is installed, as \"post\" says. \
                       Listing and downloading a post does not tell the account you looked."
@@ -2292,6 +2295,16 @@ pub struct PostsArgs {
     )]
     pub until: Vec<snob_ig::shortcode::Shortcode>,
 
+    /// Which of the profile's tabs to read: its grid of posts, its reels,
+    /// the posts it is tagged in, or what it reposted. A tagged post or a
+    /// repost is its author's. A tab's posts carry no date, and looking
+    /// into one or saving it reads it again first, one request a post
+    // The three tabs are seeded queries by pk (`allowlist::Operation`'s
+    // `ProfileReels` and the rest), the first page from the profile and the
+    // next ones from the tab, after the app's navigation to it.
+    #[arg(long, value_enum, value_name = "TAB", default_value_t = PostsTab::Posts)]
+    pub tab: PostsTab,
+
     #[command(flatten)]
     pub action: MediaActionArgs,
 
@@ -2300,6 +2313,38 @@ pub struct PostsArgs {
 
     #[command(flatten)]
     pub video: VideoArgs,
+}
+
+/// A tab of a profile, as `posts --tab` names it.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PostsTab {
+    Posts,
+    Reels,
+    Tagged,
+    Reposts,
+}
+
+impl PostsTab {
+    /// The tab the client reads, `None` for the grid itself.
+    pub fn read(self) -> Option<snob_ig::client::ProfileTab> {
+        use snob_ig::client::ProfileTab;
+        match self {
+            Self::Posts => None,
+            Self::Reels => Some(ProfileTab::Reels),
+            Self::Tagged => Some(ProfileTab::Tagged),
+            Self::Reposts => Some(ProfileTab::Reposts),
+        }
+    }
+
+    /// How the JSON names it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Posts => "posts",
+            Self::Reels => "reels",
+            Self::Tagged => "tagged",
+            Self::Reposts => "reposts",
+        }
+    }
 }
 
 /// A post named on the command line by its link or its code, refused by

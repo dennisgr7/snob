@@ -58,7 +58,7 @@ use crate::commands::posts::{about, headline_cell, size_of};
 use crate::exit::ExitCode;
 use crate::media::Kind;
 use crate::posts::{self, Comments, Grid, Opened, Post};
-use crate::report;
+
 use crate::ui::browser::busy::Busy;
 use crate::ui::browser::input::{self, Action, Raw, page};
 use crate::ui::browser::scratch::{ABANDONED_AFTER, Scratch};
@@ -1120,7 +1120,7 @@ fn draw_grid(
             Cell::from(post.kind.label()),
         ];
         if shown.posted {
-            cells.push(Cell::from(report::dated(post.taken_at)).style(dim));
+            cells.push(Cell::from(post.posted()).style(dim));
         }
         if shown.likes {
             cells.push(Cell::from(Line::from(likes).right_aligned()));
@@ -1538,12 +1538,11 @@ mod tests {
     }
 
     fn grid() -> Grid {
-        Grid {
-            username: "someone".into(),
-            posts: vec![post(), post()],
-            next: Some("x".into()),
-            declared: Some(30),
-        }
+        let mut grid = Grid::of("someone", None, None);
+        grid.posts = vec![post(), post()];
+        grid.next = Some("x".into());
+        grid.declared = Some(30);
+        grid
     }
 
     fn comment(author: &str, text: &str) -> CommentLine {

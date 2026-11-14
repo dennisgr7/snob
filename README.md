@@ -91,6 +91,7 @@ snob pfp someone                 # the profile picture at full size
 snob stories someone -d all      # save every story an account has up
 snob highlights someone 2 -d all # save everything in its second highlight
 snob posts someone               # the posts on its grid
+snob posts someone --tab reels   # its reels; or tagged, or reposts
 snob post <link> -d all          # one post by its link, every photo and video in it
 snob post <link> --comments 5    # the post and five pages of its comments
 snob post <link> --replies 3     # and the replies under the first three that have more
@@ -165,7 +166,8 @@ can read:
   --when-due` every 15 minutes, which runs only when the schedule in
   `watch.toml` says so and otherwise sends nothing.
 - `snob mcp` is an MCP server for AI agents, on standard input and output:
-  the status, the lists, profiles, posts, stories and highlights (without
+  the status, the lists, profiles, posts (a grid or a profile's reels, tagged
+  posts and reposts), stories and highlights (without
   their picture and video addresses; an agent that asks is handed a small
   picture of each to look at, a video's cover for a video), the captures
   earlier walks stored and what changed between two of them, with

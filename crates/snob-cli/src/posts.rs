@@ -18,6 +18,11 @@
 //! - the replies under a comment are one read a thread, the first page of
 //!   it, a comment step after the read before ([`read_threads`]), at most
 //!   [`MOST_THREADS`] a run, their authors charged to the day's accounts;
+//! - a profile's reels, tagged or reposts tab is its profile and then one
+//!   read per page, a step apart, as the grid's, and the app's navigation to
+//!   the tab before its second page ([`read_tab`]). Its posts carry no date
+//!   and no video's address, so a post of a tab looked into or saved costs
+//!   its info first ([`filled`]);
 //! - a link is the post's info alone, and its comments only when they are
 //!   shown;
 //! - the files come from the CDN, which is not paced
@@ -35,7 +40,7 @@ use serde_json::Value;
 use snob_core::Epoch;
 use snob_core::model::post::{self as document, AccountRef, Place};
 use snob_core::model::printable;
-use snob_ig::client::IgClient;
+use snob_ig::client::{IgClient, ProfileTab};
 use snob_ig::error::IgError;
 use snob_ig::model::dash;
 use snob_ig::model::post::{Comment, CommentsPage, LikedBy, Media, Named as NamedAccount};
@@ -174,6 +179,9 @@ pub struct Post {
     pub pinned: bool,
     pub paid_partnership: bool,
     pub caption_edited: bool,
+    /// The notes other accounts wrote on it where it was reposted, as a
+    /// reposts tab shows them.
+    pub notes: Vec<String>,
 }
 
 impl Post {
@@ -210,7 +218,14 @@ impl Post {
                 };
                 Item {
                     kind: if video { Kind::Video } else { Kind::Photo },
-                    url: item.best_url().map(str::to_string),
+                    // **A video offered no video's file has no copy**, not
+                    // its cover's: a tab's reels come that way (captures of
+                    // 2026-11-13 and 2026-11-14), and a cover saved under a
+                    // video's name would be a wrong file, where none is a
+                    // post to read whole first (`filled`).
+                    url: (!video || !item.video_versions.is_empty())
+                        .then(|| item.best_url().map(str::to_string))
+                        .flatten(),
                     width,
                     height,
                     pk: digits(&item.pk.to_string()),
@@ -298,6 +313,19 @@ impl Post {
             pinned: media.pinned(),
             paid_partnership: media.is_paid_partnership == Some(true),
             caption_edited: media.caption_is_edited == Some(true),
+            notes: media.notes().into_iter().map(printable).collect(),
+        }
+    }
+
+    /// When it was posted, as a person reads it, or a dash where the answer
+    /// did not say: a tab's posts carry no date (captures of 2026-11-13 and
+    /// 2026-11-14), and the JSON's `taken_at` is then 0, as it always was
+    /// for a post with none.
+    pub fn posted(&self) -> String {
+        if self.taken_at == Epoch::default() {
+            "-".to_string()
+        } else {
+            crate::report::dated(self.taken_at)
         }
     }
 
@@ -765,6 +793,39 @@ pub struct Grid {
     pub next: Option<String>,
     /// How many posts the profile says it has.
     pub declared: Option<u64>,
+    /// The tab it is, `None` for the grid itself.
+    pub tab: Option<ProfileTab>,
+    /// The account's pk: what a tab is asked by.
+    pub pk: Option<snob_core::Pk>,
+    /// Whether the app was navigated to the tab, which it is once, before
+    /// the tab's second page.
+    pub tab_opened: bool,
+}
+
+impl Grid {
+    /// An empty grid of `username`'s, of `tab` when it is one.
+    pub fn of(username: &str, tab: Option<ProfileTab>, pk: Option<snob_core::Pk>) -> Self {
+        Self {
+            username: username.to_string(),
+            posts: Vec::new(),
+            next: None,
+            declared: None,
+            tab,
+            pk,
+            tab_opened: false,
+        }
+    }
+
+    /// What it is, for a sentence: "posts", "reels", "tagged posts",
+    /// "reposts".
+    pub fn what(&self) -> &'static str {
+        match self.tab {
+            None => "posts",
+            Some(ProfileTab::Reels) => "reels",
+            Some(ProfileTab::Tagged) => "tagged posts",
+            Some(ProfileTab::Reposts) => "reposts",
+        }
+    }
 }
 
 /// What a profile's grid could show.
@@ -854,12 +915,8 @@ pub async fn read_grid(
     let declared = info.posts.map(|p| p.count);
     // Zero is an answer the profile already gave, as in `highlights`.
     if declared == Some(0) {
-        let grid = Grid {
-            username: info.username,
-            posts: Vec::new(),
-            next: None,
-            declared,
-        };
+        let mut grid = Grid::of(&info.username, None, Some(info.id));
+        grid.declared = declared;
         return Ok((Fetched::Grid(grid), GridRead::default()));
     }
     let (mut grid, how) = read_pages(client, &info.username, pages, at_least, until).await?;
@@ -882,35 +939,94 @@ pub async fn read_pages(
     at_least: usize,
     until: &[MediaPk],
 ) -> Result<(Grid, GridRead)> {
-    let mut grid = Grid {
-        username: username.to_string(),
-        posts: Vec::new(),
-        next: None,
-        declared: None,
-    };
+    let mut grid = Grid::of(username, None, None);
     let first = client.profile_posts(&grid.username, None).await?;
     grid.take(first);
+    let how = read_on(client, &mut grid, pages, at_least, until).await?;
+    Ok((grid, how))
+}
+
+/// Tab `tab` of the profile `typed` names, as [`read_grid`] reads its grid:
+/// the profile, then the tab's first page, and its next ones as far as
+/// `pages`, `at_least` and `until` say.
+///
+/// **No shortcut on a profile that says it has no posts**: its header
+/// counts the grid alone, and an account with none had a reel, reposts and
+/// tagged posts over more than a page in the capture of 2026-11-14. A
+/// private account the viewer does not follow is answered from its profile,
+/// as its grid is, and no tab of it is asked for.
+#[expect(clippy::too_many_arguments, reason = "read_grid's, and the tab")]
+pub async fn read_tab(
+    client: &IgClient,
+    typed: &str,
+    viewer: snob_core::Pk,
+    known: Option<snob_core::Pk>,
+    tab: ProfileTab,
+    pages: u32,
+    at_least: usize,
+    until: &[MediaPk],
+) -> Result<(Fetched, GridRead)> {
+    let info = client
+        .profile_named(crate::engine::target::clean(typed), known)
+        .await?;
+    let own = info.id == viewer;
+    let is_private = info.is_private.unwrap_or(false);
+    let you_follow = info.followed_by_viewer.unwrap_or(false);
+    if !(own || !is_private || you_follow) {
+        return Ok((
+            Fetched::Hidden {
+                username: info.username,
+            },
+            GridRead::default(),
+        ));
+    }
+    let mut grid = Grid::of(&info.username, Some(tab), Some(info.id));
+    let first = client
+        .profile_tab(tab, info.id, &grid.username, None)
+        .await?;
+    grid.take(first);
+    let how = read_on(client, &mut grid, pages, at_least, until).await?;
+    Ok((Fetched::Grid(grid), how))
+}
+
+/// Reads `grid` on from its first page, each next one a step after the
+/// page before and past any rest the account's sitting owes, while fewer
+/// than `at_least` posts are held, or while fewer than `pages` were read and
+/// none of `until` has come ([`reached`]); at most [`MOST_PAGES`].
+async fn read_on(
+    client: &IgClient,
+    grid: &mut Grid,
+    pages: u32,
+    at_least: usize,
+    until: &[MediaPk],
+) -> Result<GridRead> {
     let mut read = 1;
     // A post's number asked for is read up to, whatever `until` says; past
     // it, a page is asked for only while none of `until` has come.
     while read < MOST_PAGES
         && (grid.posts.len() < at_least || (read < pages && reached(&grid.posts, until).is_none()))
     {
-        if rest_before_a_page(client, "the grid").await? || !more(client, &mut grid).await? {
+        if rest_before_a_page(client, "the grid").await? || !more(client, grid).await? {
             break;
         }
         read += 1;
     }
-    let how = GridRead {
+    Ok(GridRead {
         pages: read,
         reached: reached(&grid.posts, until),
-    };
-    Ok((grid, how))
+    })
 }
 
 impl Grid {
     fn take(&mut self, page: snob_ig::client::PostsPage) {
-        let owner = self.username.clone();
+        // **A tagged post or a repost is its author's**, never the
+        // profile's whose tab it is on (12 of 12 in the capture of
+        // 2026-11-14): the answer names the owner, and where it does not,
+        // the owner is not known rather than taken to be the profile.
+        let owner = match self.tab {
+            None | Some(ProfileTab::Reels) => self.username.clone(),
+            Some(ProfileTab::Tagged | ProfileTab::Reposts) => String::new(),
+        };
         self.posts
             .extend(page.posts.iter().map(|m| Post::from_media(m, &owner)));
         self.next = page.next;
@@ -926,9 +1042,51 @@ pub async fn more(client: &IgClient, grid: &mut Grid) -> Result<bool> {
     if client.step_between(&Pace::default()).await {
         return Ok(false);
     }
-    let page = client.profile_posts(&grid.username, Some(&after)).await?;
+    let page = match (grid.tab, grid.pk) {
+        (Some(tab), Some(pk)) => {
+            // The click that opens the tab, then a step, then its next
+            // page from it, as the app scrolls a tab it has opened.
+            if !grid.tab_opened {
+                client.open_tab(&grid.username, tab).await?;
+                grid.tab_opened = true;
+                if client.step_between(&Pace::default()).await {
+                    return Ok(false);
+                }
+            }
+            client
+                .profile_tab(tab, pk, &grid.username, Some(&after))
+                .await?
+        }
+        _ => client.profile_posts(&grid.username, Some(&after)).await?,
+    };
     grid.take(page);
     Ok(true)
+}
+
+/// `posts`, each read again by its info, a step apart: what a tab's posts
+/// take before they are looked into or saved, since a tab hands out no
+/// video's address and a carousel's items as covers alone. One read a post;
+/// a post the info does not hold stays as the tab described it. `None` when
+/// Ctrl+C stopped a wait.
+pub async fn filled(client: &IgClient, posts: Vec<Post>) -> Result<Option<Vec<Post>>> {
+    let mut filled = Vec::with_capacity(posts.len());
+    for post in posts {
+        if client.step_between(&Pace::default()).await {
+            return Ok(None);
+        }
+        let fresh = client.media_info(post.pk, &post.page()).await?;
+        filled.push(match fresh {
+            Some(media) => {
+                let mut fresh = Post::from_media(&media, &post.owner);
+                fresh.opens = post.opens;
+                fresh.asked_from = post.asked_from;
+                fresh.notes = post.notes;
+                fresh
+            }
+            None => post,
+        });
+    }
+    Ok(Some(filled))
 }
 
 /// A post opened the way the app opens one: its info read again and its
@@ -1343,6 +1501,7 @@ pub fn post_document(post: &Post, number: Option<usize>) -> document::Post {
         pinned: post.pinned,
         paid_partnership: post.paid_partnership,
         caption_edited: post.caption_edited,
+        notes: post.notes.clone(),
     }
 }
 

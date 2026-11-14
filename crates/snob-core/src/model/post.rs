@@ -81,6 +81,11 @@ pub struct Post {
     pub paid_partnership: bool,
     /// Its caption was edited after it was posted.
     pub caption_edited: bool,
+    /// The notes other accounts wrote on it where it was reposted, as a
+    /// reposts tab shows them; left out where there are none, every post of
+    /// a grid among them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// An account a post names, by pk and name. The pk is `null` where the

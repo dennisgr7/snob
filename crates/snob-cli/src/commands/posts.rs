@@ -21,6 +21,12 @@
 //!
 //! **A private account the viewer does not follow is told apart from an
 //! account with no posts**, as `highlights` tells it.
+//!
+//! **`--tab reels|tagged|reposts` reads another of the profile's tabs**
+//! ([`posts::read_tab`]) the same way, a page of it a request: the listing,
+//! `--pages`, `--until`, the view and `-d` alike. A tab's posts carry no
+//! date and no video's address, so the posts a number or `-d` names are
+//! read again by their info first ([`posts::filled`]), one request each.
 
 use std::path::Path;
 
@@ -38,7 +44,9 @@ use crate::exit::ExitCode;
 use crate::media::{self, empty_document};
 use crate::output;
 use crate::output::Presentation;
-use crate::posts::{self, Fetched, Grid, GridRead, Post, Videos, files_of, post_json, read_grid};
+use crate::posts::{
+    self, Fetched, Grid, GridRead, Post, Videos, files_of, post_json, read_grid, read_tab,
+};
 use crate::report;
 use crate::ui;
 
@@ -70,16 +78,33 @@ pub async fn run(args: PostsArgs, store: SecretStore, paths: &AccountPaths) -> R
         .post
         .map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX));
 
-    let (fetched, read) = read_grid(
-        app.client(),
-        &typed,
-        app.viewer().pk,
-        known,
-        pages,
-        at_least,
-        &until,
-    )
-    .await?;
+    let (fetched, read) = match args.tab.read() {
+        None => {
+            read_grid(
+                app.client(),
+                &typed,
+                app.viewer().pk,
+                known,
+                pages,
+                at_least,
+                &until,
+            )
+            .await?
+        }
+        Some(tab) => {
+            read_tab(
+                app.client(),
+                &typed,
+                app.viewer().pk,
+                known,
+                tab,
+                pages,
+                at_least,
+                &until,
+            )
+            .await?
+        }
+    };
     let asked = Asked {
         until: !until.is_empty(),
         read,
@@ -110,7 +135,11 @@ pub async fn run(args: PostsArgs, store: SecretStore, paths: &AccountPaths) -> R
     }
 
     if grid.posts.is_empty() {
-        ui::info(&format!("@{} has no posts.", printable(&grid.username)));
+        ui::info(&format!(
+            "@{} has no {}.",
+            printable(&grid.username),
+            grid.what()
+        ));
         if args.action.selection().is_none() && !args.action.interactive {
             let destination = args.action.output.as_deref();
             let format = common::checked_format(args.list.format, destination, "a grid")?;
@@ -137,7 +166,11 @@ pub async fn run(args: PostsArgs, store: SecretStore, paths: &AccountPaths) -> R
         (None, Some(selection)) => {
             let numbers =
                 media::numbers_of(selection, grid.posts.len(), |n| no_such_post(&grid, n))?;
-            let chosen: Vec<&Post> = numbers.iter().map(|n| &grid.posts[n - 1]).collect();
+            let chosen: Vec<Post> = numbers.iter().map(|n| grid.posts[n - 1].clone()).collect();
+            let Some(chosen) = filled_for_a_tab(&app, &grid, chosen).await? else {
+                return Ok(ExitCode::Interrupted);
+            };
+            let chosen: Vec<&Post> = chosen.iter().collect();
             let files = videos.prepare(files_of(&chosen));
             posts::download(app.client_shared(), files, destination).await
         }
@@ -161,7 +194,13 @@ pub async fn run(args: PostsArgs, store: SecretStore, paths: &AccountPaths) -> R
             list_grid(&grid, &asked, pictures, args.list.format, destination)
         }
         (Some(number), selection) => {
-            let post = &grid.posts[number as usize - 1];
+            let chosen = vec![grid.posts[number as usize - 1].clone()];
+            let Some(chosen) = filled_for_a_tab(&app, &grid, chosen).await? else {
+                return Ok(ExitCode::Interrupted);
+            };
+            let Some(post) = chosen.first() else {
+                return Ok(ExitCode::Ok);
+            };
             match selection {
                 Some(selection) => {
                     download_items(&app, post, selection, destination, &videos).await
@@ -176,6 +215,21 @@ pub async fn run(args: PostsArgs, store: SecretStore, paths: &AccountPaths) -> R
             }
         }
     }
+}
+
+/// `chosen`, the posts a number or `-d` named, as they are listed or saved:
+/// a grid's as the grid read them, and a tab's read again by their info
+/// first ([`posts::filled`]), since a tab hands out no video's address and a
+/// carousel's items as covers alone. `None` when Ctrl+C stopped a wait.
+async fn filled_for_a_tab(
+    app: &crate::app::App,
+    grid: &Grid,
+    chosen: Vec<Post>,
+) -> Result<Option<Vec<Post>>> {
+    if grid.tab.is_none() {
+        return Ok(Some(chosen));
+    }
+    posts::filled(app.client(), chosen).await
 }
 
 /// `-d` inside one post: the items by the numbers its listing printed.
@@ -293,8 +347,12 @@ fn list_grid(
         _ => grid_table(grid, Presentation::detect(destination)),
     };
     asked.say(grid);
+    let tab = match grid.tab {
+        None => String::new(),
+        Some(tab) => format!(" --tab {}", tab.segment()),
+    };
     let hint = format!(
-        "snob posts {} <number> to look inside one, -d <number> to save one whole, or -i to browse",
+        "snob posts {}{tab} <number> to look inside one, -d <number> to save one whole, or -i to browse",
         printable(&grid.username)
     );
     media::print_listing(text, destination, &hint)
@@ -366,11 +424,15 @@ pub fn about(post: &Post) -> Vec<String> {
         what.push_str(&format!(" · {length}"));
     }
     lines.push(what);
-    let mut when = report::dated(post.taken_at);
-    if let Some(place) = &post.location {
-        when.push_str(&format!(" · {place}"));
+    // A tab's post carries no date: its place, if any, stands alone.
+    let mut when: Vec<String> = Vec::new();
+    if post.taken_at != snob_core::Epoch::default() {
+        when.push(report::dated(post.taken_at));
     }
-    lines.push(when);
+    when.extend(post.location.clone());
+    if !when.is_empty() {
+        lines.push(when.join(" · "));
+    }
     lines.push(post.link());
     let marks: Vec<&str> = [
         (post.pinned, "Pinned"),
@@ -396,6 +458,10 @@ pub fn about(post: &Post) -> Vec<String> {
     }
     if !post.mentions.is_empty() {
         lines.push(format!("Mentions: {}", names(&post.mentions)));
+    }
+    // Another account's words, filtered when they were read (`Post::notes`).
+    for note in &post.notes {
+        lines.push(format!("Note: {note}"));
     }
     let mut counts: Vec<String> = Vec::new();
     if let Some(liked) = post.liked_line() {
@@ -472,7 +538,7 @@ fn grid_table(grid: &Grid, presentation: Presentation) -> String {
         table.add_row([
             Cell::new(index + 1),
             Cell::new(post.kind.label()),
-            Cell::new(report::dated(post.taken_at)),
+            Cell::new(post.posted()),
             Cell::new(likes),
             Cell::new(post.comments.map_or("-".into(), posts::grouped)),
             Cell::new(headline_cell(post, 60)),
@@ -508,12 +574,13 @@ pub(crate) fn clipped(text: &str, width: usize) -> String {
     }
 }
 
-/// The grid's JSON document: the posts under `posts`, and beside them how
-/// many the profile says it has, whether the grid goes on past what was
-/// read, how many pages were asked for (`pages_read`, one request each, the
-/// profile's own reads apart), and for a read `--until` shaped, whether it
-/// reached one of the posts named and which (`until`, `null` when none was
-/// named).
+/// The grid's JSON document: the posts under `posts`, and beside them which
+/// tab they are (`tab`: `posts`, `reels`, `tagged` or `reposts`), how many
+/// the profile says it has (its grid's count, `null` for another tab, which
+/// no counter counts), whether the grid goes on past what was read, how
+/// many pages were asked for (`pages_read`, one request each, the profile's
+/// own reads apart), and for a read `--until` shaped, whether it reached
+/// one of the posts named and which (`until`, `null` when none was named).
 fn grid_json(grid: &Grid, asked: &Asked, format: Format) -> Result<String> {
     let rows: Vec<serde_json::Value> = grid
         .posts
@@ -530,6 +597,7 @@ fn grid_json(grid: &Grid, asked: &Asked, format: Format) -> Result<String> {
     media::rows_or_envelope(rows, format, |rows| {
         serde_json::json!({
             "username": grid.username,
+            "tab": grid.tab.map_or("posts", |tab| tab.segment()),
             "declared_posts": grid.declared,
             "more": grid.next.is_some(),
             "pages_read": asked.read.pages,
@@ -619,12 +687,9 @@ mod tests {
         let other = post(r#"{"pk":"2","user":{"pk":"42"},"caption":{"text":"hello"}}"#);
         assert_eq!(headline_cell(&pinned, 60), format!("{PIN} hello"));
         assert_eq!(headline_cell(&other, 60), "hello");
-        let grid = Grid {
-            username: "someone".into(),
-            posts: vec![pinned, other],
-            next: None,
-            declared: Some(2),
-        };
+        let mut grid = Grid::of("someone", None, None);
+        grid.posts = vec![pinned, other];
+        grid.declared = Some(2);
         let plain = Presentation {
             interactive: false,
             hyperlinks: false,

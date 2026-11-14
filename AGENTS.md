@@ -223,7 +223,12 @@ with a documented reason in the same place.
   `doc_id`s are discovered from the page's JavaScript, never hard-coded.
   A comments cursor goes back as `min_id` only in the shape Instagram
   hands one out (`comments_cursor_has_its_shape`); a page with another
-  is the last. A thread of replies (`Rest::Replies`) goes out with the
+  is the last. A profile's reels, tagged and reposts tabs are queries of
+  the registry by pk under seeded numbers; the first page goes out from
+  the profile's page, then the app's navigation to `/<name>/<tab>/`
+  (`allowlist::list_route`, never a document the tab loads), then the next
+  pages from there, each cursor held to the shape the tab hands out. A
+  thread of replies (`Rest::Replies`) goes out with the
   app's three keys in its order and an empty cursor, and nothing else
   (`Rest::takes_every_key`): no capture shows a second page of one, so
   none is asked for, and a thread that says it has more is said to.
@@ -239,8 +244,10 @@ with a documented reason in the same place.
   (`post --comments`, at most `posts::MOST_COMMENT_PAGES`, 20) are 2 to 5 s
   apart (`COMMENT_STEP_MS`), as "load more" is clicked, and so are the
   threads of replies read after them (`post --replies`/`--replies-of`, at
-  most `posts::MOST_THREADS`, 10, one request each); pages of a grid, of
-  comments and of replies count in the sitting as a list's do
+  most `posts::MOST_THREADS`, 10, one request each); pages of a grid or of
+  a profile's tab (a step apart, the navigation to the tab a step before
+  its second page), of comments and of replies count in the sitting as a
+  list's do
   (`IgClient::count_in_the_sitting`), and a command that reads on by itself
   pays a rest owed before its next page. Under it, the persistent GCRA buckets of
   `snob-store/src/store/rate_budget.rs`: pace (3.83 s emission, burst 20),
@@ -750,7 +757,9 @@ reaches a server already listening: no command, no key, see "Over HTTP").
   than the first page that holds one (`posts::reached`, which a pinned
   post never satisfies: those come first however old); the answer says
   how many pages were asked for (`pages_read`) and whether it got there
-  (`until.reached`). `brief` hands back only what tells posts apart
+  (`until.reached`). `tab` reads a profile's reels, tagged posts or
+  reposts instead (the child's `--tab`, part of the command), with the
+  same pages and `until`. `brief` hands back only what tells posts apart
   (`answer::BRIEF`): how the answer is shaped, so no part of the command
   or of what the read is held under. `snob_post` and `snob_post_likers` take a link and hand the
   child the post's address alone (`tools::link`), never the share token;
@@ -1413,7 +1422,17 @@ push-back (`headless/listen.rs`), the prefix of `CLAIM_HANDED_OUT`
 (`headless/guard.rs`), whether Instagram varies on `Sec-Fetch-*`
 (`client/headers.rs`), what a Relay or route call without
 `X-FB-Entry-Nonce` draws (the app's own value is copied, and the header is
-left out until one is seen: `web::AppCalls`), and `TRUNCATION_THRESHOLD`.
+left out until one is seen: `web::AppCalls`), `TRUNCATION_THRESHOLD`, and
+of a profile's reels, tagged and reposts tabs (`posts --tab`): where the app
+keeps their six `doc_id`s (seeds from two captures on two builds, never
+vouched for, since the tab never sees the app send them: the scripts beside
+their names, as a write's, is untested), what Instagram answers one when
+its number has moved, how many reels a next page asks for (3 on 2026-11-14,
+5 on 2026-11-13; snob sends 3, the slower), and what a tab of a private
+account the viewer does not follow answers (snob asks none). Likewise the
+second page of a thread of replies, which no capture has shown: snob reads
+the first only, and logs the names of an answer's keys when one says it
+has more.
 
 ## Website (`web/`)
 
