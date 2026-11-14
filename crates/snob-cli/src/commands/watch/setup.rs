@@ -76,21 +76,21 @@ pub async fn setup(
     });
     let accounts = ask_accounts(answers.url.as_deref(), own.as_deref())?;
 
+    // A dry run did not read the file to replace it; what it prints still
+    // keeps the entries and the format a real run would.
+    let replaced = existing.or_else(|| config::load(paths).ok().flatten());
     config.webhook = answers.url.as_ref().map(|url| config::WebhookConfig {
         url: url.clone(),
         headers: answers.headers.iter().cloned().collect(),
         heartbeat: answers.heartbeat,
         // The format the address was given, kept when the same address is
         // set up again; else the one its host is known to want.
-        format: existing
+        format: replaced
             .as_ref()
             .and_then(|e| e.webhook.as_ref())
             .filter(|w| &w.url == url)
             .map_or_else(|| format_for(url), |w| w.format),
     });
-    // A dry run did not read the file to replace it; what it prints still
-    // keeps the entries a real run would.
-    let replaced = existing.or_else(|| config::load(paths).ok().flatten());
     config.accounts = entries_to_write(accounts, account.map(|a| a.pk()), replaced.as_ref());
 
     let registry = Registry::load(paths).unwrap_or_default();
