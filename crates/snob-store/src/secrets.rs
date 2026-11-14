@@ -694,10 +694,24 @@ fn entry_for(service: &str, user: &str) -> Result<keyring_core::Entry, SecretsEr
 /// Reads a stored session, clearing what it read: on Unix the payload is the
 /// cookie in the clear.
 fn read_file(path: &std::path::Path) -> Result<Zeroizing<String>, SecretsError> {
-    let raw = Zeroizing::new(std::fs::read(path).map_err(|source| SecretsError::Read {
+    use std::io::Read as _;
+
+    let unread = |source| SecretsError::Read {
         path: path.display().to_string(),
         source,
-    })?);
+    };
+    let mut raw = Zeroizing::new(Vec::new());
+    std::fs::File::open(path)
+        .map_err(unread)?
+        .take(MAX_SESSION_FILE_BYTES + 1)
+        .read_to_end(&mut raw)
+        .map_err(unread)?;
+    if raw.len() as u64 > MAX_SESSION_FILE_BYTES {
+        return Err(SecretsError::Corrupt(format!(
+            "the session file is larger than any session is ({} KiB at most)",
+            MAX_SESSION_FILE_BYTES / 1024
+        )));
+    }
     let mut stored: StoredSession = serde_json::from_slice(&raw).map_err(|e| {
         SecretsError::Corrupt(format!("the session file is not valid: {}", shape_of(&e)))
     })?;
@@ -712,7 +726,69 @@ fn parse_session(json: &str) -> Result<Session, SecretsError> {
     session
         .check_schema()
         .map_err(|e| SecretsError::Corrupt(e.to_string()))?;
+    held_to_shape(&session)?;
     Ok(session)
+}
+
+/// The most a session's file may weigh, read no further. A session is a
+/// handful of cookies, none near a kilobyte, a username and a User-Agent of
+/// at most 512 characters (`snob_core::session`): under 4 KiB as JSON, and
+/// under 8 KiB once DPAPI has sealed it and base64 spelled the result. Eight
+/// times that, so that nothing stored is refused and a file somebody swapped
+/// in is not read whole into memory.
+const MAX_SESSION_FILE_BYTES: u64 = 64 * 1024;
+
+/// Holds a stored session to what a login can have stored, **naming the field
+/// that fails and nothing of what it holds**, as [`shape_of`] does: the
+/// sentence is printed, and handed to an agent.
+///
+/// A pasted `sessionid` and a User-Agent are checked on their way in; a
+/// session read back was taken as it was, and every one of these goes into a
+/// header: a line break in one is a header of somebody else's choosing.
+fn held_to_shape(session: &Session) -> Result<(), SecretsError> {
+    use snob_core::session::SessionError;
+
+    let corrupt = |what: String| Err(SecretsError::Corrupt(what));
+    // snob-core's own check, as a paste meets it.
+    let checked = match Session::from_sessionid(
+        session.sessionid.expose(),
+        &session.user_agent,
+        session.origin,
+    ) {
+        Ok(checked) => checked,
+        Err(SessionError::EmptySessionId | SessionError::MalformedSessionId) => {
+            return corrupt("its sessionid is not a cookie's value".into());
+        }
+        Err(_) => return corrupt("its User-Agent is not a browser's".into()),
+    };
+    if checked.ds_user_id != session.ds_user_id {
+        return corrupt("its sessionid is another account's than the one it names".into());
+    }
+
+    let cookies = [
+        ("sessionid", Some(session.sessionid.expose())),
+        ("csrftoken", session.csrftoken.as_ref().map(Secret::expose)),
+        ("mid", session.mid.as_deref()),
+        ("ig_did", session.ig_did.as_deref()),
+        ("datr", session.datr.as_deref()),
+    ];
+    for (name, value) in cookies {
+        if value.is_some_and(|v| v.chars().any(|c| c.is_whitespace() || c.is_control())) {
+            return corrupt(format!(
+                "its {name} holds a character no cookie's value does"
+            ));
+        }
+    }
+    let lines = [
+        ("User-Agent", Some(session.user_agent.as_str())),
+        ("username", session.username.as_deref()),
+    ];
+    for (name, value) in lines {
+        if value.is_some_and(|v| v.chars().any(char::is_control)) {
+            return corrupt(format!("its {name} holds a control character"));
+        }
+    }
+    Ok(())
 }
 
 /// What is wrong with stored JSON, **without serde's own sentence**: that one
@@ -1397,6 +1473,54 @@ mod tests {
         mine(&store).delete().unwrap();
         assert!(!left.exists(), "the temporary outlived the sign-out");
         assert!(!store.paths.account(ME).session_file().exists());
+    }
+
+    /// What is read back from the store goes into headers as it is. A stored
+    /// session with a line break in a cookie or in its User-Agent is refused,
+    /// by the name of the field and with nothing of what it holds.
+    #[test]
+    fn a_stored_session_no_login_could_have_stored_is_refused_by_its_field() {
+        let (_tmp, store, _keyring) = file_store();
+        let whole = Session::from_sessionid(SID, UA, SessionOrigin::Paste).unwrap();
+        let refused = |session: &Session| {
+            mine(&store).save(session).unwrap();
+            mine(&store).load().unwrap_err().to_string()
+        };
+
+        let mut cookie = whole.clone();
+        cookie.mid = Some("abc\r\nX-Injected: yes".to_string());
+        let said = refused(&cookie);
+        assert!(said.contains("mid"), "{said}");
+        assert!(!said.contains("Injected"), "{said}");
+
+        let mut agent = whole.clone();
+        agent.user_agent = format!("{UA}\r\nCookie: stolen");
+        let said = refused(&agent);
+        assert!(said.contains("User-Agent"), "{said}");
+        assert!(!said.contains("stolen"), "{said}");
+
+        let mut another = whole.clone();
+        another.ds_user_id = snob_core::Pk::new(1);
+        let said = refused(&another);
+        assert!(said.contains("another account's"), "{said}");
+        assert!(!said.contains("AbCdEfGhIjKl"), "{said}");
+
+        mine(&store).save(&whole).unwrap();
+        assert!(mine(&store).load().unwrap().is_some());
+    }
+
+    /// A session's file is a few kilobytes. One far past that is not read
+    /// whole into memory to find out it is no session.
+    #[test]
+    fn a_session_file_larger_than_any_session_is_refused_unread() {
+        let (_tmp, store, _keyring) = file_store();
+        let account = store.paths.account(ME);
+        account.ensure_dirs().unwrap();
+        let huge = vec![b' '; MAX_SESSION_FILE_BYTES as usize + 1];
+        std::fs::write(account.session_file(), huge).unwrap();
+
+        let said = mine(&store).load().unwrap_err().to_string();
+        assert!(said.contains("larger than any session"), "{said}");
     }
 
     #[test]
