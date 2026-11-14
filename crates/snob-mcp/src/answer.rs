@@ -210,7 +210,7 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
                 }
             }
             Some(other) => json!({ "value": other }),
-            None => json!({ "text": finished.text.trim() }),
+            None => text(&finished.text),
         }
     } else {
         let said = || {
@@ -346,6 +346,24 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
         body: cleaned(body),
         whole,
         pictures: shown,
+    }
+}
+
+/// What a command printed that was no JSON, as an answer: within
+/// [`PAGE_BYTES`], its start alone past them. No plan runs a command that
+/// prints text, so this is what a child gone wrong said, of any length.
+fn text(printed: &str) -> Value {
+    let printed = printed.trim();
+    let end = (0..=PAGE_BYTES.min(printed.len()))
+        .rev()
+        .find(|at| printed.is_char_boundary(*at))
+        .unwrap_or(0);
+    match printed.get(..end) {
+        Some(start) if end < printed.len() => json!({
+            "text": start,
+            "cut": "The command printed more text than fits one answer: this is its start",
+        }),
+        _ => json!({ "text": printed }),
     }
 }
 
@@ -1069,6 +1087,20 @@ mod tests {
             }),
             ..plan(&[ExitCode::Ok])
         }
+    }
+
+    /// Text a child printed where JSON was expected is handed back within a
+    /// page's bytes, cut between two characters, and said to be cut.
+    #[test]
+    fn text_that_is_no_json_is_handed_back_within_a_pages_bytes() {
+        assert_eq!(text(" a sentence\n"), json!({ "text": "a sentence" }));
+        // Three bytes a character, so the cut has to find a boundary.
+        let long = "\u{2192}".repeat(PAGE_BYTES);
+        let told = text(&long);
+        let kept = told["text"].as_str().unwrap();
+        assert!(kept.len() <= PAGE_BYTES && kept.len() > PAGE_BYTES - 3);
+        assert!(kept.ends_with('\u{2192}'));
+        assert!(told["cut"].is_string());
     }
 
     /// A listing's small pictures leave its JSON as images, each with the

@@ -12,9 +12,12 @@ use std::ffi::OsString;
 use std::process::Stdio;
 use std::time::Duration;
 
+use std::sync::Arc;
+
 use serde_json::Value;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
+use tokio::sync::Notify;
 
 use crate::exit::ExitCode;
 
@@ -28,6 +31,25 @@ const TICK_WITHIN: Duration = Duration::from_secs(5);
 /// The most of standard error kept for a failure that did not end in the JSON
 /// error line: enough for the sentences, not a log.
 const STDERR_KEPT: usize = 4 * 1024;
+
+/// The most of a child's standard output that is read. **Past it the child is
+/// stopped and the call fails** ([`too_much`]): nothing else bounds what a
+/// child gone wrong prints, and the server would hold all of it.
+///
+/// Four of the largest answers one walk gives: a walk stops at 2,000 pages of
+/// 12 accounts (`pager::HARD_PAGE_CAP`, `pace::ACCOUNTS_PER_PAGE`), and an
+/// account prints as some 700 bytes, most of them its picture's signed
+/// address, so about 16 MiB, which a job's document carries once. A list read
+/// over several walks, or imported, still fits up to some 90,000 accounts. A
+/// listing with its pictures in base64 is under 6 MiB
+/// (`media::MOST_SMALL_PICTURES`, 4 MiB, and a third).
+const MOST_OUTPUT: usize = 64 << 20;
+
+/// The most of a child's standard error that is read, with the same end past
+/// it. A command says a few sentences there, a stored read its `served`
+/// lines, and a failure one JSON line: kilobytes. The rest of the room is for
+/// the log of a person who set `SNOB_LOG`.
+const MOST_SAID: usize = 4 << 20;
 
 /// Environment variables a child never inherits, from the one home they
 /// have (`jobs`), which says why.
@@ -161,17 +183,19 @@ impl Launch {
         let mut child = self.command(args).spawn()?;
         // Held, never written: dropping it is the request to stop.
         let mut stdin = child.stdin.take();
-        let mut stdout = child.stdout.take().expect("piped");
-        let mut stderr = child.stderr.take().expect("piped");
+        let stdout = child.stdout.take().expect("piped");
+        let stderr = child.stderr.take().expect("piped");
 
-        let out = tokio::spawn(async move {
-            let mut bytes = Vec::new();
-            stdout.read_to_end(&mut bytes).await.map(|_| bytes)
-        });
-        let err = tokio::spawn(async move {
-            let mut bytes = Vec::new();
-            stderr.read_to_end(&mut bytes).await.map(|_| bytes)
-        });
+        let over = Arc::new(Notify::new());
+        let out = tokio::spawn(within(stdout, MOST_OUTPUT, Arc::clone(&over)));
+        let err = tokio::spawn(within(stderr, MOST_SAID, Arc::clone(&over)));
+        // A child that printed too much is stopped as a canceled call's is.
+        let stop = async {
+            tokio::select! {
+                () = stop => {}
+                () = over.notified() => {}
+            }
+        };
 
         let started = tokio::time::Instant::now();
         let mut beat = tokio::time::interval_at(started + every, every);
@@ -193,18 +217,62 @@ impl Launch {
                     }
                 }
                 // **Never send to the client from a spawned task**: the send
-                // would race the result (see above), and rmcp keeps which
-                // request a message belongs to in a task-local
-                // (`ORIGINATING_REQUEST`) that does not cross `tokio::spawn`.
+                // would race the result, and rmcp keeps which request a
+                // message belongs to in a task-local (`ORIGINATING_REQUEST`)
+                // that does not cross `tokio::spawn`.
                 _ = beat.tick() => {
                     let _ = tokio::time::timeout(TICK_WITHIN, tick(started.elapsed())).await;
                 }
             }
         };
 
-        let out = out.await??;
-        let err = String::from_utf8_lossy(&err.await??).into_owned();
-        Ok(read(status.code(), &out, &err))
+        let (Some(out), Some(err)) = (out.await??, err.await??) else {
+            return Ok(too_much());
+        };
+        Ok(read(status.code(), &out, &String::from_utf8_lossy(&err)))
+    }
+}
+
+/// Everything `from` says until it closes, or `None` when that is more than
+/// `most` bytes, said on `over` as soon as it is known. **Read to its end
+/// either way**, the rest thrown away: a child whose pipe nobody reads blocks
+/// on its next line and cannot stop in order.
+async fn within(
+    mut from: impl AsyncRead + Unpin,
+    most: usize,
+    over: Arc<Notify>,
+) -> std::io::Result<Option<Vec<u8>>> {
+    let mut kept = Vec::new();
+    let one_more = u64::try_from(most).unwrap_or(u64::MAX).saturating_add(1);
+    (&mut from).take(one_more).read_to_end(&mut kept).await?;
+    if kept.len() <= most {
+        return Ok(Some(kept));
+    }
+    drop(kept);
+    // A permit is kept when nobody waits yet, so the stop is never missed.
+    over.notify_one();
+    tokio::io::copy(&mut from, &mut tokio::io::sink()).await?;
+    Ok(None)
+}
+
+/// How a call ends whose child printed more than is read: a failure, with
+/// nothing of what it printed, **never the start of a document read as the
+/// whole of it**. It does not say nothing was done: the child may have sent
+/// its request before it was stopped.
+fn too_much() -> Finished {
+    Finished {
+        code: ExitCode::Error,
+        json: None,
+        text: String::new(),
+        error: None,
+        said: format!(
+            "snob printed more than this server reads of one answer ({} MiB of output, {} MiB \
+             of messages), so it was stopped and nothing it printed is handed back; what it \
+             had already done stands",
+            MOST_OUTPUT >> 20,
+            MOST_SAID >> 20
+        ),
+        served: Vec::new(),
     }
 }
 
@@ -212,7 +280,7 @@ impl Launch {
 /// data on standard output, and a failure in JSON as the last line of
 /// standard error.
 fn read(code: Option<i32>, out: &[u8], err: &str) -> Finished {
-    let text = String::from_utf8_lossy(out).into_owned();
+    let text = String::from_utf8_lossy(out);
     let json = serde_json::from_str::<Value>(text.trim()).ok().or_else(|| {
         // ndjson: one object per line, read as the array it is.
         let lines: Option<Vec<Value>> = text
@@ -243,6 +311,11 @@ fn read(code: Option<i32>, out: &[u8], err: &str) -> Finished {
         .filter_map(|value| value.get("progress").cloned())
         .filter(|progress| progress["event"] == "served")
         .collect();
+    // Megabytes for a long list, and read by nobody once it parsed.
+    let text = match json {
+        Some(_) => String::new(),
+        None => text.into_owned(),
+    };
     Finished {
         code: code.map_or(ExitCode::Interrupted, from_number),
         json,
@@ -286,6 +359,54 @@ mod tests {
         let finished = read(Some(1), b"", "{\"not\":\"an error\"}\n");
         assert!(finished.error.is_none());
         assert_eq!(finished.code, ExitCode::Error);
+    }
+
+    /// Up to the cap a child's output is kept whole; past it nothing is, the
+    /// stop is asked for, and the pipe is still read to its end, so the child
+    /// is never left blocked on a line nobody reads.
+    #[tokio::test]
+    async fn output_past_the_cap_is_kept_nowhere_and_still_read_to_its_end() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let over = Arc::new(Notify::new());
+        let kept = within(&b"abcd"[..], 4, Arc::clone(&over)).await.unwrap();
+        assert_eq!(kept.as_deref(), Some(&b"abcd"[..]));
+        let asked = tokio::time::timeout(Duration::from_millis(20), over.notified()).await;
+        assert!(asked.is_err(), "nothing went past the cap");
+
+        // A pipe of eight bytes: writing a thousand ends only if all are read.
+        let (mut child, ours) = tokio::io::duplex(8);
+        let reading = tokio::spawn(within(ours, 4, Arc::clone(&over)));
+        child.write_all(&[b'x'; 1000]).await.unwrap();
+        drop(child);
+        assert_eq!(reading.await.unwrap().unwrap(), None);
+        // Asked before anybody waited, and not missed.
+        tokio::time::timeout(Duration::from_secs(5), over.notified())
+            .await
+            .expect("the stop was asked for");
+    }
+
+    /// The call of a child that printed too much fails, whatever its plan
+    /// takes for an answer, and hands back nothing of a list.
+    #[test]
+    fn a_child_that_printed_too_much_is_a_failed_call() {
+        let stopped = too_much();
+        assert_eq!(stopped.code, ExitCode::Error);
+        assert!(stopped.json.is_none() && stopped.text.is_empty());
+        let arguments = serde_json::json!({ "list": "followers", "mode": "stored" });
+        let plan = crate::tools::plan(
+            "snob_list",
+            arguments.as_object().unwrap(),
+            crate::tools::Offer::default(),
+        )
+        .unwrap();
+        let told = crate::answer::from(&plan, stopped);
+        assert!(told.failed);
+        assert!(told.whole.is_none());
+        assert_eq!(told.body["error"]["code"], "error");
+        let message = told.body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("more than this server reads"), "{message}");
+        assert!(told.body.get("items").is_none());
     }
 
     #[test]
