@@ -663,13 +663,18 @@ pub enum Command {
 
     /// Track an account over time and report what changed
     #[command(
-        after_help = "With no subcommand it stays up and runs on a schedule; the subcommands \
+        after_help = "It reports who followed and unfollowed an account, and who was renamed; \
+                      an [[account]] in watch.toml with an [account.posts] table also reports \
+                      its new posts, and with save_to = '<directory>' under it keeps their \
+                      photos and videos there. \"lists = false\" watches the posts alone, \
+                      which asks no consent.\n\n\
+                      With no subcommand it stays up and runs on a schedule; the subcommands \
                       are the things a person does by hand. \"--json\" here emits one JSON \
                       object per run, one per line -- what the list commands would call \
                       ndjson, spelled --json because each object is the state of one run.\n\n\
                       An account named like a subcommand -- \"status\", \"once\", \"diff\", \
-                      \"check\", \"setup\" -- is read as the subcommand; write it \"@status\" \
-                      to watch the account."
+                      \"check\", \"setup\", \"deliver\", \"unit\" -- is read as the \
+                      subcommand; write it \"@status\" to watch the account."
     )]
     Watch(WatchArgs),
 
@@ -1747,7 +1752,9 @@ pub enum WatchCommand {
                       to run as often as you like and it never moves the monitor on: ask twice \
                       and you get the same answer.\n\n\
                       With nothing walked yet there is nothing to compare against. Run \
-                      \"snob followers\" or \"snob following\" once first."
+                      \"snob followers\" or \"snob following\" once first.\n\n\
+                      It is about the lists alone: new posts are only found by reading the \
+                      grid, which a diff never does."
     )]
     Diff(WatchDiffArgs),
 
@@ -1757,8 +1764,11 @@ pub enum WatchCommand {
                       Scheduler; \"snob watch\" with no subcommand schedules \
                       itself instead.\n\n\
                       It reads the account's counters and only walks a list if its counter moved, \
-                      so a run with nothing to report costs one request per watched account, \
-                      two the first time an account's name is seen. Unlike \"diff\", \
+                      so a run with nothing to report costs, from the browser, one request for \
+                      your own account and, for somebody else's, the four reads a profile is \
+                      opened with, five the first time its name is seen (one each with \
+                      SNOB_NO_BROWSER). An account whose posts are watched costs its profile \
+                      and one page of its grid on top, at most once an hour. Unlike \"diff\", \
                       this moves the monitor on: whatever it reports is not reported again.\n\n\
                       The first run on an account has nothing to compare against, so it reports \
                       nothing and says so."
@@ -1768,7 +1778,8 @@ pub enum WatchCommand {
     /// Write the configuration file, step by step
     #[command(
         after_help = "Asks how often to run, where to send the reports, and which accounts to \
-                      watch, then writes a file you can edit afterwards.\n\n\
+                      watch: for each, its lists, its new posts or both, and where to save the \
+                      posts' photos and videos. Then it writes a file you can edit afterwards.\n\n\
                       A token or a signing key goes into the system keyring, never into the \
                       file: it sits at a guessable path and would end up in every backup of \
                       your home directory. \"snob purge\" removes both."
@@ -1786,8 +1797,10 @@ pub enum WatchCommand {
                       Poll it hourly rather than by the minute: every invocation is charged to \
                       the same daily budget the walks draw on, and a probe that drains it \
                       causes the condition it is watching for.\n\n\
-                      Cost: one request per configured account, and from the browser one \
-                      more for another account until a list snob walked has named it. The \
+                      Cost: from the browser, the four reads a profile is opened with per \
+                      configured account, and one more for another account until a list snob \
+                      walked has named it; one each with SNOB_NO_BROWSER. An account whose \
+                      posts are watched costs nothing more. The \
                       session is checked from the page the browser already loaded, which \
                       costs none; with \
                       SNOB_NO_BROWSER it costs one request, and one more while the session has \

@@ -22,7 +22,9 @@ Instagram's own data export (`import dyi`, nothing sent to Instagram),
 compares the lists it stored (`snapshots`, `changes`, nothing sent to
 Instagram either), keeps itself up to date from GitHub's releases
 (`update`, `snob update`), and monitors
-accounts over time (`watch`, with webhooks). It signs in as the user, through
+accounts over time (`watch`, with webhooks: their followers and following,
+their new posts, or both, and the new posts' files saved where `watch.toml`
+says). It signs in as the user, through
 Instagram's own **web** API (`www.instagram.com`, never the mobile API), and by
 default sends every request from a Chromium-based browser installed on the
 machine (Chrome, Edge, Brave, Chromium), headless, on a profile of snob's own.
@@ -150,9 +152,10 @@ Locally:
 - **No test reaches Instagram.** HTTP is mocked with `wiremock`, or with the
   fake Instagram in `crates/snob-cli/tests/common/ig.rs` (a `World` served in
   the web app's shapes, whose Relay endpoints are an independent oracle that
-  answers 400 to a malformed form). `IgClient::is_live` decides by address, so
-  every wait and pace is off against a local server and on against
-  instagram.com, and no caller can choose otherwise.
+  answers 400 to a malformed form; a `Person` can delete or archive posts,
+  `deleted`, and keeps a pin on its place in the grid). `IgClient::is_live`
+  decides by address, so every wait and pace is off against a local server
+  and on against instagram.com, and no caller can choose otherwise.
 - **Jobs in tests** (`tests/sandbox.rs`): a walk still going when it is asked
   about is a followers mock with `set_delay` at a higher priority
   (`fake_instagram_slow`), answered at once after its first `n` times.
@@ -289,6 +292,21 @@ with a documented reason in the same place.
   stays out of the help. The owner's browsers need none of it: they leave
   within two seconds of their pipe closing, the owner killed included
   (measured with Chromium 156 on Linux, in their own process group).
+- **The monitor's posts** (`engine::watch_posts`, its header has the order).
+  An entry with `[account.posts]` has its posts read on every run, after
+  its lists: the profile as the app opens one (reused when the lists of the
+  run just opened it, a step after their last request) and one page of the
+  grid; up to `posts::UNTIL_PAGES` (3) only while the pages read hold no
+  post seen before and not pinned. Five requests an account with nothing
+  new, from the browser only (`SNOB_NO_BROWSER` skips them and says so).
+  **At most once an hour per account** (`watch_posts::READ_AT_MOST_EVERY`),
+  nothing sent in a cooldown, a push-back ends the posts of that run with
+  no retry, and two accounts of one run are a dwell apart (`DWELL_MS`).
+  Reading somebody's posts asks no consent (see "Consent"), so an entry
+  with `lists = false` runs unattended without one. The grid is not charged
+  to the day's accounts; the files go to the CDN, bounded per account and
+  run by `commands/watch/posts.rs` (1 GiB, no file started after ten
+  minutes).
 - **Cache.** A list's counter is polled before any walk (one request instead
   of a walk when nothing moved, `engine::freshness`). Each walked page commits
   in its own transaction, so stopping is saving.
@@ -302,7 +320,8 @@ with a documented reason in the same place.
 - **Consent.** Walking another account's lists asks first, before resolving
   it; no terminal and no `-y` is a refusal with exit 130 and nothing spent.
   `watch once` has no `-y`: the monitor takes consent from its configuration.
-  `stories`, `highlights` and `profile` do not ask: consent covers walking
+  `stories`, `highlights`, `posts`, `profile` and the monitor's reading of
+  posts (an entry with `lists = false`) do not ask: consent covers walking
   somebody's followers or following, and the only list `profile` reads is the
   viewer's own following. `likers` asks too, for every post, the viewer's own
   included (the question comes before the post is read, so it cannot know
@@ -405,7 +424,14 @@ with a documented reason in the same place.
   how long Instagram's answers took (`answers`, a week of rows, the last
   day shown by `snob status --answers`, by the call's name and never its
   path), and what agents were told yes to through `snob mcp` (`mcp_acts`, a week of
-  rows, the last day shown by `snob status`); its jobs under
+  rows, the last day shown by `snob status`), and what the monitor has seen of
+  a watched account's posts (`watch_posts`, its media pk as decimal digits,
+  and `watch_post_marks`, the baseline and the floor; written only by
+  `watch::commit_report`, rows kept thirty days and always each account's
+  newest 36). **`save_to`, the directory a watched account's new posts are
+  saved in, is written by the person only**, in `watch.toml` (by hand or
+  `watch setup`), a whole path, never a flag; snob writes into it with the
+  names every download gives and never over a file that is there; its jobs under
   `accounts/<pk>/jobs/<id>/` (`job.json`, `state.json`, the walk's output and
   log, `0600` on Unix; a finished job's result kept a day, the job a week, at
   most 50, swept by a start and by `snob jobs` and the `__job` reads when
@@ -594,7 +620,12 @@ reaches a server already listening: no command, no key, see "Over HTTP").
   monitor itself stays out**: `watch once` moves the one receipt per
   account that the person's own webhook is owed from, and `watch.toml` is
   where standing consent to walk another account's lists and the address
-  its reports go to are kept, neither of which is an agent's to write.
+  its reports go to are kept, neither of which is an agent's to write. The
+  two halves meet without overlapping: an agent comes back for new posts
+  with `snob_posts` and `until` and keeps what it has seen itself, the
+  monitor keeps it in `watch_posts`, and both read the grid through
+  `posts::read_pages` and stop at `posts::reached`; a `save_to` that is the
+  server's `--downloads-dir` gets no file twice, since both name files alike.
 - **One account a server, unless the person says any** (`tools::Offer`).
   Not told otherwise, a server acts as the account its children resolve:
   the one `--account` or `SNOB_ACCOUNT` names (`Offer::pinned`), else the
@@ -1204,7 +1235,14 @@ reaches a server already listening: no command, no key, see "Over HTTP").
   tray level and an items level (`snob highlights someone 2`); `posts` has the
   same two levels. Shared flags live in `cli::MediaActionArgs`.
 - The monitor: a run compares against what was last **reported**
-  (`watch_marks`), not against the newest capture; a report is queued before
+  (`watch_marks`), not against the newest capture; **a post is new when its
+  pk was never seen and it was taken after the newest one seen**
+  (`snob_core::watch::posts`), so posts that move up the grid after a
+  deletion, or an old one newly pinned, are not news, and a first read of an
+  account's posts lays a baseline and says nothing; the report carries them
+  additively (`posts`, `counts.posts_new`, `events.posts_new`, `run.posts`),
+  and **`counts.total` does not count them**: it is the lists' changes and
+  the renames, as before posts were watched; a report is queued before
   its mark moves; the delivery queue is drained once per run, after every
   account (`commands/watch/run.rs`), and a report is owed for a week
   (`deliveries::MAX_AGE_SECS`), so a daily run's single retry is never too
@@ -1292,7 +1330,14 @@ What Instagram does that snob cannot fix, only report:
 - **Profiles that answer 400** (some business accounts): the id comes from
   search, which carries no counters, so truncation cannot be detected and the
   cache cannot judge freshness (`report::counters_unknowable`).
-- **Private accounts the viewer does not follow**: refused before any walk.
+- **Private accounts the viewer does not follow**: refused before any walk;
+  their posts are said hidden, and their grid is not asked for.
+- **A post shared as a collaboration and accepted later** carries its old
+  `taken_at`, and reads as a post brought back from the archive: the
+  monitor does not report it. **More new posts between two runs than three
+  pages hold** are reported as far as the three pages go, the report says it
+  is not complete, and the older ones are never reported, since the floor
+  moves past them (`snob posts <name> --pages N` reads further back).
 
 ## Costs worth knowing
 

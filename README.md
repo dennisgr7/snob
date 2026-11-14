@@ -98,7 +98,7 @@ snob likers <link>               # who liked a post, as many as Instagram shows
 snob fetch <cdn-address>         # one file by its address, no account needed
 snob follow someone
 snob unfollow someone
-snob watch                       # keep watching on a schedule, report changes
+snob watch                       # keep watching on a schedule, report changes and new posts
 snob status                      # budget left, cooldown, stored lists, agents; sends nothing to Instagram
 snob snapshots                   # the captures of your lists stored here; sends nothing to Instagram
 snob changes --since 7d          # who joined, left or was renamed between two of them
@@ -151,11 +151,17 @@ can read:
   takes. `--json` writes the reports as lines instead. `snob watch deliver`
   sends what a receiver that was down is still owed, at once, with no
   request to Instagram.
+- An `[[account]]` in `watch.toml` can watch its new posts beside its
+  lists, or instead of them: `[account.posts]` reports each post published
+  since the last run, and `save_to = '<directory>'` under it keeps their
+  photos and videos there (`lists = false` leaves its followers alone, which
+  asks no consent). The first run on an account's posts reports none; each
+  run after costs its profile and a page of its grid, at most once an hour.
 - `snob watch unit` prints what to give the system's scheduler (a systemd
   timer, a crontab line, a launch agent or a Windows scheduled task, as
-  PowerShell commands; installs nothing). Each runs `snob watch once --when-due` every 15 minutes, which
-  runs only when the schedule in `watch.toml` says so and otherwise sends
-  nothing.
+  PowerShell commands; installs nothing). Each runs `snob watch once
+  --when-due` every 15 minutes, which runs only when the schedule in
+  `watch.toml` says so and otherwise sends nothing.
 - `snob mcp` is an MCP server for AI agents, on standard input and output:
   the status, the lists, profiles, posts, stories and highlights (without
   their picture and video addresses; an agent that asks is handed a small

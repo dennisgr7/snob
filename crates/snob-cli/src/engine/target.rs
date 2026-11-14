@@ -96,9 +96,10 @@ pub fn known_pk_of(app: &App, target: Option<&str>, typed: &str) -> Result<Optio
     }
 }
 
-/// Resolves against Instagram, spending one request when a name was given:
-/// from the browser, one once the name's pk is known here and two the
-/// first time.
+/// Resolves against Instagram when a name was given: from the browser, the
+/// profile as the app opens one, its query and the three reads beside it
+/// (`IgClient::profile_named`), four once the name's pk is known here and
+/// five the first time; one without a browser.
 ///
 /// A private account the viewer does not follow is refused **here**, before a
 /// single page is walked: Instagram serves those lists to followers only, so

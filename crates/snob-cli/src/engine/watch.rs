@@ -695,12 +695,15 @@ fn refused_outcome(lists: &[TickList], posts: Option<PostsSkipped>) -> ExitCode 
 /// The order is the whole of it:
 ///
 /// 1. Get both lists through [`crate::engine::list`], which decides on its own
-///    whether anything has to be fetched. One request when nothing moved: one
-///    profile answer carries both counters.
-/// 2. Refuse to conclude anything from a list this run did not verify, or one
+///    whether anything has to be fetched. When nothing moved, one answer
+///    carries both counters: the hover card for the own account (one
+///    request), and somebody else's profile as the app opens one (four
+///    from the browser, five the first time its name is seen).
+/// 2. Then the posts, when they are watched (`watch_posts::look`).
+/// 3. Refuse to conclude anything from a list this run did not verify, or one
 ///    that came back short. **The mark does not move for a refused list**: what
 ///    was never reported stays unreported, and the next run says it.
-/// 3. Compare what is left against the receipt, and move it.
+/// 4. Compare what is left against the receipt, and move it.
 pub async fn tick(app: &mut App, watched: &Watched) -> Result<TickReport> {
     let args = watched.list_args();
     let before = app.client().pacer().spent();

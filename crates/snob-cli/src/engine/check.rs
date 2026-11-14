@@ -14,9 +14,10 @@
 //! tidiness: it is meant to be usable as a monitoring probe, and a probe that
 //! spends a walk every time it is polled is worse than no probe.
 //!
-//! What it does spend is bounded and named: one request per configured
-//! account for its counters, and, without a browser, one to check the
-//! session. An account whose posts are watched costs nothing more: whether
+//! What it does spend is bounded and named: per configured account, its
+//! profile as the app opens one (four reads from the browser, five for
+//! another account whose pk is not known yet; one without a browser), and,
+//! without a browser, one to check the session. An account whose posts are watched costs nothing more: whether
 //! they are shown is read off the profile already asked for, and the rest
 //! (a browser, ffmpeg, the directory, the baseline) is asked of this
 //! machine. From the browser the session is checked off the tab's document
