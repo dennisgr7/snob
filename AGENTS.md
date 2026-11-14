@@ -1,1452 +1,849 @@
 # AGENTS.md
 
-Instructions for anyone, human or agent, changing this repository. `CLAUDE.md`
-points here. Code comments cite this file by section name ("Known walls",
-"Costs worth knowing", "Stories are handed to the system viewer", the write
-regime, the rules below), so rename a section only together with the comments
-that cite it (`grep -rn AGENTS.md crates`).
+Rules for anyone, human or agent, changing this repository. `CLAUDE.md` points
+here. Code comments cite this file by section name ("Known walls", "Costs worth
+knowing", "Stories are handed to the system viewer", the write regime, ...), so
+**rename a section only together with the comments that cite it**
+(`grep -rn AGENTS.md crates`).
 
-The code documents itself heavily: every module opens with a `//!` header that
-says what it is for and which rule it keeps, and every dependency, feature,
-workflow step and magic number has its reason written beside it. **Read the
-header of a file before changing it.** This document is the map and the rules
-that span files; it does not repeat what a header already says.
+This file is the map and the rules that span files. What a module does, and
+why, is in that module: **read a file's `//!` header before changing it.**
 
-## What snob is, and the lines it does not cross
+## What snob is
 
-`snob` is an Instagram CLI (binary `snob`, crate `snob-cli`, version in
-`[workspace.package]` of `Cargo.toml`). It walks followers and following lists
-and crosses them (`unfollowers`, `fans`, `friends`, `scan`), shows profiles,
-stories, highlights, posts and reels and downloads their media, imports
-Instagram's own data export (`import dyi`, nothing sent to Instagram),
-compares the lists it stored (`snapshots`, `changes`, nothing sent to
-Instagram either), keeps itself up to date from GitHub's releases
-(`update`, `snob update`), and monitors
-accounts over time (`watch`, with webhooks: their followers and following,
-their new posts, or both, and the new posts' files saved where `watch.toml`
-says). It signs in as the user, through
-Instagram's own **web** API (`www.instagram.com`, never the mobile API), and by
-default sends every request from a Chromium-based browser installed on the
-machine (Chrome, Edge, Brave, Chromium), headless, on a profile of snob's own.
+`snob` is an Instagram CLI: binary `snob`, crate `snob-cli`, version in
+`[workspace.package]` of `Cargo.toml`. It walks followers and following and
+crosses them (`unfollowers`, `fans`, `friends`, `scan`); shows profiles,
+stories, highlights, posts and reels and downloads their media; reads
+Instagram's data export (`import dyi`) and its own stored lists (`snapshots`,
+`changes`) without sending anything; monitors accounts (`watch`, with
+webhooks); serves agents (`snob mcp`); and updates itself (`snob update`).
 
-Hard lines, each enforced by code or a test, never by convention alone:
+It signs in as the user, speaks Instagram's **web** API (`www.instagram.com`,
+never the mobile API), and by default sends every request from a headless
+Chromium-based browser installed on the machine, on a profile of its own.
 
-- **Two writes, ever: follow and unfollow.** No block, remove-follower, like,
-  comment, message, share. `snob_ig::graphql::Mutation` has exactly two
-  variants and its matches have no wildcard arm, so a third write is a compile
-  error; a test in `graphql.rs` pins the operation names. `IgClient::post`
-  (in `crates/snob-ig/src/client/write.rs`, the only file that writes) takes a
-  `Mutation`, never a path.
-- **Nothing ever marks anything as seen**: stories, reels, posts, the activity
-  feed, threads, search history, time spent, view counts.
-  `crates/snob-core/tests/no_seen.rs` fails on any known spelling of such a
-  call in any `.rs` file (it is the only file allowed to name them), and
-  `snob_ig::allowlist` refuses every call it does not name. Reading a reel
-  does not register a view; sending the seen call would.
-- **The user's own browser is never touched.** No reading of its cookie store
-  (on Windows that would mean defeating App-Bound Encryption). snob logs in
-  in a window it opens on its own profile, or takes a pasted `sessionid`, or
-  relays its own headless browser to the user's (`login --remote`). The
-  password is never seen by snob except as keystrokes relayed over `--remote`,
-  which are passed to its browser and kept nowhere.
-- **A human pace, a hard stop on the first push-back.** See "Talking to
-  Instagram" below. Slower is always acceptable; faster has to be argued for
-  in the code, next to the number.
-- **Consent before enumerating someone else's lists**, asked before the
-  account is even resolved (resolving is already a request).
+## Hard lines
+
+Each is enforced by code or a test, never by convention alone.
+
+| Rule | Enforced by |
+|---|---|
+| **Two writes, ever: follow and unfollow.** No block, remove-follower, like, comment, message, share. | `snob_ig::graphql::Mutation` has two variants and no wildcard arm in its matches, so a third is a compile error; a test in `graphql.rs` pins `Mutation::ALL`. `crates/snob-ig/src/client/write.rs` is the only file that writes; `IgClient::post` takes a `Mutation`, never a path. |
+| **Nothing ever marks anything as seen**: stories, reels, posts, the activity feed, threads, search history, time spent, view counts. | `crates/snob-core/tests/no_seen.rs` fails on any known spelling of such a call in any `.rs` file (it alone may name them); `snob_ig::allowlist` refuses every call it does not name. |
+| **The user's own browser is never touched**, its cookie store included. | Login is a window on snob's own profile, a pasted `sessionid`, or `login --remote`, which relays snob's browser; the password reaches snob only as keystrokes relayed there, kept nowhere. |
+| **A human pace, and a hard stop on the first push-back.** Slower is always acceptable; faster is argued for in the code, next to the number. | "Talking to Instagram". |
+| **Consent before enumerating someone else's lists**, asked before the account is resolved. | `engine::list`; `crates/snob-cli/tests/consent.rs`. |
+
+The no-writes claim is stated in four places that move together: the `.deb`
+`extended-description` in `crates/snob-cli/Cargo.toml`, the winget locale
+manifest `packaging/render.sh` renders from it, `crates/snob-ig/src/lib.rs`, and
+`README.md`.
 
 ## Workspace map
 
-Rust 2024 edition, resolver 3. Dependency direction is one-way:
+Rust 2024, resolver 3. Dependencies point one way:
 `snob-cli -> snob-store, snob-ig -> snob-core`; `snob-ig` never depends on
 `snob-store`.
 
-| Crate | What lives there | What must not |
+| Crate | Holds | Must not |
 |---|---|---|
-| `crates/snob-core` | Domain: `Pk`, models (the JSON contract), set arithmetic, `watch` diff, schedule (cron and `--on/--at/--every`), webhook signing (HMAC-SHA256) and the one constant-time comparison (`watch::sign::same`), `Secret`, `Session`, the `RateBudget` trait and cooldown policy, `clock` | **No I/O.** No file, database, network or directory; `clock` is the single exception |
-| `crates/snob-ig` | Instagram web client: `client/` (`read.rs`, `write.rs`, `transport.rs`, `headers.rs`, `cdn.rs`, `media.rs`, `page.rs`, `ask.rs`, `posts.rs`), `web.rs` (calls built as the web app builds them), `allowlist.rs`, `pager.rs` (list walks), `pace.rs`, `graphql.rs`, `error.rs` (classifying answers), `http.rs` (the only place `reqwest` is configured; re-exported) | No SQLite, no keyring, no browser driving (it defines the page request shape only) |
-| `crates/snob-store` | SQLite (`store/`, migrations in `store/sql/`), platform paths, keyring/file secret store, account registry (`accounts.toml`), the monitor's `watch.toml`, layout migration | Domain logic that belongs in `snob-core` |
-| `crates/snob-cli` | `cli.rs` (clap), `main.rs`, `app.rs` (wires everything), `commands/`, `engine/` (rules: cache, consent, cooldown, walks, estimates, monitor), `output/`, `report.rs` (shared sentences), `ui/` (ratatui views), `headless/` + `cdp/` + `pipe.rs` (the browser), `owner/` (one background process that owns the browsers), `detach.rs` (starting a process that outlives its command, with nothing of the command's), `exe.rs` (the path to this binary that survives an upgrade, for what `mcp config` and `watch unit` print), `jobs/` (a list walk run as a job that outlives the call that started it: the hidden `__job start|run|show|list|cancel`, and `snob jobs`), `relay/` (`login --remote`), `parent.rs` (stopping with the program that started the run), `update/` (keeping snob up to date: `snob update`, the hidden `__update fetch|apply`), `power/`, `watch/webhook.rs`, `posts.rs` + `media.rs` (posts and downloads), `ffmpeg.rs` (the person's own ffmpeg, never bundled, started with no shell to join a video's best tracks without re-encoding), `commands/mcp/` (the MCP server, feature `mcp`; over HTTP, `mcp-http`) | |
+| `snob-core` | The domain: `Pk`, the models (the JSON contract), set arithmetic, the monitor's diff and schedule, webhook signing and the one constant-time comparison (`watch::sign::same`), `Secret`, `Session`, the `RateBudget` trait and cooldown policy, `clock`. | Do I/O: no file, database, network or directory (`clock` excepted). |
+| `snob-ig` | The Instagram web client: `client/`, `web.rs`, `allowlist.rs`, `pager.rs`, `pace.rs`, `graphql.rs`, `error.rs` (classifying answers), `http.rs` (the only place `reqwest` is configured). | Touch SQLite or the keyring, or drive a browser (it only defines the page's request shapes). |
+| `snob-store` | SQLite (`store/`, migrations in `store/sql/`), paths, the secret store, `accounts.toml`, `watch.toml`, the layout's migration. | Hold domain logic. |
+| `snob-cli` | The library and the `snob` binary: `cli.rs`, `app.rs`, `commands/` (`commands/mcp/` is the MCP server), `engine/` (cache, consent, cooldown, walks, estimates, monitor), `output/`, `report.rs`, `ui/`, the browser (`headless/`, `cdp/`, `pipe.rs`, `owner/`), `jobs/`, `relay/`, `update/`, `posts.rs`, `media.rs`, `ffmpeg.rs`. | |
 
-Layering rules inside `snob-cli`:
+Inside `snob-cli`:
 
-- **Commands take an `App`** and orchestrate; they never build a client or
-  open a database themselves. The exceptions say so in their header
-  (`status`, `--dry-run`, `fetch`, `update`, and `snapshots` and `changes`,
-  which read the stored captures with `Store::read_existing` and send
-  nothing).
-- **`engine` returns data and where it came from; it never decides how
-  anything looks.** Wording and exit codes for those outcomes live in
-  `commands` and `report.rs`. `engine::list` is the one place every list comes
-  out of, in a fixed order: cooldown, consent, counter poll, freshness, walk.
-  It knows nothing about delivery (`WatchConfig` stays out of it).
-- In `commands/watch/`, `say.rs` is prose (rewording is free) and `wire.rs` is
-  protocol (`SENT_SCHEMA = 1`, `PRINTED_SCHEMA = 2`; what is signed, stored
-  and deduplicated on `run_id`). An edit to `wire.rs` is an integration change.
+- **A command reaches Instagram and the account's database through an `App`**
+  (`App::open`), never by building a client or opening a store itself. The
+  exceptions say so in their header: `status`, `--dry-run`, `fetch`, `update`,
+  `whoami`, `snapshots`, `changes`.
+- **`engine` returns data and where it came from, never how it looks**; wording
+  and exit codes live in `commands` and `report.rs`. Every list comes out of
+  `engine::list`, its checks in a fixed order (cooldown, `--offline`, consent,
+  cooldown again, counter poll, freshness, walk); it knows nothing of delivery.
+- `commands/watch/say.rs` is prose (rewording is free); `wire.rs` is protocol
+  (`SENT_SCHEMA = 1`, `PRINTED_SCHEMA = 2`): an edit there is an integration
+  change.
 
 ## Build, lint, test: what CI runs
 
-The toolchain is pinned in `rust-toolchain.toml` (`1.100.0`, with rustfmt and
-clippy); `rust-version = "1.95"` is the floor for `cargo install --git`. Bump
-the toolchain together with `tools/ci/Dockerfile` (`FROM rust:1.100.0-...`).
-Every command that resolves dependencies takes `--locked`.
+Toolchain pinned in `rust-toolchain.toml` (`1.100.0`); bump it together with
+`tools/ci/Dockerfile`. `rust-version = "1.95"` is the floor for `cargo install
+--git`. Everything that resolves dependencies takes `--locked`.
 
-`.github/workflows/ci.yml`, job **lint** (Ubuntu):
+`.github/workflows/ci.yml` (pushes to `main` and `dev`, every pull request):
 
 ```bash
+# lint (ubuntu-latest)
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo clippy -p snob-cli --all-targets --no-default-features --locked -- -D warnings
-```
+bash packaging/render.sh <version> SHA256SUMS   # then git diff --exit-code on Formula, bucket, packaging/winget
 
-plus a check that `bash packaging/render.sh <version> SHA256SUMS` reproduces
-the committed `Formula/`, `bucket/` and `packaging/winget/` (skipped while the
-version is unreleased). Never hand-edit those files.
-
-Job **test**, on `ubuntu-latest`, `ubuntu-24.04-arm`, `windows-latest`,
-`windows-11-arm`, `macos-latest`:
-
-```bash
-# Windows and macOS: clippy again (Linux never compiles cfg(windows)/macOS code)
+# test: ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest
+# Windows and macOS (Linux never compiles their cfg code):
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 SNOB_TEST_REQUIRE_BROWSER=1 cargo test --workspace --locked
 SNOB_TEST_REQUIRE_BROWSER=1 cargo test -p snob-cli --features testing --locked -- --test-threads=1
-
-# Linux: against musl, inside a session bus with gnome-keyring unlocked
+# Linux, against musl, in a session bus with gnome-keyring unlocked:
 dbus-run-session -- bash -c '
   echo "" | gnome-keyring-daemon --unlock --components=secrets
   cargo test --workspace --locked --target "$(uname -m)-unknown-linux-musl"
   cargo test -p snob-cli --features testing --locked --target "$(uname -m)-unknown-linux-musl"'
 ```
 
-Job **build** (pushes only, not pull requests): `cargo build --release --locked
---target <triple> -p snob-cli` for the five release targets, runs `--version`,
-checks the musl binaries are static, and builds the `.deb` with
-`cargo-deb@3.8.0`.
-
-`.github/workflows/supply-chain.yml` (also weekly): `cargo deny check
-advisories sources licenses`. Not a bare `cargo deny check`: `bans` is off on
-purpose and fails. Every `ignore` entry in `deny.toml` needs a reason and the
-condition under which it goes; a new release target must be added to
-`[graph] targets`.
-
-Locally:
-
-- On the maintainer's Windows machine, the CI lint and test commands above run
-  as written (with `SNOB_TEST_REQUIRE_BROWSER` optional). Remember they do not
-  compile `cfg(unix)`/Linux code.
-- `bash tools/ci/run.sh` runs the Linux job (musl, real Secret Service keyring)
-  in Docker; `tools/ci/ci.sh` is what the container runs and must stay in step
-  with `ci.yml`.
-- **Never export `RUSTFLAGS`**: it replaces `.cargo/config.toml` rather than
-  merging, silently dropping `+crt-static` and `/Brepro` on Windows (the
-  binaries would then need the VC++ redistributable). Add flags to a table in
-  `.cargo/config.toml` or to a second config file, as `release.yml` does.
+- The render check is skipped while the version is unreleased; **never
+  hand-edit `Formula/`, `bucket/` or `packaging/winget/`**.
+- Job **build** (pushes only): `cargo build --release --locked --target
+  <triple> -p snob-cli` for the five targets, `--version`, a static check of the
+  musl binaries, and the `.deb` with `cargo-deb@3.8.0`.
+- `supply-chain.yml` (pushes, pull requests, Mondays): `cargo deny check
+  advisories sources licenses`, never a bare `cargo deny check` (`bans` is off
+  on purpose). Every `ignore` in `deny.toml` says why and when it goes.
+- Locally on Windows the lines above run as written; they skip `cfg(unix)`
+  code. `bash tools/ci/run.sh` runs the Linux job in Docker; `tools/ci/ci.sh`
+  stays in step with `ci.yml`.
+- **Never export `RUSTFLAGS`**: it replaces `.cargo/config.toml` instead of
+  merging, silently dropping `+crt-static` and `/Brepro` on Windows. Add a flag
+  to a table there, or to a second config file as `release.yml` does.
 
 ## Tests
 
-- Unit tests sit in `#[cfg(test)] mod tests` at the bottom of each file;
-  integration tests in `crates/<crate>/tests/`, with shared fixtures in
-  `tests/common/`. Test names are sentences stating the property
+- Unit tests in `#[cfg(test)] mod tests` at the bottom of the file; integration
+  tests in `crates/<crate>/tests/`, fixtures in `tests/common/`. **A test name
+  is a sentence stating the property**
   (`only_a_walk_against_a_test_server_skips_the_waits`).
-- **No test reaches Instagram.** HTTP is mocked with `wiremock`, or with the
-  fake Instagram in `crates/snob-cli/tests/common/ig.rs` (a `World` served in
-  the web app's shapes, whose Relay endpoints are an independent oracle that
-  answers 400 to a malformed form; a `Person` can delete or archive posts,
-  `deleted`, and keeps a pin on its place in the grid). `IgClient::is_live`
-  decides by address, so every wait and pace is off against a local server
-  and on against instagram.com, and no caller can choose otherwise.
-- **Jobs in tests** (`tests/sandbox.rs`): a walk still going when it is asked
-  about is a followers mock with `set_delay` at a higher priority
-  (`fake_instagram_slow`), answered at once after its first `n` times.
-  **Every job test stops its jobs and waits for their locks before its
-  `TempDir` drops** (`Jobs`, on drop, a panic included): a job is a detached
-  process, and one left running writes into a directory being removed, and on
-  Windows keeps it from being removed.
-- **The `testing` feature** (`snob-cli/testing` -> `snob-ig/testing`) adds the
-  hidden seam: `--sandbox-root`, `--ig-base-url` (requires `--sandbox-root`),
-  `--through-the-browser` (requires `--ig-base-url`), `point_every_client_at`,
-  `SANDBOX_BASE`, `with_page`. A release binary contains none of it, and
-  `crates/snob-core/tests/sandbox.rs` fails if any of those names appears
-  without `#[cfg(feature = "testing")]` directly above it. `tests/sandbox.rs`,
-  `tests/headless.rs` and `tests/web.rs` in `snob-cli` need the feature;
-  `--workspace` alone runs none of them. Do not narrow the CI line with
-  `--test`: it would skip the bin's own unit tests.
-- **Tests that need a browser** (`browser_pipe.rs`, `headless.rs`, some
-  `owner`/`headless` unit tests) skip when none will start, and fail instead
-  when `SNOB_TEST_REQUIRE_BROWSER=1`. Run them with `--test-threads=1`.
-  Chromium refuses to run as root.
-- **No test may touch the real keyring** (service `snob-ig`). Every
-  `SecretStore::new(` in test code is followed by `.with_service(` in the same
-  statement; `crates/snob-core/tests/keyring.rs` reads the source to enforce
-  it. Binary-level tests use `--sandbox-root`, which forces the file backend
-  and a keyring namespace of its own.
-- **Source-reading guards** in `crates/snob-core/tests/` (shared walk in
-  `common/mod.rs`, over tracked and untracked-but-not-ignored files):
-  `no_seen.rs`, `keyring.rs`, `sandbox.rs`, and `language.rs`, which scans
-  `rs sql md toml yml yaml sh ps1 rb json` (this file included) for Spanish
-  (escape: `i18n-allow`), British spellings (escape: `spelling-allow`), runs of
-  spaces inside a sentence in `.rs` (escape: `layout-allow`), and a
-  `snob ...` command to be typed back that contains an at sign (no escape).
-  `.agents/` (vendored skills) and `pnpm-lock.yaml` are skipped.
-- Hand-run only: `cargo test -p snob-cli --features testing --test headless
+- **No test reaches Instagram; never walk a real account's lists without the
+  limiter.** HTTP is mocked with `wiremock` or served by the fake Instagram in
+  `crates/snob-cli/tests/common/ig.rs`. `IgClient::is_live` decides by address:
+  waits are off against a local server and on against instagram.com, and no
+  caller can choose otherwise.
+- **No test touches the real keyring** (service `snob-ig`): every
+  `SecretStore::new(` in test code has `.with_service(` in the same statement
+  (`crates/snob-core/tests/keyring.rs` reads the source). Binary-level tests use
+  `--sandbox-root`: the file backend, a keyring namespace of its own, and every
+  file the run touches under one directory.
+- **The `testing` feature** (`snob-cli/testing` -> `snob-ig/testing`) is the
+  only seam that points snob elsewhere (`--sandbox-root`, `--ig-base-url`,
+  `--through-the-browser`, `point_every_client_at`, `SANDBOX_BASE`,
+  `with_page`). A release binary has none of it:
+  `crates/snob-core/tests/sandbox.rs` fails when a seam name appears without
+  `#[cfg(feature = "testing")]` directly above it. `--workspace` alone runs no
+  binary-level test; never narrow the CI line with `--test`, which skips the
+  bin's own unit tests.
+- **A test that starts a job stops it and waits for its lock before its
+  `TempDir` drops**, a panic included.
+- **Browser tests** skip when no browser starts and fail under
+  `SNOB_TEST_REQUIRE_BROWSER=1`; run them with `--test-threads=1`, never as
+  root.
+- **Source-reading guards** in `crates/snob-core/tests/`: `no_seen.rs`,
+  `keyring.rs`, `sandbox.rs`, and `language.rs`, which scans
+  `rs sql md toml yml yaml sh ps1 rb json` (this file too) for Spanish (escape
+  `i18n-allow`), British spelling (`spelling-allow`), runs of spaces in a
+  sentence in `.rs` (`layout-allow`), and a `snob ...` command to type back
+  containing an at sign (no escape). `.agents/` and `pnpm-lock.yaml` are
+  skipped.
+- Migrations: the `validate()` tests run the whole chain of both databases.
+- Hand-run: `cargo test -p snob-cli --features testing --test headless
   serve_the_fake_world -- --ignored --nocapture` serves the fake Instagram for
-  `SNOB_TEST_SERVE_SECS` (`serve_the_website_world`, the same people under
-  readable names, is what `web/video/record.sh` records on); `tools/parity/tui.sh` diffs the full-screen views of
-  two `testing` builds frame by frame in tmux.
-- Migrations: the `validate()` test runs the whole chain; it is mandatory.
+  `SNOB_TEST_SERVE_SECS` (`serve_the_website_world` is what
+  `web/video/record.sh` records); `tools/parity/tui.sh` diffs two builds'
+  views in tmux.
 
 ## Talking to Instagram
 
-All numbers below are in code with their source next to them; change one only
-with a documented reason in the same place.
+Every number is in code with its source beside it; change one only with a
+documented reason in the same place.
 
-- **Transport.** By default every request leaves from a tab on instagram.com
-  in a headless installed browser, sent with `fetch()`, so handshake, HTTP/2,
-  cookie jar, client hints and `Referer` are the browser's own
-  (`headless/`, `snob_ig::client::page`). `SNOB_NO_BROWSER=1` sends with
-  `reqwest` instead, and Instagram can tell. One browser per account, run by
-  the **owner** process (`owner/`, the hidden `__browser-owner` command), closed
-  `headless::IDLE` (5 min) after its last request; `SNOB_NO_OWNER=1` makes a
-  command run its own. Nothing that spends no network starts a browser.
-- **Allowlist.** Every call snob may send is a value in `snob_ig::allowlist`
-  (call sites pass those values, never a path or a name). The tab's guard
-  (`headless::guard`) pauses every request the page's scripts make, and
-  every document, by its kind and whatever its address, the app's own
-  included: GETs go on, a POST only if `allowlist::refused` lets it, and
-  the view count, the event log and the Facebook sync fail whatever the
-  method. **A follow or an unfollow goes on only as snob's own write**:
-  the tab arms the guard with that request just before it fetches it
-  (`guard::Armed`), the first paused POST matching its address and form
-  exactly spends it, and every other one, the app's under any `doc_id`,
-  fails (`allowlist::refused_app`).
-  `doc_id`s are discovered from the page's JavaScript, never hard-coded.
-  A comments cursor goes back as `min_id` only in the shape Instagram
-  hands one out (`comments_cursor_has_its_shape`); a page with another
-  is the last. A profile's reels, tagged and reposts tabs are queries of
-  the registry by pk under seeded numbers; the first page goes out from
-  the profile's page, then the app's navigation to `/<name>/<tab>/`
-  (`allowlist::list_route`, never a document the tab loads), then the next
-  pages from there, each cursor held to the shape the tab hands out. A
-  thread of replies (`Rest::Replies`) goes out with the
-  app's three keys in its order and an empty cursor, and nothing else
-  (`Rest::takes_every_key`): no capture shows a second page of one, so
-  none is asked for, and a thread that says it has more is said to.
-- **Headers.** Every value is the page's, or computed from the User-Agent of
-  the browser actually installed; what cannot be computed is left out. An
-  absent header is honest, an invented one is not, and no header is a
-  disguise (`client_hints.rs`, `headers.rs`). TLS handshake, HTTP/2 settings
-  and header order are never imitated.
-- **Pace** (`snob_ig::pace`): web app's page size (12), 1 to 3 s between pages
-  of an action (`STEP_MS`), 1.5 to 4 s dwell before a list (`DWELL_MS`), a
-  5 to 15 min rest after 40 pages (`PAGES_PER_SITTING`, `SITTING_PAUSE_MS`),
-  `HARD_PAGE_CAP = 2000`. A post's comments read a page after another
-  (`post --comments`, at most `posts::MOST_COMMENT_PAGES`, 20) are 2 to 5 s
-  apart (`COMMENT_STEP_MS`), as "load more" is clicked, and so are the
-  threads of replies read after them (`post --replies`/`--replies-of`, at
-  most `posts::MOST_THREADS`, 10, one request each); pages of a grid or of
-  a profile's tab (a step apart, the navigation to the tab a step before
-  its second page), of comments and of replies count in the sitting as a
-  list's do
-  (`IgClient::count_in_the_sitting`), and a command that reads on by itself
-  pays a rest owed before its next page. Under it, the persistent GCRA buckets of
-  `snob-store/src/store/rate_budget.rs`: pace (3.83 s emission, burst 20),
-  daily (about 2,000 requests), and writes (burst of 3, then one every 15 min).
-  Lists read at most 2,000 accounts in any 24 h, 1,000 for a week after a
-  push-back (`budget::accounts_per_day`); `--same-day` reads past it on
-  purpose. The budget outlives the process. **The sitting and the rest it
-  owes are kept in the account's database and outlive the process** (table
-  `sitting`, `snob_core::budget::Sitting`): the page that fills a sitting
-  draws its rest and writes down when it ends, whether or not its walk goes
-  on, and the next page any walk of that account reads (the pager, a
-  profile's mutual followers), in this process or another, waits for it
-  first. So a walk ending on its cap, a run stopped during its rest and a
-  list read a page at a time all still rest after 40 pages; a sitting not
-  full that is left alone for the longest rest (15 min) ends. `--max-wait`
-  refuses a wait for the budget (asked with `read_wait`/`write_wait` before
-  the charge, so the refusal costs nothing) and never cuts a sitting's rest,
-  which would only be owed again by the next run.
-  **Slow answers lengthen the waits, never shorten them** (`SlowRule` in
-  `snob_core::budget`, the numbers in `pace.rs`): every answer of the API
-  is timed to its headers (inside the tab on the browser's path, around
-  `send` on `reqwest`'s) and written to the account's `answers` table with
-  the load it declared; before a step or a dwell, `Pacer::slowed` takes the
-  median of the latest five healthy answers of the last ten minutes, and
-  with at least three of them the wait lasts at least twice that, at most a
-  minute. The load headers are written down and still never acted on.
-- **Push-back is a hard stop.** The first refusal stops the run and starts a
-  cooldown: 2 h for a throttle, 12 h for an action block, 30 min for a
-  challenge (`snob_core::budget`, pinned by
-  `the_cooldowns_are_the_documented_ones`). A push-back on one account brakes
-  every account on the machine for an hour (`shared.db`, `common_brake`). The
-  app's own calls in the tab are listened to for push-back too
-  (`headless::listen`). Never write a retry loop against Instagram (the
-  project this was inspired by did `catch { continue }`). During a cooldown
-  nothing is sent, not even the counter poll; stored lists are served with a
-  dated warning. `SNOB_IGNORE_COOLDOWN` exists only so a bug of ours cannot
-  lock anyone out; it stays out of the help.
-- **A run nobody is left to want stops** (`parent.rs`,
-  `interrupt::stop_when_parent_exits`). A parent dying sends its children
-  nothing, so a walk a script, an agent's shell or an app started went on
-  for nobody when that program died, spending the budget and holding the
-  list's claim, and `snob mcp --listen` kept its port for ever. A process
-  a program drives (standard input or output a pipe or a socket) watches
-  its parent, as a process and never as a thread (no `PR_SET_PDEATHSIG`,
-  which fires when the starting thread exits): a `pidfd` on Linux,
-  `kqueue` on macOS, a handle checked to be older than this process on
-  Windows, asking `getppid` each second where none can be opened. Its going
-  is one of the system's requests to stop, the same road as `SIGTERM`.
-  **Not watched**: a run at a terminal (`SIGHUP` says it), one whose output
-  goes to a file, one under `nohup` (whose ignored `SIGHUP` is now kept, not
-  replaced by the listener) or `setsid`, one whose parent is pid 1, and the
-  processes snob detaches to outlive their starter (the owner of the
-  browsers, a job's supervisor). `SNOB_NO_PARENT_WATCH` turns it off and
-  stays out of the help. The owner's browsers need none of it: they leave
-  within two seconds of their pipe closing, the owner killed included
-  (measured with Chromium 156 on Linux, in their own process group).
-- **The monitor's posts** (`engine::watch_posts`, its header has the order).
-  An entry with `[account.posts]` has its posts read on every run, after
-  its lists: the profile as the app opens one (reused when the lists of the
-  run just opened it, a step after their last request) and one page of the
-  grid; up to `posts::UNTIL_PAGES` (3) only while the pages read hold no
-  post seen before and not pinned. Five requests an account with nothing
-  new, from the browser only (`SNOB_NO_BROWSER` skips them and says so).
-  **At most once an hour per account** (`watch_posts::READ_AT_MOST_EVERY`),
-  nothing sent in a cooldown, a push-back ends the posts of that run with
-  no retry, and two accounts of one run are a dwell apart (`DWELL_MS`).
-  Reading somebody's posts asks no consent (see "Consent"), so an entry
-  with `lists = false` runs unattended without one. The grid is not charged
-  to the day's accounts; the files go to the CDN, bounded per account and
-  run by `commands/watch/posts.rs` (1 GiB, no file started after ten
-  minutes).
-- **Cache.** A list's counter is polled before any walk (one request instead
-  of a walk when nothing moved, `engine::freshness`). Each walked page commits
-  in its own transaction, so stopping is saving.
-- **The write regime** (`commands/follow.rs`, `client/write.rs`): one account
-  per invocation and no flag that batches; the question is asked before the
-  request (`-y` answers it in advance); the write pays the write bucket on
-  top of the read buckets; it needs a CSRF token and refuses without one; it
-  sends `Origin`; it follows no redirect; and once in flight it is **not**
-  abandoned on Ctrl+C (the only exception to "Ctrl+C cancels at once"; every
-  read races the cancel token).
-- **Consent.** Walking another account's lists asks first, before resolving
-  it; no terminal and no `-y` is a refusal with exit 130 and nothing spent.
-  `watch once` has no `-y`: the monitor takes consent from its configuration.
-  `stories`, `highlights`, `posts`, `profile` and the monitor's reading of
-  posts (an entry with `lists = false`) do not ask: consent covers walking
-  somebody's followers or following, and the only list `profile` reads is the
-  viewer's own following. `likers` asks too, for every post, the viewer's own
-  included (the question comes before the post is read, so it cannot know
-  the owner): a post's likers are other people's accounts, read with
-  `media/<pk>/likers/`, one answer of about a hundred (105 to 125 seen),
-  charged to the day's accounts, and refused before the question when the
-  day has fewer than `commands::likers::LIKERS_AT_MOST` (150) left. The app's `show_many` after it is
-  not sent.
-- **Identity is the numeric `pk`, never the username.** `snob_core::Pk` is a
-  newtype with no `Deref`, no arithmetic and no `ToSql`/`FromSql`; SQLite goes
-  through `snob_store::store::pk_to_sql`/`pk_from_sql`. Crossings are by pk.
-  Their arithmetic is tested: unfollowers + friends = following, fans +
-  friends = followers.
+### Transport
+
+- **By default every request leaves from a tab on instagram.com** in the
+  headless browser, sent with `fetch()`: handshake, HTTP/2, cookies, client
+  hints and `Referer` are the browser's (`headless/`, `snob_ig::client::page`).
+  `SNOB_NO_BROWSER=1` sends with `reqwest`, and Instagram can tell.
+- One browser per account, run by the owner process (`owner/`, hidden
+  `__browser-owner`), closed `headless::IDLE` (5 min) after its last request;
+  `SNOB_NO_OWNER=1` makes a command run its own. Nothing that spends no network
+  starts a browser.
+- REST reads take one path on both transports, `IgClient::rest_read`
+  (`client/ask.rs`).
+- The API client follows no redirect; the transport follows them itself, pays
+  for every hop, and never leaves instagram.com.
+
+### Allowlist
+
+- **Every call snob may send is a value in `snob_ig::allowlist`**; call sites
+  pass those values, never a path or a name.
+- **The tab's guard** (`headless::guard`) pauses every request the page makes
+  and every document: GETs go on, a POST only if `allowlist::refused` lets it;
+  the view count, the event log and the Facebook sync always fail.
+- **A follow or unfollow goes out only as snob's own write**: armed just before
+  it is fetched (`guard::Armed`), spent by the first POST matching it exactly;
+  every other write, the app's under any `doc_id`, fails
+  (`allowlist::refused_app`).
+- A read's `doc_id` is pinned and follows the app when it moves
+  (`allowlist::vouched`); a write's starts from a captured seed
+  (`Mutation::seed_doc_id`) and is looked for in the page's JavaScript when
+  refused.
+- Cursors and pages go out only in the shapes Instagram hands out (comments,
+  a profile's tabs, threads of replies: `allowlist.rs` has each).
+
+### Headers
+
+Every value is the page's, or computed from the User-Agent of the browser
+actually installed; what cannot be computed is left out (`client_hints.rs`,
+`client/headers.rs`). An absent header is honest, an invented one is not. TLS
+handshake, HTTP/2 settings and header order are never imitated.
+
+### Pace
+
+| What | Value | Where |
+|---|---|---|
+| Accounts asked for per list page | 12 (the app's) | `pace::ACCOUNTS_PER_PAGE` |
+| Between pages of one action | 1 to 3 s | `STEP_MS` |
+| Between pages of comments, and threads of replies | 2 to 5 s | `COMMENT_STEP_MS` |
+| Before a list | 1.5 to 4 s | `DWELL_MS` |
+| A sitting, and the rest after it | 40 pages; 5 to 15 min | `PAGES_PER_SITTING`, `SITTING_PAUSE_MS` |
+| Most pages of one walk | 2,000 | `pager::HARD_PAGE_CAP` |
+| Comment pages and reply threads of one post read | 20 and 10 | `posts::MOST_COMMENT_PAGES`, `MOST_THREADS` |
+| Slow answers | a wait lasts at least twice the median of the latest 5 healthy answers of 10 min (3 needed), at most 60 s | `SLOW_*`, `budget::SlowRule` |
+
+- **The sitting outlives the process** (table `sitting`, `budget::Sitting`): the
+  page that fills one draws the rest, and the next page any walk of the account
+  reads, in any process, waits it out. Grid, tab, comment and reply pages count
+  in it (`IgClient::count_in_the_sitting`).
+- **Slow answers lengthen waits, never shorten them** (`Pacer::slowed`). Load
+  headers are recorded in `answers` and never acted on.
+- `--max-wait` refuses a wait for the budget before anything is charged; it
+  never cuts a sitting's rest.
+
+The persistent budget under the pace (GCRA, `store/rate_budget.rs`):
+
+| Bucket | Allows | Where |
+|---|---|---|
+| Pace | one request per 3.83 s sustained, a burst of 20 | `PACE_EMISSION_MS`, `PACE_BURST_MS` |
+| Daily | about 2,000 requests | `DAILY_EMISSION_MS` |
+| Writes, on top of both | 3 in a row, then one per 15 min; 99 in 24 h | `WRITE_EMISSION_MS`, `WRITES_IN_A_DAY` |
+| Accounts read off lists | 2,000 in any 24 h; 1,000 for a week after a push-back | `budget::accounts_per_day` |
+
+`--same-day` reads past the day's accounts on purpose; agents never get it.
+
+### Push-back and retries
+
+**The first push-back stops the run and starts a cooldown**, during which
+nothing is sent, not even the counter poll; stored lists are served with a
+dated warning.
+
+| Answer | Cooldown |
+|---|---|
+| Throttle (`RateLimited`) | 2 h, `RATE_LIMIT_COOLDOWN` |
+| Action block (`FeedbackRequired`) | 12 h, `ACTION_BLOCK_COOLDOWN` |
+| Challenge or checkpoint | 30 min, `CHALLENGE_COOLDOWN` |
+| Push-backs on two different accounts less than an hour apart | every account, until the later cooldown ends (`budget::common_brake`, `shared.db`) |
+
+The durations are pinned by `the_cooldowns_are_the_documented_ones`. The app's
+own calls in the tab are listened to for push-back too (`headless/listen.rs`).
+
+**Retries.** `IgError::reaction` is the single authority; never write a retry
+loop of your own against Instagram.
+
+- A list page that failed on the network or drew a 5xx is retried by
+  `pager::fetch_page`, `Pace::network_retries` times (3; 2 for another
+  account's lists) after a doubling backoff (from 2 s; 3 s).
+- A walk that finds the machine slept reloads and waits for the network
+  (`RECONNECT_WAITS_SECS`).
+- A write refused in a way that says it did not happen is sent once more under a
+  rediscovered `doc_id`; one that may have happened (5xx, redirect, unreadable
+  200) never is.
+- **A push-back, a challenge, a dead session: never.**
+
+`SNOB_IGNORE_COOLDOWN` exists so a bug of ours cannot lock anyone out; it stays
+out of the help and out of an MCP child's environment.
+
+### Consent
+
+- **Walking another account's lists asks first, before resolving it.** No
+  terminal and no `-y` is exit 130, `consent_required`, nothing spent; a no is
+  `declined`.
+- `likers` asks too, for every post, the viewer's own included. Its answer
+  (about a hundred accounts) is charged to the day's accounts, and a day with
+  fewer than `likers::LIKERS_AT_MOST` (150) left is refused before asking.
+- `stories`, `highlights`, `posts`, `post` and `profile` do not ask: consent
+  covers somebody's followers and following, and `profile` walks only the
+  viewer's own following.
+- `watch once` has no `-y`: the monitor's consent is `watch.toml`. An entry with
+  `lists = false` reads posts only and needs none.
+
+### The write regime
+
+`commands/follow.rs`, `client/write.rs`: one account per invocation and no flag
+that batches; asked before the request (`-y` answers in advance); paid from the
+write bucket on top of the read buckets; refused without a CSRF token; sends
+`Origin`; follows no redirect; and **once in flight it is not abandoned on
+Ctrl+C**, the one exception to "Ctrl+C cancels at once".
+
+### Identity is the pk
+
+- **An account is its numeric `pk`, never its username.** `snob_core::Pk` has
+  no `Deref`, no arithmetic and no `ToSql`/`FromSql`; SQLite goes through
+  `store::pk_to_sql`/`pk_from_sql`. Crossings are by pk; a test asserts
+  unfollowers + friends = following and fans + friends = followers.
+- A name that cannot be a username (`model::possible_username`: 1 to 30 of
+  `[A-Za-z0-9._]`, one leading at sign dropped, never `.` or `..`) is refused by
+  clap, exit 2, before anything is asked or spent.
+
+### Stored lists
+
+- A list's counter is polled before any walk (`engine::freshness`); nothing
+  moved, nothing walked.
+- Each walked page commits in its own transaction: stopping is saving.
+- **The account's own writes reach its stored following list**
+  (`store::own_writes`, `engine::serve_stored`), said as such, never as a walk.
+- **Old captures are swept by one rule** (`store::snapshots::prune`), after a
+  walk that finished whole, the monitor's or not: whole captures older than 30
+  days go, except the one each `watch_marks` row points at, each list's two
+  newest whole captures (the pair `snob changes` compares by default), and every
+  unfinished one.
+
+### A run nobody is left to want stops
+
+A process a program drives (a pipe or socket on standard input or output)
+watches its parent and stops, as on `SIGTERM`, when it goes (`parent.rs`). Not
+at a terminal, into a file, under `nohup` or `setsid`, under pid 1, or in the
+processes snob detaches. `SNOB_NO_PARENT_WATCH` turns it off, out of the help.
+
+### The monitor's posts
+
+`engine::watch_posts`: an entry with `[account.posts]` has its profile and one
+page of its grid read after its lists (up to `posts::UNTIL_PAGES`, 3, while
+nothing seen before turns up), from the browser only. **At most once an hour per
+account** (`READ_AT_MOST_EVERY`), nothing in a cooldown, no retry. Files go to
+`save_to`, bounded per account and run (`commands/watch/posts.rs`: 1 GiB, no
+file started after ten minutes).
 
 ## Secrets, network and local data
 
-- **Session storage**: system keyring (Credential Manager with
+### Secrets
+
+- **Sessions**: the system keyring (Credential Manager with
   `CRED_PERSIST_LOCAL_MACHINE`, Keychain, Secret Service), or with
-  `--no-keyring` a `0600` file in a `0700` directory (DPAPI-sealed on
-  Windows). One session per account. Credential fields are `Secret`: `Debug`
-  prints `<hidden>`, zeroized on drop, read only through `expose()` (keep it
-  greppable). Never log or print a token.
-- **The MCP key** (`snob mcp key`, `commands/mcp/key.rs`): one key for
-  `snob mcp` served over the network, `snob_mcp_` plus 43 base64url
-  characters of 256 random bits; any other text is refused, from the
-  keyring and from `SNOB_MCP_KEY` alike. **Keyring only** (`Kind::McpKey`,
-  like the monitor's secrets; `--no-keyring` does not change it): on a
-  machine without one, `SNOB_MCP_KEY` in the server's environment is the
-  way, and it wins over the keyring wherever it is set, which `show` and
-  `revoke` warn about; `new --env` makes one for it, printed and kept
-  nowhere, the keyring not even read. A client reads its copy from `SNOB_MCP_TOKEN`, never
-  the server's name. The key is printed only to a terminal unless `--print`
-  (an agent with a shell would keep it in its transcript), and is named
-  everywhere else by a 12-digit fingerprint. Neither variable reaches a
-  child of a tool call or a job (`jobs::NEVER_INHERITED`). **`snob mcp
-  --listen` does not start without it**: a TCP port on loopback is open to
-  every local user, unlike the owner's pipe, and the key is what tells the
-  person's client from anything else that connects (on Unix, `--listen
-  socket` serves where nobody else can connect, and the key is required
-  there too, since a tunnel lets in whoever reaches its far end). `snob
-  mcp key` is behind the `mcp-http` feature; `Kind` has no feature gate, so every build
-  purges the key; no test writes it to the
-  keyring outside `SecretStore::with_service`, and the sandbox tests reach
-  it through `SNOB_MCP_KEY` only.
-- **No cookie jar in `reqwest`**: the `cookies` feature is off workspace-wide
-  so `.cookie_store(true)` does not compile; the session travels as an
-  explicit header on the one client meant to carry it. `reqwest` is
-  configured only in `snob_ig::http` and re-exported from there.
-- **Clients that can never carry the session**: the CDN client
-  (`client/cdn.rs`: HTTPS, CDN hosts only, never instagram.com), the
-  webhook client (`watch/webhook.rs`), both built by `http::plain`, which has
-  no argument for a credential, and the updater's (`update/github.rs`,
-  `http::plain_download`: HTTPS to GitHub's release hosts only, every
-  redirect held to them). The webhook follows no redirect, says
-  `User-Agent: snob/<version>`, refuses `http://` outside private networks, signs with
-  `X-Snob-Signature: sha256=<hex>`, and its token and key live in the
-  keyring, never in `watch.toml`. Retries are allowed there (it is the user's
-  server), never against Instagram. What it is sent is `format` under
-  `[webhook]` (or `--webhook-format`), made in `wire::outgoing`: snob's JSON
-  by default, with `summary` and `*_iso` dates beside the epochs (additive,
-  so `SENT_SCHEMA` stays 1), or the summary alone as Slack, Discord, ntfy or
-  plain text take it. The signature covers the bytes sent, which are the
-  bytes queued; each row keeps its event and content type (migration 017),
-  so a retry goes in the shape it was queued in, whatever the file says by
-  then. `watch setup` picks the format a known host takes.
-- **API redirects**: the API client's policy is `none()`; the transport
-  follows redirects itself, pays for every hop, and never leaves
-  instagram.com.
-- **TLS**: rustls (with `prefer-post-quantum`) on four targets, native-tls
-  (schannel) on Windows ARM64 only, because neither rustls provider builds
-  there without LLVM. HTTP/2 is required (HTTP/1.1 draws 429s). Default trust
-  is the platform store; `--strict-roots` narrows to Mozilla's roots (refused
-  on Windows ARM64, where it cannot work) and `--tls-extra-root` adds PEM
-  files to that. Neither applies to the webhook. No C crypto library is
-  linked (RustCrypto `hmac`/`sha2` for signing).
-- **The browser's DevTools protocol is on a pipe** (`--remote-debugging-pipe`,
-  `pipe.rs`), never a port: a port hands the session to any local process. The
-  owner's socket is reachable only by the same user (Unix: `0600` socket,
-  `peer_cred` checks; Windows: named pipe with a DACL for this user, owner
-  verified on both ends). The relay page for `--remote` gets JPEG frames and
-  posts input only, behind a one-visit token and a key in the URL fragment;
-  the protocol never crosses the tunnel. It listens on a `0600` Unix socket in
-  the data directory, and falls back to a TCP port on `127.0.0.1` only on
-  Windows or where the socket path cannot be forwarded by `ssh -L`
-  (`relay::can_be_forwarded`).
-- **The account's own writes reach its stored following list**
-  (`snob_store::store::own_writes`, `engine::serve_stored`): a follow or an
-  unfollow Instagram took is written down, and a stored following list of
-  the account's own is handed out with the writes made since its walk
-  applied, said in a warning and, to an agent, as `own_changes` in
-  `served`; never as a walk. The monitor compares captures by id, so it
-  reports what was walked.
-- **Rotated cookies are written back** from the browser to the store when a
-  command leaves it (`headless/write_back.rs`); a login is authoritative.
-- **Local data is per user, never per directory** (`snob-store/src/paths.rs`,
-  app name `snob-ig`): on Windows the Local, not Roaming, directory (WAL on a
-  synced folder corrupts SQLite), created with a user-only DACL and
-  `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED`. Per account under `accounts/<pk>/`;
-  `shared.db` for what accounts share; the account's database also keeps
-  how long Instagram's answers took (`answers`, a week of rows, the last
-  day shown by `snob status --answers`, by the call's name and never its
-  path), and what agents were told yes to through `snob mcp` (`mcp_acts`, a week of
-  rows, the last day shown by `snob status`), and what the monitor has seen of
-  a watched account's posts (`watch_posts`, its media pk as decimal digits,
-  and `watch_post_marks`, the baseline and the floor; written only by
-  `watch::commit_report`, rows kept thirty days and always each account's
-  newest 36). **`save_to`, the directory a watched account's new posts are
-  saved in, is written by the person only**, in `watch.toml` (by hand or
-  `watch setup`), a whole path, never a flag; snob writes into it with the
-  names every download gives and never over a file that is there; its jobs under
-  `accounts/<pk>/jobs/<id>/` (`job.json`, `state.json`, the walk's output and
-  log, `0600` on Unix; a finished job's result kept a day, the job a week, at
-  most 50, swept by a start and by `snob jobs` and the `__job` reads when
-  the jobs lock is free, and a result past its day is not handed back,
-  swept or not), which `snob logout` stops and `snob purge` stops and
-  removes, both before the owner of the browsers is released, so no walk
-  starts it again into what is going, and **both holding the account's jobs
-  lock until its session is gone** (an account that never ran a job
-  included), since a start checks the session again under that lock and
-  makes nothing without one. **Then, before the browsers close, both sign
-  the account out for every other process** (`owner::sign_out`: the
-  account's `signed-in` list emptied, `AccountPaths::signed_in`, which names
-  the sessions that may be sent as by their `created_at`, compared for
-  equality only, so no clock set back can refuse a login; **every rewrite
-  of it holds `signed-in.lock` beside it**, `AccountPaths::signed_in_lock`,
-  so a login trimming a full list cannot put back what a sign-out emptied
-  meanwhile): a walk typed
-  elsewhere, the monitor's run or an agent's call still holding a session
-  in memory is refused its next request, by itself, by the owner and by
-  the browser's holder once it has the account's browser (before every
-  start while it waits for the profile included), as exit 3 saying it was
-  signed out on this computer (`IgError::SignedOutHere`, never Instagram's
-  "expired"), and starts no browser on the profile going (one running its own browser
-  closes it within two seconds, and the profiles are removed once it has
-  let go, seen on Windows as on Unix, `headless::profile::in_use`). **It
-  stays refused through any later login**, which lets in its own session
-  only (`AccountPaths::admit_session`, before its check), a sessionid
-  pasted again included. **A session stored here and signed out of** (a
-  `logout` that could not remove it, or its account's directory gone) is
-  refused by every command at its start (`App::open`, and the checks
-  ahead of a job and of a write), exit 3 with the same sentence
-  (`report::SIGNED_OUT_HERE`); `snob status` reports it as no session,
-  with that sentence as the error's message, and `snob whoami` reports it
-  with `alive: false` and `not_checked: "signed_out"` (a value added).
-  An account directory that is gone, as `purge`
-  leaves it, refuses every session, and one made again (`ensure_dirs`, or
-  the layout's move landing one whole as a login adopts the database left
-  `unclaimed`) starts with nobody signed in; a directory with no list, as every one
-  made before the list existed, was never signed out of and refuses none
-  until its first sign-out or login: **a login starts a missing list with
-  its own session**, never reading it as "refuses none", since the
-  directory may be one another process has just made and is about to give
-  its empty list.
-  `SNOB_NO_BROWSER` sends with `reqwest`, which asks nothing of it.
-  `accounts.toml` changed only
-  through `Registry::update` (file lock). `watch.toml` and `accounts.toml`
-  are read with serde and written from a hand-written template, tested to
-  round-trip. `snob status` and `--dry-run` write nothing of the account's
-  (the updater's start, which every command shares, is the machine's,
-  "Updates" below). `snob purge`
-  removes everything but the binary.
-- **Migrations** (`snob-store/src/store/migrations.rs`): a published migration
-  is never edited; add the next numbered file in `store/sql/` (and
-  `store/sql/shared/` for `shared.db`). No `PRAGMA foreign_keys` inside a
-  migration; rebuild a table by create, copy, drop, rename
-  (`SQLITE_DBCONFIG_DEFENSIVE` forbids `writable_schema`). Counts are not
-  `u64` columns (`fallible_uint` is off on purpose).
+  `--no-keyring` a `0600` file in a `0700` directory (DPAPI-sealed on Windows).
+  One per account. A stored session that does not parse is reported without
+  quoting it (`secrets.rs`).
+- **Credentials are `Secret`**: `Debug` prints `<hidden>`, zeroized on drop, read
+  only through `expose()` (keep it greppable), `==` in constant time. Never log
+  or print a token.
+- **The MCP key** (`commands/mcp/key.rs`): `snob_mcp_` and 43 base64url
+  characters, nothing else accepted. Keyring only, whatever `--no-keyring`
+  says; where there is none, `SNOB_MCP_KEY` in the server's environment, which
+  wins wherever it is set. Clients read theirs from `SNOB_MCP_TOKEN`. Printed
+  only to a terminal unless `--print`, otherwise named by a 12-digit
+  fingerprint. Neither variable reaches a child (`jobs::NEVER_INHERITED`).
+- The webhook's token and signing key live in the keyring, never in
+  `watch.toml`.
 
-## The MCP server (`snob mcp`)
+### Network clients
 
-Feature `mcp` (on by default; `rmcp` pinned exactly in the workspace
-`Cargo.toml`). A stdio server an agent's client starts, or with `--listen`
-(feature `mcp-http`, on by default) the same server over HTTP on loopback,
-behind the MCP key; `snob mcp config <client>` prints the snippet for that
-client's configuration and never writes it (with `--remote <url>`, one that
-reaches a server already listening: no command, no key, see "Over HTTP").
+`reqwest` is configured only in `snob_ig::http`. **No cookie jar**: the
+`cookies` feature is off workspace-wide, so `.cookie_store(true)` does not
+compile; the session is an explicit header on the one client meant to carry it.
 
-- **Every tool call is a child `snob`** with the arguments a person would
-  type (`commands/mcp/tools.rs` builds them, `child.rs` runs them), never a
-  function call into the commands: their confirmations read standard input,
-  which here carries the protocol, the cancellation token is per process, and
-  a stray line on standard output would corrupt a frame. So every rule above
-  (the budget, the cooldown, consent, the write regime) holds for an agent
-  through the same code path it holds for a person. **The server process
-  itself never builds an Instagram client or opens a database**; the one
-  thing it reads is the MCP key, to serve over HTTP.
-- Children get the server's global flags, `--max-wait` (`mcp::Waits`: the
-  server's own when given, else 5 min, and an hour, `mcp::JOB_MAX_WAIT`, for
-  a job's walk, which nobody waits on) and `--stop-when-stdin-closes`; the
-  server's globals carry no `--max-wait` of their own, since clap refuses it
-  twice. A canceled call closes the child's standard
-  input and kills it only after a grace period, so a walk saves its page and
-  gives back its claim. **A child runs in a process group of its own**
-  (`child::Launch`), so closing its input is the only stop it gets: the
-  Ctrl+C that stops the server would otherwise reach it too, and the input
-  closing after it would be a second stop, which exits at once.
-  `SNOB_IGNORE_COOLDOWN` is removed from a child's environment.
-- **Reads only, unless `--allow-writes`**: status, lists, profiles, posts
-  (`snob_posts`, `snob_post`, `snob_post_likers`), stories and highlights
-  (`snob_stories`, `snob_highlights`), and what earlier walks stored
-  (`snob_snapshots`, `snob_changes`). One tool
-  list for every client, from the server's flags alone. Walking another
-  account's lists, a post's likers, and every follow or unfollow, needs a yes for that one
-  call, asked in this order (`mod.rs`, `Server::consent`): a form the client
-  shows (elicitation, either revision); else, for a client that declared no
-  form or answers `elicitation/create` with method-not-found, the chat: the
-  call answers, not as an error, with `status: "confirmation_required"`, the
-  question and a `confirmation` token, which the agent puts to the person
-  word for word and hands back on the same call only on a yes. A decline, a
-  dismissal or a timeout in a form is a no, never a reason to ask in the
-  chat. `--confirm-in-chat none|lists|all` (`all` when not given on stdio,
-  `lists` with `--listen`) says what the chat may cover; past it the call is `cannot_confirm`.
-  **It limits the chat route only**: a client that declares a form answers
-  it as it likes, so over `--listen` whoever holds the key can confirm a
-  write whatever it says (recorded as a yes given in a form). Not
-  offered, ever: `login` (signing in is the person's, below), `logout
-  --all`, `account use`, `purge`, the monitor, `--same-day`,
-  and **a path or a file name as an argument of a call**: the one command
-  that writes a file for an agent writes it where the server was told
-  (below).
-- **A post's files, only into a directory the person named** (`snob mcp
-  --downloads-dir <DIR>`, `tools::Offer::downloads`; not given,
-  `snob_post_download` is not listed, and calling it is -32602, as a write
-  is without `--allow-writes`). The directory has to exist when the server
-  starts (clap, exit 2) and is the only path on a download's command line;
-  the call names a post by its link, read for its code, and its items by
-  their numbers. The child is `snob post <link> --download=<items>
-  --output=<DIR> --quality=compat|best --json` (`posts::save_telling`):
-  the files go in one after another under the names every download has,
-  `<owner>-<code>[-<n>].<ext>`, **never over one that is there** (an
-  earlier copy is answered as `already`; the write is `create_new` on a
-  `.part`, renamed once whole, `media::save_named`), and what comes back is
-  a document (`post`, `directory`, `saved`, `failed`, `left`, `bytes`),
-  never the bytes: a child's standard output is the JSON the server reads,
-  so `-o -` beside `--json` is refused. The read that finds the files is
-  paid as any read (two requests, the post and its first page of comments,
-  under `--spend-alone`, one call at a time); the files come from the CDN,
-  which the request budget does not count, so a call is bounded on its
-  own: it starts no further file once it has fetched `tools::SAVE_AT_MOST`
-  (1 GiB) or downloaded for `tools::SAVE_WITHIN` (2 min), says the rest
-  under `left`, and the same call again saves them. Best tracks fetched
-  and given up for the smaller file, or lost with a file that failed,
-  count toward the bytes at what they were declared to weigh
-  (`media::best_weight`). **A file that failed is one entry of `failed`,
-  and a push-back is the end of the run**, for the pictures as for the
-  files (`media::ends_the_run`): a file the account's tab fetches is a
-  request Instagram can refuse, and the files after it are not asked for.
-  A failure's sentence names no address (`media::without_addresses`),
-  since an error of the network ends in the signed one it was fetching.
-  **It asks no yes**: a
-  post's read reaches nobody and tells its owner nothing, the person's part
-  is the flag, and the client's own prompt stands before the tool
-  (`readOnlyHint: false`). Over `--listen` the files are saved on snob's
-  machine all the same and nothing of them travels in an answer; startup
-  warns that whoever holds the key can have them saved.
-- **A picture is shown as a picture, and small** (`pictures: true` on
-  `snob_posts`, `snob_post`, `snob_stories` and `snob_highlights`; the
-  hidden `--small-pictures` of those commands, `media::small_pictures`).
-  The child fetches the thumbnail of each thing it lists from the CDN (the
-  narrowest picture at least 640 wide, a video's cover, a highlight's
-  cover: the `thumb` and `cover` the views draw, in no JSON contract), at
-  most `media::MAX_SMALL_PICTURE` (512 KiB) each and
-  `media::MOST_SMALL_PICTURES` (4 MiB) a listing, and prints them in its
-  JSON under `pictures`, in base64. The server takes them out before
-  anything else reads the document (`answer::take_pictures`: only
-  `image/jpeg`, `png` and `webp`, only base64, anything else said as
-  `missing`) and hands each back as MCP image content after a line saying
-  which number in the answer it is of, with the page that holds it when
-  the listing is paged (`pages::Whole::pictures`). **Never an address, and
-  never a video**: a video is saved, not shown, and the descriptions say
-  so. It adds no request to Instagram. **A picture cannot go through
-  `printable`**: the descriptions say that what one shows or says is data,
-  as a caption is.
-- **Stories and highlights are read, and nothing marks them seen**
-  (`snob_stories`, `snob_highlights`): the children are `snob stories` and
-  `snob highlights` themselves, so what keeps a view from being registered
-  for an agent is what keeps it for a person: the allowlist names no such
-  call, the tab's guard lets through no POST the allowlist refuses, and
-  `no_seen.rs` keeps every spelling of one out of the source. They ask no
-  yes, as the commands ask none. **Their files are not saved for an agent
-  yet**: a story's file is named by its place in the tray (`<name>-<n>`),
-  which another day's story takes, and a download that never fetches a
-  name twice would then skip the new one; that wants an id in the name
-  first.
-- **What was stored is read for nothing** (`snob_snapshots`,
-  `snob_changes`): the children are `snapshots` and `changes`, which send
-  nothing, write nothing and move no mark (`Store::read_existing`), so they
-  ask nothing, another account's captures included, as its stored list asks
-  nothing; asking twice gives one answer, and they answer in a cooldown.
-  `snob_changes` hands its accounts back as a list's go, without their
-  pictures' addresses, and all of them together within `answer::PAGE_BYTES`
-  (`answer::bounded_changes`): what does not fit is left out, with
-  `gained_count`, `lost_count` and `renamed_count` saying how many there
-  are and `cut` saying so.
-  They are what an agent that comes back each day compares with. **The
-  monitor itself stays out**: `watch once` moves the one receipt per
-  account that the person's own webhook is owed from, and `watch.toml` is
-  where standing consent to walk another account's lists and the address
-  its reports go to are kept, neither of which is an agent's to write. The
-  two halves meet without overlapping: an agent comes back for new posts
-  with `snob_posts` and `until` and keeps what it has seen itself, the
-  monitor keeps it in `watch_posts`, and both read the grid through
-  `posts::read_pages` and stop at `posts::reached`; a `save_to` that is the
-  server's `--downloads-dir` gets no file twice, since both name files alike.
-- **One account a server, unless the person says any** (`tools::Offer`).
-  Not told otherwise, a server acts as the account its children resolve:
-  the one `--account` or `SNOB_ACCOUNT` names (`Offer::pinned`), else the
-  active one. `snob mcp --any-account` (refused beside `--account`, exit 2,
-  and beside `SNOB_ACCOUNT`, exit 1) offers `snob_accounts` (`account list
-  --json`: no request, no database opened) and gives every other tool
-  `as_account`, a username or a pk, checked (`tools::acting_name`) and
-  handed to the child as its own `--account=<name>` ahead of the command
-  (`Plan::globals`), never as part of `Plan.args`. **What is per account
-  stays so because the child is that account's**: its budget, cooldown and
-  `spend.lock`, its `mcp_acts` and the cap on writes, its jobs (`snob_job`,
-  `snob_jobs` and `snob_job_cancel` take `as_account` too, and another
-  account's id is `no_such_job`). **A yes is bound to the account**
-  (`Plan::binding`: a chat token for a call as one account, brought to the
-  same call as another, is `not_for_this_call`), the question names it, and
-  a page is held under it (`Plan::acting`). The server's limits stay the
-  server's: one call that may reach Instagram at a time whichever account
-  it is for, which is stricter than the accounts need and keeps one server
-  from walking two at once. A walk as a named account is answered with its
-  job, never with an MCP task: `tasks/get` carries an id and nothing else,
-  and is read as the account the server acts as. `account use` is not
-  offered: which account the person's own commands act as is not an
-  agent's to move.
-- **A call that names no account acts as whichever is active when its
-  child starts**, and its yes is bound to the command alone, as before:
-  `snob account use` typed between a question and its yes runs the yes as
-  the other account. Where several accounts are signed in, start the server
-  with `--account`, or have its calls name theirs.
-- **Signing out, after a yes that names the account** (`snob_logout`, on
-  every server). The call names the account, always, and the child is
-  `snob logout --only=<name>`, the command itself, so its order holds
-  (the account's jobs stopped and their lock held until the session is
-  gone, every other process refused its next request, the browser
-  released). **`--only` (hidden) refuses, with nothing signed out, unless
-  the account the run resolved is the one named** (`not_this_account`):
-  never `logout` with no account resolved, which signs every account
-  out, a registry emptied meanwhile included, and never `--all`. **Which
-  account a server may sign out is which it may act as**: on a server
-  started for one account it is that account, as it was spelled to the
-  server, or a refusal; with `--any-account`, any, as the child's own
-  `--account`; with neither, the account its children act as. Its
-  question (`About::SignOut`) is taken in the chat only where a write's is
-  (`--confirm-in-chat all`), and counts once, for that account. It is not
-  recorded in `mcp_acts`: `logout` takes none of the flags that record an
-  act (`Plan::records`), and nothing is closed on Instagram's side.
-- **The yes comes from the client, not provably from the person.** The
-  client declares what it can show, and an agent can type a yes in the chat
-  itself (or be steered to by a bio it read). The tickets keep a yes to the
-  call it was asked about, once; the real gate on a write is the client's
-  own permission prompt, so keep `snob_follow` and `snob_unfollow` on "ask"
-  (`snob mcp config --allow-writes` says so). The question is composed of
-  snob's words and the validated username only (`tools::Question`), never a
-  display name, a bio or any other string another person wrote, since it is
-  read out to the person in snob's voice.
-- **A yes counts once, for the command it was given for** (`seal.rs`). On
-  the stateless revision the question goes out with a ticket: a random
-  nonce, a deadline ten minutes on in seconds of the process's monotonic
-  clock, and an HMAC under a key drawn at start over its kind, the nonce,
-  the deadline and the command line (`tools::Plan::binding`, the tool and
-  `Plan.args`, which hold nothing about how a call is delivered). Redeeming
-  puts the nonce in a set of spent ones, kept until it would have expired
-  and at most 4096 (full is refused, never forgotten): the same answered
-  call sent twice runs once and then answers `confirmation_used`; a ticket
-  for another command, kind or server spends nothing. A call back with the
-  ticket and no answer retires it and is asked again. A chat token is a
-  ticket of the other kind, carried in the `confirmation` argument, which
-  stays out of `Plan.args`; brought to a call that asks nothing it is
-  `invalid_arguments`, and one for another call or past its time is no yes
-  (the call is asked again, with `previous` saying why). Where a request
-  carries a session, the chat ticket is bound to it too (over HTTP, the
-  `Mcp-Session-Id` of the 2025-11-25 revision, read from the parts rmcp
-  hands the handler). **A stateless call over HTTP carries none, as stdio
-  does**, so there the ticket is bound to the command alone, and any
-  conversation that holds the key may redeem it, once, before it expires.
-  No ticket outlives the process.
-- **Signing in is the person's.** The server's instructions say so, and
-  every answer that comes of having no session carries a hint that the
-  person runs `snob login` in their own terminal, in place of the command's
-  own (`answer::SIGN_IN`). `snob_status` with no session is an answer, not a
-  failure: exit 3 is what it was asked, as exit 5 is in a cooldown. **Every
-  hint that is advice to the person at a terminal is replaced the same
-  way**, by the failure's `reason` (`answer::agent_hint`: `too_many_jobs`,
-  `no_such_job`, `no_such_snapshot`, `job_stopping`, `nothing_stored`,
-  `stored_moments`,
-  `budget_wait`, `busy`, `mcp_write_cap`, `walked_elsewhere`), with the
-  tools that do it instead,
-  and a push-back the call met itself, whose cooldown the failure does not
-  date, by `answer::PUSHED_BACK` (ask `snob_status` when it lifts); so
-  every refusal a cooldown already held is behind carries
-  `cooldown_until`, a crossing's of two stored lists too far apart
-  included (`engine::cooldown::check_same_moment_dated`); a failure's
-  message is its sentences, the records of the log and the progress lines
-  left out (`jobs::show::sentences`).
-- **`snob_profile` stays inline, not a job**: its walk of the mutual
-  followers is at most `MUTUAL_PAGE_CAP` (10) pages, which count toward the
-  account's sitting as a list's do, so it may wait out one rest between
-  sittings, up to 15 minutes, before or between those pages (one an
-  earlier walk left owed, or one its own pages draw; a rest paid first
-  leaves a sitting ten pages cannot fill), which its description says and
-  `mcp::longest_call` counts.
-  `openWorldHint` is per tool (`tools::Spec::open_world`): false for the
-  tools whose every plan spends nothing (`snob_status`, the three job
-  tools, `snob_snapshots`, `snob_changes`, `snob_accounts` and
-  `snob_logout`).
-- **Posts are read inline, and handed back without a media address**
-  (`answer::without_media_addresses`: every `http` address not on
-  instagram.com becomes null, wherever it is): an address is a download
-  under another name, which is the server's to make and bound (below), and
-  a signed one is hundreds of bytes of query string. `snob_posts`
-  reads at most three pages of a grid (`tools::MOST_GRID_PAGES`), its
-  posts paged out of the document (`tools::Page::rows`), and a later page
-  only from what the server holds (`held_only`: nothing of a grid is
-  stored). **A post is told from every other by its `pk` and its `code`,
-  which are one number and never change**, so a reader that comes back
-  names the newest posts it has (`until`, at most `tools::MOST_UNTIL`,
-  each as its code, part of the command) and the grid is read no further
-  than the first page that holds one (`posts::reached`, which a pinned
-  post never satisfies: those come first however old); the answer says
-  how many pages were asked for (`pages_read`) and whether it got there
-  (`until.reached`). `tab` reads a profile's reels, tagged posts or
-  reposts instead (the child's `--tab`, part of the command), with the
-  same pages and `until`. `brief` hands back only what tells posts apart
-  (`answer::BRIEF`): how the answer is shaped, so no part of the command
-  or of what the read is held under. `snob_post` and `snob_post_likers` take a link and hand the
-  child the post's address alone (`tools::link`), never the share token;
-  the likers ask, as a walk does, with a question of our words and the
-  code, are checked first with `likers --check-ahead` (`busy`, the
-  cooldown, the day's accounts) and recorded as an act.
-- **A post's comments and the replies under them are read on**
-  (`snob_post`'s `comments`, `replies` and `replies_of`, each part of the
-  command as `--comments=`, `--replies=` and `--replies-of=`, checked in
-  `tools::threads`): up to `posts::MOST_COMMENT_PAGES` pages and
-  `posts::MOST_THREADS` threads, the two kinds of thread together, each
-  comment named by its pk in digits (`CommentPk::parse`), anything else
-  `invalid_arguments` with nothing sent. They ask no yes: comments and
-  replies are what a post shows anyone who opens it, and they are charged
-  to the day's accounts as a page of comments is. Every comment and reply
-  carries its `pk`, so an agent comes back for the threads it wants. **The
-  answer is bounded** (`answer::bounded_post`): the comments, their replies
-  and the threads named together within `answer::PAGE_BYTES`, in order,
-  with `comments_left_out`, `replies_left_out` and `cut` when anything was.
-- Arguments are checked, not passed through: an `account` must be a possible
-  username, so it can never be read as a flag, and an unknown argument is
-  refused rather than ignored. A tool that is not listed (the writes without
-  `--allow-writes` included) is a JSON-RPC error, -32602, as the protocol
-  asks, not an `isError` result.
-- Everything a child prints is passed through `printable` string by string
-  before it reaches the client; tool descriptions tell the model that names
-  and bios are data, never instructions. What a child printed is read
-  without assuming its shape (`answer.rs`): under `panic = "abort"` one
-  indexing panic is the server gone, with every call in flight.
-- **A few calls at a time, and one that spends** (`commands/mcp/limits.rs`):
-  at most 4 calls at once, 1 of them a call that may reach Instagram
-  (`snob_list` that polls or walks, `snob_profile`, the writes; not
-  `snob_status`, a stored list or a dry run, `tools::Spends`), 1 write, and
-  60 calls a minute, which also keeps the tickets alive under `seal.rs`'s
-  4096. Taken before anything is asked, so nobody says yes to a call that is
-  then refused; past a limit the call answers `busy` at once and is never
-  queued; held until the child has exited. **Every refusal that costs
-  nothing to know is asked before anything is asked too**
-  (`Server::refused_ahead`), through a child that sends and writes nothing,
-  with the refusal the call's own child would give: a walk run as a job
-  through `__job start --check` (the account's jobs, since a job's walk
-  holds no permit once its call answered: `too_many_jobs`, `job_stopping`,
-  `walked_elsewhere`; and in a cooldown a refresh, or a list with nothing
-  stored to serve), and a write through `follow --check-ahead` (a job
-  walking or `spend.lock` held, `busy`; no CSRF token; the cooldown, with
-  `cooldown_until`; `mcp_write_cap`; a wait for the write bucket past
-  `--max-wait`, `budget_wait`), and a follow of an account the following
-  list walked in the last hour holds is answered `already_following` with
-  no question (`follow::followed_as_stored`; never an unfollow, since no
-  list shows a pending request it would withdraw). In a cooldown a stored list is still asked
-  about: the command carries `-y`, which a question skipped would hand a
-  walk with no yes once the cooldown lifts. What can still refuse after the
-  yes: what changes between the check and the yes (another process taking
-  `spend.lock`, a cooldown starting, the budget or the cap taken by another
-  call), what only a request tells (a write already so, a name that is
-  nobody's), and a crossing whose stored lists a cooldown serves were walked
-  too far apart. Across
-  processes, every child that may reach Instagram is run with the hidden
-  `--spend-alone` (`tools::Plan::command_line`, outside the binding) and takes
-  `accounts/<pk>/spend.lock` in `App::open`, before any request; held
-  elsewhere, it exits 1 with `reason: "busy"` in its JSON failure, which the
-  server hands the agent as code `busy`. Why: the persistent budget bounds
-  the average across processes, but `STEP_MS` and `DWELL_MS` are waited per
-  process, so two walks of one account interleave their requests and drain
-  the burst at once. A command a person types takes no lock, for now.
-- **A record of every yes, and a cap on an agent's writes**
-  (`snob_store::store::mcp_acts`). Since nobody can prove who said yes, the
-  person sees what was done in their name and the volume stays human. A call
-  run on a yes gets the hidden `--confirmed-via form|elicitation|chat` and
-  `--confirmed-for=<client>` (the client's `name version`, from the request's
-  `_meta` or the handshake, through `printable`, cut to `[A-Za-z0-9 ._/-]`
-  and 64 characters; `commands::common::client_label`), and a write also
-  `--mcp-write-cap=<N>`, all after the binding is taken
-  (`tools::Plan::command_line`). The child records the act in the account's
-  `mcp_acts` table before its first request, in a transaction of its own
-  (`commands::common::record_agent_act`); a follow or unfollow is refused
-  with nothing sent and nothing recorded when the writes recorded in the
-  last 24 hours reach the cap: exit 1, `reason: "mcp_write_cap"`, and
-  `retry_at`, when the next frees. Attempts count (one Instagram refused, or
-  that found nothing to do, still did). Only follow and unfollow are
-  writes, only acts recorded this way are counted, on the account whichever
-  server made them; a command the person types records nothing, and nor
-  does a walk in a cooldown, which reads nothing. `--max-writes-per-day`
-  (10 by default, `mcp_acts::WRITES_A_DAY`) is bounded by what the write
-  bucket allows in a day anyway (99, `rate_budget::WRITES_IN_A_DAY`).
-  `snob status` (section `--agents`, `agents` in `--json`) lists the last
-  day's acts: when, what, how the yes was given and through which client.
-- **A long list comes back a page at a time** (`answer::page`): at most 200
-  accounts (`answer::PAGE`) and 30,000 bytes of compact JSON
-  (`answer::PAGE_BYTES`), since the result goes into the model's context
-  twice (structured and as text) and clients cut long ones (Claude Code at
-  25,000 tokens, as quoted). **An account goes without its picture's
-  address** (`answer::LEFT_OUT`, `pfp_url`): a signed URL of 300 to 500
-  bytes that answers nothing an agent is asked, and with it a page held
-  some 65 accounts. `{total, count, offset, items, next_offset}`: `total`
-  the list's, `count` what the call hands back across its pages, at most
-  `limit`; an `offset` at or past `count` is refused as `offset_past_end`,
-  never answered with an empty page. **The server applies `limit`**
-  (`tools::Page::limit`), never the command's `--limit`, so a call given
-  one still says the whole list's `total`, and one it cut to a single page
-  says so in a sentence (`answer::limited`); the limit stays out of `Plan.args`, so a yes is to
-  the walk whatever it trims, and every limit pages from the same list held.
-  A failure's `partial` is one page with no `next_offset`, since what a walk
-  stopped short read is not stored as a whole list. **A list is never
-  handed back as more than it is**: where it came from is the walk's
-  `served` progress line (`Progress::served`, read from a job's log, or
-  from a stored read's own standard error, which `mode: "stored"` and a
-  later page get `--progress-json` for), with its date, a sentence beside
-  it when it was not read now (`answer::not_read_now`), and `complete:
-  false` with what was read of how many and a sentence
-  (`answer::incomplete`; for a crossing, that results are missing and the
-  ones given are right) when a walk cut short by `max_pages` exited 0. The
-  client's `offset` is sliced with `get`, never indexed. **A page past the
-  first never walks**: `offset` stays out of `Plan.args` (and the binding),
-  and the call is planned as the same list read with `--offline`, which
-  asks nothing and spends nothing (`tools::Page`), whatever its mode;
-  `offset` with `dry_run` is `invalid_arguments`. It is handed back from the
-  whole list the server holds from the call that read it
-  (`commands/mcp/pages.rs`: in memory, 4 lists, 30 min, 16 MiB), under the
-  call's binding without `--refresh`, so a refresh and a later page of it
-  meet, and with what the first page said of the whole list (`served`,
-  `cooldown_until`, `complete`), since the store would not always serve
-  the same list: a walk cut by `max_pages` is not a whole one, and a
-  crossing checked against Instagram on the first page is refused offline
-  when its lists were walked far apart. Not held, the page is read from the
-  store; for a call given `max_pages`, it is refused as `page_unavailable`.
-- **A walk can outlive the call that started it, as a job** (`jobs/`, in
-  every build: `std` processes and threads, no `mcp` feature). A person
-  starts one with `--background` on a list command
-  (`commands/background.rs`): consent is asked first, in this process, as
-  the walk would ask it, and no job is made on a no; the job's command
-  then carries `-y`, and `--background` is refused beside every flag a
-  job's command does not take (`argv::ALLOWED`). `snob __job
-  start` checks the walk, makes the job under the account's `jobs/.lock`
-  (one running per account: the same command again is `reused`, the
-  `--confirmed-*` aside, another is `too_many_jobs`, and one asked to stop
-  that has not yet is `job_stopping`, never reused; a list a lost job may
-  still hold is `walked_elsewhere`, with until when, `retry_at` for a
-  program, and one that never started its walk, with no walk's pid in its
-  state, holds none, `jobs::Seen::claim_frees_at`), starts its supervisor
-  detached (`detach.rs`) and answers with **one** compact JSON document:
-  the record, and the walk's answer under
-  `finished` when it ended within `--wait`. Asked to stop before it answered
-  (its standard input closing), it stops the job it made, since nobody would
-  ever be told the id. The supervisor, `__job run <id>`, holds the job's
-  `lock` all its life (a held lock is a running job, `jobs::derive`; asking
-  writes nothing, `paths::lock_is_held`), **runs itself** (`current_exe`,
-  never a path from disk) with its own global flags (`argv::globals`), and
-  **checks the stored command line again** (`argv::check`: the five list
-  commands, judged by clap, and an allowlist of flags; anything else ends
-  `failed`, `refused_argv`, nothing run). Its walk gets `--spend-alone`,
-  `--stop-when-stdin-closes` on a pipe it holds, and `--progress-json`, which
-  wins over `--no-progress` and is what `show` reads progress and the time
-  left from. Stopping is a `stop` file, read every second; the supervisor
-  closes the walk's input and kills it through its own handle only after
-  the grace. No pid read from a file is ever signaled. `show`, `list` and
-  `cancel` look only in the jobs of the account the run acts as: another
-  account's id is `no_such_job`. A Windows job object that refuses breakaway
-  takes the job with its client: `detached: "in_client_job"`. On Windows
-  the detached supervisor hears no end of session, so a job running at
-  sign-out or shutdown is read as `lost`; and a supervisor that comes to a
-  job every reader already takes as lost leaves it so (`started_late`)
-  rather than run it.
-- **To an agent, a list that may be walked is a job** (`tools::Run::Job`):
-  `snob_list` in mode `auto` or `refresh` (not `stored`, a dry run or a later
-  page; the writes never) runs `__job start --wait=<wait_seconds>s --tool
-  --arguments --started-by -- <the command and its --confirmed-*>`, with no
-  `--spend-alone` (the supervisor gives the walk that). `wait_seconds` (20 by
-  default, at most 50, `tools::MOST_WAIT_SECONDS`, so a call answers inside a
-  minute) stays out of `Plan.args`, the binding and what the job records
-  (`tools::recorded`). Ended within it, the call answers as an inline walk
-  would, with `job_id` beside it and its pages held as any list's; otherwise
-  with `{status: "running", done: false, job_id, progress, eta_seconds,
-  detached, poll_with: "snob_job"}` and a sentence (`commands/mcp/job.rs`).
-  `snob_job` (`__job show <id> --wait`), `snob_jobs` (`__job list`, each
-  row without the `estimate` a job is started with, which `snob_job`
-  gives) and `snob_job_cancel` (`__job cancel <id>`) are offered always,
-  spend nothing, and take a `job_id` only as `JobId::parse` reads it. A
-  finished job answers
-  through `answer::from` with the plan rebuilt from the tool and arguments it
-  recorded, its pages read again from the job's `out.json` (`offset`); a
-  result swept a day later is `result_gone`, a lost job `job_lost`. **All job
-  I/O goes through those `__job` children**, so the server still opens no
-  store and reads no job's file.
-- **A client that takes MCP Tasks gets a task for that job**
-  (`commands/mcp/tasks.rs`; SEP-2663 as rmcp 3.10.0 has it: `tasks/get`,
-  `tasks/update`, `tasks/cancel`, and no `tasks/result` or `tasks/list`, so
-  jobs are listed by `snob_jobs`). The server declares the extension. A
-  `snob_list` run as a job, for a client that declared it (at `initialize`,
-  or in a stateless request's `_meta`), waits at most `tasks::WAIT_SECONDS`
-  (5) whatever `wait_seconds` says, and answers with a task whose id is the
-  job's. `tasks/get` and `tasks/cancel` are the children `snob_job` (with no
-  wait) and `snob_job_cancel` run, under the same limits and the upgrade
-  check; an id that is not one of the account's jobs is `invalid_params`
-  "unknown task". Queued or running is `working`, with `pollIntervalMs` a
-  tenth of the least time left (5 to 60 s); a walk that ended is
-  `completed` with the result `snob_job` would give, an error result
-  included; a canceled job is the extension's canceled status, and a lost
-  one `failed` with `job_lost`. `ttlMs` is the week a job is kept. **Nothing
-  is asked inside a task**: the yes is settled before the job starts, so
-  `tasks/update` only checks the id. Not rmcp's `TaskManager`, which keeps
-  tasks in memory and aborts one after five minutes.
-- A heartbeat (`notifications/progress`) is sent from the call's own task
-  and awaited, never spawned, so none can reach the client after the result.
-- **Upgrades.** `snob mcp config` prints a path that outlives one
-  (`config::stable_exe`: Homebrew's link, Scoop's `current`, or the first
-  `snob` on `PATH`), each candidate taken only if it leads to the running
-  binary, and warns when what it prints is in a directory named after a
-  version. A running server whose binary was moved, removed or replaced
-  (size and modification time, `child::Launch::upgraded`) refuses every
-  call with `upgraded` and starts nothing; the client restarts it.
-- Codex's snippet carries `tool_timeout_sec` from `mcp::longest_call`: the
-  longer of a call that asks (the person's answer, `ANSWER_WITHIN`, then
-  the longer of `--max-wait`, `mcp::MAX_WAIT` when not given, and a list's
-  wait for its job, `MOST_WAIT_SECONDS` plus
-  `jobs::start::SUPERVISOR_WITHIN`), a profile (`--max-wait` and the
-  longest rest between sittings) and a post read as far as it goes
-  (those two and 29 comment steps, `pace::COMMENT_STEP_MS`'s longest
-  each), then the child's grace and a margin. A
-  list's walk is bounded by it however long it is: the call hands back the
-  job and the walk goes on.
-- **Over HTTP, for a tunnel of your own** (`snob mcp --listen <addr>`,
-  `commands/mcp/http.rs`). **Loopback only**: any other address is refused
-  with exit 2, and TLS is the tunnel's job (`--public-url`, `https` only,
-  adds the tunnel's host and origin to those taken). **On Unix, `--listen
-  socket`**
-  (`http/socket.rs`) serves on `mcp.sock` in the private data directory,
-  `0600`, each connection checked for this user or root (`peer_cred`): the
-  one way to close the gap below, since nobody else can connect to it or
-  take its name while snob is not running. One server holds the name at a
-  time (`mcp.sock.lock`, held for its life); holding it, a socket left at
-  the name by a killed server is replaced, and anything else there is left
-  alone and refused. Refused on Windows with exit 2. **The key is
-  mandatory** (no key, exit 1 and a hint), because loopback TCP is
-  reachable by every local user, unlike the owner's pipe; startup says its
-  source and fingerprint, never the key, and with `--allow-writes` warns
-  that whoever holds it can call the writes and confirm them, in a form it
-  answers itself whatever `--confirm-in-chat` says (and in the chat too
-  under `all`). **The reverse does not hold: the server does not prove
-  itself to its clients.** A client or tunnel sends the key
-  to whatever answers on the port, so another local user who binds it while
-  snob is not listening is handed the key; `--listen` is for a machine where
-  nobody else can run code, and startup says to replace the key if the
-  port could have been taken (revoking the keyring's, or replacing
-  `SNOB_MCP_KEY`, by where the key came from). Bound to `127.0.0.1` or
-  `[::1]`, it also holds the same port of the other family (`http::twin`),
-  since `localhost` may resolve to either, and, on a port the person
-  named, refuses to start, exit 1, when something else holds it (its
-  family's wildcard held with exclusive use included) or it cannot be held
-  for any reason but the family being absent; on a port the system picked
-  (`:0`) it goes on with one family. Each request, in order: the path (`/mcp`
-  only, `/.well-known/*` included is 404); the key (`Authorization:
-  Bearer`, the scheme in any case), checked **before any of the body is
-  read** by comparing HMACs of both sides under a key drawn at start, and
-  refused with 401, `WWW-Authenticate: Bearer realm="snob"` and
-  `Connection: close`; the body, read by snob, at most 256 KiB (413) within
-  30 s (408); at most 8 sessions, a new one past them closing the one left
-  idle longest with no call running, since a client gone without a `DELETE`
-  keeps its session for the idle time (503 for an `initialize` only when
-  every one has a call running; a stateless call opens none and passes);
-  then rmcp's own
-  checks and the same handler. **The `Host` and `Origin` checks guard
-  browsers (DNS rebinding) only; against any other caller the key is the
-  only control.** hyper serves HTTP/1.1 with a header (and idle) timeout of
-  10 s and a 16 KiB buffer; a connection's first request must arrive within
-  2 s. At most 32 connections, **counted against those that have shown the
-  key**: past it, the oldest connection that has not is closed for the new
-  one, so idle sockets held by another local process lock no client with
-  the key out (`http::Open`). `Host` takes the bound address too, so any of
-  127/8 works. Sessions idle for 30 min close. The limits, consent, jobs and
-  tasks are the stdio server's, shared by every session; a chat token from
-  a stateless call is bound to its command only (see "A yes counts once").
-  Ctrl+C (or the system, or `--stop-when-stdin-closes`) stops accepting,
-  stops every call's child as a canceled call's is stopped, answers a call
-  still waiting on a form as not confirmed (`Server::in_a_form` races the
-  question against `Server::stopped`), waits for the children
-  (`child::GRACE` and 5 s), **then for their answers to be written** (rmcp
-  drops an answer it has not handed over once its token is canceled), and
-  only then ends the streams and exits 130. **What the tunnel sees**: TLS
-  ends at its edge, so its provider sees the key and every answer, other
-  people's names and lists included, in plain text, and a connector's vendor
-  stores the key; put an access layer in front where the tunnel offers one
-  (Cloudflare Access service tokens, for example). **`snob mcp config
-  <client> --remote <url>`** (`config.rs`, `render_remote`) prints a
-  client's snippet for such a server: the address and how the client sends
-  the key, never a command and never the key, which it does not read. The
-  client takes it from `SNOB_MCP_TOKEN` in its own environment
-  (`config::TOKEN`; each client's spelling of a variable, Codex's
-  `bearer_token_env_var`), never from `SNOB_MCP_KEY`, which would replace
-  the keyring's key in every snob started where it is set; Claude Desktop
-  gets the address alone, for a connector, which Anthropic's side reaches,
-  so a loopback address is warned about. The address is `https`, or `http`
-  on loopback only (`ssh -L`), and holds no user, password, query, fragment
-  or key; clap is handed a parser of its own (`config::RemoteUrl`) so that a
-  refused address is not printed back. The server's flags (`--allow-writes`,
-  `--confirm-in-chat`, `--max-writes-per-day`) are refused with it, since
-  they describe a process this does not start.
+| Client | Rules |
+|---|---|
+| Instagram API | carries the session; redirects followed by the transport, inside instagram.com |
+| CDN (`client/cdn.rs`, `http::plain`) | HTTPS, CDN hosts only, never instagram.com; no credential argument exists |
+| Webhook (`watch/webhook.rs`, `http::plain`) | no redirect; `User-Agent: snob/<version>`; `http://` only to private networks; `X-Snob-Signature: sha256=<hex>` over the exact bytes; retried, since it is the user's server |
+| Updater (`update/github.rs`, `http::plain_download`) | HTTPS to GitHub's release hosts only, every redirect held to them |
 
-## Updates (`update/`, `snob update`)
+- A webhook body is `format` under `[webhook]` or `--webhook-format`
+  (`wire::outgoing`): snob's JSON, or the summary alone for Slack, Discord, ntfy
+  or text. A queued row keeps its content type, so a retry goes out as queued.
+- **TLS**: rustls (`prefer-post-quantum`) on four targets, schannel on Windows
+  ARM64, where rustls does not build without LLVM. HTTP/2 is required (HTTP/1.1
+  draws 429s). The platform's roots by default; `--strict-roots` narrows to
+  Mozilla's (refused on Windows ARM64), `--tls-extra-root` adds PEM files;
+  neither reaches the webhook. No C crypto library is linked.
 
-- **How snob was installed decides how it is updated** (`update/how.rs`,
-  from the binary's real path, as `exe::stable_exe` reads it): Homebrew,
-  Scoop, WinGet and Cargo by their own command (the prefix's `brew`, the
-  root's `scoop.cmd`, the `cargo` beside the binary); a copy in a directory
-  this user writes, as the install scripts leave it, by replacing itself;
-  the `.deb` (known by `/var/lib/dpkg/info/snob.list`) only by the `apt`
-  command root runs, which `snob update` runs on a terminal and prints
-  otherwise. A build in a Cargo `target` directory is never updated nor
-  checked for, and an install that matches nothing is only told about.
-- **Every command takes part, first** (`update::at_start`, from `main`):
-  it applies a staged version when it is alone, says once on a terminal
-  what was applied or is waiting (standard error), and starts the day's
-  check, detached (`snob __update fetch`), when one is due. `snob mcp`, the
-  owner of the browsers and a job's plumbing take no part; a job's
-  supervisor only counts as running.
-- **A cold start is one with no other snob running** (`update/running.rs`):
-  every snob that counts holds `running.lock` shared for its life, and the
-  applier asks for it alone without waiting. `snob mcp` does not count,
-  since it refuses every call once its binary changed (`upgraded`), nor
-  does the owner, which a newer build retires. A restart releases every
-  lock, so "or after a restart" needs nothing of its own.
-- **Applied**: a script install's binary is written beside the old one,
-  synced and renamed over it (on Windows, the old renamed to `.old`, swept
-  by a later start), and on Unix the command runs again from the new one
-  with the same arguments (`exec`). A package manager's upgrade runs
-  detached (`snob __update apply`), once the command that found it alone
-  has ended, from a copy of the binary on Windows (Scoop and WinGet refuse
-  while their `snob.exe` runs). `snob update` applies at once, after asking
-  (`-y`).
-- **Checked against the release's `SHA256SUMS`** as it downloads, as the
-  install scripts check, and again before it is applied; unpacked by the
-  system's `tar` (bsdtar, `System32\tar.exe`, on Windows, which reads a
-  zip), so no archive crate is built in. A version never moves back
-  (`latest` only grows), and no pre-release is ever one.
-- **The state is `update.json`** in the data directory (`update/state.rs`,
-  written whole under `update.lock`), shown by `snob update --status
-  [--json]` and as `update` in `snob status --json` with no section named
-  (additive), for
-  anything that shows it, an app around snob included. `--auto
-  off|notify|download|apply` (`apply` by default) is kept there.
-- **Never**: in a sandbox (unless a `testing` build is pointed at a fake
-  GitHub with `SNOB_TEST_UPDATE_ORIGIN`), with `CI` or
-  `SNOB_NO_UPDATE_CHECK` set, on a pre-release build or a machine with no
-  release. No retry: the next day's check is one.
+### Local processes
+
+- **The browser's DevTools protocol is on a pipe** (`pipe.rs`), never a port: a
+  port hands the session to any local process.
+- The owner's socket admits the same user only (Unix: `0600` and `peer_cred`;
+  Windows: a named pipe with a DACL for this user).
+- `login --remote`'s relay page gets JPEG frames and posts input, behind a
+  one-visit token and a key in the URL fragment; the protocol never crosses the
+  tunnel. It listens on a `0600` Unix socket, on a loopback port only where
+  `ssh -L` cannot forward one (`relay::can_be_forwarded`).
+- Rotated cookies are written back from the browser when a command leaves it
+  (`headless/write_back.rs`); a login is authoritative.
+
+### Local data
+
+- **Per user, never per directory** (`snob-store/src/paths.rs`, app name
+  `snob-ig`). On Windows the Local directory, not Roaming (WAL on a synced
+  folder corrupts SQLite), with a user-only DACL written once a process per
+  directory and read back after (`windows_acl`).
+- Per account under `accounts/<pk>/`; `shared.db` for what accounts share.
+  Kept a week: `answers` (`snob status --answers`, by call name, never path)
+  and `mcp_acts` (`snob status --agents`). `watch_posts`, written only by
+  `watch::commit_report`: thirty days, and each account's newest 36.
+- Jobs under `accounts/<pk>/jobs/<id>/`, `0600` on Unix: a result kept a day,
+  a job a week, at most 50.
+- **One writer at a time**: `session.json` and `watch.toml` are replaced under a
+  lock on `<temporary>.lock` (`paths::replace_private_alone`); `accounts.toml`
+  changes only through `Registry::update`, under `accounts.toml.lock`.
+  `watch.toml` and `accounts.toml` are written from a template, tested to
+  round-trip.
+- **`save_to` is written by the person only**, in `watch.toml`, never a flag;
+  snob never writes over a file already there.
+- **Reading for a report writes nothing of the account's**: `status`,
+  `snapshots`, `changes` and `--dry-run` use `Store::read_existing` (no create,
+  `query_only`, an older schema migrated in memory), which leaves no `-wal` or
+  `-shm` file that was not there before; while another process has the
+  database open they stay, and nothing is folded in.
+- `snob purge` removes everything but the binary.
+
+### Signing out
+
+`logout`, `purge` and an agent's `snob_logout`:
+
+1. Stop the account's jobs and **hold its jobs lock until the session is
+   gone**.
+2. **Sign it out for every other process** (`owner::sign_out`): its
+   `signed-in` list is emptied, under `signed-in.lock`, and a killed save's
+   `.session.json.tmp` removed. A walk, the monitor or an agent still holding
+   the session is refused its next request with exit 3,
+   `IgError::SignedOutHere` ("signed out on this computer", never "expired").
+3. Release the browsers; remove the profiles once nothing uses them.
+
+- **A sign-out holds through any later login**, which admits its own session
+  only (`AccountPaths::admit_session`). A stored session signed out of is
+  refused by every command at its start (`report::SIGNED_OUT_HERE`).
+- **An account directory never exists without its `signed-in` list**: a new one
+  is built as `accounts/<pk>.making-<pid>-<n>` with the empty list inside and
+  renamed into place (`paths::make_signed_out`), so it starts with nobody
+  signed in. A directory from before the list existed refuses nobody until its
+  first sign-out or login.
+
+### Migrations
+
+A published migration is never edited; add the next numbered file in
+`store/sql/` (`store/sql/shared/` for `shared.db`). No `PRAGMA foreign_keys` in
+a migration; rebuild a table by create, copy, drop, rename
+(`SQLITE_DBCONFIG_DEFENSIVE` forbids `writable_schema`). Counts are not `u64`
+columns (`fallible_uint` is off on purpose).
+
+## The MCP server
+
+`snob mcp` (`commands/mcp/`, feature `mcp`; `rmcp` pinned exactly): a stdio
+server an agent's client starts, or with `--listen` (feature `mcp-http`) the
+same over HTTP on loopback, behind the MCP key. `snob mcp config <client>`
+prints a client's snippet and never writes it.
+
+### Every call is a child
+
+- **A tool call runs one `snob` command** with the arguments a person would type
+  (`tools.rs`, `child.rs`), so every rule above holds for an agent through the
+  same code path.
+- **The server never builds an Instagram client, opens a database or reads a
+  job's file**; it reads only the MCP key. Job I/O goes through `snob __job`.
+- Children get the server's globals, `--max-wait` (5 min, `mcp::MAX_WAIT`, when
+  the server has none; an hour, `JOB_MAX_WAIT`, for a job's walk),
+  `--stop-when-stdin-closes`, and `--spend-alone` when they may reach
+  Instagram, which takes `accounts/<pk>/spend.lock` before any request (held:
+  `busy`).
+- **A child runs in its own process group** (`child::Launch`): closing its
+  input is its stop, and it is killed only after `child::GRACE`.
+- Arguments are checked, never passed through. A tool not offered is JSON-RPC
+  -32602. Everything a child prints goes through `printable`, and is read
+  without assuming its shape (one panic is the server gone).
+
+### Tools
+
+| Tool | Runs | Asks a yes | Offered |
+|---|---|---|---|
+| `snob_status` | `status` | no | always |
+| `snob_list` | a list or crossing; a walk runs as a job | another account's lists | always |
+| `snob_job`, `snob_jobs`, `snob_job_cancel` | `__job show`, `list`, `cancel` | no | always |
+| `snob_profile` | `profile`, inline | no | always |
+| `snob_posts` | a grid or tab, at most 3 pages | no | always |
+| `snob_post` | a post, its comments and replies | no | always |
+| `snob_post_likers` | `likers` | yes | always |
+| `snob_stories`, `snob_highlights` | `stories`, `highlights` | no | always |
+| `snob_snapshots`, `snob_changes` | stored captures; nothing sent | no | always |
+| `snob_post_download` | `post --download` into `--downloads-dir` | no (the client's prompt) | with `--downloads-dir` |
+| `snob_follow`, `snob_unfollow` | `follow`, `unfollow` | yes | with `--allow-writes` |
+| `snob_logout` | `logout --only=<name>` | yes, naming the account | always |
+| `snob_accounts` | `account list --json` | no | with `--any-account` |
+
+**Never offered**: `login`, `logout --all`, `account use`, `purge`, the
+monitor, `--same-day`, and **a path or file name as an argument**. The list
+depends on the server's flags alone.
+
+### The yes
+
+- **Asked in a form the client shows**; for a client with none, the call answers
+  `status: "confirmation_required"` with a question and a `confirmation` token
+  the agent hands back on a yes. A no, dismissal or timeout in a form is never a
+  reason to ask in the chat.
+- `--confirm-in-chat none|lists|all` (`all` on stdio, `lists` with `--listen`)
+  limits **the chat route only**; signing out goes through the chat only under
+  `all`.
+- **The yes comes from the client, not provably from the person**, so the gate
+  on a write is the client's own prompt: keep the writes on "ask". **The
+  question is snob's words and the validated username only** (`tools::Question`),
+  never text another person wrote.
+- **A yes counts once, for the command it was given for** (`seal.rs`): an HMAC
+  ticket over its kind, a nonce, a deadline (10 min) and the command with its
+  account (`Plan::binding`); a nonce is spent once (4,096 kept, full refuses).
+  Bound to the MCP session where a request has one; a stateless HTTP call has
+  none.
+- **What can be refused for nothing is refused before asking**
+  (`Server::refused_ahead`), through children that send nothing (`__job start
+  --check`, `follow --check-ahead`, `likers --check-ahead`).
+- **Every act on a yes is recorded** in `mcp_acts` before its first request.
+  Agents' follows and unfollows past `--max-writes-per-day` are refused with
+  nothing sent (exit 1, `mcp_write_cap`, `retry_at`); attempts count, and what a
+  person types is neither recorded nor counted.
+
+### Limits
+
+| Limit | Value | Where |
+|---|---|---|
+| Calls at once; of them reaching Instagram; writes | 4; 1; 1 | `limits.rs` |
+| Calls a minute | 60 | `limits.rs` |
+| A list page | 200 accounts, 30,000 bytes | `answer::PAGE`, `PAGE_BYTES` |
+| Lists held for later pages | 4, 30 min, 16 MiB | `pages.rs` |
+| A job's wait in a call | 20 s default, at most 50; a task's 5 s | `tools::WAIT_SECONDS`, `MOST_WAIT_SECONDS`, `tasks::WAIT_SECONDS` |
+| Posts named in `until` | 24 | `tools::MOST_UNTIL` |
+| One download call | 1 GiB or 2 min, then no new file | `tools::SAVE_AT_MOST`, `SAVE_WITHIN` |
+| Small pictures | 512 KiB each, 4 MiB a listing | `media::MAX_SMALL_PICTURE`, `MOST_SMALL_PICTURES` |
+| Agents' writes on an account | 10 in any 24 h by default, at most 99 | `mcp_acts::WRITES_A_DAY`, `MOST_WRITES_A_DAY` |
+
+Permits are **taken before anything is asked and never queued**: past a limit a
+call answers `busy` at once.
+
+### Lists, jobs and posts
+
+- **A list comes back a page at a time** (`{total, count, offset, items,
+  next_offset}`, without `pfp_url`), and **a page past the first never walks**.
+  The server applies `limit`. **A list is never handed back as more than it
+  is**: `served` says where and when it came from, and a walk cut short answers
+  `complete: false`.
+- **A list that may be walked is a job** (`tools::Run::Job`), answered inline
+  when it ends within `wait_seconds`, else with its `job_id`. One job per
+  account. A client that declared MCP Tasks gets a task with the job's id
+  (`tasks.rs`). People start the same job with `--background`.
+- **Jobs** (`jobs/mod.rs`): the supervisor runs `current_exe`, never a path from
+  disk, and checks the stored command line again (`jobs::argv`). **Stopping is
+  a `stop` file, never a signal.** An account sees only its own jobs.
+- **No media address reaches an agent** (`answer::without_media_addresses`).
+  Pictures asked for (`pictures: true`) come back as MCP image content, never a
+  video.
+- **Files only into the directory the person named** (`--downloads-dir`, which
+  must exist), under the names every download gets, and **none written over**
+  (`media::save_named`). A push-back ends the run (`media::ends_the_run`).
+  Stories and highlights are not saved for an agent yet (their names are tray
+  positions).
+- A post is told apart by `pk` and `code`; `until` stops a grid at the first
+  page holding a post the reader has (`posts::reached`, never a pinned one).
+  Comments, replies and changes come back bounded, with what was left out
+  counted.
+
+### Accounts and hints
+
+- A server acts as `--account` or `SNOB_ACCOUNT`, else the active account; **a
+  call that names none acts as whichever is active when its child starts**.
+- `--any-account` (refused beside `--account` and `SNOB_ACCOUNT`) offers
+  `snob_accounts` and `as_account` on every tool, passed as the child's own
+  `--account`. Budget, cooldown, `spend.lock`, `mcp_acts` and jobs stay per
+  account; a yes is bound to its account; the server's limits stay the server's.
+- `snob_logout` always names the account; `logout --only` refuses
+  (`not_this_account`) unless the run resolved it.
+- **Signing in is the person's**: a failure for want of a session carries
+  `answer::SIGN_IN`, and every hint meant for a person at a terminal is replaced
+  by one for the agent (`answer::agent_hint`).
+
+### Over HTTP
+
+`snob mcp --listen` (`commands/mcp/http.rs`):
+
+- **Loopback only** (else exit 2); TLS is the tunnel's job; `--public-url`
+  (https) adds the tunnel's host. **On Unix, `--listen socket`** serves on
+  `mcp.sock`, `0600`, this user or root only; refused on Windows.
+- **The key is mandatory** (none: exit 1), checked before the body is read.
+- **The server does not prove itself to its clients**: whoever binds the port
+  while snob is not listening is handed the key. `--listen` on a port is for a
+  machine where nobody else runs code; `socket` closes that gap.
+- **`Host` and `Origin` checks guard browsers only**; against any other caller
+  the key is the only control.
+- **The tunnel's provider sees the key and every answer in plain text.** Startup
+  and the README say so.
+
+| Limit | Value |
+|---|---|
+| Path | `/mcp` only |
+| Body | 256 KiB within 30 s |
+| Sessions | 8 (the idlest without a call closes for a new one); 30 min idle |
+| Connections | 32, counted against those that have shown the key |
+| First request; headers and idle | 2 s; 10 s, 16 KiB buffer |
+
+- `snob mcp config <client> --remote <url>` prints the address and how to send
+  the key from `SNOB_MCP_TOKEN`, never a command or the key.
+- Ctrl+C stops every child and **waits for their answers to be written**
+  before exiting 130.
+
+### Upgrades
+
+`snob mcp config` prints a path that outlives an upgrade (`config::stable_exe`).
+**A server whose binary changed refuses every call** (`upgraded`); the client
+restarts it. Codex's snippet carries `tool_timeout_sec` from
+`mcp::longest_call`.
+
+## Updates
+
+- **How snob was installed decides how it is updated** (`update/how.rs`):
+  Homebrew, Scoop, WinGet and Cargo by their own command; a script install by
+  replacing itself; the `.deb` only by `apt` as root (run on a terminal, printed
+  otherwise). A build in a Cargo `target` directory never updates.
+- **Every command takes part first** (`update::at_start`): it applies a staged
+  version when no other snob runs (`running.lock`) and starts the day's check
+  detached (`__update fetch`). `snob mcp`, the owner and jobs take no part.
+- **Checked against the release's `SHA256SUMS`** on download and before it is
+  applied; unpacked by the system's `tar`. Never backward, never a
+  pre-release.
+- State in `update.json` (`snob update --status`, and `update` in `snob status
+  --json`), with `--auto off|notify|download|apply` (default `apply`).
+- **Never** in a sandbox (but a `testing` build with `SNOB_TEST_UPDATE_ORIGIN`),
+  with `CI` or `SNOB_NO_UPDATE_CHECK` set, or on a pre-release build. No retry.
 
 ## Output contract
 
-- **Standard output carries data only**; progress bars, prompts, warnings and
-  every full-screen view are drawn on standard error. `snob stories someone
-  -i > out.txt` leaves the file empty.
+- **Standard output carries data only**; progress, prompts, warnings and
+  full-screen views go to standard error.
 - `--format json|ndjson|csv|xlsx|md|table` and `-o <file>` for lists and
-  documents (narrower enums where a format makes no sense, e.g.
-  `StoryFormat`); `--json` for status commands; `-o -` is stdout. Not a
-  terminal means JSON by default and no interactive view; `--no-interactive`
-  forces printing.
-- When the result would have been JSON, a failure is also one JSON object on
-  the last line of standard error (`main::wording_for`); its `code` is the
-  exit's token, and `reason` a finer one when there is one
-  (`ExitError::with_reason`, e.g. `busy`, `mcp_write_cap`,
-  `walked_elsewhere`, `nothing_stored`, `stored_moments` for a crossing of
-  two stored lists too far apart under `--offline`, `budget_wait` for a
-  wait past `--max-wait`, `consent_required` when nobody could be asked
-  and `declined` when the answer was no (both exit 130, as Ctrl+C is),
-  `no_such_account` for a name Instagram says is nobody's,
-  `no_such_snapshot` for a `changes --from/--to` that names no whole capture
-  of the account, `not_delivered`
-  for a `watch once` whose report did not reach the webhook, and a job's
-  `too_many_jobs`, `job_stopping`, `no_such_job`, `refused_argv`). A name
-  that cannot be a username is refused by clap, exit 2, before anything is
-  asked or spent (`snob_core::model::possible_username`, the rule `snob
-  mcp` checks its `account` with too).
-  `cooldown_until` is when a cooldown that refused the run lifts
-  (`ExitError::with_cooldown_until`), and `retry_at` when a refusal that is
-  no cooldown stops applying (`ExitError::with_retry_at`: `mcp_write_cap`,
-  and `walked_elsewhere`, when the lost job's claim on the list frees),
-  both in seconds since the epoch, since the sentence says them in the local
-  time of the machine that wrote it.
-- **Exit codes are stable** (`exit.rs`, `snob_core::watch::RunOutcome`, the
-  `watch_runs.outcome` column and the `--json` `outcome` field share one
-  vocabulary): 0 worked (a list cut short by `--limit`/`--max-pages` is still
-  0), 1 failed or result refused as incomplete, 2 bad command line (clap), 3 no
-  or dead session, 4 account needs verifying, 5 throttled or in cooldown, 130
-  stopped (Ctrl+C, a confirmation not given, a wait past `--max-wait`,
-  standard input closing under the hidden `--stop-when-stdin-closes`, which
-  is how a parent on Windows stops a child in order, or the program that
-  drove the run going, `parent.rs`). `snob status` exits 5 in
-  cooldown, whatever was asked. Errors that know their code carry it as
-  `ExitError` (with an optional `with_hint`, printed on its own `hint:` line).
-- The JSON shapes are the types in `snob-core` (`model.rs`), deliberately
-  separate from the wire models in `snob-ig`, which follow Instagram. A JSON
-  shape change is a contract change.
-- **Every string from another person goes through `snob_core::model::printable`**
-  before it reaches a terminal, a JSON list (`output::readable`) or a
-  monitor's report, printed or sent to a webhook (`watch/wire.rs`,
-  `account_json`), since a JSON reader may be a model and `serde_json` writes
-  `Cf` as it is. `printable` removes all of `Cc` and all of `Cf`, plus the
-  invisible letters such as Hangul fillers and the marks that draw nothing
-  (the whole of `Default_Ignorable_Code_Point`:
-  the combining grapheme joiner, the Mongolian and supplementary variation
-  selectors, U+FE00 to U+FE0D, and U+FE0E/U+FE0F anywhere but alone right
-  after a symbol in the ranges where Unicode puts the bases of presentation
-  sequences (a positive list, `takes_a_presentation`), or after a keycap
-  base with U+20E3 next; never after a letter, a digit, a combining mark
-  of any script or punctuation that is no emoji: one selector per letter or
-  mark hides four bits each, a run a byte each); whitespace controls become
-  a space.
-- **No `@` in a command handed over to be typed back** (PowerShell's splatting
-  eats an unquoted `@name`, and the command then answers about the user's own
-  account). Names are accepted with or without it; the help explains quoting.
+  documents; `--json` for status commands; `-o -` is standard output. Not a
+  terminal means JSON and no view; `--no-interactive` forces printing.
+- **The JSON shapes are the types in `snob-core` (`model.rs`)**, separate from
+  `snob-ig`'s wire models. A shape change is a contract change; fields are
+  added, never removed or redefined.
+- **When the result would have been JSON, a failure is also one JSON object on
+  the last line of standard error** (`report::error_json_for`): `code`, `exit`,
+  `message`, `hint`, `url`, `cooldown_until` and `retry_at` (epoch seconds), and
+  a finer `reason` (`ExitError::with_reason`): `busy`, `mcp_write_cap`,
+  `walked_elsewhere`, `nothing_stored`, `stored_moments`, `budget_wait`,
+  `consent_required`, `declined`, `no_such_account`, `no_such_snapshot`,
+  `not_delivered`, `not_this_account`, `too_many_jobs`, `job_stopping`,
+  `no_such_job`, `refused_argv`.
+
+| Exit | Token | Means |
+|---|---|---|
+| 0 | `ok` | worked (a list cut short by `--limit` or `--max-pages` too) |
+| 1 | `error` | failed, or a result refused as incomplete |
+| 2 | | bad command line (clap); nothing done |
+| 3 | `no_session` | no session, a dead one, or signed out here |
+| 4 | `challenge` | the account needs verifying |
+| 5 | `rate_limited` | throttled or in cooldown (`snob status` exits 5 in cooldown whatever was asked) |
+| 130 | `interrupted` | Ctrl+C, a confirmation not given, a wait past `--max-wait`, standard input closing under `--stop-when-stdin-closes`, the driving program gone |
+
+One vocabulary for `exit.rs`, `snob_core::watch::RunOutcome`,
+`watch_runs.outcome` and the `--json` `outcome`.
+
+- **Every string another person wrote goes through
+  `snob_core::model::printable`** before a terminal, a JSON list or a report. It
+  removes `Cc`, `Cf` and every `Default_Ignorable_Code_Point`, keeping a
+  variation selector only after a symbol that takes one
+  (`takes_a_presentation`) or a keycap base.
+- **No at sign in a command handed over to be typed back**: PowerShell eats an
+  unquoted one, and the command answers about the user's own account.
 
 ## Code conventions
 
-- English everywhere, **US spelling**; the language guard enforces both.
-  Comments say why, in full sentences, and carry where a number came from
-  (a capture and its date, a measurement, a paper). Bold marks the claim a
-  reader must not miss. Prefer one home per rule over copies that drift, and
-  say in a comment where the other half of a rule lives.
-- Errors: `thiserror` enums in the libraries (`IgError`, `PathError`, ...),
-  `anyhow` in `snob-cli` with `ExitError` for anything with a specific exit
-  code; `exit::exit_code_for` digs the code out of the chain. Instagram's
-  answers are classified in `snob_ig::error` (status codes lie; the body says
-  why), and everything in `snob_ig::model` but `pk` is optional.
-- Lints (`[workspace.lints]`): `undocumented_unsafe_blocks` (every `unsafe`
-  block has a `// SAFETY:` comment; there is no `unsafe fn`) and
-  `return_self_not_must_use`. Lints are added one at a time, each for a
-  defect this codebase had; no `pedantic`/`nursery` groups.
-- Dependencies: every entry and feature in `Cargo.toml` is commented with why
-  it is there and why its features are what they are; keep it that way.
-  Features are narrowed to what is used (no `#[tracing::instrument]`, so no
-  `attributes`; no `env-filter`; `SNOB_LOG` is `target=level` pairs). Avoid
-  `ring`/`aws-lc-rs`/OpenSSL (Windows ARM64 cannot build the first two).
+### Comments
+
+**Few, only the necessary ones:**
+
+- every `// SAFETY:`;
+- where a magic number came from (a capture and its date, a measurement, a
+  paper);
+- a non-obvious why the code cannot say;
+- the guard escapes;
+- one short `//!` header per module: what it is for, which rule it keeps;
+- one short sentence on a public item whose name does not say it.
+
+No narration, no history, no rationale repeated in several places: one home per
+rule. Bold marks the claim a reader must not miss.
+
+### Language
+
+English, **US spelling**. A test enforces it (`language.rs`).
+
+### Rust
+
+- Errors: `thiserror` enums in the libraries, `anyhow` in `snob-cli` with
+  `ExitError` for anything with an exit code (`exit::exit_code_for`).
+  Instagram's answers are classified in `snob_ig::error` (status codes lie; the
+  body says why); everything in `snob_ig::model` but `pk` is optional.
+- Lints: `undocumented_unsafe_blocks` and `return_self_not_must_use`, added one
+  at a time, each for a defect this codebase had; no `pedantic` or `nursery`.
+  The one `unsafe fn` is `snob_store::windows_user::User::of`.
+- Every dependency and feature in a `Cargo.toml` says why it is there and why
+  its features are what they are; features are narrowed to what is used. No
+  `ring`, `aws-lc-rs` or OpenSSL.
 - Release profile: `opt-level = "s"`, fat LTO, one codegen unit, stripped,
-  **`panic = "abort"`**: no destructor runs on a panic or `exit()`, so durable
-  state is committed as it is made, and code fed by a browser (the CDP
-  dispatcher) never panics.
-- The runtime is `tokio` multi-thread with exactly two workers (`main.rs`):
-  one worker would let a blocked task starve the Ctrl+C handler.
-- **Every future `main`, `run` and `dispatch` await is made through `boxed`**
-  (`main.rs`), on the heap, and a new command's arm does the same. Awaited in
-  place, a debug build gives each command's future a place of its own in
-  `dispatch`'s frame, all at once, and on Windows the main thread has 1 MiB:
-  a command's future growing a few KiB then overflows the stack of another
-  command altogether, in the sandbox tests. The numbers are on `boxed`.
-- Terminal UI: `ratatui` for drawing, keys read through
-  `ui/browser/input.rs` (crossterm, bracketed paste) and never
-  `console::Term::read_key`; `ui::tui::Tui` is the one claim on the terminal
-  and restores it on drop. **A color is named by what it is for**, one of
-  the five roles of `ui/theme.rs` (accent, ok, warn, error, info; the five of
-  the site's terminal blocks), never as a color: each is one of the 16 ANSI
-  colors, so the user's theme decides the shade, and the one exception is
-  asked for, `SNOB_THEME=brand`, which draws the accent alone in the site's
-  pink where the terminal says 24-bit color. The selection is reverse video and
-  no role. Full-screen views use the alternate screen and print receipts
-  after leaving it; the menu draws inline. From the profile card, never call
-  `ui::stories::browse` or `ui::highlights::browse` (a second `Tui` and a
-  second scratch directory on the same path); for the same reason a view
-  entered from another is lent its guard and its scratch directory
-  (`ui::people::browse_in`, `ui::profile::peek`, `ui::posts::browse_grid_in`).
-  A frame leaves in one write,
-  inside one synchronized update, and a frame with nothing changed writes
-  nothing (`ui::tui::Screen`). **A fetch a key starts runs under a `Busy`**
-  (`ui/browser/busy.rs`): the view stays up under a box that names what is
-  going on and that `q` or Ctrl+C stops it, shown once the wait has lasted a
-  tick; never call `input::watching_cancel_keys` from a view with nothing on
-  screen saying so.
-- **A view's keys are in a table beside its binding** (`KEYS`, shown by `?`
-  through `ui/help.rs`), and a test in the view presses every key the table
-  names: a key added or taken away goes into the table in the same change.
-  The keys that mean the same in every view are worded once, in `ui::help`.
-  `h j k l` are the four arrows; `w` hands the account's page on
-  instagram.com to the system's browser, and is `w` because in the posts
-  browser `o` opens the item in the viewer; in the account list's filter
-  every key is a letter of the query but Ctrl+U, Ctrl+W, the arrows and
-  Enter, which opens the match under the selection.
-- **Stories are handed to the system viewer.** A view writes the file into
-  the session's scratch directory (`ui/browser/scratch.rs`, swept when
-  abandoned) and opens it with `opener` in whatever the user already uses
-  for pictures and videos. **The one thing drawn in the terminal is a still
-  picture** (`ui/preview.rs`, feature `preview`): a JPEG, in half blocks.
-  On `p`, the one under the cursor, in a box over the view, fetched as
-  Enter fetches it and into the same file. Without a key, a small one
-  beside the text (`preview::Gallery`): the thumbnail of the post or item
-  the cursor is on, a video's cover, the avatar on a profile card, where
-  it is also what Enter and `d` act on. A small one is fetched only after
-  the cursor has rested, one at a time, once a session, from the address
-  the answer already carried (`posts::Item::thumb`, `Profile::pfp_url`),
-  and a failed one is not asked for again. Never a video, never anything
-  marked as seen. **A picture goes out in the terminal's own pixels where
-  the terminal is known to draw them** (`ui/graphics.rs`): kitty's
-  protocol in kitty and Ghostty, iTerm2's inline images in iTerm2 and
-  WezTerm, sixel in Windows Terminal and foot, half blocks anywhere else
-  and inside tmux or screen. Which one is read from the environment and
-  the terminal is never asked, since its answer would arrive among the
-  keys; `SNOB_IMAGES=kitty|iterm|sixel|blocks` says otherwise. The
-  picture's bytes leave after the frame's, in the same update, over cells
-  the frame left blank with the picture's number on them, and a box over
-  a view takes the pictures under it away (`tui::veil`). A build without
-  the feature, a run with no colors and a terminal that neither draws
-  pictures nor says 24-bit color draw none, and lay the views out as if
-  there were none.
+  **`panic = "abort"`**: no destructor runs on a panic, so durable state is
+  committed as it is made, and code fed by a browser never panics.
+- `tokio` with exactly two workers (`main.rs`), so a blocked task cannot starve
+  the Ctrl+C handler.
+- **Every future `main`, `run` and `dispatch` awaits goes through `boxed`**
+  (`main.rs`), a new command's arm included, or a debug build overflows the
+  1 MiB main stack on Windows.
+
+### Terminal UI
+
+- `ratatui` draws; keys come through `ui/browser/input.rs`, never
+  `console::Term::read_key`. `ui::tui::Tui` is the one claim on the terminal,
+  restored on drop; a frame leaves in one write, and an unchanged one writes
+  nothing.
+- **A color is named by its role** (`ui/theme.rs`: accent, ok, warn, error,
+  info), each one of the 16 ANSI colors; `SNOB_THEME=brand` is the one
+  exception. The selection is reverse video.
+- A view entered from another is lent its guard and scratch directory; from
+  the profile card never call `ui::stories::browse` or
+  `ui::highlights::browse`.
+- **A fetch a key starts runs under a `Busy`** (`ui/browser/busy.rs`) that says
+  what is going on and that `q` or Ctrl+C stops it.
+- **A view's keys are in a table beside its binding** (`KEYS`, shown by `?`),
+  and a test presses every key it names: change both together. `h j k l` are
+  the arrows.
 - `stories` and `highlights` are separate commands because a highlight has a
-  tray level and an items level (`snob highlights someone 2`); `posts` has the
-  same two levels. Shared flags live in `cli::MediaActionArgs`.
-- The monitor: a run compares against what was last **reported**
-  (`watch_marks`), not against the newest capture; **a post is new when its
-  pk was never seen and it was taken after the newest one seen**
-  (`snob_core::watch::posts`), so posts that move up the grid after a
-  deletion, or an old one newly pinned, are not news, and a first read of an
-  account's posts lays a baseline and says nothing; the report carries them
-  additively (`posts`, `counts.posts_new`, `events.posts_new`, `run.posts`),
-  and **`counts.total` does not count them**: it is the lists' changes and
-  the renames, as before posts were watched; a report is queued before
-  its mark moves; the delivery queue is drained once per run, after every
-  account (`commands/watch/run.rs`), and a report is owed for a week
-  (`deliveries::MAX_AGE_SECS`), so a daily run's single retry is never too
-  late; `watch once` exits 1 (`not_delivered`) when a report it tried did
-  not arrive; `watch deliver` (`commands/watch/deliver.rs`) is that drain
-  alone, with no session and no request to Instagram, sending what is owed
-  to the webhook's address without waiting out each row's backoff
-  (`deliveries::owed_now`), and exits 1 the same way; `watch unit` prints
-  (never installs) a systemd service and timer, a crontab line, a launch
-  agent or the PowerShell that registers a scheduled task (the value is
-  still `schtasks`; a `schtasks /TR` line only parses in `cmd.exe`), all
-  running `watch once --when-due` every 15 minutes, so the schedule is
-  translated nowhere: the run asks the scheduled mode's evaluator
-  (`schedule::due_asked_since`, from `scheduled::seed_for`, and the first
-  look of a timer, kept in `shared.db`, so a calendar that never ran is due
-  at the first look after its moment) and, not due, reads no session and
-  sends nothing, saying so only to a terminal; **a run counts from its
-  start**, written in `shared.db` before its work (`run::started`), so one
-  that failed before any account wrote its row is not due again at the next
-  look; `watch status` says
-  when that evaluator next comes round (`next_run` in `--json`), from the
-  last run it would start from, read and never written
-  (`scheduled::seed_as_stored`), with no request; what a run reports
-  as spent is what the
-  pacer was charged, measured around the tick. Schedules: `--every` is a floor
-  from the previous run and `--on/--at` or `--cron` a calendar; the next run
-  is on the calendar and past the floor, both (`--every 2w --on mon` is legal
-  and is what cron cannot say), the interval added on the wall clock so a
-  change of the clocks moves no run off its hour, and a time the clocks
-  skip (`--at 02:30` the night 02:00 becomes 03:00) runs at the minute
-  after the jump, as cron runs it (`next::reading_served`). Cron day-of-month and
-  day-of-week combine with OR when both are restricted. **A run records when
-  it was due, began and ended** (`watch_runs.due_at`, `began_at`,
-  `finished_at`, migration 020; `engine::watch::RunTiming`): due for the
-  moment the evaluator named (`schedule::due_moment`, or the one the loop
-  slept towards, before its jitter), and for nothing when started by hand.
-  It began late when that is more than `watch::LATE_AFTER` (half an hour,
-  twice the timer's quarter) past its moment, beyond the jitter it was
-  allowed; the report says so (`run.due_at`, `began_at`, `ended_at`,
-  `late_by`, `late`, additive), and so do its summary and `watch status`,
-  which notes a last run that began late.
+  tray level and an items level (`snob highlights someone 2`); `posts` has both
+  too. Shared flags: `cli::MediaActionArgs`.
+
+### Stories are handed to the system viewer
+
+A view writes the file into the session's scratch directory
+(`ui/browser/scratch.rs`) and opens it with `opener` in the user's own viewer.
+**The one thing drawn in the terminal is a still picture** (`ui/preview.rs`,
+feature `preview`): on `p`, or small beside the text once the cursor rests.
+Never a video, never anything marked as seen. Where the terminal is known to
+draw pixels it gets kitty's protocol, iTerm2's images or sixel
+(`ui/graphics.rs`), elsewhere half blocks; the terminal is never asked, and
+`SNOB_IMAGES` overrides the guess.
+
+### The monitor
+
+- **A run compares against what was last reported** (`watch_marks`), not the
+  newest capture; a report is queued before its mark moves.
+- **A post is new when its pk was never seen and it was taken after the newest
+  one seen** (`snob_core::watch::posts`); a first read lays a baseline and says
+  nothing. **`counts.total` does not count posts.**
+- The delivery queue is drained once per run, after every account; a report is
+  owed for a week. `watch once` exits 1 (`not_delivered`) when one it tried did
+  not arrive; `watch deliver` is the drain alone, sending nothing to Instagram.
+  Receivers deduplicate on `run_id`, never on the queue's reused row id.
+- `watch unit` prints, never installs, a unit running `watch once --when-due`
+  every 15 minutes; the schedule is evaluated only in snob, and a run not due
+  reads no session and sends nothing. **A run counts from its start.**
+- `--every` is a floor from the last run, `--on/--at` or `--cron` a calendar;
+  the next run is on the calendar and past the floor (`--every 2w --on mon`,
+  which cron cannot say), on the wall clock. Cron day-of-month and day-of-week
+  combine with OR.
+- A run records when it was due, began and ended (`RunTiming`); late is past
+  `watch::LATE_AFTER` (30 min) beyond its jitter. What it reports as spent is
+  what the pacer was charged.
 
 ## Platforms
 
-Releases: `x86_64-pc-windows-msvc` (built for `x86-64-v2`; Windows 11 only),
+Releases: `x86_64-pc-windows-msvc` (`x86-64-v2`, Windows 11 only),
 `aarch64-pc-windows-msvc`, `x86_64-unknown-linux-musl`,
-`aarch64-unknown-linux-musl` (static, no glibc requirement),
-`aarch64-apple-darwin`. No Intel macOS build. The five triples appear in
-`ci.yml`, `release.yml`, `deny.toml` and `packaging/render.sh`; a new target
-touches all four.
+`aarch64-unknown-linux-musl` (static), `aarch64-apple-darwin`; no Intel macOS.
+The five triples appear in `ci.yml`, `release.yml`, `deny.toml` and
+`packaging/render.sh`: a new target touches all four.
 
-Platform-specific code, all of it reached only by the CI job on that OS:
+Platform code compiles only on that OS's CI job:
 
-- Windows (`windows-sys`): launching the browser with an explicit handle list
-  and a job object (`pipe.rs`), starting a process detached with its own
-  handle list and out of the command's job where the job allows it
-  (`detach.rs`), the owner's named pipe and its DACL
-  (`owner/socket.rs`, `snob-store/src/windows_user.rs`), the hidden window that
-  hears the end of a session (`owner/end_of_session.rs`), power requests,
-  EcoQoS, the data directory's ACL, the keyring's local persistence, the
-  language preference, `QueryUnbiasedInterruptTime` for sleep detection
-  (`snob_ig::awake`), and a ToolHelp snapshot, `OpenProcess`,
-  `GetProcessTimes` and `WaitForSingleObject` for the parent of a run a
-  program drives (`parent.rs`). Static CRT and `/Brepro` via `.cargo/config.toml`.
-- Unix (`libc`): the CDP pipe made with `pipe2` (on macOS, which has
-  none, `pipe` and `fcntl(FD_CLOEXEC)`), its ends put onto fds 3 and 4
-  with `dup2` and `fcntl` clearing `FD_CLOEXEC` on one already there, the
-  parent's copies of the child's ends closed with `close`, the browser in
-  a process group of its own with `setpgid`, asked after and killed with
-  `kill`/`killpg` (`pipe.rs`), `setsid` for a detached start
-  (`detach.rs`), another snob's browser holding a profile asked after with
-  `kill(pid, 0)` and the machine's name from `gethostname`
-  (`headless/profile.rs`, `cdp/mod.rs`), the owner's lock with `flock`, and
-  `geteuid`, compared with `peer_cred`, for every socket that admits this
-  user alone: the owner's (`owner/socket.rs`), the relay's
-  (`relay/mod.rs`) and `snob mcp --listen socket`'s
-  (`commands/mcp/http/socket.rs`, root too); and `geteuid` to refuse
-  starting the browser as root (`headless::refuse_root`); the parent of a
-  run a program drives watched with `pidfd_open` and `poll` on Linux and
-  `kqueue` on macOS, `getppid` where neither opens, and `fstat`,
-  `sigaction` and `getsid` for whether to watch it at all (`parent.rs`);
-  `access(W_OK)` for whether snob may replace itself, and `exec` to run a
-  command again from the binary just applied (`update/`).
-  In `snob-store` (`paths.rs`), the scratch root is opened with
-  `O_DIRECTORY | O_NOFOLLOW`, made `0700` through the descriptor, and asked
-  its owner (`geteuid`) before it is made private or swept.
-  Linux adds a logind `idle` inhibitor (`zbus`) and `SCHED_BATCH`/`uclamp_max`
-  (`syscall` for `sched_setscheduler`/`sched_setattr`, `power/qos.rs`);
-  macOS uses `caffeinate -i -w <pid>` and leaves the browser's scheduling
-  alone.
-- TLS backend and `--strict-roots` differ on Windows ARM64 (see above).
+| File | Windows (`windows-sys`) | Unix (`libc`) |
+|---|---|---|
+| `pipe.rs` | handle list and job object | CDP pipe on fds 3 and 4, own process group |
+| `detach.rs` | own handle list, out of the job | `setsid` |
+| `owner/socket.rs` | named pipe, user DACL (`windows_user.rs`) | `0600` socket, `peer_cred` |
+| `owner/end_of_session.rs` | hidden window hearing the session end | |
+| `parent.rs` | ToolHelp, `OpenProcess`, `WaitForSingleObject` | `pidfd` (Linux), `kqueue` (macOS), `getppid` |
+| `headless/` | | `kill(pid, 0)`, `gethostname`, refusing root |
+| `relay/`, `commands/mcp/http/socket.rs` | | `peer_cred` against `geteuid` |
+| `power/` | power requests, EcoQoS | logind inhibitor, `SCHED_BATCH` (Linux); `caffeinate` (macOS) |
+| `snob-store/src/paths.rs` | the data directory's DACL | scratch root opened with `O_NOFOLLOW`, `0700` |
+| `snob_ig::awake` | `QueryUnbiasedInterruptTime` | |
+| `update/` | | `access(W_OK)`, `exec` |
+
+Static CRT and `/Brepro` on Windows come from `.cargo/config.toml`.
 
 ## Known walls
 
-What Instagram does that snob cannot fix, only report:
+What Instagram does that snob can only report:
 
-- **Truncated lists.** Instagram can stop serving pages well before a list's
-  declared size; a walk that falls short of a declared size past
-  `pager::TRUNCATION_THRESHOLD` (10,000, a guess from unverified reports) ends
-  `StopReason::Truncated`, which is not a success and cannot be a baseline.
-  On some accounts `following` hits it on every walk while `followers`
-  completes, so `watch status` treats a list never read as unhealthy.
+- **Truncated lists.** A walk short of the declared size past
+  `pager::TRUNCATION_THRESHOLD` (10,000, a guess) ends `StopReason::Truncated`,
+  which is no success and no baseline. Some accounts' `following` hits it every
+  time, so `watch status` treats a list never read as unhealthy.
 - **Profiles that answer 400** (some business accounts): the id comes from
-  search, which carries no counters, so truncation cannot be detected and the
-  cache cannot judge freshness (`report::counters_unknowable`).
+  search, with no counters, so truncation and freshness cannot be judged
+  (`report::counters_unknowable`).
 - **Private accounts the viewer does not follow**: refused before any walk;
-  their posts are said hidden, and their grid is not asked for.
-- **A post shared as a collaboration and accepted later** carries its old
-  `taken_at`, and reads as a post brought back from the archive: the
-  monitor does not report it. **More new posts between two runs than three
-  pages hold** are reported as far as the three pages go, the report says it
-  is not complete, and the older ones are never reported, since the floor
-  moves past them (`snob posts <name> --pages N` reads further back).
+  their grid is not asked for.
+- **A collaboration accepted later** keeps its old `taken_at`: the monitor does
+  not report it. **More new posts between two runs than three pages hold** are
+  reported as far as three pages go, and said incomplete
+  (`snob posts <name> --pages N` reads further).
 
 ## Costs worth knowing
 
-A walk is not compute: about 0.69 s of client CPU for a 12,000-follower walk
-against roughly fifteen minutes of deliberate pacing. Optimize for requests
-sent and binary size, not speed. Measured, and recorded beside the setting:
+A walk is not compute: about 0.69 s of CPU for a 12,000-follower walk against
+some fifteen minutes of pacing. Optimize for requests sent and binary size.
 
-- `opt-level = "s"` takes 23.7% off the Windows ARM64 binary for at most
-  +7.7% on the CPU-bound exports (`Cargo.toml`, `[profile.release]`).
-- Static CRT on Windows: +126,976 bytes per binary, 20 imported DLLs down to
-  11 (`.cargo/config.toml`).
-- The `xlsx` feature (`rust_xlsxwriter` and `zopfli`): about 498 KiB and six
-  crates for one of six formats; on by default, removable with
-  `--no-default-features` (also drops reading a zipped export).
-- Dropping the Windows keyring's `search` feature removed `regex` and
-  `aho-corasick`: 863,744 bytes, 11.4% of the Windows binaries.
-- The `mcp-http` feature (`snob mcp --listen`: hyper's server half and
-  rmcp's Streamable HTTP; tokio-stream and sse-stream are the only new
-  crates, the rest was in the tree through reqwest): 486,912 bytes, 4.8%
-  of the Windows x86-64 release binary (10,180,608 against 9,693,696
-  with `--no-default-features --features xlsx,mcp`); on by default.
-- The `preview` feature (pictures drawn in the terminal: `zune-jpeg`
-  built without its SIMD, and `zune-core`, two crates nothing else
-  uses): 102,400 bytes, 0.9% of the Windows x86-64 release binary
-  (11,245,056 against 11,142,656 with `--no-default-features --features
-  xlsx,mcp,mcp-http`); on by default.
+| Setting | Measured | Where |
+|---|---|---|
+| `opt-level = "s"` | 23.7% off the Windows ARM64 binary; at most +7.7% on CPU-bound exports | `[profile.release]` |
+| Static CRT on Windows | +126,976 bytes; imported DLLs 20 down to 11 | `.cargo/config.toml` |
+| Feature `xlsx` | about 498 KiB and six crates | `crates/snob-cli/Cargo.toml` |
+| Windows keyring without `search` | 863,744 bytes, 11.4% | `Cargo.toml` |
+| Feature `mcp-http` | 486,912 bytes, 4.8% of the Windows x86-64 binary | `crates/snob-cli/Cargo.toml` |
+| Feature `preview` | 102,400 bytes, 0.9% | `crates/snob-cli/Cargo.toml` |
+
+All four features are on by default; `--no-default-features` drops them.
 
 ## Open questions
 
-Assumptions the code marks as not yet confirmed against the real app; settle
-them with a capture (`tools/capture/record.js`, which writes redacted
-recordings to the gitignored `tools/capture/out/`; `summarize.js` reads them)
-before relying on them further: the paths and thresholds the listener counts as
-push-back (`headless/listen.rs`), the prefix of `CLAIM_HANDED_OUT`
-(`headless/guard.rs`), whether Instagram varies on `Sec-Fetch-*`
-(`client/headers.rs`), what a Relay or route call without
-`X-FB-Entry-Nonce` draws (the app's own value is copied, and the header is
-left out until one is seen: `web::AppCalls`), `TRUNCATION_THRESHOLD`, and
-of a profile's reels, tagged and reposts tabs (`posts --tab`): where the app
-keeps their six `doc_id`s (seeds from two captures on two builds, never
-vouched for, since the tab never sees the app send them: the scripts beside
-their names, as a write's, is untested), what Instagram answers one when
-its number has moved, how many reels a next page asks for (3 on 2026-11-14,
-5 on 2026-11-13; snob sends 3, the slower), and what a tab of a private
-account the viewer does not follow answers (snob asks none). Likewise the
-second page of a thread of replies, which no capture has shown: snob reads
-the first only, and logs the names of an answer's keys when one says it
-has more.
+Assumptions not yet confirmed against the real app. Settle them with a capture
+(`tools/capture/record.js`, redacted into the ignored `tools/capture/out/`;
+`summarize.js` reads them):
 
-## Website (`web/`)
+- the paths and thresholds the listener counts as push-back
+  (`headless/listen.rs`);
+- the prefix of `CLAIM_HANDED_OUT` (`headless/guard.rs`);
+- whether Instagram varies on `Sec-Fetch-*` (`client/headers.rs`);
+- what a call without `X-FB-Entry-Nonce` draws (`web::AppCalls`);
+- `pager::TRUNCATION_THRESHOLD`;
+- a profile's tabs (`posts --tab`): where the app keeps their six `doc_id`s
+  (seeds from two captures), what a moved one answers, how many reels a next
+  page asks for (3 or 5 seen; snob sends 3), what a private account's tab
+  answers (snob asks none);
+- the second page of a thread of replies, never captured: snob reads the first
+  and logs the answer's keys when it says there is more.
 
-A static Astro site (`output: 'static'`, Tailwind 4) served by Cloudflare
-Workers from `dist/` (`wrangler.jsonc`, custom domain `snob.dennisgr7.dev`).
-The one piece of Worker code, `web/worker/index.ts`, runs for the hero's
-videos alone (`run_worker_first`) and answers byte ranges, which static assets
-do not and Safari needs to play a video; it sets its own headers, since
-`_headers` does not reach a Worker's answers.
-Workers Builds deploys `main` and uploads a preview for every other branch.
-Node `24.22.3` (`web/.node-version`), pnpm `12.18.0` via Corepack; exact
-versions only, a 24 h release quarantine and an install-script allowlist in
-`web/pnpm-workspace.yaml`. CI (`.github/workflows/web.yml`, only on changes
-under `web/`):
+## Website
+
+`web/`: a static Astro site (Tailwind 4) on Cloudflare Workers from `dist/`
+(`wrangler.jsonc`, `snob.dennisgr7.dev`). `web/worker/index.ts` runs for the
+hero's videos only, to answer byte ranges, and sets its own headers. Workers
+Builds deploys `main` and previews every other branch. Node `24.22.3`, pnpm
+`12.18.0` via Corepack, exact versions, a 24 h release quarantine and an
+install-script allowlist (`web/pnpm-workspace.yaml`).
+
+`.github/workflows/web.yml`, on changes under `web/`:
 
 ```bash
 cd web
@@ -1455,68 +852,48 @@ pnpm exec playwright install --with-deps chromium
 pnpm check && pnpm build && pnpm test   # Playwright against `wrangler dev` serving dist/
 ```
 
-- `web/DESIGN.md` is the reasoning behind the look; a change to the look
-  starts there. `/design-system` shows every token live.
-- Every word on the page is in `web/src/lib/content.ts`, shared by the HTML,
-  `llms.txt` and the Markdown twin (`index.md`); it may promise nothing the
-  README and `--help` do not. The version is read from `Cargo.toml` at build
-  time (`src/lib/version.ts`); never copy it.
-- Four small scripts, hashed into the CSP; no `is:inline` code, no `style`
-  attributes; everything works without JavaScript.
-- `pnpm brand` regenerates the committed images in `public/` (after
-  `pnpm build`). The hero's recording is two steps: `bash web/video/record.sh`
-  records the real views and MCP answers of a `testing` build on the invented
-  world of `serve_the_website_world` into `web/video/captures/`, and `pnpm
-  video` (after `pnpm build`, with ffmpeg) films them into `public/video/`.
-  Both outputs are committed; record again when a view the video shows
-  changes.
+- `web/DESIGN.md` is the reasoning behind the look; a change to the look starts
+  there.
+- **Every word on the page is in `web/src/lib/content.ts`** (shared by the HTML,
+  `llms.txt` and `index.md`), and **it may promise nothing the README and
+  `--help` do not.** The version is read from `Cargo.toml`; never copy it.
+- Scripts are hashed into the CSP: no `is:inline` code, no `style` attributes;
+  everything works without JavaScript.
+- `pnpm brand` regenerates `public/` images; `bash web/video/record.sh` then
+  `pnpm video` re-film the hero (both committed) when a view it shows changes.
 
 ## Release and packaging
 
-1. Changes land on `dev` through pull requests; Dependabot also targets `dev`
-   (weekly; cargo updates are lockfile-only).
-2. A release commit sets `[workspace.package] version` (subject
-   `Snob CLI X.Y.Z`); `dev` goes to `main` through a pull request, which
-   `claude-code-review.yml` reviews.
-3. `git tag vX.Y.Z` on a commit of `main` and push it. `release.yml` refuses a
-   tag that is not an ancestor of `origin/main` or disagrees with
-   `Cargo.toml`; builds the five targets with no cache and with
-   `--remap-path-prefix`, reproducibly (`.zip` on Windows, `.tar.gz` and `.deb`
-   elsewhere, times from the tagged commit); publishes `SHA256SUMS` and a
-   build-provenance attestation; then runs `packaging/render.sh`, commits
-   "Point the formula and the manifest at vX.Y.Z" to `main` and cherry-picks
-   it onto `dev`.
-4. `Formula/snob.rb` (Homebrew tap) and `bucket/snob.json` (Scoop bucket) are
-   read straight from this repository; `packaging/winget/` is generated for a
-   manual pull request to `microsoft/winget-pkgs`. `packaging/install.sh`
-   (POSIX sh) and `install.ps1` install the latest release
+1. Changes land on `dev` by pull request; Dependabot targets `dev` weekly
+   (cargo updates lockfile-only).
+2. A release commit sets the version (subject `Snob CLI X.Y.Z`); `dev` goes to
+   `main` by pull request, reviewed by `claude-code-review.yml`.
+3. Push a tag `vX.Y.Z` on `main`. `release.yml` refuses one that is not an
+   ancestor of `origin/main` or disagrees with `Cargo.toml`, builds the five
+   targets reproducibly, publishes `SHA256SUMS` and a provenance attestation,
+   runs `packaging/render.sh`, commits "Point the formula and the manifest at
+   vX.Y.Z" to `main` and cherry-picks it onto `dev`.
+4. `Formula/snob.rb` and `bucket/snob.json` are read straight from this
+   repository; `packaging/winget/` goes to `microsoft/winget-pkgs` by hand.
+   `packaging/install.sh` and `install.ps1` install the latest release
    (`SNOB_VERSION`, `SNOB_INSTALL_DIR`).
 
-The no-writes claim is stated in four places that must move together: the
-`.deb` `extended-description` in `crates/snob-cli/Cargo.toml`, the winget
-locale manifest that `render.sh` renders from it, `crates/snob-ig/src/lib.rs`,
-and `README.md`.
-
-Workflows pin every action to a commit SHA with the version in a comment;
-Dependabot moves them. Every workflow starts from `permissions: contents:
-read`. `claude.yml` (`@claude`) and `claude-code-review.yml` only take effect
-once identical on `main`.
+Workflows pin every action to a commit SHA with its version in a comment, and
+start from `permissions: contents: read`. `claude.yml` and
+`claude-code-review.yml` take effect only once identical on `main`.
 
 ## Git
 
-- Branches: `dev` is where work goes; `main` only takes what `dev` has, via
-  the release pull request. Topic branches are named by kind and subject
-  (`feat/ssh-remote-login`, `fix/story-browser`, `deps/rustls-0.23.46`) and
+- Work goes to `dev`; `main` takes only what `dev` has. Topic branches are named
+  by kind and subject (`feat/ssh-remote-login`, `deps/rustls-0.23.46`) and
   merged into `dev` by pull request.
 - Commit subjects are English sentences in the imperative, saying what the
   change does for the person using snob, with no type prefix and no final
-  period: "Bind the tunnel's near end to loopback by name", "Take tokio 1.53.3
-  and rustls-webpki 0.103.16 for two advisories". The body, wrapped at about
-  72 columns, says why: the failure as it happened, what changes, what was
-  measured. Dependency bumps name the advisories they answer.
-- No `Co-Authored-By`, "Generated with" or other tool trailers, and never push
-  unless asked.
-- Never commit what snob produces: exports (`*.json`, `*.csv`, `*.xlsx`, ...
-  at the root are ignored), data exports, `tools/capture/out/`, or anything
-  under `/docs/` (scratch notes, ignored). A new root-level `.md` file is
-  ignored unless `.gitignore` lists it.
+  period ("Bind the tunnel's near end to loopback by name"). The body, wrapped
+  at about 72 columns, says why: the failure, the change, what was measured.
+  Dependency bumps name the advisories they answer.
+- No `Co-Authored-By`, "Generated with" or other trailers; never push unless
+  asked.
+- Never commit what snob produces (exports at the root, `tools/capture/out/`,
+  anything under `/docs/`). A new root-level `.md` is ignored unless
+  `.gitignore` lists it.
