@@ -1,9 +1,7 @@
 //! The Instagram session the tool reuses.
 //!
-//! The two credential fields are [`Secret`], which hides itself from `Debug`
-//! and clears itself when dropped, so a stray `debug!(?session)` writes nothing
-//! useful and the cookie does not linger in freed memory. Anything added here
-//! that is itself a credential belongs in the same type.
+//! The two credential fields are [`Secret`]; anything added here that is
+//! itself a credential belongs in the same type.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -14,20 +12,14 @@ use crate::{Epoch, Pk};
 
 pub const SESSION_SCHEMA_VERSION: u32 = 1;
 
-/// What the Windows Credential Manager accepts, in bytes.
-///
-/// `CRED_MAX_CREDENTIAL_BLOB_SIZE` is 5*512, and the keyring backend writes the
-/// secret as UTF-16 and checks the length of **that**, so this is a byte
-/// ceiling rather than a character one. Above it, the session falls back to the
-/// bare essentials rather than failing to store at all.
+/// What the Windows Credential Manager accepts: `CRED_MAX_CREDENTIAL_BLOB_SIZE`,
+/// 5*512 **bytes** of the UTF-16 the keyring backend writes. Above it, the
+/// session is stored as [`Session::minimal`].
 pub const MAX_KEYRING_SECRET_BYTES: usize = 5 * 512;
 
-/// How much room a string takes in the Windows Credential Manager.
-///
-/// Two bytes per UTF-16 unit, which is **not** the same as two per character: a
-/// character outside the Basic Multilingual Plane is two units, so four bytes.
-/// Counting characters instead let a value pass this check and then be refused
-/// by Windows with an error that explains nothing.
+/// How much room a string takes in the Windows Credential Manager: two bytes
+/// per UTF-16 unit, so four for a character outside the Basic Multilingual
+/// Plane.
 pub fn keyring_bytes(text: &str) -> usize {
     text.encode_utf16().count() * 2
 }
@@ -51,9 +43,7 @@ pub enum SessionError {
     UnsupportedSchema { found: u32, expected: u32 },
 }
 
-/// Where the session came from. Worth storing because it changes the diagnosis
-/// when something fails: a `useragent mismatch` on a pasted session almost
-/// always means the User-Agent was copied wrong.
+/// Where the session came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionOrigin {
@@ -62,9 +52,8 @@ pub enum SessionOrigin {
 }
 
 impl SessionOrigin {
-    /// The stable token, shared by the serialized form and machine-readable
-    /// output. Kept separate from `Display` so that rewording the human text
-    /// cannot break a JSON contract.
+    /// The stable token of the serialized form and of JSON output; `Display`
+    /// is the wording for a person and may change.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Browser => "browser",
@@ -83,9 +72,7 @@ impl std::fmt::Display for SessionOrigin {
 }
 
 /// `Debug` is derived, and safe to derive: both credential fields are
-/// [`Secret`], which prints `<hidden>`. Derived rather than written out,
-/// because a hand-written impl drifts: a field added to the struct and not to
-/// the impl goes missing from every dump.
+/// [`Secret`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub schema_version: u32,
@@ -99,29 +86,19 @@ pub struct Session {
     pub mid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ig_did: Option<String>,
-    /// Meta's browser cookie, set on the first page load and carried by every
-    /// request the browser makes after that — the login included. Absent from
-    /// a session stored before it was captured, and from a paste.
+    /// Meta's browser cookie. Absent from a paste.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub datr: Option<String>,
     pub user_agent: String,
-    /// The user gave this User-Agent explicitly, so nothing may rewrite it.
-    ///
-    /// Without this flag the refresh below could not tell "we worked this out
-    /// from the installed browser" from "the user knows better than we do", and
-    /// it would quietly overwrite the second.
+    /// The user gave this User-Agent explicitly, so no refresh may rewrite it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub user_agent_pinned: bool,
     /// When the installed browser's version was last compared against the
     /// User-Agent. Absent means never.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_agent_checked_at: Option<Epoch>,
-    /// Which browser the User-Agent describes, when one was picked.
-    ///
-    /// A machine with Chrome and Edge on it has two answers, and the session
-    /// belongs to exactly one of them. Without this, the refresh follows
-    /// whichever comes first in the preference order and can hand a session
-    /// created in Edge the version number of Chrome.
+    /// Which browser the User-Agent describes, so a refresh on a machine with
+    /// several follows the one the session was made in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<String>,
     pub origin: SessionOrigin,
@@ -132,15 +109,15 @@ pub struct Session {
 
 impl Session {
     /// Builds a session from the `sessionid` and the User-Agent of the browser
-    /// that produced it. The account id is not asked for: it is encoded at the
-    /// start of the `sessionid` itself.
+    /// that produced it. The account id is read off the start of the
+    /// `sessionid`.
     pub fn from_sessionid(
         raw_sessionid: &str,
         user_agent: &str,
         origin: SessionOrigin,
     ) -> Result<Self, SessionError> {
         let sessionid = clean_sessionid(raw_sessionid)?;
-        let ds_user_id = extract_pk(&sessionid)?;
+        let ds_user_id = extract_pk(sessionid)?;
         let user_agent = validate_user_agent(user_agent)?;
 
         Ok(Self {
@@ -162,14 +139,8 @@ impl Session {
         })
     }
 
-    /// A short, one-way name for this credential: which session it is,
-    /// without being it.
-    ///
-    /// For the browser snob sends its requests from, which has to tell a
-    /// session it already carries from one a new login produced, and writes
-    /// down which it was given in a file beside its profile. Sixteen hex
-    /// digits of SHA-256 cannot be turned back into the cookie, so that file
-    /// holds no credential; comparing two of them is all this is for.
+    /// Which session this is, without being it: sixteen hex digits of its
+    /// SHA-256, safe to write beside a browser profile and compare.
     pub fn fingerprint(&self) -> String {
         use sha2::{Digest, Sha256};
         Sha256::digest(self.sessionid.expose().as_bytes())
@@ -179,51 +150,50 @@ impl Session {
             .collect()
     }
 
-    /// Value of the `Cookie` header. The `sessionid` goes exactly as the
-    /// browser handed it over, undecoded: the `%3A` travels literally.
+    /// Value of the `Cookie` header. The `sessionid` goes as the browser
+    /// handed it over, undecoded.
     ///
-    /// Built into one buffer reserved up front, and handed back in a
-    /// [`Zeroizing`] wrapper. This is called on **every** request, so the
-    /// obvious spelling — a `Vec` of `format!`s joined at the end — left three
-    /// plaintext copies of the live cookie in freed memory per request, which
-    /// over a walk of a few thousand accounts is a few hundred of them. That is
-    /// exactly the core-dump, swap and hibernation exposure [`Secret`] exists
-    /// to prevent; its module doc waives only the copy inside the HTTP client,
-    /// not the ones this function makes itself.
-    ///
-    /// Reserving the capacity is the half that matters. A `String` that grows
-    /// leaves each outgrown buffer behind untouched, and `Zeroizing` can only
-    /// clear the one it still owns.
+    /// **One buffer of the exact size, cleared on drop**: this runs on every
+    /// request, and a `String` that grows leaves each outgrown buffer, a
+    /// plaintext copy of the cookie, behind in freed memory.
     pub fn cookie_header(&self) -> Zeroizing<String> {
-        let mut out = String::with_capacity(512);
-
-        out.push_str("sessionid=");
-        out.push_str(self.sessionid.expose());
-        // The account id is not a credential — it is the first field of the
-        // sessionid in plain sight — so a small allocation for it costs
-        // nothing worth avoiding.
-        out.push_str("; ds_user_id=");
-        out.push_str(&self.ds_user_id.to_string());
-
-        // Empty values are left out rather than sent blank. A cookie that is
-        // present with no value is not the same as an absent one to Instagram's
-        // session and CSRF checks, and it is a shape no browser produces.
+        let pk = self.ds_user_id.to_string();
+        // An empty value is left out: a cookie present with no value is not an
+        // absent one to Instagram, and no browser sends that shape.
         let optional = [
             ("csrftoken", self.csrftoken.as_ref().map(Secret::expose)),
             ("mid", self.mid.as_deref()),
             ("ig_did", self.ig_did.as_deref()),
             ("datr", self.datr.as_deref()),
-        ];
+        ]
+        .map(|(name, value)| (name, value.filter(|v| !v.is_empty())));
+
+        const SESSIONID: &str = "sessionid=";
+        const DS_USER_ID: &str = "; ds_user_id=";
+        let capacity = SESSIONID.len()
+            + self.sessionid.expose().len()
+            + DS_USER_ID.len()
+            + pk.len()
+            + optional
+                .iter()
+                .filter_map(|(name, value)| value.map(|v| "; ".len() + name.len() + 1 + v.len()))
+                .sum::<usize>();
+
+        let mut out = Zeroizing::new(String::with_capacity(capacity));
+        out.push_str(SESSIONID);
+        out.push_str(self.sessionid.expose());
+        out.push_str(DS_USER_ID);
+        out.push_str(&pk);
         for (name, value) in optional {
-            if let Some(value) = value.filter(|v| !v.is_empty()) {
+            if let Some(value) = value {
                 out.push_str("; ");
                 out.push_str(name);
                 out.push('=');
                 out.push_str(value);
             }
         }
-
-        Zeroizing::new(out)
+        debug_assert_eq!(out.len(), capacity, "the cookie outgrew its buffer");
+        out
     }
 
     pub fn check_schema(&self) -> Result<(), SessionError> {
@@ -240,8 +210,8 @@ impl Session {
         self.validated_at = Some(crate::clock::now());
     }
 
-    /// Reduced version for when the store cannot take the full record. Keeps
-    /// only what the session cannot work without.
+    /// Only what the session cannot work without, for a store that cannot take
+    /// the full record.
     #[must_use]
     pub fn minimal(&self) -> Self {
         Self {
@@ -255,51 +225,49 @@ impl Session {
     }
 }
 
-/// Tolerates what people actually paste: whitespace, the whole `sessionid=…`
-/// pair, surrounding quotes, and the entire cookie string.
+/// Tolerates what people paste: whitespace, the `sessionid=` pair, quotes, and
+/// the whole `Cookie` row, of which only the sessionid is kept (the value ends
+/// at the first `;`).
 ///
-/// The value ends at the first `;`, where the cookie does. Copying the whole
-/// `Cookie` row out of the developer tools is common and gives
-/// `sessionid=…; csrftoken=…; mid=…`; kept whole, the stored credential would
-/// be the sessionid *plus three other cookies*, the request would still work
-/// because that is a valid cookie string, and `csrftoken` would stay `None`,
-/// so the `X-CSRFToken` header would silently never be sent.
-fn clean_sessionid(raw: &str) -> Result<String, SessionError> {
+/// **No whitespace or control character inside it**: no cookie value holds
+/// one, and the value goes into a header as it is.
+fn clean_sessionid(raw: &str) -> Result<&str, SessionError> {
     let mut s = raw.trim();
     if let Some(rest) = s.strip_prefix("sessionid=") {
         s = rest.trim();
     }
     s = s.trim_matches(['"', '\'']).trim();
-    // A cookie value ends at the separator, whether or not anything follows it.
     s = s.split(';').next().unwrap_or(s).trim();
     s = s.trim_matches(['"', '\'']).trim();
 
     if s.is_empty() {
         return Err(SessionError::EmptySessionId);
     }
-    Ok(s.to_string())
+    if s.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(SessionError::MalformedSessionId);
+    }
+    Ok(s)
 }
 
-/// The account a `sessionid` belongs to, however its colon is written. What
-/// tells a browser's cookie of this account from another's: a session pasted
-/// as `42:abc` is set in the browser as it was pasted, and one Instagram
-/// rotated comes back as `42%3Aabc`.
+/// The account a `sessionid` belongs to, however its colon is written: a
+/// pasted `42:abc`, or the `42%3Aabc` Instagram rotates it to.
 pub fn account_in(sessionid: &str) -> Option<Pk> {
     extract_pk(sessionid).ok()
 }
 
-/// The `sessionid` starts with the account's numeric id, separated by a colon
-/// that usually arrives escaped as `%3A`.
+/// The `sessionid` starts with the account's numeric id, up to a colon that
+/// usually arrives escaped as `%3A`.
+///
+/// Read in place: a normalized copy would be a copy of the credential that
+/// nothing clears.
 fn extract_pk(sessionid: &str) -> Result<Pk, SessionError> {
-    let normalized = sessionid.replace("%3A", ":").replace("%3a", ":");
-    let head = normalized
-        .split(':')
-        .next()
+    let head = [":", "%3A", "%3a"]
+        .iter()
+        .filter_map(|separator| sessionid.find(separator))
+        .min()
+        .map(|end| &sessionid[..end])
+        .filter(|head| !head.is_empty() && head.bytes().all(|b| b.is_ascii_digit()))
         .ok_or(SessionError::MalformedSessionId)?;
-
-    if head.is_empty() || head.len() == normalized.len() {
-        return Err(SessionError::MalformedSessionId);
-    }
 
     head.parse::<Pk>()
         .map_err(|_| SessionError::MalformedSessionId)
@@ -310,8 +278,9 @@ fn validate_user_agent(ua: &str) -> Result<String, SessionError> {
     if ua.is_empty() {
         return Err(SessionError::EmptyUserAgent);
     }
-    if ua.chars().count() > MAX_USER_AGENT_CHARS {
-        return Err(SessionError::UserAgentTooLong(ua.chars().count()));
+    let length = ua.chars().count();
+    if length > MAX_USER_AGENT_CHARS {
+        return Err(SessionError::UserAgentTooLong(length));
     }
     if !ua.starts_with("Mozilla/5.0") {
         return Err(SessionError::SuspiciousUserAgent);
@@ -533,5 +502,50 @@ mod tests {
             s.check_schema(),
             Err(SessionError::UnsupportedSchema { .. })
         ));
+    }
+
+    /// The value goes into a `Cookie` header as it is: a line break or a
+    /// space inside it is two cookies pasted as one, or a header cut short.
+    #[test]
+    fn a_sessionid_with_whitespace_or_a_control_inside_is_rejected() {
+        for input in [
+            "71234567890%3AAbCd\r\nX-Injected: 1",
+            "71234567890%3AAbCd csrftoken=abc123",
+            "71234567890%3AAb\tCd",
+            "71234567890%3AAb\u{0}Cd",
+        ] {
+            assert!(
+                matches!(
+                    Session::from_sessionid(input, UA, SessionOrigin::Paste),
+                    Err(SessionError::MalformedSessionId)
+                ),
+                "{input:?} should be rejected"
+            );
+        }
+    }
+
+    /// The id is digits and nothing else: `u64`'s own parser takes a sign.
+    #[test]
+    fn the_account_id_is_digits_only() {
+        assert_eq!(account_in("+71234567890%3AAbCd"), None);
+        assert_eq!(account_in("%3A71234567890"), None);
+        assert_eq!(account_in("7123456789012345678901234567890:AbCd"), None);
+    }
+
+    /// A buffer that grows leaves the outgrown one, a copy of the cookie,
+    /// uncleared: the header is built in one of its exact size, however long
+    /// the session's values are.
+    #[test]
+    fn the_cookie_header_never_outgrows_its_buffer() {
+        let mut s = session();
+        s.csrftoken = Some(Secret::new("c".repeat(700)));
+        s.mid = Some("m".repeat(300));
+        s.ig_did = Some(String::new());
+        s.datr = Some("d".repeat(40));
+
+        let header = s.cookie_header();
+        assert_eq!(header.capacity(), header.len());
+        assert!(header.ends_with(&format!("; datr={}", "d".repeat(40))));
+        assert!(!header.contains("ig_did"));
     }
 }

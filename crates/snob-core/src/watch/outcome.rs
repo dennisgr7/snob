@@ -1,19 +1,11 @@
 //! What a run came to, and the one place its tokens are spelled.
 //!
-//! The vocabulary is shared between three things that must agree: the exit
-//! status a script reads, the `outcome` column `watch_runs` keeps, and the
-//! `"outcome"` field `--json` prints. It lives here because the store is the
-//! boundary the column crosses and cannot depend on `snob-cli`, which exits
-//! with this type under the name `ExitCode`; without a type here the column
-//! would be a bare string, written from `as_str()` at one end and compared
-//! against string literals at the other.
+//! The exit status a script reads, the `outcome` column of `watch_runs` and
+//! the `"outcome"` field of `--json` share this vocabulary. It lives here
+//! because the store writes the column and cannot depend on `snob-cli`.
 
-/// What one run of the monitor came to.
-///
-/// `snob-cli`'s `ExitCode`, without the numbers: a run's outcome is a fact
-/// about the run, while which integer the process exits with is a
-/// presentation decision and stays in `snob-cli` (`exit::code`). One type, so
-/// there is one spelling of each token in the program.
+/// What one run of the monitor came to: `snob-cli`'s `ExitCode` without the
+/// numbers, which are a presentation decision (`exit::code`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunOutcome {
     Ok,
@@ -29,8 +21,6 @@ pub enum RunOutcome {
 }
 
 impl RunOutcome {
-    /// Every outcome, so anything that has to walk them cannot walk a shorter
-    /// list. `secrets::Kind::ALL` is here for the same reason.
     pub const ALL: [RunOutcome; 6] = [
         Self::Ok,
         Self::Error,
@@ -42,13 +32,8 @@ impl RunOutcome {
 
     /// The stable token for this outcome.
     ///
-    /// It names the same conditions as the README's exit codes, so a caller
-    /// reading the JSON, a caller reading the database and a caller reading `$?` are told
-    /// the same thing by the same name. It exists so nothing has to invent
-    /// tokens inline, which is how two spellings of one condition get shipped.
-    ///
-    /// **Frozen**: this string feeds `watch_runs.outcome`, whose CHECK
-    /// constraint accepts these six values and nothing else.
+    /// **Frozen**: it feeds `watch_runs.outcome`, whose CHECK constraint
+    /// accepts these six values and nothing else.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ok => "ok",
@@ -60,17 +45,8 @@ impl RunOutcome {
         }
     }
 
-    /// The outcome a stored token names, or `None` for a token this build does
-    /// not write.
-    ///
-    /// Derived from [`RunOutcome::as_str`] rather than written as a second
-    /// match, so the two cannot disagree at all.
-    ///
-    /// `None` rather than a default, because a token this build does not
-    /// recognize came from a newer one, and guessing at what it meant is how a
-    /// probe learns to lie. What to do about it is the caller's decision, and
-    /// [`RecordedOutcome`] is where that decision is made explicit rather than
-    /// left to a comparison that quietly matches nothing.
+    /// The outcome a stored token names. `None`, never a default, for a token
+    /// this build does not write: a newer build wrote it.
     pub fn from_token(token: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
@@ -85,18 +61,11 @@ impl std::fmt::Display for RunOutcome {
 }
 
 /// An outcome as a stored row carries it: one this build knows, or the token
-/// whatever wrote the row used.
+/// a newer build wrote, kept as it was so `--json` prints what the column
+/// holds.
 ///
-/// The unknown half is a variant rather than an absence because the two are
-/// different answers. `NULL` means the run recorded no outcome at all; a token
-/// nothing here recognizes means a newer build recorded one this one cannot
-/// read, and the difference decides what `watch::status::health` should say.
-/// Kept as the string it was, so `--json` prints back what is really in the
-/// column and a person reading the line is told the word rather than "unknown".
-///
-/// **Nothing conservative is guessed here.** An unknown token is not `Ok` and
-/// is not any of the outcomes that lift by themselves; it is a run this build
-/// cannot explain, which is the direction a probe should be wrong in.
+/// **An unknown token is no known outcome**: not `Ok`, and none of those that
+/// lift by themselves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordedOutcome {
     Known(RunOutcome),
@@ -104,7 +73,6 @@ pub enum RecordedOutcome {
 }
 
 impl RecordedOutcome {
-    /// Reads a stored token. The parse the store does once, at the row.
     pub fn from_token(token: &str) -> Self {
         match RunOutcome::from_token(token) {
             Some(outcome) => Self::Known(outcome),
@@ -112,8 +80,7 @@ impl RecordedOutcome {
         }
     }
 
-    /// The token, whichever half this is. What the column holds and what the
-    /// JSON prints.
+    /// The token, whichever half this is.
     pub fn as_str(&self) -> &str {
         match self {
             Self::Known(outcome) => outcome.as_str(),
@@ -136,9 +103,7 @@ impl From<RunOutcome> for RecordedOutcome {
     }
 }
 
-/// So a caller can ask "is this row `ok`?" without unwrapping the half it does
-/// not care about — and, unlike a string comparison, an unknown token is
-/// unequal to every outcome rather than to every *spelling*.
+/// An unknown token is unequal to every outcome.
 impl PartialEq<RunOutcome> for RecordedOutcome {
     fn eq(&self, other: &RunOutcome) -> bool {
         self.known() == Some(*other)

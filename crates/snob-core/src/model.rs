@@ -1,10 +1,8 @@
-//! Domain types.
+//! Domain types: what is stored and what goes out as JSON, **a contract with
+//! whoever consumes the tool**.
 //!
-//! Deliberately separate from the models in `snob-ig`, which are the wire
-//! format and change whenever Instagram changes. What lives here is what gets
-//! stored and what goes out as JSON, which is a contract with whoever consumes
-//! the tool. Were they the same type, an Instagram change would break that
-//! contract without anyone noticing.
+//! Deliberately separate from the wire models in `snob-ig`, which follow
+//! Instagram and change when it does.
 
 use serde::{Deserialize, Serialize};
 
@@ -37,16 +35,8 @@ const IN_A_PATH: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMER
 
 /// A name, ready to be one segment of a URL path.
 ///
-/// Public for the same reason [`printable`] is: a username reaches an address
-/// from more than one place, and [`User::profile_url`] is not all of them. The
-/// `Referer` header the Instagram client sends names the page a browser would
-/// have called from, which is built out of the username as typed — and a
-/// header value cannot hold a byte below 0x20 at all, so an unencoded name
-/// there does not produce a wrong address, it produces no request.
-///
-/// Encoded rather than filtered, for the reason [`User::profile_url`] gives at
-/// length: removing a character from a name yields the address of a different
-/// account.
+/// **Encoded, never filtered**: a name with a character removed is the address
+/// of a different account, which may exist.
 pub fn in_a_path(name: &str) -> String {
     percent_encoding::utf8_percent_encode(name, IN_A_PATH).to_string()
 }
@@ -59,23 +49,23 @@ pub const USERNAME_MAX: usize = 30;
 /// first, as every command takes it off.
 ///
 /// **The one home of the rule**, for the command line (`cli::username`) and
-/// for `snob mcp` (`tools::account`) alike. A name outside it names nobody, so
-/// refusing it costs nothing, and it is refused before anything that would
-/// cost something: the consent question, the cap on an agent's writes, a
-/// request. It used to reach those first, so `snob followers 'bad name!'`
-/// asked whether to read the lists of an account that cannot exist, and was
-/// then told by Instagram it does not.
+/// for `snob mcp` (`tools::account`) alike: a name outside it names nobody,
+/// and is refused before anything that costs (a question, a write, a request).
+///
+/// `.` and `..` are refused too: as a path segment they are resolved away, so
+/// `/<name>/` would be the address of another page.
 pub fn possible_username(name: &str) -> bool {
     let name = name.strip_prefix('@').unwrap_or(name);
     let allowed = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '_';
-    !name.is_empty() && name.len() <= USERNAME_MAX && name.chars().all(allowed)
+    !name.is_empty()
+        && name.len() <= USERNAME_MAX
+        && name.chars().all(allowed)
+        && name != "."
+        && name != ".."
 }
 
 impl User {
     /// An account known by its id and name alone, every other field empty.
-    ///
-    /// Nothing is invented: the metadata arrives with a walk, and an upsert
-    /// leaves whatever it already had alone.
     pub fn named(pk: Pk, username: impl Into<String>) -> Self {
         Self {
             pk,
@@ -87,76 +77,38 @@ impl User {
         }
     }
 
-    /// The address of this account, with the name encoded into it.
-    ///
-    /// **Encoded rather than filtered, and the reason is not the terminal.**
-    /// This string lands in the URL slot of an OSC 8 sequence, in a markdown
-    /// link destination and in a spreadsheet hyperlink, and [`printable`] would
-    /// keep all three safe — but it *removes* characters, and a name with one
-    /// removed is the address of a **different account**, which may well exist.
-    /// A link that quietly points at somebody else is worse than one that does
-    /// not work, because nothing on screen says anything happened.
-    ///
-    /// Percent-encoding cannot do that. It is the identity on the alphabet
-    /// Instagram allows, so ordinary names come out byte for byte, and anything
-    /// else round-trips instead of resolving elsewhere. It also keeps an `ESC`
-    /// in a username from ending the OSC 8 sequence early and letting the rest
-    /// of the name open one of its own, pointing wherever the name said.
+    /// The address of this account, with the name percent-encoded into it
+    /// ([`in_a_path`]), so an `ESC` in a name cannot end the OSC 8 sequence
+    /// or the markdown link it lands in.
     pub fn profile_url(&self) -> String {
         format!("https://www.instagram.com/{}/", in_a_path(&self.username))
     }
 
-    /// The full name with control characters taken out, for anything a
-    /// terminal will interpret.
+    /// Through [`printable`].
     pub fn safe_full_name(&self) -> Option<String> {
         self.full_name.as_deref().map(printable)
     }
 
-    /// The username, likewise.
+    /// Through [`printable`].
     pub fn safe_username(&self) -> String {
         printable(&self.username)
     }
 }
 
-/// Strips what a terminal would obey rather than show.
+/// Strips what a terminal would obey and what a reader cannot see.
 ///
-/// Every string here came from another person's profile, and an account name is
-/// the cheapest way into this program: anyone who follows you gets one. Left
-/// alone, `\x1b]8;;http://…\x1b\\` in a full name turns a row into a link
-/// somewhere else, `\x1b[2K\x1b[A` erases the line above, and on terminals with
-/// OSC 52 enabled the clipboard can be written. None of that needs Instagram to
-/// be compromised.
+/// Every string from another person's profile goes through this before it is
+/// printed or put in JSON (AGENTS.md, "Output contract"): an escape sequence
+/// in a full name can rewrite the screen, and invisible characters can make
+/// two accounts read alike or carry text only a model reads.
 ///
-/// It removes rather than escapes: what is wanted is the name, and a name has
-/// no control characters in it. Everything printable survives untouched,
-/// accents and other scripts included.
-///
-/// The one exception is whitespace that happens to be a control character —
-/// a newline or a tab. Those become a space rather than vanishing, because
-/// deleting them would join two words that were never one.
-///
-/// Public because the same filter is needed for strings that never become a
-/// [`User`]: the name a `scan` summary opens with, an account named in an
-/// error, an excerpt of a response body. A second, slightly different copy of
-/// this list is how one output path ends up covered and another does not.
-///
-/// **A variation selector survives only where it can mean something.**
-/// U+FE00–U+FE0F draw nothing, and one after each letter of a name, or a run
-/// of them after any character, is the known way to hide four bits or a byte
-/// per selector inside text that looks ordinary: read by a model, that is an
-/// instruction nobody on screen sees. So U+FE00–U+FE0D, which only a handful
-/// of mathematical symbols and CJK compatibility ideographs use, are removed
-/// outright, and U+FE0E/U+FE0F (text or emoji presentation; U+FE0F is what
-/// asks for an emoji drawn in color) are kept only alone, right after a
-/// character that can take a presentation ([`takes_a_presentation`]): one
-/// in the ranges where Unicode puts the bases of those sequences (symbols,
-/// arrows, dingbats, the emoji blocks), or a keycap base (`0`-`9`, `#`,
-/// `*`) when U+20E3 follows and the keycap is drawn; never a letter, a
-/// digit, a combining mark of any script, whitespace, or punctuation but
-/// the four marks that are emoji themselves (U+203C, U+2049, U+3030,
-/// U+303D). What is left hides at most one bit per visible symbol, and
-/// nothing in a name written in letters, marks and digits. Judged on what
-/// has been kept, so a selector cannot slip in behind a removed character.
+/// - All of `Cc` and everything in [`is_invisible`] is removed; whitespace of
+///   any kind becomes a space, so two words are never joined.
+/// - **Variation selectors**: U+FE00 to U+FE0D are removed, and U+FE0E and
+///   U+FE0F kept only alone, right after a character that
+///   [`takes_a_presentation`], judged on what has been kept. One after each
+///   letter would hide four bits a letter; what is left hides at most one
+///   bit per visible symbol.
 pub fn printable(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -181,28 +133,14 @@ pub fn printable(text: &str) -> String {
     out
 }
 
-/// Whether `c` can be the base of a text or emoji presentation sequence,
-/// the only place [`printable`] keeps U+FE0E or U+FE0F; `keycap` is whether
-/// U+20E3 comes right after the selector.
+/// Whether `c` can be the base of a text or emoji presentation sequence;
+/// `keycap` is whether U+20E3 comes right after the selector.
 ///
-/// **A positive list, on purpose**: the ranges where
-/// `emoji-variation-sequences.txt` puts every base it names (some 350
-/// characters), taken whole rather than character by character, so the
-/// table need not follow every Unicode release. No letter of any script,
-/// no decimal digit and no combining mark is in them, and of punctuation
-/// only four marks that are emoji bases themselves (U+203C, U+2049, U+3030,
-/// U+303D), so a name written in any script's letters, marks stacked on
-/// them included (a Devanagari virama, a Thai tone mark, the kana voiced
-/// mark of text in NFD), can hide nothing; no selector is, so a run keeps
-/// at most one; and U+20E3 is not, so a keycap's mark drawn again over the
-/// same keycap carries none. The symbols in them that Unicode counts as
-/// letters or numbers (U+2139 INFORMATION SOURCE, U+24C2, the enclosed
-/// letters and digits from U+1F100) are symbols to a reader, and several
-/// are emoji bases (U+2139, U+24C2, the squared A, B, O and P), so they
-/// keep their selector and are drawn in color. The keycap bases are ASCII
-/// and qualify only before U+20E3 (`1` U+FE0F U+20E3). Every character in
-/// the ranges is drawn as a symbol of its own, so what is kept costs a
-/// reader at most one invisible bit per visible symbol.
+/// **A positive list**: the ranges where `emoji-variation-sequences.txt` puts
+/// its bases, taken whole so the table need not follow every Unicode release.
+/// They hold no letter of any script, no decimal digit, no combining mark, no
+/// selector (so a run keeps one at most) and not U+20E3. The keycap bases
+/// (`0`-`9`, `#`, `*`) qualify only before U+20E3.
 fn takes_a_presentation(c: char, keycap: bool) -> bool {
     match c {
         '0'..='9' | '#' | '*' => keycap,
@@ -213,8 +151,8 @@ fn takes_a_presentation(c: char, keycap: bool) -> bool {
         | '\u{2122}'
         | '\u{2139}'
         | '\u{2194}'..='\u{21aa}'
-        // Around U+2329 and U+232A, angle brackets, and below the dingbat
-        // brackets U+2768 to U+2775: punctuation that is no emoji base.
+        // Left out: the angle brackets U+2329 and U+232A, and the dingbat
+        // brackets U+2768 to U+2775, punctuation that is no emoji base.
         | '\u{231a}'..='\u{2328}'
         | '\u{232b}'..='\u{23fa}'
         | '\u{24c2}'
@@ -234,57 +172,14 @@ fn takes_a_presentation(c: char, keycap: bool) -> bool {
 
 /// The characters that show nothing but change how their neighbors read.
 ///
-/// `char::is_control` covers general category `Cc`, which is both the C0 and
-/// the C1 ranges. It does **not** cover these: they are category `Cf`, formatting
-/// marks rather than controls, and a right-to-left override inside a name can
-/// make one account read as another entirely.
-///
-/// Four groups, and the reason each is here:
-///
-/// - **Bidirectional overrides** — U+061C, the marks and the embedding,
-///   override and isolate controls. This is the "Trojan Source" class, and
-///   reversing the visible order of a name is the whole attack.
-/// - **Zero-width characters** — ZWSP, ZWNJ, ZWJ, the word joiner, the
-///   invisible operators and the byte-order mark. They let two different
-///   accounts render as the same name, which is what makes a list of who to
-///   unfollow untrustworthy.
-/// - **The tag block**, U+E0000–U+E007F, which encodes arbitrary invisible
-///   ASCII inside a name and renders as nothing at all, and **the
-///   supplementary variation selectors**, U+E0100–U+E01EF, which carry the
-///   same attack one byte per selector. They are category `Mn`, not `Cf`, and
-///   only ideographic variation sequences use them, which a name loses nothing
-///   by dropping. The rest of plane 14, to U+E0FFF, goes with them: it is
-///   unassigned, and set aside to be drawn as nothing. So do **the Mongolian
-///   free variation selectors**, U+180B–U+180D and U+180F, `Mn` as well and
-///   drawn as nothing, which may follow any letter as often as anyone likes;
-///   a Mongolian letter they would shape is drawn in its plain form, and
-///   nothing else is lost. (Of the standard sixteen, [`printable`] keeps
-///   U+FE0E and U+FE0F alone after an emoji base, and nothing else.)
-/// - **Blank by rendering rather than by category** — the soft hyphen, the
-///   combining grapheme joiner (U+034F, a mark, `Mn`), the Khmer inherent
-///   vowels (U+17B4–U+17B5, marks too), the Mongolian vowel separator, the
-///   interlinear annotation marks and the unassigned U+FFF0–U+FFF8 before
-///   them, and the Hangul fillers, which are *letters* (`Lo`) that draw
-///   nothing. No property this function could ask about groups them:
-///   `White_Space` does not list them and `Cc` does not contain them, so
-///   each one is another way to spell a name that is already taken.
-///
-/// With the standard variation selectors, which [`printable`] judges itself,
-/// that is the whole of Unicode's `Default_Ignorable_Code_Point`: what a
-/// renderer is told to draw as nothing when it does not know it.
-///
-/// The word-joiner range runs to U+206F rather than stopping at the invisible
-/// operators, because the deprecated formatting characters between them are
-/// invisible on the same terms.
-///
-/// **The whole of `Cf`, because AGENTS.md says so.** `char::is_control` is
-/// `Cc` alone, so this list is the entire format-character coverage, including
-/// the less familiar third: the Arabic number signs (U+0600–U+0605, U+06DD,
-/// U+070F, U+0890–U+0891, U+08E2), the Kaithi and Egyptian-hieroglyph format
-/// marks, the shorthand controls and the musical-symbol controls. A name is
-/// `[a-z0-9._]`, so only `full_name` can carry one, and the cost is a display
-/// name drawn shorter than it is — but the rules table states the guarantee
-/// flatly, and a reader believes it.
+/// `char::is_control` is `Cc` alone, so this is **the whole of `Cf`** (as
+/// AGENTS.md promises) and, with the standard variation selectors that
+/// [`printable`] judges itself, **the whole of
+/// `Default_Ignorable_Code_Point`**: the bidirectional controls ("Trojan
+/// Source"), the zero-width characters, the tag block and the rest of plane
+/// 14 with its variation selectors, the Mongolian ones, and what is blank by
+/// rendering and by no category (the soft hyphen, the combining grapheme
+/// joiner, the Hangul fillers, which are letters).
 fn is_invisible(c: char) -> bool {
     matches!(c,
         '\u{00ad}'
@@ -333,16 +228,8 @@ impl ListKind {
     }
 }
 
-/// The other direction, for reading a stored row back.
-///
-/// The standard trait rather than an inherent `from_str`, which clippy warns
-/// about for a good reason: a caller reaching for `"followers".parse()` would
-/// otherwise get a different function than the one they expected, or none.
-///
-/// It fails rather than defaulting. A `kind` column holding something else
-/// means the database was written by something that is not this program, and
-/// quietly calling that "followers" would answer a question about a list nobody
-/// asked about.
+/// Reads a stored `kind` back. It fails, never defaults: anything else was
+/// not written by this program.
 impl std::str::FromStr for ListKind {
     type Err = ();
 
@@ -361,33 +248,25 @@ impl std::fmt::Display for ListKind {
     }
 }
 
-/// Why a walk ended. Determines whether the snapshot can be compared against.
+/// Why a walk ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopReason {
-    /// The whole list was walked.
     Completed,
     /// The user interrupted it.
     Canceled,
     /// A caller-requested page cap was hit.
     PageLimit,
-    /// Instagram stopped serving pages early.
+    /// Instagram stopped serving pages early (AGENTS.md, "Known walls").
     Truncated,
-    /// Instagram is throttling requests.
     RateLimit,
-    /// A network failure that did not recover.
     Network,
-    /// The session stopped working.
     SessionInvalid,
 }
 
 impl StopReason {
-    /// Whether the resulting snapshot can be used as the basis of a comparison.
-    ///
-    /// Only a full walk describes the whole list. With any other ending
-    /// accounts are missing, and using it as a basis would make every one of
-    /// them look like it left: the classic failure of tools like this one.
-    ///
-    /// A caller-requested cap is not an exception. The list is still short.
+    /// Whether the resulting snapshot can be the basis of a comparison: only
+    /// a full walk. With any other ending, a caller-requested cap included,
+    /// accounts are missing, and each would look like it left.
     pub fn yields_complete_list(self) -> bool {
         matches!(self, Self::Completed)
     }
@@ -405,7 +284,6 @@ impl StopReason {
         }
     }
 
-    /// Every variant, so schema and code cannot drift apart untested.
     pub const ALL: [Self; 7] = [
         Self::Completed,
         Self::Canceled,
@@ -443,6 +321,10 @@ mod tests {
             "a/b",
             "@@x",
             &"a".repeat(31),
+            // Dot segments: `/../` is the address of another page.
+            ".",
+            "..",
+            "@..",
         ] {
             assert!(!possible_username(bad), "{bad}");
         }

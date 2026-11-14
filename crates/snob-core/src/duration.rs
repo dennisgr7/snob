@@ -1,19 +1,14 @@
 //! Durations as a person writes them: `30m`, `6h`, `2d`, `2w`.
 //!
-//! One parser, because three places read one of these — the maximum age of a
-//! reusable capture, the monitor's interval and its jitter, and the monitor's
-//! configuration file, which writes them back out as text. A second copy that
-//! understood `w` while the first did not is how `--max-age 2w` comes to mean
-//! two seconds.
+//! One parser for every place that reads one (a capture's maximum age, the
+//! monitor's interval and jitter, `watch.toml`, which writes them back).
 
 use std::time::Duration;
 
 /// Parses a duration written with a unit suffix. No suffix means seconds.
 ///
-/// Weeks are the largest unit on purpose. Months and years are not durations —
-/// they have no fixed length — and a schedule that says "every month" means
-/// something a fixed number of seconds cannot express. When that is wanted, it
-/// belongs in the calendar side of a schedule, not here.
+/// Weeks are the largest unit: a month has no fixed length, and belongs to the
+/// calendar side of a schedule.
 pub fn parse(text: &str) -> Result<Duration, String> {
     let text = text.trim();
     let (number, factor) = match text.chars().last() {
@@ -22,24 +17,15 @@ pub fn parse(text: &str) -> Result<Duration, String> {
         Some('h') => (&text[..text.len() - 1], 3600),
         Some('d') => (&text[..text.len() - 1], 86_400),
         Some('w') => (&text[..text.len() - 1], 604_800),
-        // With no suffix, seconds are assumed.
         Some(c) if c.is_ascii_digit() => (text, 1),
         _ => return Err(unreadable(text)),
     };
 
     let value: u64 = number.trim().parse().map_err(|_| unreadable(text))?;
 
-    // A number long enough to overflow is not a duration anyone means, and
-    // wrapping it would silently turn "never expire" into "expire at once".
-    //
-    // Bounded by `i64`, not by `u64`. Every consumer of one of these compares
-    // it against a timestamp — `now() - taken_at <= max_age_secs`, and the
-    // same shape in the scheduler — so the number leaves as `u64` and arrives
-    // as `i64`. `--max-age 15251000000000w` fits in a `u64` and comes out of
-    // the cast negative, which is false for every capture there has ever been:
-    // "never expire" would become "walk the list again, every time", about 250
-    // requests an invocation on a six-thousand-follower account, with nothing
-    // said.
+    // **Bounded by `i64`, not `u64`**: every consumer compares the seconds
+    // against a timestamp, and a value that fits a `u64` but casts negative
+    // would turn "never expire" into "walk the list again, every time".
     let seconds = value
         .checked_mul(factor)
         .filter(|s| i64::try_from(*s).is_ok())
@@ -52,12 +38,8 @@ fn unreadable(text: &str) -> String {
     format!("\"{text}\" is not a valid duration (try 30m, 6h, 2d or 2w)")
 }
 
-/// Writes a duration back the way somebody would have typed it.
-///
-/// The monitor's configuration file is written by the tool and edited by hand,
-/// so `21600` where the user wrote `6h` is a file that reads as machine output
-/// and invites being replaced wholesale. The largest unit that divides exactly
-/// is used, so a round trip through [`parse`] gives the same duration back.
+/// Writes a duration back the way somebody would have typed it: the largest
+/// unit that divides it exactly, so [`parse`] gives the same duration back.
 pub fn format(duration: Duration) -> String {
     let seconds = duration.as_secs();
     if seconds == 0 {

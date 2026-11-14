@@ -1,17 +1,19 @@
-//! Set operations between two account lists.
-//!
-//! Comparison is **always by `pk`**, never by username: usernames change, and
-//! crossing two lists by name would make anyone who renamed themselves between
-//! captures look like they left and someone else arrived.
+//! Set operations between two account lists, **always by `pk`**: a username
+//! changes, and crossing by name would turn a rename into a departure and an
+//! arrival.
 
 use std::collections::HashSet;
 
 use crate::Pk;
 use crate::model::User;
 
+fn pk_set(users: &[User]) -> HashSet<Pk> {
+    users.iter().map(|u| u.pk).collect()
+}
+
 /// Those in `a` and not in `b`, keeping the order of `a`.
 pub fn difference(a: &[User], b: &[User]) -> Vec<User> {
-    let in_b: HashSet<Pk> = b.iter().map(|u| u.pk).collect();
+    let in_b = pk_set(b);
     a.iter()
         .filter(|u| !in_b.contains(&u.pk))
         .cloned()
@@ -20,7 +22,7 @@ pub fn difference(a: &[User], b: &[User]) -> Vec<User> {
 
 /// Those in both, keeping the order of `a`.
 pub fn intersection(a: &[User], b: &[User]) -> Vec<User> {
-    let in_b: HashSet<Pk> = b.iter().map(|u| u.pk).collect();
+    let in_b = pk_set(b);
     a.iter().filter(|u| in_b.contains(&u.pk)).cloned().collect()
 }
 

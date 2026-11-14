@@ -1,17 +1,10 @@
-//! The request budget, as an interface rather than as a database.
+//! The request budget, as an interface: how to ask for a slot, whether the
+//! account is in cooldown, and how long each kind of cooldown lasts.
 //!
-//! **This is a port, kept apart from the persistence module that implements
-//! it.** `snob-ig` needs the trait — `Pacer` cannot be built without one — and
-//! must not depend on the crate that opens SQLite to get it.
-//!
-//! What is here is everything a caller has to know: how to ask for a slot, how
-//! to ask whether the account is in cooldown, and how long each kind of
-//! cooldown lasts. How any of that is stored is `snob_store::store::rate_budget`.
-//!
-//! The cooldown lengths are here rather than there because they are policy and
-//! not storage: `snob-ig` decides *which* of the three a refusal earns, from a
-//! status code and a body, and it does that without knowing there is a database
-//! at all.
+//! **A port.** `snob-ig` needs the trait and must not depend on the crate that
+//! opens SQLite to get it; the implementation is
+//! `snob_store::store::rate_budget`. The cooldown lengths and the sitting's
+//! arithmetic are here because they are policy, not storage.
 
 use std::time::Duration;
 
@@ -23,56 +16,34 @@ pub const RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(2 * 3600);
 /// Cooldown after Instagram blocks an action on the account.
 pub const ACTION_BLOCK_COOLDOWN: Duration = Duration::from_secs(12 * 3600);
 
-/// Cooldown after Instagram asks for the account to be verified.
-///
-/// Deliberately much shorter than the other two, because it is the only one
-/// waiting does not fix: a challenge is cleared by the user opening the link,
-/// and the account is usable again the moment they do. Twelve hours would
-/// strand someone who cleared it in thirty seconds, and would do nothing extra
-/// about the case this exists for — a scheduled run knocking again on an
-/// account Instagram has just asked to verify itself. Half an hour stops the
-/// second without stranding the first, and repeats still escalate.
+/// Cooldown after Instagram asks for the account to be verified. Short,
+/// because waiting does not clear a challenge, the user opening the link
+/// does: it only keeps a scheduled run from knocking again at once.
 pub const CHALLENGE_COOLDOWN: Duration = Duration::from_secs(30 * 60);
 
 /// How long to wait before firing a request.
+///
+/// Every method with a default is one a test double need not answer; the real
+/// budget, `SqliteRateBudget`, overrides them all.
 pub trait RateBudget: Send + Sync {
-    /// Reserves a request and returns how long to wait before sending it. Zero
-    /// means go ahead.
-    ///
-    /// The reservation is committed even if the request is never made:
-    /// overcharging is the safe direction to be wrong in.
+    /// Reserves a request and returns how long to wait before sending it.
+    /// **Committed even if the request is never made**: overcharging is the
+    /// safe direction to be wrong in.
     fn reserve(&self) -> Result<Duration, RateBudgetError>;
 
-    /// Reserves a **write** — a follow or an unfollow — and returns how long to
-    /// wait before sending it.
-    ///
-    /// A write pays everything a read pays and then the write bucket on top, so
-    /// this can never come back with a shorter wait than [`Self::reserve`]
-    /// would have. That ordering is the whole point of it being a separate
-    /// method: a caller cannot reach the cheaper one by mistake, because
-    /// `IgClient::post` calls this one and `IgClient::get` calls the other, and
-    /// neither takes an argument that could pick the wrong one.
+    /// Reserves a **write** (a follow or an unfollow): everything a read pays
+    /// and the write bucket on top.
     fn reserve_write(&self) -> Result<Duration, RateBudgetError>;
 
-    /// How long [`Self::reserve_write`] would wait if it were asked now.
-    /// Zero means now. Asks without spending.
-    ///
-    /// A write from the browser is built on the profile the tab loads just
-    /// before it, and a quarter of an hour's wait between the two outlasts
-    /// the browser: its wait comes before the profile is loaded, and the
-    /// reservation after it finds nothing more to wait for.
-    ///
-    /// The default is none, which is what every test double wants.
+    /// How long [`Self::reserve_write`] would wait now, without spending. A
+    /// write from the browser waits this out before it loads the profile it
+    /// is built on, which the browser would not outlast.
     fn write_wait(&self) -> Result<Duration, RateBudgetError> {
         Ok(Duration::ZERO)
     }
 
-    /// How long [`Self::reserve`] would wait if it were asked now. Zero means
-    /// now. Asks without spending, so a caller with a limit on how long it
-    /// may wait can refuse before the reservation is committed rather than
-    /// after (`Pacer::waiting_at_most`).
-    ///
-    /// The default is none, which is what every test double wants.
+    /// How long [`Self::reserve`] would wait now, without spending, so a
+    /// caller with a limit on its wait can refuse before it is charged.
     fn read_wait(&self) -> Result<Duration, RateBudgetError> {
         Ok(Duration::ZERO)
     }
@@ -83,18 +54,12 @@ pub trait RateBudget: Send + Sync {
     /// Puts the account in cooldown and returns until when.
     fn start_cooldown(&self, reason: &str, minimum: Duration) -> Result<EpochMs, RateBudgetError>;
 
-    /// How long until `accounts` more may be read off a list without the last
-    /// 24 hours holding more than [`accounts_per_day`]. Zero means now. Asks
-    /// without spending.
+    /// How long until `accounts` more may be read off a list within
+    /// [`accounts_per_day`], without spending.
     ///
-    /// **The second budget, and the one the account is judged on.** The
-    /// buckets above count requests; this counts what came back in them.
-    /// Meta's paper on the system that issues the automated-activity warning
-    /// (arXiv 2502.17693) weighs each request by how many accounts it returns,
-    /// and a list page is nothing but accounts. See [`accounts_per_day`].
-    ///
-    /// The default grants everything, which is what every test double wants;
-    /// the real budget, `SqliteRateBudget`, overrides every default here.
+    /// **The budget the account is judged on**: Meta's paper on the system
+    /// behind the automated-activity warning (arXiv 2502.17693) weighs each
+    /// request by how many accounts it returns.
     fn accounts_wait(&self, accounts: u32) -> Result<Duration, RateBudgetError> {
         let _ = accounts;
         Ok(Duration::ZERO)
@@ -111,82 +76,58 @@ pub trait RateBudget: Send + Sync {
         Ok(u32::MAX)
     }
 
-    /// The brake on every account, when one stands. See [`common_brake`].
-    ///
-    /// [`Self::cooldown`] already counts it; this says why, so the refusal can
-    /// name the accounts. The default is none, which is what a budget that
-    /// knows only one account can say.
+    /// The brake on every account, when one stands ([`common_brake`]).
+    /// [`Self::cooldown`] already counts it; this says which accounts.
     fn brake(&self) -> Result<Option<Brake>, RateBudgetError> {
         Ok(None)
     }
 
-    /// Whether this budget keeps the sitting ([`Sitting`]), so that it
-    /// outlives the process: [`Self::sitting_page`], [`Self::rest_owed`]
-    /// and [`Self::rest_paid`] then answer for it.
-    ///
-    /// The default is no, which is what every test double wants: the pacer
-    /// then counts the sitting in the process, with the same arithmetic
-    /// ([`Sitting::after_page`]). The real budget, `SqliteRateBudget`, keeps
-    /// it in the account's database, so a run stopped during its rest, or a
-    /// page cap reached on the page that filled a sitting, leaves the rest
-    /// owed to whatever walks that account next.
+    /// Whether this budget keeps the [`Sitting`], so that it outlives the
+    /// process. When not, the pacer counts it in the process.
     fn keeps_sitting(&self) -> bool {
         false
     }
 
-    /// Records a page of a list walked at `at`, and answers the sitting it
-    /// leaves: one transaction, so two processes walking the same account
-    /// count each other's pages. See [`Sitting::after_page`].
-    ///
-    /// The default keeps nothing and answers as if this were the first page
-    /// ever walked; nothing reads it unless [`Self::keeps_sitting`] says yes.
+    /// Records a page of a list walked at `at` and answers the sitting it
+    /// leaves, in one transaction: two processes walking the same account
+    /// count each other's pages.
     fn sitting_page(&self, at: EpochMs, rule: SittingRule) -> Result<Sitting, RateBudgetError> {
         Ok(Sitting::after_page(None, at, rule))
     }
 
-    /// Until when the rest the sitting owes runs, if it is still owed at
-    /// `now`. Asks without writing.
+    /// Until when the rest the sitting owes runs, if still owed at `now`.
     fn rest_owed(&self, now: EpochMs) -> Result<Option<EpochMs>, RateBudgetError> {
         let _ = now;
         Ok(None)
     }
 
-    /// Records that the rest running until `until` was paid: the sitting
-    /// starts again. A rest that is not that one any more (another process
-    /// paid it, and a new sitting filled since) is left as it is.
+    /// Records that the rest running until `until` was paid. Any other rest
+    /// (a new sitting filled since) is left as it is.
     fn rest_paid(&self, until: EpochMs) -> Result<(), RateBudgetError> {
         let _ = until;
         Ok(())
     }
 
-    /// Whether this budget keeps the answers' times ([`AnswerTime`]), so
-    /// that [`Self::recent_waits`] answers for every process of the account.
-    ///
-    /// The default is no, which is what every test double wants: the pacer
-    /// then keeps the last few in the process. The real budget keeps them in
-    /// the account's database, so an agent reading a list a page at a time,
-    /// one process a page, is slowed by the answers the pages before it got.
+    /// Whether this budget keeps the answers' times for every process of the
+    /// account. When not, the pacer keeps the last few in the process.
     fn keeps_answers(&self) -> bool {
         false
     }
 
-    /// Records how long an answer took. Nothing reads it back unless
-    /// [`Self::keeps_answers`] says yes.
     fn answer_timed(&self, answer: &AnswerTime) -> Result<(), RateBudgetError> {
         let _ = answer;
         Ok(())
     }
 
-    /// How long the healthy answers ([`AnswerTime::healthy`]) received
-    /// after `since` took, newest first, at most `n` of them: what
-    /// [`SlowRule::floor`] reads.
+    /// How long the healthy answers received after `since` took, newest
+    /// first, at most `n`: what [`SlowRule::floor`] reads.
     fn recent_waits(&self, since: EpochMs, n: usize) -> Result<Vec<Duration>, RateBudgetError> {
         let _ = (since, n);
         Ok(Vec::new())
     }
 }
 
-/// How a request left: from a tab in the browser, or from this process.
+/// How a request left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Via {
     /// `fetch()` from an instagram.com tab, timed inside the tab.
@@ -204,7 +145,6 @@ impl Via {
         }
     }
 
-    /// Back from [`Self::as_str`]; anything else is `None`.
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "browser" => Some(Via::Browser),
@@ -214,44 +154,33 @@ impl Via {
     }
 }
 
-/// How long one answer of the API took to arrive, and what Instagram said
-/// about its own load in it.
-///
-/// **The time is to the answer's headers**, from the moment the request
-/// left, after the budget had been paid: the server's thinking and one
-/// round trip, and not the size of the page. On the browser's path it is
-/// taken inside the tab, so starting the browser, the owner's pipe and the
-/// DevTools protocol are not in it.
+/// How long one answer of the API took to arrive, **to its headers**: the
+/// server's thinking and one round trip, not the size of the page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnswerTime {
-    /// When it arrived.
     pub at: EpochMs,
-    /// The call's name as the allowlist knows it, never its path: a path
+    /// The call's name as the allowlist knows it, **never its path**: a path
     /// carries the account it was about.
     pub operation: String,
-    /// The HTTP status.
     pub status: u16,
-    /// How long it took to arrive.
     pub waited: Duration,
-    /// `x-ig-capacity-level` and `x-ig-peak-time`, as `snob_ig` joins
-    /// them, when Instagram sent either. Written down, never acted on.
+    /// `x-ig-capacity-level` and `x-ig-peak-time`, as `snob_ig` joins them.
+    /// Written down, never acted on.
     pub load: Option<String>,
     pub via: Via,
 }
 
 impl AnswerTime {
-    /// A 2xx: an answer whose time says how busy the server was, rather
-    /// than how quickly it refused.
+    /// A 2xx: its time says how busy the server was, not how quickly it
+    /// refused.
     pub fn healthy(&self) -> bool {
         (200..300).contains(&self.status)
     }
 }
 
-/// When answers are slow enough to lengthen the waits between them, from
-/// the pace (`snob_ig::pace::Pace`, where each number has its reason).
-///
-/// **It only ever lengthens a wait.** The wait the pace drew stands unless
-/// the floor is longer: a fast answer never makes the next request sooner.
+/// When answers are slow enough to lengthen the waits between them; the
+/// numbers are the pace's (`snob_ig::pace::Pace`). **It only ever lengthens a
+/// wait.**
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlowRule {
     /// The floor is this many times the median recent answer. Zero turns
@@ -261,12 +190,11 @@ pub struct SlowRule {
     pub samples: usize,
     /// How far back an answer still counts.
     pub window: Duration,
-    /// The longest floor the rule sets, however slow the answers.
+    /// The longest floor the rule sets.
     pub ceiling: Duration,
 }
 
 impl SlowRule {
-    /// The rule that never lengthens anything.
     pub const OFF: SlowRule = SlowRule {
         factor: 0,
         samples: 0,
@@ -280,21 +208,15 @@ impl SlowRule {
     }
 
     /// The fewest answers the rule judges from: a majority of
-    /// [`Self::samples`], so that the median is a slow answer only when
-    /// most of them were. One slow answer, the first of a run paying for
-    /// its connection, is not a slow server.
+    /// [`Self::samples`], so one slow answer is not a slow server.
     pub fn least(&self) -> usize {
         self.samples / 2 + 1
     }
 
-    /// The shortest wait the answers in `recent` allow before the next
-    /// request, newest first: [`Self::factor`] times their median, at most
-    /// [`Self::ceiling`]. `None` when the rule is off or there are fewer
-    /// than [`Self::least`] of them.
-    ///
-    /// Only the first [`Self::samples`] are read; the caller has already
-    /// left out what is older than [`Self::window`] and what was not
-    /// healthy ([`AnswerTime::healthy`]).
+    /// The shortest wait the answers in `recent` (newest first, healthy and
+    /// inside the window) allow before the next request: [`Self::factor`]
+    /// times the median of the first [`Self::samples`], at most
+    /// [`Self::ceiling`]. `None` when off or under [`Self::least`] answers.
     pub fn floor(&self, recent: &[Duration]) -> Option<Duration> {
         if self.factor == 0 || self.samples == 0 {
             return None;
@@ -308,8 +230,7 @@ impl SlowRule {
         Some(median.saturating_mul(self.factor).min(self.ceiling))
     }
 
-    /// `drawn`, or the floor `recent` sets when that is longer: never
-    /// shorter than `drawn`.
+    /// `drawn`, or the floor `recent` sets when that is longer.
     pub fn lengthen(&self, drawn: Duration, recent: &[Duration]) -> Duration {
         self.floor(recent).map_or(drawn, |floor| floor.max(drawn))
     }
@@ -318,22 +239,14 @@ impl SlowRule {
 /// The pages of lists walked on one account since its last rest, and the
 /// rest they owe once they fill a sitting.
 ///
-/// **A rest is owed, not taken on the spot.** The page that fills a sitting
-/// draws its rest once and writes down when it ends (`rest_until`), whether
-/// or not the walk that read it goes on; and before any page of any walk of
-/// the account, the walker pays what is left of it. Paid only by a walk
-/// that went on, as the rest once was, it was skipped by a walk that ended
-/// on its page cap, by a run stopped during it, and by every caller that
-/// reads a list a page at a time, which is how an agent reads one.
-///
-/// The arithmetic is here, over plain numbers, so that the database that
-/// keeps it (`snob-store`) and the pacer that counts it in a process for a
-/// budget that keeps nothing (`snob-ig`) are the same rule.
+/// **A rest is owed, not taken on the spot**: the page that fills a sitting
+/// writes down when its rest ends, and the next page of any walk of the
+/// account pays what is left of it first. The arithmetic is here so the
+/// database that keeps it and the pacer that counts it in a process are the
+/// same rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sitting {
-    /// Pages walked in it.
     pub pages: u32,
-    /// When the last of them was walked.
     pub last_page_at: EpochMs,
     /// When the rest it owes ends, once it is full; `None` before.
     pub rest_until: Option<EpochMs>,
@@ -344,33 +257,25 @@ pub struct Sitting {
 pub struct SittingRule {
     /// How many pages fill it.
     pub pages: u32,
-    /// The rest the page that fills it owes, drawn by the caller: kept only
-    /// when this page is the one that fills it.
+    /// The rest the page that fills it owes, drawn by the caller.
     pub rest: Duration,
-    /// How long with no page a sitting that is not full ends on its own: the
-    /// longest rest. Left alone that long, the reading has rested by any
-    /// account of it; a shorter gap, even the shortest rest, would let a run
-    /// stopped and started again just past it walk a second sitting with no
-    /// rest drawn for the first.
+    /// How long with no page a sitting that is not full ends on its own:
+    /// **the longest rest**. A shorter gap would let a run stopped and
+    /// started again walk a second sitting with no rest for the first.
     pub idle: Duration,
 }
 
 impl Sitting {
-    /// The sitting after a page walked at `at`, from the one `before` it
-    /// (`None`: no page was ever walked here).
+    /// The sitting after a page walked at `at`, from the one `before` it.
     ///
     /// - A rest that has ended by `at` ends its sitting: this page is the
     ///   first of the next.
-    /// - A rest still owed stays owed, and the page is counted in the full
-    ///   sitting: walked by somebody who did not wait for it, it is no
-    ///   reason to forget the rest.
-    /// - A sitting that is not full and was left alone for longer than
-    ///   [`SittingRule::idle`] ends too.
+    /// - A rest still owed stays owed, and the page counts in the full
+    ///   sitting.
+    /// - A sitting not full and left alone longer than [`SittingRule::idle`]
+    ///   ends too. A clock set back is not idleness.
     /// - The page that brings the count to [`SittingRule::pages`] owes
     ///   [`SittingRule::rest`] from `at`.
-    ///
-    /// A clock set back is not idleness: a page "before" the last one counts
-    /// on in the same sitting, the direction that rests sooner.
     pub fn after_page(before: Option<Sitting>, at: EpochMs, rule: SittingRule) -> Sitting {
         let idle = i64::try_from(rule.idle.as_millis()).unwrap_or(i64::MAX);
         let (pages, owed) = match before {
@@ -396,8 +301,8 @@ impl Sitting {
         self.rest_until.filter(|until| *until > now)
     }
 
-    /// The sitting once the rest running until `until` is paid: a new one,
-    /// with no page in it yet. Any other rest stays owed.
+    /// The sitting once the rest running until `until` is paid: a new one.
+    /// Any other rest stays owed.
     #[must_use]
     pub fn rested(self, until: EpochMs) -> Sitting {
         if self.rest_until == Some(until) {
@@ -412,24 +317,21 @@ impl Sitting {
     }
 
     /// How many pages into a sitting the next page walked at `now` would
-    /// come after: none once a rest has ended or the sitting was left alone
-    /// past `idle`, as [`Self::after_page`] counts. For an estimate.
+    /// come after, as [`Self::after_page`] counts. For an estimate.
     pub fn pages_at(&self, now: EpochMs, idle: Duration) -> u32 {
         let rule = SittingRule {
             pages: u32::MAX,
             rest: Duration::ZERO,
             idle,
         };
+        // `after_page` counts the page asked about, so it answers one or more.
         Self::after_page(Some(*self), now, rule).pages - 1
     }
 }
 
 /// How close together push-backs on two different accounts have to be for
-/// every account to stop.
-///
-/// Two accounts refused within the hour, from one machine, is Instagram
-/// answering the machine rather than either account, and the next account to
-/// ask would be the third.
+/// every account to stop: within the hour, Instagram is answering the
+/// machine and not either account.
 pub const COMMON_BRAKE_WINDOW: Duration = Duration::from_secs(3600);
 
 /// One push-back, as every account's budget records it.
@@ -449,12 +351,9 @@ pub struct Brake {
     pub accounts: Vec<Pk>,
 }
 
-/// The brake the push-backs impose at `now`, if any.
-///
-/// Two push-backs on **different** accounts less than [`COMMON_BRAKE_WINDOW`]
-/// apart stop every account until the later of their two cooldowns. Several
-/// on one account are that account's own cooldown, which it escalates by
-/// itself.
+/// The brake the push-backs impose at `now`, if any: two on **different**
+/// accounts less than [`COMMON_BRAKE_WINDOW`] apart stop every account until
+/// the later of their two cooldowns.
 pub fn common_brake(pushbacks: &[PushBack], now: EpochMs) -> Option<Brake> {
     let window = COMMON_BRAKE_WINDOW.as_millis() as i64;
     let mut sorted: Vec<&PushBack> = pushbacks.iter().collect();
@@ -462,9 +361,10 @@ pub fn common_brake(pushbacks: &[PushBack], now: EpochMs) -> Option<Brake> {
 
     let mut brake: Option<Brake> = None;
     for (i, a) in sorted.iter().enumerate() {
-        for b in &sorted[i + 1..] {
+        // Sorted by time, so the first one outside the window ends the pairs.
+        for b in sorted[i + 1..].iter().take_while(|b| b.at - a.at < window) {
             let until = a.until.max(b.until);
-            if a.pk == b.pk || b.at - a.at >= window || until <= now {
+            if a.pk == b.pk || until <= now {
                 continue;
             }
             let brake = brake.get_or_insert(Brake {
@@ -482,14 +382,11 @@ pub fn common_brake(pushbacks: &[PushBack], now: EpochMs) -> Option<Brake> {
     brake
 }
 
-/// Accounts a day read off follower and following lists, in the ordinary case.
-///
-/// The closest thing to a measured number anybody has published: the careful
-/// monitor in this category (misiektoja/instagram_monitor, 4.0, September
-/// 2026) defaults to it, and its collaborators' testing puts the flags that
-/// arrive within a day at list walks past it. InstagramUnfollowers users were
-/// logged out for automated activity at about 1,600 in one sitting in the same
-/// month. It is a ceiling, not a target.
+/// Accounts a day read off follower and following lists. A ceiling, not a
+/// target, and the closest thing to a measured number anybody has published:
+/// misiektoja/instagram_monitor 4.0 (September 2026) defaults to it, and
+/// InstagramUnfollowers users were logged out for automated activity at about
+/// 1,600 in one sitting that month.
 const ACCOUNTS_PER_DAY: u32 = 2_000;
 
 /// The same after Instagram has pushed back on this account recently.
@@ -499,9 +396,6 @@ const ACCOUNTS_PER_DAY_AFTER_PUSH_BACK: u32 = 1_000;
 const PUSH_BACK_MEMORY: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// The daily ceiling on accounts read, given when the last cooldown began.
-///
-/// Policy rather than storage, so it lives here next to the cooldown lengths;
-/// the store only remembers when.
 pub fn accounts_per_day(last_push_back: Option<EpochMs>, now: EpochMs) -> u32 {
     match last_push_back {
         Some(at) if now - at < PUSH_BACK_MEMORY.as_millis() as i64 => {
@@ -514,11 +408,6 @@ pub fn accounts_per_day(last_push_back: Option<EpochMs>, now: EpochMs) -> u32 {
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct RateBudgetError(pub String);
-
-// No `From<StoreError>` or `From<rusqlite::Error>`: both types live in
-// `snob-store`, and the orphan rule refuses an impl where neither side is local.
-// `budget_err` in `snob_store::store::rate_budget` converts at the crate
-// boundary instead, one line per fallible call.
 
 /// Grants everything and counts nothing. **Tests only**: using it against
 /// Instagram skips rate control entirely.

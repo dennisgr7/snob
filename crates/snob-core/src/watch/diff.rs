@@ -1,17 +1,10 @@
 //! The temporal diff: what changed in a list between two captures.
 //!
-//! `gained` and `lost` are this module's words and belong to nothing else. The
-//! set commands answer a question about one instant — `unfollowers` is everyone
-//! you follow who does not follow you back, right now — and that answer is a
-//! *difference between two lists*. This one is a difference between two
-//! *moments* of the same list. Letting either vocabulary drift into the other
-//! turns "three people left" into "three people never followed you back", which
-//! is a different sentence about different people.
+//! `gained` and `lost` are this module's words: a difference between two
+//! *moments* of one list. The set commands (`unfollowers`, `fans`) answer
+//! about two lists at one instant, and the two vocabularies must not mix.
 //!
-//! Everything here is pure: lists in, changes out. No clock, no database, no
-//! network. The rules about *which* two captures may be compared live in
-//! [`Basis`], which is the part with the judgment in it and therefore the part
-//! that gets tested on its own.
+//! Pure. Which two captures may be compared is [`Basis`].
 
 use crate::model::User;
 use crate::sets;
@@ -27,13 +20,8 @@ pub struct ListDiff {
 }
 
 impl ListDiff {
-    /// Crosses two captures of the same list.
-    ///
-    /// Both directions come from [`sets`], so both are compared **by `pk`** —
-    /// which is what stops somebody who renamed themselves between the two
-    /// captures showing up as a departure and an arrival at once. That is not a
-    /// hypothetical: renames are one of the things this monitor reports, so the
-    /// two features would have contradicted each other on the same account.
+    /// Crosses two captures of the same list, **by `pk`**: somebody who
+    /// renamed themselves in between is neither a departure nor an arrival.
     pub fn between(before: &[User], after: &[User]) -> Self {
         Self {
             gained: sets::difference(after, before),
@@ -45,104 +33,61 @@ impl ListDiff {
         self.gained.is_empty() && self.lost.is_empty()
     }
 
-    /// How many changes this is, for the count a caller reports without
-    /// having to add the two up itself.
     pub fn len(&self) -> usize {
         self.gained.len() + self.lost.len()
     }
 }
 
 /// An account that now goes by a different name.
-///
-/// The event no tool of this kind offers, and it costs nothing: `users::upsert`
-/// files these in `username_history` on every walk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rename {
     pub pk: Pk,
-    /// The `username_history` row this came from.
-    ///
-    /// Carried so a report can say which renames it announced, rather than
-    /// leaving a watermark to stand in for the answer. Whether a rename is
-    /// reported and whether the scan window may close are independent
-    /// conditions — `007_renames_sent` sets out how they come apart in both
-    /// directions — and only the row itself can settle the first.
+    /// The `username_history` row this came from, so a report can say which
+    /// renames it announced (migration `007_renames_sent`).
     pub history_id: i64,
-    /// What they used to be called.
     pub from: String,
-    /// What they are called now.
     pub to: String,
-    /// When the change was noticed, not when it happened — we only find out on
-    /// the walk that sees the new name.
+    /// When the change was noticed, not when it happened.
     pub at: Epoch,
 }
 
 /// Which two captures a comparison may be made from, if any.
 ///
-/// Separate from the comparison itself, and pure, because this is where all the
-/// rules are. Deciding it takes a mark and an id; making the diff takes two
-/// full member lists off the disk. Keeping them apart means the rules can be
-/// tested exhaustively without a database, and means the members are only read
-/// when they are going to be used — an unchanged list is the common case, and
-/// it reads nothing.
+/// Decided from a mark and an id alone, so the members are read off the disk
+/// only when they are going to be compared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Basis {
-    /// Something is stored but nothing has ever been reported for this list.
-    ///
-    /// **This is everybody's first run**, not a corner case, and it must report
-    /// nothing at all: a first tick that announced fourteen hundred "new
-    /// followers" would be both useless and, pointed at a webhook, unkind to
-    /// whatever is on the other end. The mark is set and the run stays quiet.
-    /// There is no [`ListDiff`] to be had from this variant, which is the point
-    /// of it being a variant.
+    /// Something is stored but nothing was ever reported for this list.
+    /// **Everybody's first run, and it reports nothing**: the mark is set and
+    /// the run stays quiet.
     Baseline { snapshot_id: i64 },
-    /// The mark already points at the newest usable capture.
-    ///
-    /// Nothing has been walked since the last report — either the counter had
-    /// not moved or the walk was served from storage. Distinct from a `Compare`
-    /// that happens to find no changes: this one did not have to look.
+    /// The mark already points at the newest usable capture: nothing was
+    /// walked since the last report.
     Unchanged { snapshot_id: i64 },
     /// Two different captures, in this order.
     Compare { before: i64, after: i64 },
 }
 
 impl Basis {
-    /// Works out what can be compared.
+    /// Works out what can be compared. `None` when nothing is stored.
     ///
-    /// `latest` must come from `usable_snapshots`, which structurally cannot
-    /// hand back an incomplete capture — the same guard that already keeps a
-    /// half-walked list out of the static crossings. An incomplete list here
-    /// would be worse than there: the accounts missing from it would be
-    /// reported as departures, and somebody would be told that two hundred
-    /// people unfollowed them because a walk was interrupted.
-    ///
-    /// `None` means there is nothing stored at all, so there is nothing to say.
+    /// `latest` must come from `usable_snapshots`, which cannot hand back an
+    /// incomplete capture: the accounts missing from one would be reported as
+    /// departures.
     pub fn decide(mark: Option<i64>, latest: Option<i64>) -> Option<Self> {
         let latest = latest?;
         match mark {
             None => Some(Self::Baseline {
                 snapshot_id: latest,
             }),
-            // Compared by id and not by date. Two captures can share a
-            // timestamp, and a mark is a receipt for one particular row.
+            // By id, not by date: two captures can share a timestamp.
             //
-            // **`>=`, not `==`, and the difference is a report that says the
-            // opposite of the truth.** Snapshot ids only go up, so a `latest`
-            // below the mark means this run's own capture is older than one
-            // already reported — which happens without anything going wrong:
-            // there is no run lock, `snob watch once` consults no schedule, and
-            // a walk that outlives the timer interval is the ordinary way two
-            // runs overlap. The slower run then finishes second holding the
-            // older id, and `Compare { before: 101, after: 100 }` would report
-            // everybody who arrived as `lost` and everybody who left as
-            // `gained`, straight into the webhook fields a receiver branches
-            // on.
-            //
-            // The answer is `Unchanged` **at the mark, not at `latest`**: this
-            // run has nothing to add, and moving the mark back to its own older
-            // capture would make the next run re-report a window that has
-            // already been reported. `store::watch` accepts duplicates as the
-            // cost of overlap; it does not accept inversions, and it should not
-            // have to accept a regression either.
+            // **`>=`, not `==`.** Two overlapping runs (there is no run lock)
+            // can finish out of order, and the slower one then holds a
+            // capture older than the one already reported: comparing would
+            // report arrivals as `lost` and departures as `gained`. It is
+            // `Unchanged` **at the mark**, since moving the mark back would
+            // report the same window again.
             Some(mark) if mark >= latest => Some(Self::Unchanged { snapshot_id: mark }),
             Some(mark) => Some(Self::Compare {
                 before: mark,
@@ -151,12 +96,7 @@ impl Basis {
         }
     }
 
-    /// The capture the mark should point at once this run is over, whichever
-    /// way it went.
-    ///
-    /// One place answers it so that the three variants cannot drift into three
-    /// slightly different answers at the call site — and getting this wrong in
-    /// the `Baseline` arm is how a first run stays a first run forever.
+    /// The capture the mark should point at once this run is over.
     pub fn mark_to(self) -> i64 {
         match self {
             Self::Baseline { snapshot_id } | Self::Unchanged { snapshot_id } => snapshot_id,
