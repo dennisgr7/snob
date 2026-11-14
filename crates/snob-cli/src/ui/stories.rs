@@ -1,9 +1,5 @@
 //! The interactive story list: arrow keys, Enter to look, D to keep.
 //!
-//! Keys come through `ui::browser::input`, whose header gives the two defects
-//! it closes. The guard, the chrome, standard error as the only stream drawn
-//! on, and the receipts said after the alternate screen are `ui::tui`'s.
-//!
 //! What it does **not** do is render the picture in the terminal; AGENTS.md
 //! ("Stories are handed to the system viewer") gives the numbers and the
 //! argument.
@@ -35,11 +31,8 @@ use crate::ui::preview;
 use crate::ui::theme::Role;
 use crate::ui::tui;
 
-/// Drives the list until the user leaves it, or picks another account to see
-/// it as. `note` is said on the first frame.
-///
-/// Downloads are made once and kept: moving up and down a list of ten stories
-/// and opening three of them twice is three requests to the CDN, not six.
+/// Drives the list until the user leaves it, or picks another account to see it
+/// as.
 pub async fn browse(
     client: &IgClient,
     stories: &Stories,
@@ -72,9 +65,7 @@ pub async fn browse(
         loop {
             // The selection is this loop's; the state keeps only the scroll
             // offset, which is what makes the list follow the selection with two
-            // rows of margin. Layout is against the terminal's *current* size on
-            // every draw, so a resize event that was coalesced, delivered late or
-            // missed entirely cannot leave the list wrong.
+            // rows of margin.
             list.select(Some(selected));
             tui.terminal.draw(|frame| {
                 draw(
@@ -195,9 +186,7 @@ pub async fn browse(
                 // positioned writes into fragments no renderer can predict.
                 Action::Redraw => tui.terminal.clear()?,
                 Action::Quit => break Ok(ExitCode::Ok),
-                // Raw mode is what makes this reachable. Outside it, Ctrl+C either
-                // raises `SIGINT` or fires the console control handler, and the
-                // browser never hears about it.
+                // Raw mode is what makes this reachable.
                 Action::Interrupt => break Ok(ExitCode::Interrupted),
                 Action::Accounts => {
                     let picked = accounts::pick(&mut tui, secrets, paths, viewer, |frame| {
@@ -338,10 +327,6 @@ pub(crate) const FOLDER_KEYS: &[help::Key] = &[
 
 /// Draws one frame: the shared chrome, the table, and the scrollbar when the
 /// table does not fit.
-///
-/// `page_rows` is written with how many rows the list got, which is what Page
-/// Up and Page Down move by -- the keyboard arms cannot see the layout, so the
-/// draw leaves the one number they need behind.
 #[expect(clippy::too_many_arguments, reason = "one frame's worth of state")]
 fn draw(
     frame: &mut Frame<'_>,
@@ -378,12 +363,7 @@ fn draw(
 pub(crate) const FOLDER_HINT: &str =
     "↑↓ move · enter open · d save · ← back · a account · ? keys · q quit";
 
-/// The one items view, drawn under whatever title and hints its owner gives
-/// it. The story browser, the inside of a highlight folder, and the profile
-/// card's sub-views are all this function, so they cannot drift apart.
-///
-/// `with_left` is what varies: a live story says what is left of it, a kept
-/// one only when it was taken.
+/// The one items view, drawn under whatever title and hints its owner gives it.
 #[expect(clippy::too_many_arguments, reason = "one frame's worth of state")]
 pub(crate) fn draw_items_view(
     frame: &mut Frame<'_>,
@@ -413,8 +393,7 @@ pub(crate) fn draw_items_view(
     // One row of the interior belongs to the header.
     let viewport = (inner.height as usize).saturating_sub(1).max(1);
     *page_rows = viewport;
-    // Only when some of the list is off screen. On a list that fits, a counter
-    // is one more thing to read that says nothing.
+    // Only when some of the list is off screen.
     let fits = total <= viewport;
     block = tui::top_right(
         block,
@@ -469,11 +448,8 @@ const PICTURE_MIN_W: u16 = 16;
 /// A story is nine wide to sixteen tall.
 pub(crate) const STORY: (u16, u16) = (9, 16);
 
-/// The interior of a list view split for a picture at its right, when it
-/// has the room: the list, and the picture's place. `shape` is the
-/// picture's, wide to tall: at a column a pixel and two pixels a row, the
-/// place of a story is nine columns wide for every eight rows. Never so
-/// wide that the list has under [`ITEMS_MIN_W`] left.
+/// The interior of a list view split for a picture at its right, when it has
+/// the room: the list, and the picture's place.
 pub(crate) fn picture_beside(inner: Rect, (wide, tall): (u16, u16)) -> Option<(Rect, Rect)> {
     let wide = (inner.height * 2 * wide / tall).min(inner.width.saturating_sub(ITEMS_MIN_W + 2));
     if wide < PICTURE_MIN_W {
@@ -522,11 +498,9 @@ pub(crate) fn beside<'a>(
     }
 }
 
-/// The columns a list of story items needs, measured from the items rather
-/// than guessed: a `photo` and an `unknown` are different widths, and a date
-/// column sized for August is wrong in September. Only `Length` -- the spare
-/// width stays unused on the right, keeping a rail on the left instead of
-/// scattering three facts across a two-hundred-column terminal.
+/// The columns a list of story items needs, measured from the items rather than
+/// guessed: a `photo` and an `unknown` are different widths, and a date column
+/// sized for August is wrong in September.
 fn story_widths(items: &[Story], with_left: bool) -> Vec<Constraint> {
     let kind = items
         .iter()
@@ -566,11 +540,7 @@ pub(crate) fn number_width(total: usize) -> u16 {
     (digits + 1).max(3)
 }
 
-/// The row of every items view. What varies between the views is only the
-/// time columns: a story says
-/// when it was posted and what is left of it, a highlight item only when it
-/// was taken (`left` is `None` and the column does not exist). The number is
-/// dim and right-aligned, what is left dim, the mentions cyan.
+/// The row of every items view.
 fn item_row(
     index: usize,
     kind: &str,
@@ -602,14 +572,6 @@ fn item_row(
 
 /// Writes the story into the scratch directory and hands it to the system
 /// viewer.
-///
-/// The file, not the URL. Handing the CDN address to a browser puts a signed
-/// link to somebody else's story in a browser history — and it opens a
-/// browser to look at a picture, which is not what the user asked for.
-/// `stem_base` is what comes before the number in the file's name — the
-/// username for a story, the username and the highlight's number for a
-/// highlight item — so the two browsers write the very names their commands
-/// write.
 pub(crate) async fn open(
     client: &IgClient,
     stem_base: &str,
@@ -624,9 +586,7 @@ pub(crate) async fn open(
 }
 
 /// The story as a file in the scratch directory: the one already there when
-/// this session fetched it before, or fetched now and kept for the next
-/// time. What Enter opens and what `p` draws are this same file, so looking
-/// at a story both ways is one download.
+/// this session fetched it before, or fetched now and kept for the next time.
 pub(crate) async fn fetched(
     client: &IgClient,
     stem_base: &str,
@@ -645,11 +605,7 @@ pub(crate) async fn fetched(
 
     let bytes = bytes_of(client, &items[index]).await?;
     // Through the same gate as `keep` and `snob stories --download`, and for
-    // the same reason: the name came off the server. `printable` strips what
-    // a terminal must not draw and leaves everything a path reads -- a `..`,
-    // a drive letter, a UNC share -- and `Path::join` hands an absolute name
-    // the whole path. `create_new` then refuses a name that already exists,
-    // a link included.
+    // the same reason: the name came off the server.
     let name = default_name(scratch.dir(), stem_base, index + 1, extension_of(&bytes))?;
     let path = scratch.dir().join(name);
     output::create_new(&path)?
@@ -668,8 +624,7 @@ pub(crate) async fn keep(
     index: usize,
     cache: &mut [Option<PathBuf>],
 ) -> Result<PathBuf> {
-    // Reuse what was already fetched to look at it. Pressing Enter and then D
-    // on the same story is one request, not two.
+    // Reuse what was already fetched to look at it.
     let bytes = match cache[index].as_ref().filter(|p| p.is_file()) {
         Some(path) => std::fs::read(path)?,
         None => bytes_of(client, &items[index]).await?,

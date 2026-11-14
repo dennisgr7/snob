@@ -1,27 +1,11 @@
 //! The colors the interface names, by what they are for.
 //!
-//! Five roles and no more, the five the site's terminal blocks are drawn in
-//! (`web/DESIGN.md`, "Theme"; the `term-*` tokens of
-//! `web/src/styles/global.css`): the accent, which is the brand's magenta,
-//! and four states. A view asks for a role and never for a color, so what a
-//! warning looks like is decided here and nowhere else.
+//! **Each role is one of the terminal's own sixteen colors**, so the user's theme
+//! decides the shade, and nothing is drawn in a color their background was not chosen
+//! for.
 //!
-//! **Each role is one of the terminal's own sixteen colors**, so the user's
-//! theme decides the shade, and nothing is drawn in a color their background
-//! was not chosen for. The accent is used as the site uses it, sparingly:
-//! the prompt, the word a title is about, a link, the keys in the help.
-//!
-//! **`SNOB_THEME=brand` draws the accent in the site's own pink**,
-//! `#f472b6`, and only on a terminal that says it shows 24-bit color
-//! ([`truecolor`]). An option and not the default, because it is one fixed color for a
-//! background it knows nothing about: it is the site's accent on its dark
-//! page, above 6:1 there, and on a light terminal it is hard to read. The
-//! four states stay the terminal's own whatever the theme.
-//!
-//! What is not here: the selection, which is reverse video and no color at
-//! all (`tui::selection`), and the bars of a walk, which name the same cyan,
-//! green and yellow for the same states in indicatif's own templates
-//! (`progress.rs`).
+//! **`SNOB_THEME=brand` draws the accent in the site's own pink**, `#f472b6`, and only
+//! on a terminal that says it shows 24-bit color ([`truecolor`]).
 
 use std::sync::OnceLock;
 
@@ -56,15 +40,10 @@ const BRAND_ACCENT: (u8, u8, u8) = (0xf4, 0x72, 0xb6);
 
 /// Whether the environment says the terminal shows 24-bit color.
 ///
-/// `COLORTERM` set to `truecolor` or `24bit` is how a terminal says so, and
-/// most do. **Windows Terminal does not set it**, and has shown 24-bit color
-/// since its first release; it is known by `WT_SESSION`, which is how
-/// `ui/notify.rs` knows it too, and how termenv decides the same question
-/// (muesli/termenv#141). Inside tmux or screen that variable is the outer
-/// terminal's and says nothing of what the multiplexer passes on, so there
-/// `COLORTERM` alone decides.
-///
-/// `var` is `std::env::var` outside the tests.
+/// **Windows Terminal does not set it**, and has shown 24-bit color since its
+/// first release; it is known by `WT_SESSION`, which is how `ui/notify.rs`
+/// knows it too, and how termenv decides the same question
+/// (muesli/termenv#141).
 fn says_truecolor(var: impl Fn(&str) -> Option<String>) -> bool {
     if var("COLORTERM").is_some_and(|said| {
         said.eq_ignore_ascii_case("truecolor") || said.eq_ignore_ascii_case("24bit")
@@ -81,10 +60,7 @@ pub fn truecolor() -> bool {
     *SAYS.get_or_init(|| says_truecolor(|name| std::env::var(name).ok()))
 }
 
-/// The palette `SNOB_THEME` asks for. `brand` is honored only where the
-/// terminal says it shows 24-bit color: a terminal that does not would draw
-/// an escape sequence it half understands, or the nearest of 256 colors,
-/// which is nobody's accent.
+/// The palette `SNOB_THEME` asks for.
 fn palette_of(theme: Option<&str>, truecolor: bool) -> Palette {
     let brand = theme.is_some_and(|theme| theme.eq_ignore_ascii_case("brand"));
     if brand && truecolor {
@@ -101,9 +77,7 @@ fn palette() -> Palette {
 }
 
 impl Role {
-    /// The role as a view draws it: a foreground and nothing else. Passed
-    /// through `tui::paint` like every other style, so a run that may not
-    /// style draws none of them.
+    /// The role as a view draws it: a foreground and nothing else.
     pub fn style(self) -> Style {
         Style::new().fg(self.color_in(palette()))
     }

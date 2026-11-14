@@ -1,9 +1,4 @@
 //! Comma-separated rows.
-//!
-//! The columns are the six JSON keys of `User`, in the order the struct
-//! declares them. JSON leaves an unknown attribute out; a table cannot, so
-//! here it is an empty field. That keeps every row the same width, which is
-//! the whole point of the format.
 
 use anyhow::{Context, Result};
 use snob_core::model::{User, printable};
@@ -88,29 +83,8 @@ fn optional(value: Option<&str>) -> String {
 
 /// What a field from a profile has to survive before it is written.
 ///
-/// Two hazards live in the same value, and a csv meets both: it is the one
-/// machine format that routinely goes to a terminal, because `--format csv`
-/// with no `-o` writes to standard output, and it is also the one that gets
-/// opened in a spreadsheet.
-///
-/// So the control characters come out first — the terminal obeys those, and
-/// every other format goes through `safe_username` too. Then the formula is
-/// defused: Excel and LibreOffice
-/// evaluate any cell that opens with `=`, `+`, `-` or `@`, and a full name is
-/// whatever its owner typed. A leading apostrophe is the marker both of them
-/// read as "this is text", and it costs one character of fidelity in a field
-/// that is decoration anyway.
-///
-/// Order matters, and this way round. Defusing first would look at the control
-/// character, decide the field is not a formula, and only then take that
-/// character out — handing the spreadsheet a bare `=1+1` that nothing marked.
-///
 /// The **first non-blank** character, not the first, and that is the other half
-/// of the same trap. `printable` turns whitespace into a space rather than
-/// removing it, deliberately, so that deleting a newline does not join two
-/// words — which means `"\t=1+1"` survives as `" =1+1"`, whose first character
-/// is a space. Excel and LibreOffice both trim leading whitespace when they
-/// import, so what they then evaluate is the formula that nothing marked.
+/// of the same trap.
 fn clean(field: &str) -> String {
     let field = printable(field);
     match field.chars().find(|c| !c.is_whitespace()) {

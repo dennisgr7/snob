@@ -1,24 +1,8 @@
-//! The long lists `snob mcp` handed back one page of, held for the pages
-//! after it.
+//! The long lists `snob mcp` handed back one page of, held for the pages after
+//! it.
 //!
-//! A list comes back a page at a time (`answer::page`), and the call for the
-//! next page names the same list with an `offset`. **That call never walks
-//! anything**, and the page it gets has to be a page of the same list the
-//! first call read. Reading it again from the store is not always that: a
-//! walk given `max_pages` may have stopped short, and what it read is not
-//! stored as a whole list, so `--offline` serves the last whole one; and a
-//! crossing whose two lists were checked against Instagram when the first
-//! page was read is refused offline when they were walked far apart
-//! (`engine::cooldown::check_same_moment`). So the server holds the whole of
-//! a list it handed back in part, under the call that read it
-//! (`tools::Page::of`), and hands the later pages from that; only a list it
-//! no longer holds is read from the store, as `mode: "stored"` would read it.
-//!
-//! Held in memory only, for [`HELD_FOR`], a few at a time ([`HELD`], at most
-//! [`HELD_BYTES`] in all), and gone with the process. It is what was already
-//! printed to the server, the same accounts the store has on disk, and
-//! holding it opens nothing: the server still builds no client and opens no
-//! store.
+//! **That call never walks anything**, and the page it gets has to be a page of
+//! the same list the first call read.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -30,10 +14,7 @@ use serde_json::{Map, Value};
 /// conversation. The oldest goes first.
 const HELD: usize = 4;
 
-/// How long a list is held after it was read. Paging through a list of
-/// twelve thousand accounts is sixty or so calls, each a turn of the model's;
-/// past this the next page is read from the store instead, or for a walk cut
-/// short by `max_pages`, the call is made again from the start.
+/// How long a list is held after it was read.
 const HELD_FOR: Duration = Duration::from_secs(30 * 60);
 
 /// The most held at once, counted as the compact JSON of the items. An
@@ -86,8 +67,7 @@ struct List {
 
 impl Held {
     /// Holds `whole`, the whole list the call `of` read, in place of what an
-    /// earlier run of that call read. One too big to hold beside nothing
-    /// else is not held, and its later pages are read from the store.
+    /// earlier run of that call read.
     pub fn keep(&self, of: String, whole: Whole) {
         self.keep_at(of, whole, Instant::now());
     }

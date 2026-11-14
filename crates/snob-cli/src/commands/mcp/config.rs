@@ -1,28 +1,17 @@
 //! `snob mcp config <client>`: what to add to a client's configuration so it
 //! starts this server.
 //!
-//! **Printed, never written.** Each client keeps its servers in a file of its
-//! own, in a format of its own, and some of those files hold the person's
-//! other servers and their secrets. Merging into them is a write into another
-//! program's settings that a person cannot review before it happens; printing
-//! is one they can read, and paste, or not. The snippet goes to standard
-//! output, so it can be redirected; where it goes is said on standard error.
-//!
 //! **The path printed outlives an upgrade** wherever the installer keeps one
 //! that does (`exe::stable_exe`): a package manager runs the binary from a
-//! directory named after its version, and a configuration pointing there
-//! stops working the day that directory is cleaned up. A server already
-//! running when that happens refuses its calls instead (`child::Launch`).
+//! directory named after its version, and a configuration pointing there stops
+//! working the day that directory is cleaned up.
 //!
 //! **A remote server is pointed at, never started** (`--remote <URL>`): the
 //! snippet names the address a tunnel serves `snob mcp --listen` at, and how
 //! the client sends the key, with no command, and so none of the server's
 //! flags. **The key is never in it**, and never read to print it: the client
 //! takes it from [`TOKEN`] in its own environment, and a client with no
-//! variables is told to paste it where it keeps its connectors. `TOKEN` is
-//! not the server's variable (`key::ENV`), which wins over the keyring in
-//! every snob it reaches; a person who exported that one for a client would
-//! hand the key to any server started in the same shell.
+//! variables is told to paste it where it keeps its connectors.
 
 use std::ffi::OsStr;
 use std::time::Duration;
@@ -90,9 +79,7 @@ pub fn run(
     Ok(ExitCode::Ok)
 }
 
-/// The variable a client reads the key from, for a remote server. Not the
-/// server's own (`key::ENV`): see the header. `jobs::NEVER_INHERITED` keeps
-/// it, with the server's, from every child.
+/// The variable a client reads the key from, for a remote server.
 pub const TOKEN: &str = "SNOB_MCP_TOKEN";
 
 /// The global flags that describe the server a client starts, and so mean
@@ -100,11 +87,8 @@ pub const TOKEN: &str = "SNOB_MCP_TOKEN";
 const SERVERS_GLOBALS: &[&str] = &["--account", "--no-keyring", "--strict-roots"];
 
 /// `--remote`'s value: where the client reaches the server. **`https`**, the
-/// tunnel's address, or `http` on this machine's loopback only (the near end
-/// of `ssh -L`), since anywhere else the key would cross a network in plain
-/// text. Nothing secret in it: no user or password, no query or fragment,
-/// and no key, which goes in a header and nowhere else. An address with no
-/// path is given the one the server serves ([`super::HTTP_PATH`]).
+/// tunnel's address, or `http` on this machine's loopback only (the near end of
+/// `ssh -L`), since anywhere else the key would cross a network in plain text.
 pub fn remote_url(text: &str) -> Result<Url, String> {
     // Before anything that would repeat the address: a key in it is said
     // to be one, and not printed back.
@@ -174,9 +158,7 @@ fn unreachable_by(client: McpClient, url: &Url) -> Option<&'static str> {
     )
 }
 
-/// [`remote_url`] for clap. Not a plain function as a value parser, whose
-/// refusal clap prints after the value it was given: an address that holds
-/// a key or a password is refused here without being repeated.
+/// [`remote_url`] for clap.
 #[derive(Clone, Copy, Debug)]
 pub struct RemoteUrl;
 
@@ -203,9 +185,7 @@ impl clap::builder::TypedValueParser for RemoteUrl {
 }
 
 /// `snob mcp config <client> --remote <URL>`: the snippet for a client that
-/// reaches a server already serving, and what to do with it. Exit 0 always:
-/// clap refused the server's flags (`cli::McpConfigArgs`), and the address
-/// was checked as it was parsed ([`remote_url`]).
+/// reaches a server already serving, and what to do with it.
 fn remote(
     client: McpClient,
     url: &Url,
@@ -273,9 +253,7 @@ fn chat_flag(what: ConfirmInChat) -> String {
         .unwrap_or_default()
 }
 
-/// The snippet for `client`, and a sentence saying where it goes. `within` is
-/// how long one call may take ([`super::longest_call`]), for the client whose
-/// own limit is shorter than that.
+/// The snippet for `client`, and a sentence saying where it goes.
 fn render(
     client: McpClient,
     exe: &str,
@@ -311,12 +289,9 @@ fn render(
                  (\"MCP: Open User Configuration\"). VS Code's key is \"servers\".",
             )
         }
-        // Codex gives up on a tool call after 60 seconds unless told
-        // otherwise (`tool_timeout_sec`), which is less than the person may
-        // take to answer a question alone. A list's call is bounded by its
-        // wait for the job it starts, and the walk goes on past it, so the
-        // longest call is one that waits for the budget, a profile's with a
-        // rest between sittings after it (`mcp::longest_call`).
+        // Codex gives up on a tool call after 60 seconds unless told otherwise
+        // (`tool_timeout_sec`), which is less than the person may take to
+        // answer a question alone.
         McpClient::Codex => (
             format!(
                 "[mcp_servers.snob]\ncommand = {}\nargs = [{}]\n\
@@ -335,16 +310,10 @@ fn render(
     }
 }
 
-/// The snippet for `client` to reach the server at `url`, and a sentence
-/// saying where it goes. No command, and **no key**: each client is told to
-/// read it from [`TOKEN`] in the way it reads a variable, and Claude Desktop,
-/// which reads no file for a remote server, is given the address alone.
-///
-/// The spellings of a variable are the clients' own, as their documentation
-/// was quoted to us and not checked against each client: Claude Code expands
-/// `${VAR}`, Cursor and VS Code `${env:VAR}`, and Codex takes the variable's
-/// name (`bearer_token_env_var`). The sentences say to check that where a
-/// client answers 401.
+/// The snippet for `client` to reach the server at `url`, and a sentence saying
+/// where it goes. No command, and **no key**: each client is told to read it
+/// from [`TOKEN`] in the way it reads a variable, and Claude Desktop, which
+/// reads no file for a remote server, is given the address alone.
 fn render_remote(client: McpClient, url: &str, within: Duration) -> (String, &'static str) {
     let header = |variable: String| json!({ "Authorization": format!("Bearer {variable}") });
     let servers = |key: &str, server: Value| {

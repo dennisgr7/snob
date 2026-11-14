@@ -1,19 +1,14 @@
 //! A list command's `--background`: the walk as a job, started by a person.
 //!
-//! What an agent's `snob_list` does through `snob __job start`, for somebody
-//! at a terminal: the walk runs in a supervisor that outlives this command
-//! (`jobs`), and this answers at once with the job's id. **The rules are the
-//! job's**: one job at a time per account (`too_many_jobs`, or the same walk
-//! already running handed back), the command line checked against what a
-//! job may run (`jobs::argv`), and the walk's own budget, cooldown and
-//! pacing, which it meets as any walk does.
+//! **The rules are the job's**: one job at a time per account (`too_many_jobs`,
+//! or the same walk already running handed back), the command line checked
+//! against what a job may run (`jobs::argv`), and the walk's own budget,
+//! cooldown and pacing, which it meets as any walk does.
 //!
-//! **Consent is asked here, before the job is made**, in the words and
-//! order every list command asks it (`engine::ask_consent_with`, before
-//! the account is resolved, so a no spends nothing), since nobody is at the
-//! job's terminal to ask; the job's command then carries the `-y` that yes
-//! is. With no terminal and no `-y` it is refused as any walk would be, and
-//! no job is made.
+//! **Consent is asked here, before the job is made**, in the words and order
+//! every list command asks it (`engine::ask_consent_with`, before the account
+//! is resolved, so a no spends nothing), since nobody is at the job's terminal
+//! to ask; the job's command then carries the `-y` that yes is.
 
 use std::io::IsTerminal;
 use std::time::Duration;
@@ -75,10 +70,9 @@ pub async fn run(
     Ok(ExitCode::Ok)
 }
 
-/// The job's command line: the list command, the account, and the flags a
-/// job takes that were given (`--background` refuses every other one at the
-/// parser), with `-y` for a yes asked above or typed. No `--format`: a
-/// job's walk prints JSON, which is what `snob jobs show` hands back.
+/// The job's command line: the list command, the account, and the flags a job
+/// takes that were given (`--background` refuses every other one at the
+/// parser), with `-y` for a yes asked above or typed.
 fn job_command(command: &str, args: &ListArgs) -> Vec<String> {
     let mut line = vec![command.to_string()];
     if let Some(target) = &args.target {

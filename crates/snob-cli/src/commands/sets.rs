@@ -1,10 +1,4 @@
 //! `snob unfollowers`, `snob fans` and `snob friends`.
-//!
-//! All three cross an account's two lists, so they cost two walks instead of
-//! one. The cache policy makes them just as cheap as `followers` and
-//! `following`: when both lists are stored and neither counter has moved, the
-//! cross comes out of storage and costs one request, the one that reads both
-//! counters.
 
 use anyhow::Result;
 use snob_core::filters::Filter;
@@ -33,8 +27,7 @@ pub enum SetOp {
 }
 
 impl SetOp {
-    /// What the result is, singular first. Both are written out because the
-    /// singular of these is not the plural with its `s` taken off.
+    /// What the result is, singular first.
     fn description(self) -> (&'static str, &'static str) {
         match self {
             Self::Unfollowers => (
@@ -78,8 +71,7 @@ impl SetOp {
     }
 
     /// What an account missing from the crossed-against list would be made to
-    /// look like. This is the sentence that explains why a partial one is
-    /// refused rather than reported.
+    /// look like.
     fn misreads_as(self) -> &'static str {
         match self {
             Self::Unfollowers => "they did not follow you",
@@ -134,17 +126,14 @@ pub async fn run(
     .await?;
 
     // The browser instead of the listing — the default at a terminal, the
-    // decision made above. An empty result is not browsed: there is nothing
-    // to move over, and the summary line already says the count.
+    // decision made above.
     if browses && !crossed.result.is_empty() {
         return browse(app, crossed, &args, op, &filter, &store, paths).await;
     }
     destination.write(&crossed.result)?;
     print_summary(op, &crossed, None);
 
-    // Decided by what stopped the **base** list alone. The list crossed
-    // against is not consulted: it was refused outright in `cross`, well
-    // before there was a result to code.
+    // Decided by what stopped the **base** list alone.
     Ok(crossed.base_outcome.exit_code_for_a_printed_result())
 }
 
@@ -173,18 +162,14 @@ async fn cross(
     filter: &Filter,
     limit: Option<usize>,
 ) -> Result<Crossed> {
-    // The list being crossed against comes first. If it turns out incomplete
-    // there is no result to give, so it is worth finding out before spending
-    // the second walk.
+    // The list being crossed against comes first.
     let subject = engine::target::label(app, query.target.as_deref());
     let typed = query.target.clone();
     // This is where the two lists differ in a way that matters. If the list
     // being crossed against is incomplete, every account missing from it
     // **shows up in the result without deserving to**: in `unfollowers`,
     // someone who does follow you but was never read out of your followers
-    // would be presented as not following you. That is not a partial result,
-    // it is a wrong one, so it stops. The base list being incomplete only
-    // leaves results out, and the ones shown are true: that gets a warning.
+    // would be presented as not following you.
     let (against, against_outcome) =
         common::walk_named(app, &query, op.against(), &subject, |outcome| {
             op.require_against_complete(outcome)
@@ -224,9 +209,8 @@ async fn cross(
     })
 }
 
-/// The crossing in the browser, as the account the command runs as and then
-/// as each account it is crossed again as. Each account's summary is said as
-/// its view is left.
+/// The crossing in the browser, as the account the command runs as and then as
+/// each account it is crossed again as.
 async fn browse(
     app: Box<App>,
     crossed: Crossed,
@@ -316,8 +300,6 @@ fn print_summary(op: SetOp, crossed: &Crossed, whom: Option<&Viewer>) {
 }
 
 /// The one line a crossing prints about itself.
-///
-/// Built rather than printed, so a test can read it.
 #[expect(
     clippy::too_many_arguments,
     reason = "the parts of one line, apart so a test can give them"

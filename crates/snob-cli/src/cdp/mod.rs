@@ -1,24 +1,7 @@
 //! The browser snob starts, and the DevTools protocol it is driven over.
 //!
 //! **Nothing here touches the user's own browser, or the cookie store that
-//! belongs to it.** What this drives is a browser *this program started*,
-//! pointed at a profile directory under snob's own data directory — empty until
-//! the user logs into Instagram themselves, in the window that opens in front
-//! of them, or until `headless/` writes a pasted session into it. The cookie
-//! then comes back from that browser, through the browser's own debugging
-//! protocol, and describes a session the user created a moment earlier. The
-//! same profile, without a window, is what every request is sent from.
-//!
-//! That boundary is deliberate, and it is where the project stops. Reading the
-//! real browser's store instead would mean going through the encryption the
-//! operating system put around it — on Windows, App-Bound Encryption since
-//! Chrome 127 — and that protection is there on purpose. There is no need to go
-//! near it: a profile of our own answers the same question, with the user
-//! signing in themselves and watching it happen, and that is the route taken.
-//!
-//! `Storage.getCookies` is the method that matters, because it returns
-//! `HttpOnly` cookies too. `sessionid` is `HttpOnly`, which is also why no
-//! console snippet can ever read it.
+//! belongs to it.**
 //!
 //! **The protocol travels on a pipe, not on a port**: a port hands the session
 //! to every account on the machine, as `crate::pipe` tells.
@@ -38,23 +21,13 @@ mod connection;
 
 pub use connection::{CallError, Connection, Event, OnAttach, PauseRule, Paused};
 
-/// How long to wait for the browser to answer its first command. Opening the
-/// pipe is the first thing it does, so this only ever runs out when it did not
-/// start.
+/// How long to wait for the browser to answer its first command.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long to wait for someone to finish logging in. Generous on purpose:
-/// two-factor codes arrive by SMS and people go looking for their phone.
+/// How long to wait for someone to finish logging in.
 pub const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Gap between cookie checks, while the login is young.
-///
-/// Each check asks the browser for its whole cookie jar and reads it back
-/// over the pipe, so the interval is how much of that a login costs. Two
-/// seconds for the first half minute, so a person who was already signed in
-/// is not kept waiting; after that [`POLL_INTERVAL_SETTLED`], because nobody
-/// completes a two-factor prompt in under five seconds, and three hundred
-/// polls over a ten-minute wait would be work nobody reads.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Gap between cookie checks once the login has been going a while.
@@ -64,10 +37,6 @@ const POLL_INTERVAL_SETTLED: Duration = Duration::from_secs(5);
 const POLL_QUICKLY_FOR: Duration = Duration::from_secs(30);
 
 /// Gap between looks at the pipe while waiting for the browser to come up.
-///
-/// Short, because the other thing this wait watches is the process: Chrome's
-/// profile singleton exits within a second, and the whole point of noticing
-/// that is not to sit out the startup timeout first.
 const POLL_FOR_READY: Duration = Duration::from_millis(100);
 
 /// Every host the browser is kept from resolving, as a pattern of
@@ -88,10 +57,6 @@ pub fn login_url() -> String {
 }
 
 /// A browser we started, and the pipe the protocol travels on.
-///
-/// Killed when dropped, so an early exit — a failed handshake, an error —
-/// takes it down without having to remember to. The ways out that skip
-/// destructors end it too, as `crate::pipe` tells.
 pub struct Launched {
     process: BrowserProcess,
     /// Handed to the dispatcher by [`Cdp::connect`].
@@ -109,11 +74,10 @@ pub fn launch(browser: &Browser, profile: &Path) -> Result<Launched> {
     // Chrome warns, in a bar across the top of the window, that
     // `--disable-blink-features` (below) is an unsupported flag that "affects
     // stability and security", which is not true of how snob uses it and reads
-    // to the person logging in as though something were wrong. `--test-type`
-    // is what skips that bar; ChromeDriver passes it for the same reason.
-    // Measured in October 2026 on Chrome 154: the bar is gone, and the page
-    // sees the same `navigator.webdriver`, User-Agent, plugins and
-    // `window.chrome` with or without it. Only the window has a bar to hide.
+    // to the person logging in as though something were wrong. Measured in
+    // October 2026 on Chrome 154: the bar is gone, and the page sees the same
+    // `navigator.webdriver`, User-Agent, plugins and `window.chrome` with or
+    // without it.
     launch_in(
         browser,
         profile,
@@ -124,21 +88,15 @@ pub fn launch(browser: &Browser, profile: &Path) -> Result<Launched> {
 }
 
 /// Starts the same browser on a profile with no window, for snob to send its
-/// requests from, or for a question asked of the browser itself. See
-/// `headless/mod.rs` for why each flag is there.
+/// requests from, or for a question asked of the browser itself.
 pub fn launch_headless(browser: &Browser, profile: &Path, flags: &[String]) -> Result<Launched> {
     launch_in(browser, profile, flags, "about:blank", true)
 }
 
 /// Removes a profile lock another machine left behind.
 ///
-/// Chromium locks a profile with a link named after the host and process that
-/// hold it, clears one whose process on *this* host is gone, and refuses one
-/// from any other host, since it cannot see whether that process lives. A
-/// container recreated over a kept volume is a new host every time: measured,
+/// A container recreated over a kept volume is a new host every time: measured,
 /// every launch then exits 21 for good, until the file is deleted by hand.
-/// Nothing but this program uses this profile, and nothing on another host is
-/// using it now, so a lock naming another host is stale.
 #[cfg(unix)]
 fn clear_a_lock_left_by_another_host(profile: &Path) {
     let Ok(target) = std::fs::read_link(profile.join("SingletonLock")) else {
@@ -174,40 +132,32 @@ fn launch_in(
     windowless: bool,
 ) -> Result<Launched> {
     // The profile ends up holding a live Instagram session, so the directory
-    // has to be the owner's alone. The data directory above it is made private
-    // by whoever chose the profile; this is the leaf.
+    // has to be the owner's alone.
     snob_store::paths::create_private_dir(profile)
         .with_context(|| format!("could not create {}", profile.display()))?;
     #[cfg(unix)]
     clear_a_lock_left_by_another_host(profile);
 
-    // A profile from an older build may hold `DevToolsActivePort`. It is
-    // removed rather than ignored, so nothing reading the profile concludes
-    // that a port is open.
+    // A profile from an older build may hold `DevToolsActivePort`.
     let _ = std::fs::remove_file(profile.join("DevToolsActivePort"));
     keep_passwords_unsaved(profile);
 
     let mut arguments = vec![
         format!("--user-data-dir={}", profile.display()),
-        // The protocol on two inherited pipes rather than on a loopback
-        // socket. Nothing else on this machine can reach it, because there is
-        // no address for it to reach.
+        // The protocol on two inherited pipes rather than on a loopback socket.
         "--remote-debugging-pipe".to_string(),
         // **The pipe alone makes the page report `navigator.webdriver ===
-        // true`.** Measured in September 2026 against Chromium 141, headful
-        // and headless: `--remote-debugging-pipe` sets the same
+        // true`.** Measured in September 2026 against Chromium 141, headful and
+        // headless: `--remote-debugging-pipe` sets the same
         // automation-controlled bit `--enable-automation` does, and the first
-        // thing a login page's bot check reads is that property. The person
-        // logging in is typing into the window themselves; the pipe is only
-        // how the cookies come back afterwards.
+        // thing a login page's bot check reads is that property.
         "--disable-blink-features=AutomationControlled".to_string(),
         "--no-first-run".to_string(),
         "--no-default-browser-check".to_string(),
         "--disable-features=Translate".to_string(),
         // Every fresh profile makes the component updater install into a
         // `scoped_dir*` under the system temp directory, which Chrome only
-        // removes on a clean exit. That traffic goes to Google, never to the
-        // site, so turning it off changes nothing Instagram can see.
+        // removes on a clean exit.
         "--disable-component-update".to_string(),
         // The same goes for extensions registered on the machine and Chrome's
         // default apps: each fresh profile installs them, leaving CRX files
@@ -218,12 +168,7 @@ fn launch_in(
         "--disable-default-apps".to_string(),
         // The profile is never tied to a Google account's sync, so nothing it
         // holds, a password typed into the login window included, can be
-        // uploaded from it. Sync runs in the browser, not in the page, which
-        // sees nothing of it. `--disable-background-networking` is left off on
-        // purpose: Chromium describes it as a switch for network performance
-        // testing and does not list the services it stops, Safe Browsing's
-        // updates for the window a password is typed into among them, so it
-        // changes more than this program can say Instagram cannot see.
+        // uploaded from it.
         "--disable-sync".to_string(),
         // **Instagram's realtime host does not resolve.** The app keeps a
         // socket to it (MQTT over a WebSocket to `edge-chat.instagram.com`)
@@ -233,15 +178,13 @@ fn launch_in(
         // 2026 on Chrome 156, a page's and a worker's both reached the site
         // without this, and neither does with it (`headless`'s
         // `the_realtime_host_is_out_of_reach_of_the_tab_and_its_workers`).
-        // The login window gets it too: signing in needs no realtime.
         format!("--host-resolver-rules=MAP {REALTIME_HOSTS} ~NOTFOUND"),
     ];
     arguments.extend(flags.iter().cloned());
     arguments.push(start_at.to_string());
 
     // Chrome narrates to standard error: GCM registration failures, a
-    // TensorFlow notice. None of it is ours and all of it lands in the middle
-    // of our own instructions, so `pipe::spawn` gives it nowhere to go.
+    // TensorFlow notice.
     let (process, transport) = crate::pipe::spawn(&browser.path, &arguments)
         .with_context(|| format!("could not start {}", browser.name))?;
 
@@ -253,18 +196,9 @@ fn launch_in(
     })
 }
 
-/// Turns the password manager off in the profile before the browser reads
-/// it, so the login window never offers to keep the Instagram password in the
+/// Turns the password manager off in the profile before the browser reads it,
+/// so the login window never offers to keep the Instagram password in the
 /// profile's own store on disk, where snob never wants it.
-///
-/// There is no flag for either preference, so they are written into
-/// `Default/Preferences`, the file Chromium reads them from: created on a
-/// fresh profile, merged into one that exists, and only when one of them is
-/// not already off, so a profile seeded once is never written again. A file
-/// that is not a JSON object is the browser's, and is left as it is. Written
-/// to a file beside it and renamed over it, so a browser starting on it reads
-/// the old file or the new one, never half of one. A failure is said and is
-/// not fatal: the window still logs in, and only offers to save.
 fn keep_passwords_unsaved(profile: &Path) {
     if let Err(e) = seed_preferences(profile) {
         tracing::warn!(
@@ -334,8 +268,7 @@ fn without_saved_passwords(preferences: &mut Value) -> bool {
 const PROFILE_IN_USE: i32 = 21;
 
 /// The browser started and left at once because another holds its profile:
-/// another snob's, which a caller may wait out. Says what [`died_early`] or
-/// [`windowless_died_early`] says.
+/// another snob's, which a caller may wait out.
 #[derive(Debug)]
 pub struct ProfileInUse {
     said: String,
@@ -361,11 +294,6 @@ impl std::fmt::Display for ProfileInUse {
 impl std::error::Error for ProfileInUse {}
 
 /// What to say when the browser started and stopped again.
-///
-/// Split out so the wording can be read and changed without a browser: nothing
-/// about [`Cdp::connect`]'s wait is testable without launching one, and
-/// `ExitStatus` cannot be constructed portably in a test anyway, so this takes
-/// the code.
 fn died_early(code: Option<i32>, profile: &Path) -> String {
     match code {
         // Exiting cleanly and immediately is the singleton: the browser handed
@@ -380,9 +308,7 @@ fn died_early(code: Option<i32>, profile: &Path) -> String {
             profile.display()
         ),
         // No code at all means something killed it — a signal on Unix, an
-        // external terminate on Windows. Not the singleton: told as that, with
-        // the profile path to make it convincing, it sends people hunting for
-        // a window that was never open.
+        // external terminate on Windows.
         None => "the browser was killed before it answered.\n\
                  Try again, or use \"snob login --paste\"."
             .to_string(),
@@ -394,12 +320,6 @@ fn died_early(code: Option<i32>, profile: &Path) -> String {
 }
 
 /// The same, for the browser snob sends its requests from.
-///
-/// Its own wording because the login's is wrong here twice over: there is no
-/// window to close, and `snob login --paste` is no way round it, since a
-/// pasted session is sent from this same browser. Exiting cleanly at once is
-/// still the singleton — and with no window, what holds the profile is
-/// another snob in the middle of a run, the monitor's included.
 fn windowless_died_early(code: Option<i32>, profile: &Path) -> String {
     match code {
         Some(0 | PROFILE_IN_USE) => format!(
@@ -419,15 +339,6 @@ fn windowless_died_early(code: Option<i32>, profile: &Path) -> String {
 }
 
 /// An open DevTools connection, and the browser on the other end of it.
-///
-/// The two travel together because neither is useful alone: the connection is
-/// what asks the browser to leave, and the browser is what has to be killed if
-/// it will not — and what says why, when the connection ends first.
-///
-/// Every method takes `&self`: the connection has a reader of its own
-/// ([`connection`]), so any number of calls may be in flight at once, and
-/// dropping one — a timeout, a Ctrl+C — leaves the others and the connection
-/// as they were.
 pub struct Cdp {
     /// First, so it is dropped before the process: a `Cdp` dropped without
     /// [`Cdp::close`] — a failed [`Cdp::connect`] among them — kills its
@@ -445,12 +356,10 @@ pub struct Cdp {
 impl Cdp {
     /// Takes a started browser and waits until it answers.
     ///
-    /// The pipe was opened before the browser existed, so what this waits for
-    /// is the browser reading it. **The wait watches the process as well as
-    /// the pipe**: Chrome's profile singleton makes a second `snob login
-    /// --browser` hand its command line to the instance already holding the
-    /// profile and exit within a second, and that is told at once, not after
-    /// thirty seconds as a silent pipe.
+    /// **The wait watches the process as well as the pipe**: Chrome's profile
+    /// singleton makes a second `snob login --browser` hand its command line to
+    /// the instance already holding the profile and exit within a second, and
+    /// that is told at once, not after thirty seconds as a silent pipe.
     pub async fn connect(launched: Launched, cancel: &CancelToken) -> Result<Self> {
         let Launched {
             process,
@@ -474,9 +383,7 @@ impl Cdp {
             .connection
             .call(None, "Browser.getVersion", json!({}), STARTUP_TIMEOUT);
         tokio::pin!(asked);
-        // Set once the pipe has closed without an answer. The future is done
-        // then, and must not be polled again; the process check at the top of
-        // each turn is what says why.
+        // Set once the pipe has closed without an answer.
         let mut closed = false;
 
         loop {
@@ -535,12 +442,7 @@ impl Cdp {
     /// Closes the browser politely, so the profile is not left looking like it
     /// crashed and offering to restore tabs on the next login.
     ///
-    /// **At the normal pace, whatever it ran as** (`power::qos`). Closing is
-    /// where the browser writes what it holds to the profile, cookies
-    /// Instagram just rotated among them, and lets go of the profile, and the
-    /// next command waits for exactly that. Left efficient, that work runs on
-    /// the slowest cores at the lowest clock, and on a loaded machine outlasts
-    /// the close.
+    /// **At the normal pace, whatever it ran as** (`power::qos`).
     pub async fn close(self) {
         self.set_mode(crate::power::qos::Mode::Normal);
         // `call` carries its own timeout, so a browser that has stopped
@@ -607,18 +509,11 @@ impl Cdp {
     }
 
     /// The browser's process id.
-    ///
-    /// Only so the tests can ask the operating system about that process.
-    /// Nothing in the program needs it.
     pub fn browser_pid(&self) -> u32 {
         self.process.lock().unwrap_or_else(|e| e.into_inner()).id()
     }
 
     /// The exact User-Agent this browser sends.
-    ///
-    /// Worth asking for rather than reconstructing: the session is tied to it,
-    /// and a User-Agent that does not match the browser that created the cookie
-    /// is what makes Instagram answer `useragent mismatch`.
     pub async fn user_agent(&self) -> Result<String> {
         let result = self.browser_call("Browser.getVersion", json!({})).await?;
         result
@@ -651,12 +546,6 @@ pub(crate) fn is_instagram(domain: &str) -> bool {
 }
 
 /// Picks the Instagram cookies out of everything the browser holds.
-///
-/// Returns `None` until `sessionid` is there, which is what "logged in" means:
-/// the other cookies show up as soon as the login page loads.
-///
-/// A site that is not Instagram's is only ever the fake a testing build is
-/// pointed at, and its cookies are the ones that host is sent.
 fn collect(cookies: &[Value]) -> Option<BrowserCookies> {
     let site = snob_ig::client::site();
     match site.host_str() {
@@ -666,8 +555,7 @@ fn collect(cookies: &[Value]) -> Option<BrowserCookies> {
 }
 
 /// The same, for the cookies a page on `host` is sent: those whose domain is
-/// the host or one it sits under, as a browser matches them. Instagram's
-/// `www.instagram.com` takes `.instagram.com`'s; a local fake takes its own.
+/// the host or one it sits under, as a browser matches them.
 pub fn collect_for(cookies: &[Value], host: &str) -> Option<BrowserCookies> {
     collect_where(cookies, |domain| {
         let domain = domain.trim_start_matches('.');

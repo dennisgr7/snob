@@ -1,38 +1,21 @@
-//! The tickets handed out with a question: **a yes counts once, for the
-//! command it was given for.**
-//!
-//! On the stateless revision the client keeps the state between the question
-//! and its answer, and may hand back anything; the protocol says to treat it
-//! as the caller's. So the state is a ticket that says what it is good for, and
-//! the server keeps the one thing a ticket cannot carry: whether it was used.
+//! The tickets handed out with a question: **a yes counts once, for the command
+//! it was given for.**
 //!
 //! - **What it is good for.** A ticket is `nonce "." until "." mac`: 16 random
 //!   bytes (base64url), the second of this process's life past which it no
 //!   longer redeems, and the first 128 bits of an HMAC-SHA256, under a key this
 //!   process drew at start and never shows, over its kind (a form the client
-//!   shows, or a question put in the chat), the nonce, `until` and the
-//!   binding, which is the command line the question was about
-//!   (`tools::Plan::binding`). A
-//!   ticket from another server, another run, another command or another kind
-//!   does not verify, and one that does not verify spends nothing.
+//!   shows, or a question put in the chat), the nonce, `until` and the binding,
+//!   which is the command line the question was about (`tools::Plan::binding`).
 //! - **Once.** A ticket that verifies and is in time is spent: its nonce goes
-//!   into a set kept until the ticket would have expired anyway. The same
-//!   ticket offered again is [`Spoiled::Used`]: a client that sends the
-//!   answered call twice runs the command once.
+//!   into a set kept until the ticket would have expired anyway.
 //! - **On the monotonic clock.** `until` counts from when the sealer was made,
 //!   on `Instant`, not the wall clock: a clock stepped back after a prune would
-//!   otherwise make a pruned, spent ticket good again. The key and the set live
-//!   exactly as long as the process, so a count from its start is all a ticket
-//!   needs. (Where the monotonic clock stops in a suspend, as on Linux, a
-//!   ticket outlives its ten minutes by the time the machine slept.)
-//! - **Bounded, failing closed.** At most [`MOST_SPENT`] spent nonces are
-//!   kept; when the set is full of tickets still in time, the next redeem is
-//!   refused ([`Spoiled::Crowded`]) rather than one of them forgotten, which
-//!   would let it be used twice.
-//!
-//! Signed with `snob_core::watch::sign`, the webhook's own HMAC, rather than
-//! the SDK's sealer, which would bring a second copy of the RustCrypto crates
-//! into the tree for the same arithmetic.
+//!   otherwise make a pruned, spent ticket good again.
+//! - **Bounded, failing closed.** At most [`MOST_SPENT`] spent nonces are kept;
+//!   when the set is full of tickets still in time, the next redeem is refused
+//!   ([`Spoiled::Crowded`]) rather than one of them forgotten, which would let
+//!   it be used twice.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -41,8 +24,7 @@ use std::time::{Duration, Instant, SystemTime};
 use base64::Engine as _;
 use snob_core::secret::Secret;
 
-/// How many spent tickets still in time are kept at most. Far past honest use:
-/// one ticket is issued per call that asks, and each lives ten minutes.
+/// How many spent tickets still in time are kept at most.
 const MOST_SPENT: usize = 4096;
 
 /// How many hex digits of the HMAC a ticket carries: 128 bits, half of
@@ -150,10 +132,8 @@ impl Sealer {
         format!("{nonce}.{until}.{mac}")
     }
 
-    /// Over the text of the nonce and of `until` as the ticket carries them,
-    /// so a ticket spelled any other way does not verify. The binding is
-    /// JSON, whose strings escape every control character, so the NULs
-    /// between the fields cannot be forged inside one.
+    /// Over the text of the nonce and of `until` as the ticket carries them, so
+    /// a ticket spelled any other way does not verify.
     fn mac(&self, kind: Kind, nonce: &str, until: &str, binding: &str) -> String {
         let body = format!("snob-mcp/{}\0{nonce}\0{until}\0{binding}", kind.name());
         let signed = snob_core::watch::sign::sign(&body, &self.key);

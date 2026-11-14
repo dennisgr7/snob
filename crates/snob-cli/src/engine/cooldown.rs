@@ -1,9 +1,5 @@
 //! What the tool can still answer while the account is in cooldown, and the
 //! rule that stops two stored lists from being crossed when they should not be.
-//!
-//! A cooldown does not blind the tool. Nothing may be spent — not even the
-//! counter poll — so storage is the only thing that can answer, and it answers
-//! however old it is: stale beats nothing, and the warning names the date.
 
 use anyhow::Result;
 use snob_core::Pk;
@@ -16,9 +12,6 @@ use crate::engine::{ListOutcome, ListQuery, Provenance, target};
 use crate::report::{self, Blocked};
 
 /// Serves what is stored, or explains why nothing can be.
-///
-/// No confirmation is asked because nothing is enumerated, and `--max-age` is
-/// ignored for the same reason `--offline` ignores it.
 pub fn serve(
     app: &App,
     args: &ListQuery,
@@ -70,17 +63,8 @@ pub fn stored(
 
 /// Two lists may only be crossed if they describe roughly the same moment.
 ///
-/// Only two of the five provenances guarantee that on their own: a walked list
-/// is the account as it is, and a counter-verified one was checked against it in
-/// this run, so its age is known to be harmless. The other three are stored
-/// lists that nothing looked at — during a cooldown nothing may be spent, on a
-/// failed poll nothing could be, and with `--offline` nothing was meant to be.
-///
-/// Stitching two distant moments together invents arrivals and departures that
-/// never happened, which is the failure this whole tool is built not to have.
-///
 /// What is measured is the time **between** the two walks, not between the two
-/// moments they finished at. See [`gap_between`].
+/// moments they finished at.
 pub fn check_same_moment(a: &ListOutcome, b: &ListOutcome) -> Result<()> {
     // Both sides have to carry evidence, not just neither side being a
     // cooldown: `--offline` and a failed poll are not cooldowns either, and
@@ -101,11 +85,8 @@ pub fn check_same_moment(a: &ListOutcome, b: &ListOutcome) -> Result<()> {
 }
 
 /// [`check_same_moment`] for a run, with a refusal over a list a cooldown
-/// served dated by when that cooldown lifts (`held`, asked only then), as
-/// every refusal a cooldown is behind is (`ExitError::with_cooldown_until`).
-/// Undated, the refusal exits 5 like a push-back met by the run itself, and
-/// an agent is told one was (`commands::mcp::answer::PUSHED_BACK`) when
-/// nothing was sent at all.
+/// served dated by when that cooldown lifts (`held`, asked only then), as every
+/// refusal a cooldown is behind is (`ExitError::with_cooldown_until`).
 pub fn check_same_moment_dated(
     a: &ListOutcome,
     b: &ListOutcome,
@@ -126,40 +107,14 @@ pub fn check_same_moment_dated(
 }
 
 /// How much dead time there may be between two walks and still be one moment:
-/// fifteen minutes of an account's life, the drift this tool treats as a
-/// single instant.
-///
-/// Deliberately not [`snapshots::RESUME_WINDOW_SECS`]. That decides how long
-/// one interrupted walk may be continued, this what two finished ones may
-/// leave unobserved between them: two questions, so two numbers, and changing
-/// how long a walk may be paused must not quietly change what may be crossed.
+/// fifteen minutes of an account's life, the drift this tool treats as a single
+/// instant.
 const SAME_MOMENT_GAP_SECS: i64 = 15 * 60;
 
 /// The seconds during which neither walk was looking.
 ///
-/// Each list covers an interval — first page to last — rather than an instant,
-/// and what can invent an arrival is a stretch of time one list saw and the
-/// other did not. So this is the distance **between** the intervals: zero when
-/// they overlap or touch, however long either of them took.
-///
-/// That difference is the whole point. Two lists walked back to back in one
-/// correct run *finish* far apart by definition — on an account following six
-/// thousand people the second walk alone takes hours of sittings and rests at
-/// the documented pace, and days under the daily ceiling on accounts — so
-/// comparing finishing times against a fifteen-minute bound would refuse
-/// precisely the pair that is most obviously one moment.
-///
-/// It is not a license, either. A walk that genuinely took an hour, crossed
-/// against a snapshot from two hours later, still has an hour of gap and is
-/// still refused.
-///
-/// A paused walk keeps the moment its first page was asked for, whether a
-/// later run resumed it within [`snapshots::RESUME_WINDOW_SECS`] or it slept
-/// on the day's accounts inside one run, so its interval can span a day or
-/// more. That is accepted on purpose: this rule is about time neither list
-/// saw, a change during a long walk is misread the same whether or not it is
-/// crossed, and refusing would leave a list larger than a day's accounts
-/// impossible to cross at all.
+/// So this is the distance **between** the intervals: zero when they overlap or
+/// touch, however long either of them took.
 fn gap_between(a: &ListOutcome, b: &ListOutcome) -> i64 {
     (b.started_at - a.taken_at)
         .max(a.started_at - b.taken_at)

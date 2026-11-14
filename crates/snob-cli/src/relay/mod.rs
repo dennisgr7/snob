@@ -1,69 +1,6 @@
 //! The login shown in a browser on another machine: `snob login --remote`.
 //!
-//! **What it is for.** Over SSH there is no window to log in through: a Linux
-//! machine with no display cannot open one, and a Mac or a Windows PC opens it
-//! on a screen the person is not looking at (`crate::seat`). So the browser
-//! that would have opened the window runs here without one, on the same
-//! profile a windowed login uses, and what it shows is relayed to a page in
-//! the browser of the machine the person is at, through a tunnel they open
-//! with `ssh -L`; their clicks and keys come back the same way. They log into
-//! Instagram themselves, in snob's browser, as they would in the window, and
-//! the cookies come back from that browser over its pipe, as in every login
-//! (`cdp::wait_for_login`). Nothing is read out of the browser they are
-//! looking at: it only shows pictures.
-//!
-//! **What crosses the tunnel is pictures and input, never the protocol.** The
-//! debugging protocol stays on the pipe (`crate::pipe` tells why a port is
-//! not acceptable for it). The page is sent JPEG frames of the tab
-//! (`Page.startScreencast`) on an event stream and posts back mouse, wheel,
-//! key and text events, which `input` turns into the protocol's own
-//! `Input.*` commands, the only ones the page can cause, besides moving
-//! through the tab's history and reloading it. No address, no script, no
-//! cookie and no protocol message is taken from the page.
-//!
-//! **Who can reach it.**
-//!
-//! - On Unix, a socket in the data directory, which is private, made `0600`
-//!   and checked at every connection for this user at the other end, as the
-//!   owner's is (`owner::socket`): `ssh -L port:/path/to/socket` reaches it as
-//!   the user who logged in over SSH, and nobody else on the machine can.
-//! - Where that cannot be had — Windows, or a data directory too deep for a
-//!   socket's path or named with what `ssh -L` cannot be given
-//!   (`can_be_forwarded`) — a TCP port on `127.0.0.1`, never another address; any
-//!   account on the machine can connect to that, so the next point is what
-//!   keeps them out.
-//! - On the person's machine, the near end of the tunnel is what the link
-//!   names, and the page there cannot prove it is snob's: anything holding
-//!   that port serves whatever page it likes, a copy of Instagram's login
-//!   among them, and keeps what is typed into it. So the printed command
-//!   carries `-o ExitOnForwardFailure=yes`: `ssh` with `-N` and a near end
-//!   it cannot bind otherwise warns once and stays up as though the tunnel
-//!   were open, and the link then reaches whoever holds the port. With it,
-//!   `ssh` exits with the error, and the person is left no link that works
-//!   ([`tunnel_command`]).
-//! - Either way the printed link carries a token of 256 random bits, good for
-//!   one visit: the first request that brings it is sent to the page with a
-//!   key of another 256 bits in the address's fragment, which a browser never
-//!   sends anywhere, and the token is spent. The page keeps the key in its
-//!   tab's session storage, which belongs to its origin, port and all: a
-//!   cookie would have been sent to every port of `127.0.0.1` the browser
-//!   asks anything of while the login lasts, a developer's server or another
-//!   account's among them. The event stream and input take it in a header of
-//!   their own, never in an address, which a server that took the port after
-//!   the tunnel dropped would write in its log; a page on another site cannot
-//!   send that header without a preflight this server never answers. The
-//!   stream is read with `fetch` for that, since an `EventSource` sends no
-//!   header of its own. The page and its two files hold nothing and are served to
-//!   any loopback `Host`. A `Host` that is not a loopback name is refused,
-//!   which is what a site the person has open would send after making its own
-//!   name resolve to the tunnel (DNS rebinding).
-//!
-//! **What it leaves out.** The tab is a desktop's, 1920 by 1032 as every
-//! request's browser is (`headless`), whatever the screen it is watched on: the
-//! profile is the device, and the device does not change shape. Native
-//! pop-ups a headless browser does not paint — a `<select>`'s list, a
-//! `window.open` — are not shown; Instagram's login uses neither. A
-//! JavaScript dialog is accepted at once, since there is nobody to show it to.
+//! **What crosses the tunnel is pictures and input, never the protocol.**
 
 use std::convert::Infallible;
 #[cfg(unix)]
@@ -93,45 +30,28 @@ const PAGE: &str = include_str!("page.html");
 const SCRIPT: &str = include_str!("page.js");
 const STYLE: &str = include_str!("page.css");
 
-/// The header the event stream and input carry the key in. A page on another
-/// site can only send it after a preflight, which nothing here answers.
+/// The header the event stream and input carry the key in.
 const KEY_HEADER: &str = "x-snob-key";
 
-/// How long a frame waits for a page to have sent it before the browser is
-/// told it was taken anyway.
-///
-/// The acknowledgment is the screencast's flow control: the browser sends
-/// the next frame only once the last is acknowledged, so a frame is
-/// acknowledged once a page has written it out, and a tunnel slower than the
-/// browser paints gets fewer frames rather than a queue. With no page
-/// connected the browser still paints once a second, so whoever connects next
-/// starts from a picture of now.
+/// How long a frame waits for a page to have sent it before the browser is told
+/// it was taken anyway.
 const FRAME_PATIENCE: Duration = Duration::from_secs(1);
 
 /// How often an idle event stream says something, so that nothing along the
 /// way closes it for silence.
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
 
-/// How many events the screencast's subscription may fall behind. The
-/// browser sends one frame at a time and waits for it to be acknowledged, so
-/// a few are plenty; the rest are navigation and dialogs.
+/// How many events the screencast's subscription may fall behind.
 const EVENT_ROOM: usize = 64;
 
 /// The JPEG quality of a frame: legible text at a fraction of the size.
 const QUALITY: u8 = 70;
 
-/// How long a connection may sit between requests, or take over one, before
-/// it is closed. A browser opens a kept-alive connection again without a
-/// word; what this ends is a connection somebody opened and left, which on
-/// the port (Windows) can be anybody's on the machine.
+/// How long a connection may sit between requests, or take over one, before it
+/// is closed.
 const IDLE: Duration = Duration::from_secs(60);
 
-/// How many connections are served at once. A browser holds about six to one
-/// host, and the event stream is one of them.
-///
-/// A limit on what is spent, not a boundary: on the port, any account on the
-/// machine can hold them all and shut the person's browser out until `IDLE`
-/// ends them, but no connection gets past the token or the key.
+/// How many connections are served at once.
 const MOST_CONNECTIONS: usize = 64;
 
 /// Where the relay listens, and the tunnel's near end to suggest for it.
@@ -144,8 +64,7 @@ pub struct Relay {
 }
 
 impl Relay {
-    /// Starts listening. Done before the browser starts, so that a relay that
-    /// cannot listen costs nothing.
+    /// Starts listening.
     pub fn bind(paths: &AppPaths) -> Result<Self> {
         let listener = Listener::bind(paths)?;
         let local_port = match &listener {
@@ -183,10 +102,6 @@ impl Relay {
 
     /// Relays the tab `tab` of `cdp` to whoever opens the link, until the
     /// browser holds an Instagram session, and returns it.
-    ///
-    /// Two waits, each as long as a login gets: for the link to be opened,
-    /// since opening a tunnel from another machine is a step of its own, and
-    /// then for the login. Ctrl+C ends either.
     pub async fn serve(
         self,
         cdp: &Cdp,
@@ -291,18 +206,10 @@ async fn relay(
 /// `ssh` told to forward `local_port` on the person's machine to `far_end`
 /// here, reaching this machine as `ssh` says the client did.
 ///
-/// The near end is bound to `127.0.0.1` by name: with no address `ssh` binds
-/// it wherever the person's own `GatewayPorts` says, which can be every
-/// interface, and a whole network could then hold the relay's connections.
-///
-/// **A near end that cannot be bound ends `ssh`**
-/// (`-o ExitOnForwardFailure=yes`): by default, and with `-N`, `ssh` warns
-/// and stays up, and the link would open on whatever already holds the
-/// port, which can serve a look-alike login and keep the password.
-///
-/// The far end is quoted when it holds anything a shell would split or
-/// read: a Mac's data directory is under `Application Support`. Double
-/// quotes, which the shells and Windows' `cmd` and PowerShell all take.
+/// **A near end that cannot be bound ends `ssh`** (`-o
+/// ExitOnForwardFailure=yes`): by default, and with `-N`, `ssh` warns and stays
+/// up, and the link would open on whatever already holds the port, which can
+/// serve a look-alike login and keep the password.
 fn tunnel_command(local_port: u16, far_end: &str, ssh: Option<&Ssh>) -> String {
     let server = ssh.and_then(|s| s.server.as_ref());
     let host = server.map_or("this-machine", |(address, _)| address.as_str());
@@ -570,11 +477,8 @@ async fn route<S: AsyncWrite + Unpin>(
                 .await?;
                 return Ok(Answered::Again);
             };
-            // A tab that has stopped answering holds one post up for this
-            // long, not each of its inputs for as long again. What the post
-            // still held is dropped, a button's release or a key's among it,
-            // which the tab then takes as still held: accepted, since a tab
-            // that answers nothing is a login that has failed already.
+            // A tab that has stopped answering holds one post up for this long,
+            // not each of its inputs for as long again.
             let performed = tokio::time::timeout(CALL_TIMEOUT, async {
                 for one in inputs {
                     if let Some(command) = input::command(one) {
@@ -600,10 +504,6 @@ fn has_the_key(given: Option<&str>, shared: &Shared) -> bool {
 }
 
 /// The link's token traded for the key, once.
-///
-/// The key is only ever handed out here: whoever opens the link again is told
-/// it was opened already, the tab it was opened in included, which still has
-/// the key and needs no link to reload.
 async fn redeem<S: AsyncWrite + Unpin>(
     stream: &mut S,
     request: &http::Request,
@@ -684,8 +584,7 @@ async fn events<S: AsyncWrite + Unpin>(stream: &mut S, shared: &Shared) -> std::
     }
 }
 
-/// Sends what one input became to the tab. A failure is logged and the next
-/// input tried: a click the tab missed is clicked again.
+/// Sends what one input became to the tab.
 async fn perform(shared: &Shared, command: input::Command) {
     let tab = Some(shared.tab.as_str());
     let call = |method: &'static str, params: Value| {
@@ -851,9 +750,7 @@ impl Listener {
     }
 }
 
-/// Removes the socket file, which is this relay's alone. One left by a
-/// process that never got here is swept by the next relay
-/// (`sweep_dead_sockets`).
+/// Removes the socket file, which is this relay's alone.
 impl Drop for Listener {
     fn drop(&mut self) {
         #[cfg(unix)]
@@ -863,9 +760,8 @@ impl Drop for Listener {
     }
 }
 
-/// Removes the sockets of relays that are gone without removing their own:
-/// a process killed, or a release build's panic, which aborts. One a relay
-/// still listens on takes the connection and is left alone.
+/// Removes the sockets of relays that are gone without removing their own: a
+/// process killed, or a release build's panic, which aborts.
 #[cfg(unix)]
 fn sweep_dead_sockets(dir: &std::path::Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {

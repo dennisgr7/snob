@@ -1,54 +1,11 @@
 //! Pictures as the terminal's own pixels, where the terminal draws them.
 //!
-//! Half blocks are two pixels to a cell, and a face in sixteen of them is a
-//! guess (`ui::preview`). Most terminals people run today draw real
-//! pictures, each through one of three protocols, and a picture sent that
-//! way is as sharp as the screen:
-//!
-//! | Protocol | Terminals taken to speak it |
-//! |---|---|
-//! | kitty's graphics protocol | kitty, Ghostty |
-//! | iTerm2's inline images | iTerm2, WezTerm |
-//! | sixel | Windows Terminal (from 1.22), foot |
-//!
-//! Everything else gets the half blocks, which need nothing but 24-bit
-//! color.
-//!
 //! **Which one is decided from the environment and never by asking the
-//! terminal** ([`protocol_of`]). A terminal says what it supports when it
-//! is asked, and the answer arrives on its input, among the keys a view is
-//! reading. So the list above is the terminals whose names in the
-//! environment are known and whose support is not in doubt; inside tmux or
-//! screen the name is the outer terminal's and the multiplexer decides what
-//! passes, so there it is half blocks. **`SNOB_IMAGES`** says otherwise for
-//! a terminal not on the list, or one on it that draws wrong: `kitty`,
-//! `iterm`, `sixel` or `blocks`.
+//! terminal** ([`protocol_of`]). **`SNOB_IMAGES`** says otherwise for a
+//! terminal not on the list, or one on it that draws wrong: `kitty`, `iterm`,
+//! `sixel` or `blocks`.
 //!
-//! **A picture is not a cell, and ratatui only knows cells.** A frame
-//! places a picture over cells it leaves blank ([`place`]), and the bytes
-//! go out after the frame's own, in the same synchronized update
-//! (`tui::Screen`, through [`Painter`]). Two things keep the two in step:
-//!
-//! - The blank cells under a picture carry the picture's number as a
-//!   foreground color ([`under`]), which a blank cell does not show. When
-//!   the picture changes or goes, those cells differ from the frame before,
-//!   so ratatui writes them again, and for sixel and iTerm2, where a
-//!   picture lives in the cells it covers, that is what erases it.
-//! - kitty keeps pictures in a layer of their own that text does not erase,
-//!   so there each one is sent once, placed by its number, and every
-//!   placement is deleted and made again when what is placed changes.
-//!
-//! A box over a view dims the cells under it (`tui::veil`), and calls
-//! [`hide`]: a picture is not drawn under a box, and comes back with the
-//! first frame after it.
-//!
-//! **What was not seen working.** The encoders are tested against what the
-//! protocols say; none of this was looked at on a screen while writing it,
-//! on any terminal. Windows Terminal is taken to draw sixel on the VT340's
-//! cell of 10 by 20 pixels whatever its font, which is how its
-//! implementation was described when 1.22 shipped; where a picture comes
-//! out the wrong size or in the wrong place, `SNOB_IMAGES=blocks` is the
-//! way back.
+//! **A picture is not a cell, and ratatui only knows cells.**
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -70,8 +27,7 @@ pub enum Protocol {
     Iterm,
 }
 
-/// The protocol the environment names. `var` is `std::env::var` outside the
-/// tests.
+/// The protocol the environment names.
 fn protocol_of(var: impl Fn(&str) -> Option<String>) -> Protocol {
     if let Some(asked) = var("SNOB_IMAGES") {
         return match asked.to_ascii_lowercase().as_str() {
@@ -98,9 +54,7 @@ fn protocol_of(var: impl Fn(&str) -> Option<String>) -> Protocol {
     }
 }
 
-/// The protocol of this run, read from the environment once. Half blocks in
-/// a test, whatever terminal the tests are run from: a test draws into a
-/// buffer and counts cells.
+/// The protocol of this run, read from the environment once.
 pub fn protocol() -> Protocol {
     if cfg!(test) {
         return Protocol::Blocks;
@@ -145,8 +99,7 @@ impl Placement {
     }
 }
 
-/// What the frame being drawn has placed. A frame is drawn by one thread at
-/// a time, the one that holds the terminal; the lock is for the type system.
+/// What the frame being drawn has placed.
 static PLACED: Mutex<Vec<Placement>> = Mutex::new(Vec::new());
 
 fn placed() -> std::sync::MutexGuard<'static, Vec<Placement>> {
@@ -386,10 +339,8 @@ fn kitty_send(picture: &Pixels, area: Rect, number: u32, out: &mut Vec<u8>) {
     }
 }
 
-/// The picture as iTerm2's inline image, stretched over the cells of
-/// `area`, which already have its shape. The file inside is a BMP: the one
-/// format every reader of this protocol decodes that takes no compressor to
-/// write.
+/// The picture as iTerm2's inline image, stretched over the cells of `area`,
+/// which already have its shape.
 fn iterm(picture: &Pixels, area: Rect) -> Vec<u8> {
     let file = bmp(picture);
     let mut out = format!(
@@ -442,11 +393,6 @@ const COLORS: usize = 255;
 
 /// The picture in at most [`COLORS`] colors: the colors, and for each pixel
 /// which one.
-///
-/// The colors are chosen from the picture (median cut over its colors at
-/// five bits a channel), and each pixel's error is passed to its neighbors
-/// (Floyd and Steinberg's weights), which is what makes a face in 255
-/// colors look like a photograph and not like a map.
 fn quantized(picture: &Pixels) -> (Vec<[u8; 3]>, Vec<u8>) {
     let rgb = picture.rgb();
     let bin = |red: u8, green: u8, blue: u8| {
@@ -570,12 +516,6 @@ fn quantized(picture: &Pixels) -> (Vec<[u8; 3]>, Vec<u8>) {
 }
 
 /// The picture as a sixel string, a pixel of it a pixel of the screen.
-///
-/// `P1` of 9 and the raster attributes both say the pixels are square; `P2`
-/// of 1 says a pixel no color names is left as it was, so nothing around
-/// the picture is filled. Six rows go to a band: for each color in a band,
-/// its register and then a character a column whose six low bits are the
-/// rows that color is on, with runs counted.
 fn sixel(picture: &Pixels) -> Vec<u8> {
     let (palette, pixels) = quantized(picture);
     let (width, height) = (picture.width(), picture.height());

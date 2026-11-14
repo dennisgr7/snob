@@ -1,15 +1,9 @@
 //! What a report looks like on the wire.
 //!
-//! The JSON `--json` prints and the body a webhook receives. Its own module
-//! because it is **protocol, not presentation**: `payload` builds the exact
-//! string that gets signed and stored, so an edit here is an edit to what a
-//! receiver deduplicates on and to what a signature covers, which is not the
-//! same kind of change as rewording a sentence. `super::say` is where the
-//! sentences live.
-//!
-//! [`SENT_SCHEMA`] and [`PRINTED_SCHEMA`] are the numbers that say so out
-//! loud. Everything a receiver may rely on is in here, in one place, so that
-//! "did this change break somebody's integration" is a question about one file.
+//! Its own module because it is **protocol, not presentation**: `payload`
+//! builds the exact string that gets signed and stored, so an edit here is an
+//! edit to what a receiver deduplicates on and to what a signature covers,
+//! which is not the same kind of change as rewording a sentence.
 //!
 //! The posts the monitor reports (`posts`, `counts.posts_new`,
 //! `events.posts_new`, `run.posts`) arrived additively, beside the lists:
@@ -93,8 +87,6 @@ pub(super) fn check_json(
                 // The sentence a person reads, so it comes from where the
                 // sentences are, and this and the terminal report agree by
                 // construction.
-                // Through `printable` too: a problem can quote what
-                // Instagram or somebody's own server answered.
                 "problem": checked.problem.as_ref().map(|p| printable(&super::say::problem_line(p))),
             })
         }).collect::<Vec<_>>(),
@@ -104,45 +96,22 @@ pub(super) fn check_json(
 /// A report, in the one shape every emitter of one uses: the body a webhook
 /// receives, each line of the `--json` stream and `diff --json`.
 ///
-/// Hand-built rather than derived from the report, because this is a contract
-/// with whatever is reading it and the struct behind it is not: renaming a
-/// field in `ListReport` must not silently rename a key here.
-///
-/// `run` is what the run says about itself ([`run_json`]); a delivery adds the
-/// id a receiver deduplicates on, and nothing else differs between them.
-///
-/// Four decisions worth knowing about, all of them about what an n8n node
-/// actually needs:
-///
 /// - **`counts` is separate from `events`**, and redundant with the array
-///   lengths on purpose. `{{ $json.counts.followers_lost > 0 }}` is the
-///   condition people write, and it is far less fragile than an expression over
-///   `.length` on a field that may be absent.
+///   lengths on purpose.
 /// - **`schema` and `event` are at the top**, so fields can be added later
 ///   without breaking anybody and a Switch node can tell a heartbeat from a
 ///   report without looking inside.
-/// - **`looked` is not derivable from the arrays.** Empty changes mean "nothing
-///   happened" when the run could see and "I could not look" when it could not,
-///   and something watching for silence reads those as the same thing.
-/// - **`run.lists` is `looked` at the granularity a receiver needs.** `looked`
-///   is true when *either* list was read, so a run that walked followers and
-///   was refused following says `true` while `lists.following` is `null` and
-///   `counts.following_lost` is `0` — indistinguishable from a quiet run, and
-///   from an account with no following capture at all. The token is per list
-///   and additive, so it moves no `schema`. `lists.<kind>` deliberately stays
-///   `null` rather than becoming an object: a receiver testing it against
-///   `null` is the shape this shipped with, and there is no version to warn
-///   them by.
-/// - **The posts sit beside the lists, never inside them**: `posts` at the
-///   top, so a reader walking the keys of `lists` meets no third shape, and
+/// - **`looked` is not derivable from the arrays.**
+/// - **`run.lists` is `looked` at the granularity a receiver needs.**
+/// - **The posts sit beside the lists, never inside them**: `posts` at the top,
+///   so a reader walking the keys of `lists` meets no third shape, and
 ///   `run.posts` beside `run.lists`, `null` for an account whose posts are not
 ///   watched and otherwise `{"skipped": null | "not_verified" | "incomplete" |
-///   "hidden" | "no_browser"}`: what tells "no new post" from "could not
-///   look". **`counts.total` does not count the new posts**: it is the lists'
-///   changes and the renames, as it was before posts were watched, so a
-///   receiver's `total > 0` means what it always meant; `counts.posts_new`
-///   counts them beside it, and `event` is `watch.changes` when either has
-///   news.
+///   "hidden" | "no_browser"}`: what tells "no new post" from "could not look".
+///   **`counts.total` does not count the new posts**: it is the lists' changes
+///   and the renames, as it was before posts were watched, so a receiver's
+///   `total > 0` means what it always meant; `counts.posts_new` counts them
+///   beside it, and `event` is `watch.changes` when either has news.
 fn report_json(
     schema: u32,
     event: &str,
@@ -159,8 +128,7 @@ fn report_json(
         // Who read it, which on somebody else's account is not `account`.
         "viewer": viewer.json(),
         // Through `printable`, like every name in this body (see
-        // [`account_json`]). A username Instagram accepts comes out byte for
-        // byte, so the name that identifies the account is still the name.
+        // [`account_json`]).
         "account": {
             "pk": report.account_pk,
             "username": report.username.as_deref().map(printable),
@@ -199,16 +167,15 @@ fn report_json(
     })
 }
 
-/// The `run` object, the same in every report and every line of the stream,
-/// a failed tick's included, so one reader takes `run.at` off any of them.
+/// The `run` object, the same in every report and every line of the stream, a
+/// failed tick's included, so one reader takes `run.at` off any of them.
 ///
-/// **When it was due, began and ended**, additively: `due_at` is the moment
-/// the schedule named (`null` for a run started by hand), `began_at` when the
-/// run began and `ended_at` when this account's part of it ended, each with
-/// its `_iso`; `late_by` is how many seconds after `due_at` it began, and
-/// `late` whether that is past what a timer's look and the jitter explain
-/// (`engine::watch::LATE_AFTER`). All `null` where a run says nothing of it:
-/// `diff`, which ran nothing, and a failed tick's line.
+/// **When it was due, began and ended**, additively: `due_at` is the moment the
+/// schedule named (`null` for a run started by hand), `began_at` when the run
+/// began and `ended_at` when this account's part of it ended, each with its
+/// `_iso`; `late_by` is how many seconds after `due_at` it began, and `late`
+/// whether that is past what a timer's look and the jitter explain
+/// (`engine::watch::LATE_AFTER`).
 fn run_json(
     at: Epoch,
     looked: bool,
@@ -237,10 +204,6 @@ fn run_json(
 }
 
 /// A tick's `run`.
-///
-/// The tick's own moment, not a third reading of the clock. It is what
-/// `commit_report` files the mark at and what the `--json` line carries, so
-/// one event has one time in all three places.
 fn tick_run_json(tick: &TickReport) -> serde_json::Value {
     run_json(
         tick.at(),
@@ -257,10 +220,6 @@ fn tick_run_json(tick: &TickReport) -> serde_json::Value {
 
 /// The event a report is: news when it holds a change, and otherwise the
 /// heartbeat a quiet run is sent as when one is asked for.
-///
-/// A printed report carries one whether or not anything changed, since it is
-/// printed either way; whether a quiet run is sent at all is
-/// `delivery::event_for`'s question, and it names the event through here.
 pub(super) fn event(has_changes: bool) -> &'static str {
     if has_changes {
         "watch.changes"
@@ -270,9 +229,6 @@ pub(super) fn event(has_changes: bool) -> &'static str {
 }
 
 /// What `snob watch status --json` prints.
-///
-/// Here and not in `status`, for the reason the header of this file gives: it
-/// is the output a monitoring system is most likely to parse.
 #[expect(
     clippy::too_many_arguments,
     reason = "one document's worth of what status read, each part its own key"
@@ -307,10 +263,7 @@ pub(super) fn status_json(
             // send these" are two facts.
             "waiting": owed.waiting,
             "elsewhere": owed.elsewhere,
-            // Not owed -- owing has ended. Deliberately apart from the two
-            // above, which count work still to do: this is work that will
-            // never be done, and a probe that added it to the queue length
-            // would report a backlog that no run can shorten.
+            // Not owed -- owing has ended.
             "given_up": owed.given_up,
         },
         // The verdict, so a caller reading this does not have to reimplement
@@ -320,11 +273,7 @@ pub(super) fn status_json(
             "verdict": health.verdict.as_str(),
             "notes": health.notes,
         },
-        // Told apart from the marks below on purpose. A run that could not
-        // look moves no mark, so without this a monitor sitting in a cooldown
-        // is indistinguishable from one that was killed.
-        // Each row names the account whose database recorded it, which is the
-        // account the run read as.
+        // Told apart from the marks below on purpose.
         "last_runs": last_runs.iter().map(|RunOf { run, viewer, .. }| serde_json::json!({
             "viewer": viewer.json(),
             "pk": run.account_pk,
@@ -369,15 +318,7 @@ pub(super) fn status_json(
 /// A tick's line in the `--json` stream: the body a webhook would be sent for
 /// it, less `run.id`.
 ///
-/// No `run.id`, and that is right rather than an omission: an id exists to
-/// deduplicate an at-least-once delivery, and a line written once to a local
-/// file is not one. The event is the one the body `--heartbeat` asks for would
-/// carry, since a line is printed whether or not anything changed.
-///
-/// **`schema` is here for the same reason it is on the wire.** The README's own
-/// recipe is `snob watch --json >> events.ndjson`, which makes this file a data
-/// feed with readers of its own; [`PRINTED_SCHEMA`] says why its number is not
-/// the body's.
+/// **`schema` is here for the same reason it is on the wire.**
 pub(super) fn tick_json(tick: &TickReport) -> serde_json::Value {
     report_json(
         PRINTED_SCHEMA,
@@ -390,11 +331,6 @@ pub(super) fn tick_json(tick: &TickReport) -> serde_json::Value {
 
 /// What `snob watch diff --json` prints: the stored report, as a line of the
 /// stream would carry it, so one reader takes both.
-///
-/// Nothing ran, and its `run` says so rather than being left out: `looked` is
-/// false and `lists` empty, because no list was read from Instagram,
-/// `requests` is 0, and `at` is `now`, the moment it was asked. `viewer` is the
-/// account whose database it was read from.
 pub(super) fn stored_json(viewer: &Viewer, report: &WatchReport, now: Epoch) -> serde_json::Value {
     report_json(
         PRINTED_SCHEMA,
@@ -413,13 +349,6 @@ pub(super) fn stored_json(viewer: &Viewer, report: &WatchReport, now: Epoch) -> 
 }
 
 /// Which lists this run read, and which it refused.
-///
-/// One builder for both streams. A list served during a cooldown, after a
-/// failed poll or cut short is dropped before the comparison, so it reaches
-/// [`payload`] as `None` and serializes to `null`, the same `null` an account
-/// with no capture of that list produces, with `counts.following_lost` at `0`
-/// either way. This is what tells a run where the following walk met the
-/// truncation wall from a run where nothing happened.
 fn run_lists_json(tick: &TickReport) -> serde_json::Value {
     tick.lists
         .iter()
@@ -434,26 +363,6 @@ fn run_lists_json(tick: &TickReport) -> serde_json::Value {
 }
 
 /// The line a tick that failed leaves in the stream.
-///
-/// So a tick that could not resolve an account, met a mid-walk cooldown, or
-/// could not read `history_head` still leaves a line for that interval in a
-/// file the README offers as a complete way to use the tool.
-///
-/// It carries the same `run` object a successful line carries, so one reader
-/// can take `run.at` off every line without asking which kind it is, and
-/// `error` is what tells the two apart. `error.code` is the vocabulary of the
-/// README's exit table and of `watch_runs.outcome`, which is the field worth
-/// branching on; `error.message` is the chain, for a person reading the file.
-///
-/// The name and the message go through `printable`, for the reason
-/// [`account_json`] gives: this line is read by programs that hand it on, and
-/// the message can quote what another person wrote (a name, an excerpt of an
-/// answer). A username Instagram accepts comes out byte for byte, so the
-/// account is still identified. What is drawn at a person goes through
-/// `report::print_error`.
-///
-/// `viewer` is the account the entry was to be read as; `None` when nobody is
-/// signed in to read it as.
 pub(super) fn failed_tick_json(
     viewer: Option<&Viewer>,
     watched: &Watched,
@@ -478,19 +387,7 @@ pub(super) fn failed_tick_json(
     })
 }
 
-/// One JSON line. One object, one line, in both modes.
-///
-/// Not a mode's decision: a run prints one object per account with nothing
-/// wrapping them, so two pretty-printed objects back to back would be in no
-/// documented format at all, neither one document nor NDJSON. `--json` is a
-/// stream of lines, which is what `snob watch once --json >> events.ndjson` has
-/// to mean. With `--json` a tick with no news is printed in both modes too;
-/// what the modes differ on is the prose, which is `run::Printing`'s.
-///
-/// The fallback is `Value::to_string` rather than a `?` because one call site
-/// is reached from the arm already handling a failure: a serializer error on a
-/// `Value` built here is not a second failure worth returning instead of the
-/// first.
+/// One JSON line.
 pub(super) fn json_line(value: &serde_json::Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
 }
@@ -498,30 +395,15 @@ pub(super) fn json_line(value: &serde_json::Value) -> String {
 /// The version of the shape a receiver is sent: the webhook body and the
 /// preflight `snob watch check` posts.
 ///
-/// One number for both, in one place: separate literals could tell a receiver
-/// a report is schema 1 and a preflight schema 2 for the same release.
-///
-/// It moves when a field is removed or its meaning changes, and not when one is
-/// added: additive is what lets a receiver keep working, and `run.lists`
-/// arriving beside `counts` did not move it.
+/// One number for both, in one place: separate literals could tell a receiver a
+/// report is schema 1 and a preflight schema 2 for the same release.
 pub(super) const SENT_SCHEMA: u32 = 1;
 
 /// The version of the shape this tool prints: every line of the `--json`
 /// stream, a failed tick's included, and `diff --json`.
-///
-/// Its own number, because what is printed and what is sent are separate
-/// contracts with readers of their own, even though a line is the body less
-/// `run.id`: each number moves, by the rule [`SENT_SCHEMA`] gives, only when
-/// its own output loses a field or changes what one means.
 pub(super) const PRINTED_SCHEMA: u32 = 2;
 
 /// What goes on the wire: the report, and the id a receiver deduplicates on.
-///
-/// A contract with whatever is on the other end, so it is built here by hand
-/// and asserted in a test: this is the one output of the tool that a stranger's
-/// automation branches on, and a field renamed by accident breaks a workflow
-/// somebody built months ago. [`report_json`] is the shape and the decisions
-/// behind it.
 pub(super) fn payload(tick: &TickReport, run_id: &str, event: &str) -> serde_json::Value {
     let mut body = report_json(
         SENT_SCHEMA,
@@ -535,15 +417,6 @@ pub(super) fn payload(tick: &TickReport, run_id: &str, event: &str) -> serde_jso
 }
 
 /// What `snob watch check` posts.
-///
-/// The same skeleton [`payload`] uses — `schema`, `event`, and the id and the
-/// moment under `run` — so a receiver can branch on it exactly as it branches
-/// on the rest.
-///
-/// `looked`, `requests` and `lists` are deliberately absent: this run looked at
-/// nothing and spent nothing on the account, and a `false` there would read as
-/// a report that could not see rather than as a message that is not a report.
-/// The `note` says so in words, for whoever opens one by hand.
 pub(super) fn preflight_body(run_id: &str, at: Epoch) -> serde_json::Value {
     serde_json::json!({
         "schema": SENT_SCHEMA,
@@ -559,8 +432,7 @@ pub(super) fn preflight_body(run_id: &str, at: Epoch) -> serde_json::Value {
 
 /// What `snob watch deliver` did: how many owed reports it tried, at which
 /// address (as `check` shows it, any path secret cut), and what is still
-/// queued, for this address and for others. Printed with `--json` only, and
-/// never sent.
+/// queued, for this address and for others.
 pub(super) fn deliver_json(
     destination: &str,
     tried: usize,
@@ -582,16 +454,7 @@ pub(super) const PREFLIGHT_SUMMARY: &str =
 /// One account, as an automation wants it.
 ///
 /// **Both names through `printable`, as `snob followers --format json` has
-/// them** (`output::readable`, and AGENTS.md, "Output contract"). The stored
-/// row holds the full name as Instagram sent it, and `serde_json` escapes `Cc`
-/// but writes `Cf` as it is: a right-to-left override would reverse the name
-/// in the chat message a receiver builds from this, and the tag block would
-/// carry invisible ASCII into the agent node of an n8n workflow, where it
-/// reads as an instruction nobody on screen can see. Only the content is
-/// filtered, never the shape, so neither [`SENT_SCHEMA`] nor
-/// [`PRINTED_SCHEMA`] moves. The address is built from the username as
-/// stored: it is encoded rather than filtered, for the reason
-/// `User::profile_url` gives.
+/// them** (`output::readable`, and AGENTS.md, "Output contract").
 fn account_json(user: &User) -> serde_json::Value {
     let readable = User {
         username: user.safe_username(),
@@ -653,15 +516,11 @@ fn posts_json(report: Option<&PostsReport>) -> serde_json::Value {
     })
 }
 
-/// One new post, as a receiver building a message wants it. Built by hand
-/// rather than derived from `document::Post`: this is the contract, that is
-/// the listing's.
+/// One new post, as a receiver building a message wants it.
 ///
-/// **No media address**, for the reason `answer::without_media_addresses`
-/// gives an agent: a signed CDN address expires and weighs hundreds of bytes
-/// of query string. `url` is the post's own page. The caption was filtered
-/// line by line as it was read (`Post::from_media`), and is filtered again
-/// whole here, since it goes to a reader that may be a model.
+/// **No media address**, for the reason `answer::without_media_addresses` gives
+/// an agent: a signed CDN address expires and weighs hundreds of bytes of query
+/// string.
 fn post_json(post: &Post, saved: Option<&SavedPost>) -> serde_json::Value {
     serde_json::json!({
         "pk": post.pk.to_string(),
@@ -705,10 +564,9 @@ fn rename_json(rename: &Rename) -> serde_json::Value {
 }
 
 /// A moment as RFC 3339 in UTC, beside the epoch seconds every moment here is
-/// already given in: a receiver building a message or a spreadsheet row
-/// wants a date it can show, and converting an epoch is the step a no-code
-/// tool makes hard. Additive, so neither schema moves. `None` only for a
-/// moment `chrono` cannot represent, which no clock gives.
+/// already given in: a receiver building a message or a spreadsheet row wants a
+/// date it can show, and converting an epoch is the step a no-code tool makes
+/// hard.
 fn iso(at: Epoch) -> Option<String> {
     chrono::DateTime::from_timestamp(at.get(), 0)
         .map(|moment| moment.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
@@ -729,21 +587,11 @@ const DISCORD_MOST: usize = 1_900;
 const SLACK_MOST: usize = 3_900;
 const NTFY_MOST_BYTES: usize = 3_900;
 
-/// What a webhook in `format` is sent, from the JSON a report or a preflight
-/// is and the summary a person reads.
+/// What a webhook in `format` is sent, from the JSON a report or a preflight is
+/// and the summary a person reads.
 ///
 /// **This is protocol**: what comes out is the exact string that is signed,
-/// queued and sent again on a retry. `json` is the body it always was, plus
-/// `summary` (additive: [`SENT_SCHEMA`] does not move). The others carry the
-/// summary alone, in the shape the service's incoming webhook takes:
-///
-/// - `slack`: `{"text": ...}`, with `&`, `<` and `>` escaped, which Slack
-///   reads as markup otherwise;
-/// - `discord`: `{"content": ..., "allowed_mentions": {"parse": []}}`, so a
-///   name that reads as `@everyone` notifies nobody;
-/// - `ntfy` and `text`: the summary as plain UTF-8.
-///
-/// A summary longer than the service shows is cut at a line, and says so.
+/// queued and sent again on a retry.
 pub(super) fn outgoing(
     format: snob_store::config::WebhookFormat,
     mut json: serde_json::Value,
@@ -825,9 +673,7 @@ fn chars(text: &str) -> usize {
     text.chars().count()
 }
 
-/// The stable name of what a list's report is. Written out here rather than on
-/// [`Basis`] because it is vocabulary aimed at a caller, and the domain does
-/// not decide how it is spelled.
+/// The stable name of what a list's report is.
 fn basis_token(basis: Basis) -> &'static str {
     match basis {
         Basis::Baseline { .. } => "baseline",

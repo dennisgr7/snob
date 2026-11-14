@@ -1,100 +1,32 @@
 //! The tab's guard: what the browser pauses on its way out, and the verdict
-//! on each.
+//! on each. Instagram's app runs on every document the tab loads and sends
+//! calls of its own, which snob's own path never sees, so each is judged here.
 //!
-//! **Why.** `snob_ig::allowlist` refuses what snob would send that it does
-//! not name, before it leaves. Instagram's app runs on every document the tab
-//! loads and sends calls of its own from it — promotions, message badges, and
-//! the signals that tell somebody what was seen among them — which snob's own
-//! path never sees. So the browser pauses every call to the API, the app's
-//! and snob's alike, and each is judged here before it leaves: a GET goes on,
-//! and a POST goes on only when [`refused`] lets it, the same check snob's own
-//! requests pass. A call refused is failed as a content blocker fails one
-//! (`cdp::connection`), and said in the log.
+//! - **Paused by what sends it, not only by where it goes**
+//!   (`SENT_BY_A_PAGE`): every request a page's scripts make and every
+//!   document, whatever its address. A GET goes on; a POST only when the
+//!   allowlist lets it (`refused_app`).
+//! - **snob's own write goes on only as the request it armed** ([`Armed`]):
+//!   the first paused POST matching its address and form exactly spends it,
+//!   and any other write fails.
+//! - The app's empty POST to [`CLAIM_HANDED_OUT`] goes on though the allowlist
+//!   does not name it: its answer alone hands out `X-IG-WWW-Claim`.
+//! - **The view count, the event log, the Facebook sync and the app's two
+//!   beacons fail whatever the method** (`EVENTS`): a GET carries a signal as
+//!   well as a POST does. The one GET that goes on is the tab's own navigation
+//!   to a profile whose name happens to be one of them.
+//! - **No video reaches the page**: a muted video plays under every
+//!   `--autoplay-policy` (measured on Chromium 153), and Instagram counts a
+//!   play from its start. By address as well as by kind, since the player
+//!   fetches its pieces with `fetch()`.
 //!
-//! **Paused by what sends it, not only by where it goes** (`SENT_BY_A_PAGE`).
-//! A list of the API's paths is only as good as the app's habits: a POST
-//! under `/web/`, a beacon at the root or wherever Meta puts the next one
-//! would leave without a verdict. So every request a page's scripts make —
-//! `fetch`, XHR, a beacon, an event stream, what the browser calls other —
-//! and every document, a form posted among them, is paused whatever its
-//! address and host, and a POST among them that the allowlist does not name
-//! fails. Scripts, stylesheets, fonts and images are not paused by kind:
-//! they are GETs, which go on, and the paths below catch a pixel.
-//!
-//! **The app's own reads go on, by name and number.** Its boot calls ask for
-//! the promotions, the message badge's counts and what a profile says of its
-//! account, its posts and the accounts it suggests among them;
-//! `snob_ig::allowlist::refused_app` names the few of them that read and write
-//! nothing, the posts, the promotions and the two counts under any number
-//! their call vouches for since those rotate, and everything else the app
-//! POSTs is refused as before.
-//! Why each is in or out, and why the beacons (`/ajax/bz`, `/ajax/qm/`) stay
-//! out, is written at `APP_READS`. The numbers of the registry's reads follow
-//! the app when it moves them ([`Rediscovered`]).
-//!
-//! **snob's own write goes on only as the request it armed** ([`Armed`]).
-//! The allowlist lets a follow or an unfollow out by its name and endpoint,
-//! since its number rotates; from the app it is refused outright
-//! (`refused_app`), so that a write nobody asked for, paid for or recorded
-//! cannot leave the tab. snob's write is fetched from the same tab and paused
-//! the same way, so it is told apart by what nobody else could send: just
-//! before the fetch, the tab arms the guard with that request's address and
-//! form, and the first paused POST that matches both exactly is let through
-//! (after the allowlist's own check) and spends it. Any other write fails,
-//! and the expectation is gone once the fetch has answered, whatever it was.
-//!
-//! **One exception, named.** The app's empty POST to [`CLAIM_HANDED_OUT`] is
-//! let through though the allowlist does not name it (snob never sends it):
-//! it is neither a write nor a seen signal, and its answer is the only one
-//! that hands out the `X-IG-WWW-Claim` the app, and snob after it, echo on
-//! every REST read. Without it every read would carry the claim `0`. With a
-//! body, it is judged like any other POST.
-//!
-//! **Beyond the API**, three paths are paused though no call snob makes is
-//! under them: the view-count path (`/video/`, never spelled out here), the
-//! app's event log, and the sync it runs with Facebook, whose hosts are the
-//! only ones the patterns name. Everything else has no host, so a sandbox's
-//! fake is judged the same way. **These, and the app's two beacons under the
-//! API (`/ajax/bz`, `/ajax/qm/`), fail whatever the method** (`EVENTS`): a
-//! GET carries a signal in its query, or as a pixel, as well as a POST does
-//! in its form, and snob never sends either beacon, so a GET of one is the
-//! app's. The one GET that goes on is the tab's own navigation to a profile
-//! whose name happens to be one of them (`/video/` is somebody's).
-//!
-//! **The realtime host is never reached.** The app keeps a connection to
-//! Meta (MQTT over a WebSocket to `edge-chat`), which can publish presence
-//! and receipts, and a WebSocket's handshake is never paused by `Fetch`, so
-//! the guard cannot judge it; `Network.setBlockedURLs` does not refuse one
-//! either, nor anything a worker sends (measured on Chrome 156, both
-//! reached the site). So the browser is started unable to resolve any host
-//! named `edge-chat` (`cdp`, `--host-resolver-rules`), which holds for every
-//! page and worker and for the HTTP fallback too. snob sends nothing there.
-//!
-//! **What it cannot see**: a WebSocket to any other host, or to `edge-chat`
-//! from a browser that goes through a proxy, since the rule above holds only
-//! where the browser resolves names itself; and a route the app takes inside
-//! the page, which is not a request. snob never clicks, and the
-//! tab goes only where the allowlist lets it.
-//!
-//! **Nor what the network service sends on its own.** A report under the
-//! Reporting API (`report-to`, the `Reporting-Endpoints` header, deprecation
-//! and intervention reports among them) and a Network Error Logging upload
-//! (`NEL`) are queued and uploaded by the browser's network service, not by
-//! the page, so no `Fetch.requestPaused` is ever raised for them. What a page
-//! does send of that kind, a Content Security Policy report under the older
-//! `report-uri`, is a request of its own kind (`CSPViolationReport`), paused
-//! by that kind and failed whatever the method: snob sends none, and it says
-//! what the page loaded and when.
-//!
-//! **And no video reaches the page.** The feed plays a video that scrolls
-//! into view, muted, on its own, and Instagram counts a play of a reel from
-//! its start. Measured on Chromium 153, a muted video plays under every
-//! `--autoplay-policy`; what holds is the video never arriving. By address as
-//! well as by kind, since the site's player fetches its video in pieces with
-//! `fetch()`: a file named `.mp4`, `.webm` or `.m3u8` followed by a query, as
-//! every piece on the CDN is. The query is what keeps a name out of it —
-//! `clips.mp4` is a username snob may ask about — and `\?` is a literal `?`
-//! in the protocol's patterns, where a bare one is any character.
+//! **What it cannot see**: a WebSocket, whose handshake `Fetch` never pauses
+//! and `Network.setBlockedURLs` does not refuse (measured on Chrome 156), so
+//! the browser is started unable to resolve `edge-chat` (`cdp`,
+//! `--host-resolver-rules`; no help behind a proxy); what the network service
+//! uploads on its own (Reporting API, NEL); and a route the app takes inside
+//! the page. snob never clicks, and the tab goes only where the allowlist
+//! lets it.
 
 use std::sync::{Arc, Mutex};
 
@@ -115,13 +47,11 @@ const CLAIM_HANDED_OUT: &str = "/api/v1/web/fxcal/ig_sso_users/";
 /// Why a call to Facebook is refused.
 const FACEBOOK: &str = "the app's sync with Facebook";
 
-/// Where the app reports what was seen and done: the view count, its event
-/// log and the sync with Facebook outside the API, and its two beacons under
-/// it (`/ajax/bz` batches its events, impressions among them; `/ajax/qm/` is
-/// the other, whose payload was never recorded; `snob_ig::allowlist`, at
-/// `APP_READS`). Each is paused wherever it appears in an address
-/// ([`patterns`]) and failed whatever the method when a path starts with it
-/// ([`judge`]); no call snob makes is under any.
+/// Where the app reports what was seen and done: the view count, its event log
+/// and the sync with Facebook outside the API, and its two beacons under it
+/// (`/ajax/bz` batches its events, impressions among them; `/ajax/qm/` is the
+/// other, whose payload was never recorded; `snob_ig::allowlist`, at
+/// `APP_READS`).
 const EVENTS: [&str; 5] = [
     "/video/",
     "/logging_client_events",
@@ -141,13 +71,10 @@ pub(super) fn video_patterns() -> Vec<Value> {
     ]
 }
 
-/// The kinds of request, as the protocol names them, that are paused
-/// whatever their address: everything a page's scripts send (`fetch` is
-/// `Fetch`, `navigator.sendBeacon` is `Ping`), and the documents, where a
-/// form is posted. `Other` is what the browser files a request under when it
-/// is none of its kinds, which is where a new way of sending would land.
-/// `CSPViolationReport` is a page's report of what its Content Security
-/// Policy refused, which [`judge`] fails whatever it is.
+/// The kinds of request, as the protocol names them, that are paused whatever
+/// their address: everything a page's scripts send (`fetch` is `Fetch`,
+/// `navigator.sendBeacon` is `Ping`), and the documents, where a form is
+/// posted.
 const SENT_BY_A_PAGE: [&str; 7] = [
     "Document",
     "XHR",
@@ -161,8 +88,7 @@ const SENT_BY_A_PAGE: [&str; 7] = [
 /// Why a page's report of its Content Security Policy is refused.
 const CSP_REPORT: &str = "a page's report of its content security policy";
 
-/// The one `Fetch.enable` a target gets: a second would replace it. A
-/// request is paused when any one pattern matches it.
+/// The one `Fetch.enable` a target gets: a second would replace it.
 pub(super) fn patterns() -> Value {
     let api = [
         // The API, the app's and snob's.
@@ -189,9 +115,8 @@ pub(super) fn patterns() -> Value {
 }
 
 /// The one write of snob's the guard is told to expect, if any: armed by the
-/// tab just before it sends one ([`Armed::expect`]), spent by the first
-/// paused POST that is it ([`Armed::spend`]). Its form carries the page's
-/// tokens, so it is never printed.
+/// tab just before it sends one ([`Armed::expect`]), spent by the first paused
+/// POST that is it ([`Armed::spend`]).
 #[derive(Default)]
 pub(super) struct Armed(Mutex<Held>);
 
@@ -374,11 +299,9 @@ fn judge_post(
     }
 }
 
-/// The operation a refused Relay form says it is, for the log: a refusal
-/// read back as `POST /graphql/query` alone says nothing of whether the
-/// app was kept from its feed, its tray or a beacon. The name is the page's
-/// own word, so only a plain identifier of a sane length is repeated, and it
-/// makes each operation a reason of its own, said once.
+/// The operation a refused Relay form says it is, for the log: a refusal read
+/// back as `POST /graphql/query` alone says nothing of whether the app was kept
+/// from its feed, its tray or a beacon.
 fn operation_named(form: Option<&str>) -> Option<String> {
     let name = url::form_urlencoded::parse(form?.as_bytes())
         .find(|(name, _)| name == "fb_api_req_friendly_name")?

@@ -1,17 +1,4 @@
 //! ffmpeg, which joins a video's best tracks into one file.
-//!
-//! A post's widest video is a video track and a sound track apart
-//! (`snob_ig::model::dash`), and one file that plays needs both in it. snob
-//! never bundles ffmpeg and never re-encodes: it starts the ffmpeg the person
-//! already has, as it starts the system viewer, to copy both streams into one
-//! MP4 untouched (`-c copy`), which is disk speed. Without one, a download is
-//! the progressive file, and the person is told once how to get ffmpeg.
-//!
-//! How it is started is the rule here: by an absolute path (`--ffmpeg`,
-//! [`ENV`], or a `PATH` entry that is absolute), with no shell, standard input
-//! and output closed, every path given absolute so none can be read as an
-//! option, its errors kept to [`STDERR_KEPT`] bytes, and stopped, by its own
-//! handle, on Ctrl+C or past [`WITHIN`].
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -50,10 +37,8 @@ pub struct Ffmpeg {
 }
 
 impl Ffmpeg {
-    /// The ffmpeg to use: `named` (`--ffmpeg`), else [`ENV`], else the first
-    /// on the `PATH`. A name that is not a file is none, and so is a relative
-    /// one: what a relative path names depends on the directory snob was
-    /// started in.
+    /// The ffmpeg to use: `named` (`--ffmpeg`), else [`ENV`], else the first on
+    /// the `PATH`.
     pub fn find(named: Option<&Path>) -> Option<Self> {
         let given = named
             .map(Path::to_path_buf)
@@ -68,9 +53,7 @@ impl Ffmpeg {
         &self.path
     }
 
-    /// `video` and `audio` copied into one MP4 at `out`, untouched. Stops,
-    /// and answers `IgError::Canceled`, when `cancel` is, and fails past
-    /// [`WITHIN`]; `out` is then left for the caller to remove.
+    /// `video` and `audio` copied into one MP4 at `out`, untouched.
     pub async fn join(
         &self,
         video: &Path,

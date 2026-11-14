@@ -1,16 +1,6 @@
 //! The keys of the view on screen, in a box over it.
 //!
-//! A view's bottom edge is one row, and what does not fit on it is cut. The
-//! hints there name the keys a person needs first; the rest, `g` and `G`, a
-//! page at a time, `h j k l`, Ctrl+L, were known to whoever had read
-//! `browser::input`. `?` puts all of them on screen, for the view and the
-//! level it is pressed at, and any key takes them away again.
-//!
-//! **A table sits beside the binding it describes.** Each view keeps its own
-//! (`KEYS`), built from the entries below that mean the same everywhere and
-//! from its own. An entry carries one of the keys it names, so a test in the
-//! view can press it and hold the table to what the view really does: a key
-//! named here that does nothing is a failing test, not a stale sentence.
+//! **A table sits beside the binding it describes.**
 
 use anyhow::Result;
 use console::measure_text_width;
@@ -65,10 +55,6 @@ pub const QUIT: Key = key("q", "quit", KeyCode::Char('q'));
 pub const STOP: Key = ctrl("ctrl+c", "stop and leave", 'c');
 
 /// Shows `keys` over the view `under` draws until a key is pressed.
-///
-/// Any key closes it and is spent doing so: the box is in the way of what
-/// the key would have acted on. A stop the system asked for is read as a
-/// key like any other here, and as Ctrl+C again by the view's own loop.
 pub fn show(
     tui: &mut Tui,
     title: &str,
@@ -87,10 +73,8 @@ pub fn show(
     }
 }
 
-/// The box: one row a key, the keys on the left in the accent, bold, and
-/// what they do beside them. On a terminal too short for all of it the last
-/// rows are cut, which is the first rows' good luck: they are the ones every
-/// view puts first.
+/// The box: one row a key, the keys on the left in the accent, bold, and what
+/// they do beside them.
 pub fn modal(frame: &mut Frame<'_>, title: &str, keys: &[Key], colors: bool) {
     let dim = tui::paint(colors, tui::DIM);
     let bold = tui::paint(colors, tui::BOLD);

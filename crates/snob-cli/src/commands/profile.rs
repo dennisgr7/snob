@@ -1,22 +1,13 @@
 //! `snob profile`: an account the way its page shows it, for a handful of
 //! requests.
 //!
-//! The counters, the bio, whether you follow each other, who you follow that
-//! follows them, the highlights under the bio and whether anything is up right
-//! now — which is what a person sees on opening a profile, and what every
-//! other command here answers a narrower question about at a higher price.
-//! `scan` walks two lists to cross them; this reads the page and stops.
-//!
 //! **What it costs**: one request for the profile, which is the one every
 //! command makes to turn a name into an id; one for the highlights and one for
 //! the stories, both skipped when the account is private and not followed,
 //! because neither is served then; and one per twelve accounts you follow that
-//! follow them, skipped when there are none. A typical account is three or
-//! four requests, and the closing line says what it was.
+//! follow them, skipped when there are none.
 //!
-//! **It does not ask for consent**, for the reason `stories` gives. This is a
-//! few requests about one account, and the only list in it is made of people
-//! *you* follow, which is your own list. It stores nothing.
+//! **It does not ask for consent**, for the reason `stories` gives.
 //!
 //! **Reading a highlight's tray does not tell anybody you looked**, for the
 //! reason `stories` gives; `crates/snob-core/tests/no_seen.rs` holds it.
@@ -44,10 +35,7 @@ use crate::ui;
 /// rather than named.
 ///
 /// Twelve names a page is what the endpoint serves, so this is 120 names for
-/// ten requests. Past that the list stops being something a person reads on a
-/// profile and becomes a list command's job, and this command's cost stops
-/// being a handful. The cap is said out loud when it is hit, never applied in
-/// silence.
+/// ten requests.
 const MUTUAL_PAGE_CAP: usize = 10;
 
 /// How many names the "followed by" line puts before it starts counting.
@@ -67,17 +55,13 @@ pub struct Profile {
     pub is_private: bool,
     pub is_verified: bool,
     /// The category a business or creator account shows under its name.
-    /// Instagram sends an empty string for one that has none, and that is
-    /// `None` here rather than a blank line.
     pub category: Option<String>,
     pub followers: Option<u64>,
     pub following: Option<u64>,
     pub posts: Option<u64>,
-    /// How the viewer and this account stand to each other. `None` on the
-    /// viewer's own account, where the question has no answer.
+    /// How the viewer and this account stand to each other.
     pub relation: Option<Relation>,
-    /// The accounts you follow that follow this one. `None` on your own
-    /// account.
+    /// The accounts you follow that follow this one.
     pub mutual: Option<Mutual>,
     pub highlights: Visibility<Vec<Highlight>>,
     /// The address of the profile picture at the size the page serves —
@@ -90,12 +74,9 @@ pub struct Profile {
     pub pfp_full_size: Option<String>,
     /// The account keeps the default avatar, which is no picture to show.
     pub pfp_anonymous: bool,
-    /// The stories up right now. The printed forms only ever say how many —
-    /// [`Profile::stories_up`] — and the interactive view opens them, which
-    /// is why the items are kept rather than counted and dropped.
+    /// The stories up right now.
     pub stories: Visibility<Vec<Story>>,
-    /// The date the summary describes. It is the moment it was read, and it is
-    /// carried so the JSON dates itself like every other object here.
+    /// The date the summary describes.
     pub read_at: Epoch,
 }
 
@@ -115,24 +96,16 @@ pub struct Relation {
 pub struct Mutual {
     /// The count the page shows, which is Instagram's and not a length here.
     pub count: u64,
-    /// The three names the page itself puts in the sentence. They are not the
-    /// first three of the list below — the page picks, and the sentence here
-    /// says what the page says.
+    /// The three names the page itself puts in the sentence.
     pub preview: Vec<String>,
     /// The names, in the order the mutual tab lists them.
     pub people: Vec<User>,
-    /// Whether `people` is the whole list. False when the walk stopped at
-    /// [`MUTUAL_PAGE_CAP`], and the closing line says so.
+    /// Whether `people` is the whole list.
     pub complete: bool,
 }
 
-/// A part of the page that a private account keeps from those who do not
-/// follow it.
-///
-/// Carried as its own case rather than as an empty list, because "no
-/// highlights" and "highlights you may not see" are different sentences and a
-/// summary that printed the first for the second would be wrong in the way
-/// this tool goes to lengths not to be.
+/// A part of the page that a private account keeps from those who do not follow
+/// it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Visibility<T> {
     Shown(T),
@@ -157,8 +130,7 @@ pub struct Highlight {
 }
 
 impl Profile {
-    /// How many stories are up, which is all the printed forms say about
-    /// them. The items themselves are [`Profile::stories`]'s.
+    /// How many stories are up, which is all the printed forms say about them.
     pub fn stories_up(&self) -> Visibility<usize> {
         match &self.stories {
             Visibility::Shown(items) => Visibility::Shown(items.len()),
@@ -168,11 +140,6 @@ impl Profile {
 }
 
 /// Whether [`fetch`] walks the mutual list or leaves it for a later click.
-///
-/// The printed document names the walked list, so the static path pays for
-/// it up front. The interactive view shows the count the page already sent
-/// and walks only when the number is opened — up to ten requests that a
-/// glance at a profile should not cost.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutualPolicy {
     WalkNow,
@@ -193,9 +160,7 @@ pub async fn run(args: ProfileArgs, store: SecretStore, paths: &AccountPaths) ->
 
     let browses = args.browses(crate::ui::a_human_would_watch_the_listing_scroll_by());
 
-    // A bar only for the browser, whose clicks can start real walks. The
-    // printed path stays barless: a handful of requests does not need one,
-    // and the summary is short enough that a bar would outlast it.
+    // A bar only for the browser, whose clicks can start real walks.
     let app = common::reader(&store, paths, args.interactive, browses)?;
     let typed = common::target_or_own(&app, args.target.as_deref()).await?;
 
@@ -216,9 +181,8 @@ pub async fn run(args: ProfileArgs, store: SecretStore, paths: &AccountPaths) ->
     // The card instead of the document — the default at a terminal, the
     // decision made above.
     if browses {
-        // A pacer wait during the fetch may have drawn a bar; the card must
-        // not share the screen with it. `finish` also leaves the stack ready
-        // for the walks the clicks can start.
+        // A pacer wait during the fetch may have drawn a bar; the card must not
+        // share the screen with it.
         app.progress().finish();
         return browse(app, profile, args.target, before, &store, paths).await;
     }
@@ -250,11 +214,7 @@ pub async fn run(args: ProfileArgs, store: SecretStore, paths: &AccountPaths) ->
 }
 
 /// The card, as the account the command runs as and then as each account the
-/// card switches to. A switch fetches the profile again as the new account,
-/// because how the two stand to each other is the viewer's.
-///
-/// The closing line counts each account's session as it is left: the fetch
-/// plus whatever the clicks spent.
+/// card switches to.
 async fn browse(
     app: Box<App>,
     profile: Profile,
@@ -335,12 +295,6 @@ fn shown(profile: &Profile, viewer: snob_core::Pk) -> Option<String> {
 
 /// The network half, kept apart from the session and the filesystem so a test
 /// can drive it against a mock server.
-///
-/// `viewer` is the session's own id, which is what decides whether the
-/// account is the viewer's: compared by id rather than by name, because the
-/// session may not know its own name yet and a name can be spelled two ways.
-/// `known` is the account's pk when this machine has seen it
-/// ([`target::known_pk`]).
 pub async fn fetch(
     client: &IgClient,
     typed: &str,
@@ -354,8 +308,7 @@ pub async fn fetch(
     let you_follow = info.followed_by_viewer.unwrap_or(false);
 
     // A private account serves its reels — the highlights and the stories —
-    // only to its followers. Asking would spend two requests on two empty
-    // answers, and then print "no highlights" for an account that has some.
+    // only to its followers.
     let visible = own || !is_private || you_follow;
 
     let relation = (!own).then(|| Relation {
@@ -398,7 +351,6 @@ pub async fn fetch(
 
     // The profile already says how many there are; a count of zero is the
     // answer, and asking the tray for it spent a request on an empty list.
-    // Unknown still asks.
     let highlights = if visible && info.highlight_reel_count == Some(0) {
         Visibility::Shown(Vec::new())
     } else if visible {
@@ -479,15 +431,6 @@ pub async fn fetch(
 }
 
 /// The accounts you follow that follow this one, walked a page at a time.
-///
-/// The count comes from the profile and is trusted as the size; the names come
-/// from the mutual endpoint, and the walk stops when it says there is no next
-/// page or at [`MUTUAL_PAGE_CAP`], whichever is first. A count of zero spends
-/// nothing: there is nothing to name.
-///
-/// Takes the pieces rather than the wire struct, so the interactive view —
-/// which deferred the walk and holds only a [`Profile`] — can pay for it at
-/// the click that asks for it.
 pub(crate) async fn mutuals(
     client: &IgClient,
     pk: snob_core::Pk,
@@ -523,9 +466,7 @@ pub(crate) async fn mutuals(
     let mut complete = false;
     for page_number in 0..MUTUAL_PAGE_CAP {
         // **A step between pages, as a person scrolling the list makes**, the
-        // same one a list walk takes. The shared bucket alone lets a burst of
-        // twenty through, which would make ten pages faster than any list is
-        // read here.
+        // same one a list walk takes.
         if page_number > 0
             && (rest_before_a_page(client).await? || client.step_between(&Pace::default()).await)
         {
@@ -560,8 +501,7 @@ pub(crate) async fn mutuals(
 
 /// Pays a rest the account's sitting owes before a page of the mutual list,
 /// saying so on standard error: no bar draws for this walk, and the command
-/// would otherwise stand still for minutes without a word. `true` when it
-/// was canceled.
+/// would otherwise stand still for minutes without a word.
 async fn rest_before_a_page(client: &IgClient) -> Result<bool> {
     Ok(client
         .rest_before_a_page(&Pace::default(), |left| {
@@ -645,10 +585,6 @@ fn as_json(profile: &Profile) -> serde_json::Value {
 }
 
 /// "Followed by @ana, @luis, @eva and 30 others".
-///
-/// Built on the count and the names the page shows rather than on the walk,
-/// so the sentence is the page's whether or not the walk reached the end. The
-/// walk's first names stand in only when the page sent none.
 fn followed_by_line(mutual: &Mutual) -> Option<String> {
     if mutual.count == 0 {
         return None;
@@ -907,9 +843,7 @@ fn as_markdown(profile: &Profile) -> String {
     if let Some(url) = &profile.external_url {
         // An autolink ends at the first `>` and breaks on a space, so a link
         // whose text carries either would spill the rest into the document as
-        // markdown of the server's choosing. Percent-encoded rather than
-        // escaped: `md::escape` is for labels, and a backslash inside `<…>`
-        // is part of the address.
+        // markdown of the server's choosing.
         let safe = url
             .replace('<', "%3C")
             .replace('>', "%3E")

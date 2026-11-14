@@ -1,38 +1,28 @@
 //! The protocol connection: one reader, any number of callers.
 //!
-//! One task, the dispatcher, owns the read side and does nothing but route. A
-//! reply goes to the caller registered under its id; an event goes to whoever
-//! subscribed to its session; an attach and a paused request are answered
-//! right there. That decides four things, each measured:
+//! That decides four things, each measured:
 //!
 //! - A target the browser attaches is let go the moment the attach is read,
 //!   whether or not any call is waiting: a worker created one second into a
 //!   six-second gap between calls, whose attach waited for the next caller to
-//!   read the pipe, started 5.1 s late, where the dispatcher starts it in
-//!   about ten milliseconds. A late worker is itself a timing tell.
+//!   read the pipe, started 5.1 s late, where the dispatcher starts it in about
+//!   ten milliseconds.
 //! - Answering an attach is never part of a caller's future, so a timeout or a
 //!   Ctrl+C cannot leave a target paused for good.
 //! - A crashed tab fails the calls waiting on it at once.
 //! - A message past the ceiling fails the one call it answered.
 //!
-//! **The dispatcher never waits for a reply of its own** — it would be
-//! waiting on itself — so what it sends in answer is written and not awaited,
-//! and a failure among those is logged when its reply comes. It never panics
-//! either: the release profile aborts on a panic, and everything it reads came
-//! from a browser.
+//! **The dispatcher never waits for a reply of its own** — it would be waiting
+//! on itself — so what it sends in answer is written and not awaited, and a
+//! failure among those is logged when its reply comes.
 //!
 //! A caller registers its id **before** the command is written, and the entry
 //! is removed when its future is dropped, whatever the reason: a reply to a
-//! call nobody waits for any more finds nothing and is dropped. So calls are
-//! safe to cancel and may run at the same time, which is what several tabs on
-//! one browser need.
+//! call nobody waits for any more finds nothing and is dropped.
 //!
 //! **No crate**, because none fits: `chromiumoxide` speaks only WebSocket and
 //! enables `Runtime` on every frame, `headless_chrome` only a port, not
-//! flattened, and `expect`s in its reader. Neither knows the inherited pipe
-//! descriptors or the Windows job object, which are the hard part here.
-//! Puppeteer's `Connection` and Playwright's `crConnection.ts` are the
-//! structure this follows.
+//! flattened, and `expect`s in its reader.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -98,14 +88,10 @@ pub struct Event {
 
 /// The commands a newly attached target gets, by what kind of target it is.
 ///
-/// **Why a browser engine needs this.** `Emulation.setUserAgentOverride` holds
-/// for the one tab it was sent to. A worker the page starts, a frame from
-/// another site and the service worker the site registers are targets of their
-/// own, and each of them went out as the bare headless browser: measured on
-/// Chromium 153, a service worker called itself `HeadlessChrome`. With
-/// auto-attach, the browser pauses every such target before its first line
-/// runs and tells this connection; the target is given these commands and then
-/// let go.
+/// A worker the page starts, a frame from another site and the service worker
+/// the site registers are targets of their own, and each of them went out as
+/// the bare headless browser: measured on Chromium 153, a service worker called
+/// itself `HeadlessChrome`.
 #[derive(Debug, Clone, Default)]
 pub struct OnAttach {
     /// For a page or a frame, which has the `Emulation` domain.
@@ -124,22 +110,15 @@ pub enum Paused {
 }
 
 impl Paused {
-    /// The reason every video the site would load is refused for. Too
-    /// common to warn about: a feed asks for a piece of one at every scroll.
+    /// The reason every video the site would load is refused for.
     pub const VIDEO: &'static str = "video";
 }
 
 /// Judges each request the browser pauses, from the `Fetch.requestPaused`
-/// event's `params`. Run by the dispatcher, synchronously, so it answers at
-/// once and never waits.
+/// event's `params`.
 pub type PauseRule = Arc<dyn Fn(&Value) -> Paused + Send + Sync>;
 
-/// An open connection to a browser. Cheap to clone; every clone talks to the
-/// same dispatcher.
-///
-/// Dropping the last clone drops the sending half, which ends the writer
-/// thread and closes the browser's command pipe; the dispatcher holds only a
-/// weak reference, so it does not keep a connection nobody uses alive.
+/// An open connection to a browser.
 #[derive(Clone)]
 pub struct Connection {
     shared: Arc<Shared>,
@@ -154,11 +133,9 @@ struct Shared {
 #[derive(Default)]
 struct State {
     pending: HashMap<u64, Pending>,
-    /// Why the connection ended, once it has. Every call from then on fails
-    /// at once with it.
+    /// Why the connection ended, once it has.
     closed: Option<String>,
-    /// Sessions the browser has said are gone. A call on one fails at once
-    /// rather than waiting out a timeout for an answer that cannot come.
+    /// Sessions the browser has said are gone.
     gone: HashSet<String>,
     subscribers: Vec<Subscriber>,
     on_attach: Option<OnAttach>,
@@ -248,8 +225,7 @@ struct Subscriber {
     sender: mpsc::Sender<Event>,
 }
 
-/// What the dispatcher reads out of a message. Only the envelope; `params`
-/// and `result` stay as they came.
+/// What the dispatcher reads out of a message.
 #[derive(serde::Deserialize)]
 struct Incoming {
     id: Option<u64>,
@@ -280,10 +256,6 @@ impl Connection {
     }
 
     /// Sends one command and waits up to `timeout` for its answer.
-    ///
-    /// Safe to drop at any point: the id is registered before the command is
-    /// written and forgotten when this future goes, so a late answer finds
-    /// nobody and is dropped.
     pub async fn call(
         &self,
         session: Option<&str>,
@@ -311,20 +283,13 @@ impl Connection {
         }
     }
 
-    /// Sends a command nobody waits for. A failure is logged when its reply
-    /// comes; a command that could not even be written is logged now.
+    /// Sends a command nobody waits for.
     pub fn fire(&self, session: Option<&str>, method: &str, params: Value) {
         self.shared.fire(session, method, params);
     }
 
-    /// Everything the browser says on `session` (`None`: its own) from now
-    /// on, up to `capacity` events behind.
-    ///
-    /// **Lossy on purpose.** An event is offered with `try_send`, and one that
-    /// does not fit is dropped rather than holding up the dispatcher, which is
-    /// also what carries every reply. A subscriber that must not miss
-    /// anything keeps up, or asks for room. The channel ends when the session
-    /// or the connection does.
+    /// Everything the browser says on `session` (`None`: its own) from now on,
+    /// up to `capacity` events behind.
     pub fn subscribe(&self, session: Option<&str>, capacity: usize) -> mpsc::Receiver<Event> {
         let (sender, receiver) = mpsc::channel(capacity.max(1));
         let mut state = self.shared.lock();
@@ -383,8 +348,7 @@ impl Connection {
         self.shared.lock().closed.clone()
     }
 
-    /// How many calls are waiting for an answer. For the tests, which check
-    /// that a call given up on leaves nothing behind.
+    /// How many calls are waiting for an answer.
     #[cfg(test)]
     fn waiting(&self) -> usize {
         self.shared.lock().pending.len()
@@ -595,20 +559,14 @@ impl Shared {
 
     /// Gives a target the browser has just paused its commands, and lets it go.
     ///
-    /// Nothing here waits for a reply: the commands are written in order on
-    /// the target's own session, and the last of them lets it run. A target
-    /// attached before any plan is set is only registered.
-    ///
-    /// **A target is dressed once, and released on every session.** The
-    /// service worker a site registers is attached twice, once by each
-    /// auto-attach, and two things were measured on Chromium 141:
+    /// **A target is dressed once, and released on every session.** The service
+    /// worker a site registers is attached twice, once by each auto-attach, and
+    /// two things were measured on Chromium 141:
     ///
     /// - Released on only one of its sessions, the worker stayed paused; so
     ///   every attach that is waiting is released.
     /// - The identity lives in the session it was given on: that session
-    ///   detached, the worker's requests named `HeadlessChrome` again. So the
-    ///   first session carries it, a second is only released, and the identity
-    ///   moves when the carrier goes and another stays ([`Shared::detached`]).
+    ///   detached, the worker's requests named `HeadlessChrome` again.
     fn attached(&self, params: &Value) {
         let Some(session) = params.get("sessionId").and_then(Value::as_str) else {
             return;
@@ -705,19 +663,8 @@ impl Shared {
         }
     }
 
-    /// Answers a request the browser paused for this connection, on the
-    /// session that paused it.
-    ///
-    /// Nothing is paused but what a `Fetch.enable` asked for, and the only
-    /// one sent is `headless/`'s, which also sets the rule that judges each
-    /// (`headless::guard`). Without a rule a paused request is failed: a
-    /// connection that asked for pauses and said nothing about them lets
-    /// nothing through. A request is failed the way a content blocker fails
-    /// one — `BlockedByClient`, which is what a page sees from the
-    /// extensions a great many people run.
-    ///
-    /// Here and not in a subscriber, whose events can be dropped: a pause
-    /// nobody answers holds the request, and the page with it, for good.
+    /// Answers a request the browser paused for this connection, on the session
+    /// that paused it.
     fn answer_paused(&self, session: Option<&str>, params: &Value) {
         let Some(request) = params.get("requestId").and_then(Value::as_str) else {
             return;
@@ -817,10 +764,6 @@ async fn dispatch(shared: Weak<Shared>, mut frames: mpsc::Receiver<Frame>) {
 }
 
 /// The `id` at the start of a message, read off its first bytes.
-///
-/// For a message too large to keep, of which only the head survives. Chromium
-/// writes a reply's `id` first, so `{"id":` and the digits after it are all
-/// there is to find; anything else is an event, which answers no call.
 fn id_in_head(head: &[u8]) -> Option<u64> {
     let rest = head.strip_prefix(br#"{"id":"#)?;
     let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();

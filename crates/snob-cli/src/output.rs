@@ -1,11 +1,4 @@
 //! Writing the result.
-//!
-//! Data goes to standard output and everything else to standard error, so that
-//! redirecting to a file or piping into another process works without any
-//! coordination with the progress bar.
-//!
-//! Each format is rendered by a pure function that returns the finished bytes,
-//! and every command hands them to the one sink below.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -18,10 +11,6 @@ use crate::ui;
 
 /// The six JSON keys of `User`, in the order the struct declares them: the
 /// column set every row format shares.
-///
-/// Shared by `csv` and `xlsx`, and here above the `xlsx` feature gate so the
-/// build without the feature still has the one definition. A test below holds
-/// the list to the struct's actual keys.
 pub(crate) const USER_COLUMNS: [&str; 6] = [
     "pk",
     "username",
@@ -39,10 +28,6 @@ pub(crate) mod table;
 pub(crate) mod xlsx;
 
 /// How the result will be seen.
-///
-/// Worked out once per run and passed down, so the renderers stay pure
-/// functions a test can drive without touching the environment or the
-/// terminal it happens to be running in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Presentation {
     /// The result lands on a terminal a person is looking at: no `-o`, and
@@ -52,17 +37,12 @@ pub struct Presentation {
     pub hyperlinks: bool,
     /// Styling is welcome there.
     pub color: bool,
-    /// Width to lay a table out in. `None` lets the table library measure the
-    /// terminal itself; tests set it to stay deterministic.
+    /// Width to lay a table out in.
     pub width: Option<u16>,
 }
 
 impl Presentation {
-    /// Reads the environment. The destination comes first: a file is never
-    /// interactive, whatever the terminal supports.
-    ///
-    /// `FORCE_HYPERLINK` and `NO_COLOR` are honored by the two crates behind
-    /// this, so neither variable is read here.
+    /// Reads the environment.
     pub fn detect(destination: Option<&Path>) -> Self {
         let interactive = file_named(destination).is_none()
             && std::io::IsTerminal::is_terminal(&std::io::stdout());
@@ -75,8 +55,7 @@ impl Presentation {
     }
 }
 
-/// What a renderer produces. Text for everything a terminal or an editor can
-/// read; bytes for a spreadsheet, which is a zip archive.
+/// What a renderer produces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rendered {
     Text(String),
@@ -95,9 +74,6 @@ impl Rendered {
 /// Picks the format: whatever was asked for, then what the destination's
 /// extension implies, and failing both a table on a terminal and JSON in a
 /// pipe.
-///
-/// The extension matters so `-o list.csv` with no `--format` does not write
-/// one name per line into a file named like a spreadsheet.
 pub fn effective_format(requested: Option<Format>, destination: Option<&Path>) -> Format {
     let destination = file_named(destination);
     if let Some(format) = requested {
@@ -154,16 +130,6 @@ pub fn check_destination(format: Format, destination: Option<&Path>) -> Result<(
 
 /// Builds a file name for a result nobody named, and refuses the ones that
 /// would not behave as files ([`usable_stem`]).
-///
-/// An existing file is never overwritten here. With `-o` the user picked the
-/// name and replacing it is their call; with this one they did not.
-///
-/// `in_dir` is where that check looks. It is a parameter rather than the
-/// process's working directory because that is shared by the threads
-/// `cargo test` runs one binary's tests on.
-///
-/// What comes back is still the bare name, because that is what gets printed
-/// and what the caller writes to.
 pub fn default_path(in_dir: &Path, stem: &str, extension: &str) -> Result<PathBuf> {
     usable_stem(stem)?;
     let name = format!("{stem}.{extension}");
@@ -176,17 +142,6 @@ pub fn default_path(in_dir: &Path, stem: &str, extension: &str) -> Result<PathBu
 }
 
 /// Refuses a stem that would not behave as a file name.
-///
-/// The stem comes from a server rather than from what anyone typed, so it is
-/// checked before it becomes a path: no separators, no leading dot, and none of
-/// the names Windows resolves to devices whatever extension they carry — that
-/// last one is how a download reports success while going to the null device.
-///
-/// **The one home of that rule.** [`default_path`] asks it, and so does a
-/// caller that builds paths of its own from a stem before it gets there
-/// (`media::save_named`, whose look for an earlier copy and whose `.part`
-/// are both paths): a `..` or a share name in the stem would otherwise have
-/// been probed and written outside the directory before this said no.
 pub fn usable_stem(stem: &str) -> Result<()> {
     #[rustfmt::skip]
     const RESERVED: [&str; 24] = [
@@ -196,8 +151,7 @@ pub fn usable_stem(stem: &str) -> Result<()> {
     ];
 
     // Windows decides a device name from what comes before the first dot, so
-    // `con.x.jpg` opens the console just as `con` does. Comparing the whole
-    // stem would let any account with a dot in its name walk past this.
+    // `con.x.jpg` opens the console just as `con` does.
     let device = stem.split('.').next().unwrap_or(stem).to_ascii_lowercase();
 
     let usable = !stem.is_empty()
@@ -214,8 +168,7 @@ pub fn usable_stem(stem: &str) -> Result<()> {
     if !usable {
         // Filtered where it is quoted, not where it is checked: the test above
         // has to see the name Instagram sent, and this sentence is printed to a
-        // terminal by `report::print_error`. Every name that fails the test for
-        // carrying a control character reaches exactly this line.
+        // terminal by `report::print_error`.
         return Err(anyhow!(
             "\"{}\" cannot be used as a file name here. \
              Use -o to say where the result should go",
@@ -235,10 +188,6 @@ pub fn write(
 }
 
 /// [`write_rendered`] for bytes that are not a rendering.
-///
-/// A story is a file that arrived, and wrapping it in `Rendered::Bytes` would
-/// copy the whole thing once more -- up to the story ceiling -- for a writer
-/// that only reads a borrowed slice. `Rendered` stays for what is rendered.
 pub fn write_bytes(bytes: &[u8], destination: Option<&Path>) -> Result<()> {
     match file_named(destination) {
         Some(path) => {
@@ -253,12 +202,6 @@ pub fn write_bytes(bytes: &[u8], destination: Option<&Path>) -> Result<()> {
 
 /// Writes to a name **this program chose**, refusing to touch anything that is
 /// already there.
-///
-/// `write_rendered` is for a path the user named, where replacing what is there
-/// is their call. This one is for a name derived from a username that came off
-/// a server, and the check has to be the creation itself: looking first and
-/// writing afterwards leaves a gap — a whole network download wide, in `pfp` —
-/// in which the name can become a symlink to somewhere else.
 pub fn write_new(rendered: &Rendered, path: &Path) -> Result<()> {
     create_new(path)?
         .write_all(rendered.as_bytes())
@@ -269,11 +212,6 @@ pub fn write_new(rendered: &Rendered, path: &Path) -> Result<()> {
 }
 
 /// Opens a file that must not already exist, readable by this account only.
-///
-/// The creation is the check: looking first and writing afterwards leaves a
-/// gap in which the name can become a link to somewhere else. Shared by
-/// [`write_new`] and by the story browser, which writes into its scratch
-/// directory and says nothing about it.
 pub fn create_new(path: &Path) -> Result<std::fs::File> {
     use std::fs::OpenOptions;
 
@@ -282,9 +220,7 @@ pub fn create_new(path: &Path) -> Result<std::fs::File> {
     // Everything else this tool writes is 0600 or 0700 -- the session, the
     // database, the directories -- and an export is a list of real people's
     // names, which the umask would usually leave world-readable on a shared
-    // machine. Only for the name snob chooses; an explicit `-o` is the user's
-    // own decision about where their data goes, and `write_rendered` leaves
-    // that alone.
+    // machine.
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -297,17 +233,6 @@ pub fn create_new(path: &Path) -> Result<std::fs::File> {
 
 /// A download into a path the user named with `-o`, which replaces what is
 /// there only once the whole file has arrived.
-///
-/// The bytes go to `.<name>.<pid>.part` beside it and are renamed over it at
-/// [`Replacing::commit`]; anything short of that removes the `.part` and
-/// leaves the path as it was. Truncating the path first, and removing it on a
-/// failure, lost a good earlier copy to an expired address, and removed
-/// whatever the user had named, `/dev/null` included.
-///
-/// A path that exists and is neither a file nor a directory (a device, a
-/// pipe) is written to in place: it cannot be renamed over, and it is not a
-/// copy of anything to keep. A link is followed, so the file it points at is
-/// the one replaced and the link stays a link.
 pub struct Replacing {
     /// `None` once closed, which Windows wants before a rename or a removal.
     file: Option<std::fs::File>,
@@ -420,15 +345,8 @@ pub fn is_stdout(path: &Path) -> bool {
     path.as_os_str() == "-"
 }
 
-/// The file a destination names, or `None` for standard output: no `-o`, or
-/// `-o -`.
-///
-/// Every function here that takes a destination reads it through this, so a
-/// listing or a document given `-o -` is printed as it would be with no `-o`,
-/// and never written to a file named `-` (`-o ./-` still is). Where `-o -`
-/// differs from no `-o` at all is decided before this: it asks for the
-/// printed form, not the full-screen view, and a download with it goes to
-/// standard output rather than into the working directory.
+/// The file a destination names, or `None` for standard output: no `-o`, or `-o
+/// -`.
 pub fn file_named(destination: Option<&Path>) -> Option<&Path> {
     destination.filter(|path| !is_stdout(path))
 }
@@ -436,10 +354,6 @@ pub fn file_named(destination: Option<&Path>) -> Option<&Path> {
 /// The checks before a downloaded file goes to standard output: exactly one
 /// file, and a reader that is not a terminal, where the bytes of a JPEG or an
 /// MP4 are noise that can leave it in a state somebody has to reset.
-///
-/// Asked before any file is fetched, so a refusal costs no download; what
-/// the command line alone answers is asked before anything at all
-/// ([`stdout_download_ahead`]).
 pub fn one_file_to_stdout(files: usize) -> Result<()> {
     if files != 1 {
         return Err(several_to_stdout(files));
@@ -449,9 +363,7 @@ pub fn one_file_to_stdout(files: usize) -> Result<()> {
 
 /// [`one_file_to_stdout`] as far as the command line answers it, before a
 /// single request: whether standard output is a terminal, and whether the
-/// numbers given (`-d 1,3`) already name more than one file. `at_least` is
-/// that count, a lower bound since a post can hold several; `None` when only
-/// the listing will tell (`-d all`). Nothing is refused when `-o` is not `-`.
+/// numbers given (`-d 1,3`) already name more than one file.
 pub fn stdout_download_ahead(destination: Option<&Path>, at_least: Option<usize>) -> Result<()> {
     if !destination.is_some_and(is_stdout) {
         return Ok(());
@@ -482,13 +394,8 @@ fn no_terminal_for_a_file() -> Result<()> {
     Ok(())
 }
 
-/// Standard output as the sink of a streamed download, which a reader that
-/// left ends quietly, as [`write_stdout`] treats one.
-///
-/// Written through [`std::io::Stdout`] on each chunk rather than held
-/// locked, because a download's sink has to be `Send` and a lock is not.
-/// What has gone out before a failure cannot be taken back: the run exits
-/// non-zero and says so on standard error, and the reader has a prefix.
+/// Standard output as the sink of a streamed download, which a reader that left
+/// ends quietly, as [`write_stdout`] treats one.
 #[derive(Default)]
 pub struct StdoutSink {
     closed: bool,
@@ -536,18 +443,6 @@ impl StdoutSink {
 }
 
 /// The result, on standard output, for a reader that may have left.
-///
-/// Not `.ok()` on either call. Standard output is line-buffered, so at this
-/// point the tail of the result is still in the buffer and the flush is where
-/// a full disk reports itself. Discarded, `snob pfp someone > face.jpg` on a
-/// full filesystem printed nothing, exited 0, and left a truncated JPEG
-/// behind.
-///
-/// A closed reader is the one exception, and it is not a failure: `snob
-/// followers | head -20` is a reader that has finished, and on Windows there
-/// is no SIGPIPE to end the process the way it does on Unix. Reporting "could
-/// not write the result" and exiting non-zero there would make a normal shell
-/// idiom look like an error.
 fn write_stdout(bytes: &[u8]) -> Result<()> {
     let stdout = std::io::stdout();
     let mut locked = stdout.lock();
@@ -563,13 +458,6 @@ fn write_stdout(bytes: &[u8]) -> Result<()> {
 /// The users with their names through `printable`, for the JSON formats.
 ///
 /// **JSON is read by programs that hand it on, and one of them is a model.**
-/// `serde_json` escapes `Cc`, so a terminal escape cannot survive it, but it
-/// writes `Cf` as it is: a right-to-left override still reverses a name in
-/// whatever shows it, and the tag block still carries invisible ASCII into an
-/// agent's context, where it reads as text nobody on screen can see. The table,
-/// Markdown and CSV already filter both names; this is the same filter, so no
-/// format is the one left uncovered. The picture address is left alone: it is
-/// Instagram's, not a person's.
 pub(crate) fn readable(users: &[User]) -> Vec<User> {
     users
         .iter()
@@ -589,9 +477,7 @@ fn render(users: &[User], format: Format, presentation: Presentation) -> Result<
         anyhow::bail!("this build of snob was made without the \"xlsx\" format");
     }
     Ok(Rendered::Text(match format {
-        // The drawn table is for someone watching it appear. Down a pipe or
-        // into a file it stays one name per line, which is what scripts have
-        // always got.
+        // The drawn table is for someone watching it appear.
         Format::Table if presentation.interactive => table::table(users, presentation),
         Format::Table => table::plain(users),
         Format::Json => {

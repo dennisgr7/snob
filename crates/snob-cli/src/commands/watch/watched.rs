@@ -1,23 +1,11 @@
 //! Which accounts a run watches, and on whose say-so.
-//!
-//! One answer, for both modes and for `super::status`, which is what a file of
-//! its own is for here: two answers could disagree about the accounts the file
-//! names.
 
 use snob_core::Pk;
-use snob_store::config::{AccountConfig, VideoQuality, WatchConfig};
+use snob_store::config::{AccountConfig, WatchConfig};
 
 use crate::engine::watch::{PostsWatch, Watched};
 
 /// Which account a scheduled run watches, as whom, and whether it may.
-///
-/// A name on the command line is checked against the file, because that is the
-/// only place a consent can have been recorded — and an unattended run that
-/// could be pointed at a stranger by an argument would make the recording
-/// pointless. It is read as `in_use`, the account the command resolved, and so
-/// is an entry that names no viewer: that is what such an entry meant before
-/// entries named one, and filling it in here keeps one account from being two
-/// groups.
 pub(super) fn watched_from(
     target: Option<String>,
     configured: Option<&WatchConfig>,
@@ -59,31 +47,19 @@ pub(super) fn watched_from(
 
 /// One account, with whatever answer its entry records.
 ///
-/// The file is the only place a consent can have come from, which is what makes
-/// an unattended run safe: an argument cannot grant one.
-///
 /// **The at sign comes off here, on both sides**, which makes this the boundary
 /// a `Watched` is built at, as every other reader in the tool cleans
-/// (`target::resolve`, `target::from_store`, `target::label`). Otherwise a
-/// typed `"@friend"` against a file recording an answer for `friend` would
-/// match nothing and refuse a correctly consented monitor at startup, and a
-/// hand-edited `target = "@friend"` would reach `engine::check` as
-/// `username=@friend` and report a working configuration as broken. README.md
-/// promises without qualification that a username may be written either way.
+/// (`target::resolve`, `target::from_store`, `target::label`).
 ///
 /// **What is watched comes from the same entry**, a name typed included: the
 /// file is where somebody said to watch an account's posts and where to save
-/// them, and an argument says neither. A name with no entry watches its
-/// lists, as it always did.
+/// them, and an argument says neither.
 fn from_entry(name: &str, entry: Option<&AccountConfig>) -> Watched {
     let name = crate::engine::target::clean(name);
     let recorded = entry.and_then(|account| account.consent);
 
     let watched = if recorded.is_some() {
-        // The table is what matters, not what is in it. `[account.consent]`
-        // exists because somebody was asked; its `agreed_at` is the record of
-        // when, kept in the file, and nothing downstream of here reads it or
-        // could tell a real moment from whatever a hand-edit wrote.
+        // The table is what matters, not what is in it.
         Watched::consented(name.to_string(), crate::engine::watch::Consent)
     } else {
         Watched::asking(name.to_string())
@@ -111,10 +87,7 @@ fn entry_named<'a>(name: &str, configured: Option<&'a WatchConfig>) -> Option<&'
 fn posts_of(account: &AccountConfig) -> Option<PostsWatch> {
     account.posts.as_ref().map(|posts| PostsWatch {
         save_to: posts.save_to.clone(),
-        quality: posts.quality.map(|quality| match quality {
-            VideoQuality::Best => crate::cli::Quality::Best,
-            VideoQuality::Compat => crate::cli::Quality::Compat,
-        }),
+        quality: posts.quality,
     })
 }
 
@@ -458,7 +431,7 @@ consent = { agreed_at = 1700 }
             typed[0].posts(),
             Some(&PostsWatch {
                 save_to: Some(std::path::PathBuf::from(dir)),
-                quality: Some(crate::cli::Quality::Compat),
+                quality: Some(snob_store::config::VideoQuality::Compat),
             })
         );
 

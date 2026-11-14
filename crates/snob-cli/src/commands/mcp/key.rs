@@ -2,25 +2,15 @@
 //! network, kept in the system keyring (`secrets::Kind::McpKey`).
 //!
 //! **Only a key in snob's own form is taken**, from the keyring and from
-//! `SNOB_MCP_KEY` alike: `snob_mcp_` and 43 base64url characters that decode
-//! to exactly 32 bytes ([`Key::parse`]). A key a person chose would be as
-//! strong as what they chose, and nothing at the far end could tell; one of
-//! these is 256 random bits from the operating system, every time.
+//! `SNOB_MCP_KEY` alike: `snob_mcp_` and 43 base64url characters that decode to
+//! exactly 32 bytes ([`Key::parse`]).
 //!
-//! **Keyring only, by design** (`SecretStore::save_secret` says why). On a
-//! machine with no keyring, which is where a server is most likely to run,
-//! `SNOB_MCP_KEY` in the server's environment is the way: `new` there makes
-//! a key it cannot keep and prints it, for the person to put in that
-//! environment. The variable wins over the keyring wherever it is set, so
-//! `show` and `revoke` say so when it is: a key revoked from the keyring is
-//! still taken by a server started with the variable.
+//! **Keyring only, by design** (`SecretStore::save_secret` says why).
 //!
-//! **The key is printed only to a terminal**, unless `--print` says
-//! otherwise ([`may_print`]): an agent with a shell that ran `snob mcp key
-//! new` would otherwise have the key in its transcript, and from there in
-//! its vendor's logs. Everywhere else it is named by a fingerprint
-//! ([`Key::fingerprint`]), which says which key it is and nothing that
-//! helps to guess it.
+//! **The key is printed only to a terminal**, unless `--print` says otherwise
+//! ([`may_print`]): an agent with a shell that ran `snob mcp key new` would
+//! otherwise have the key in its transcript, and from there in its vendor's
+//! logs.
 
 use std::ffi::OsStr;
 use std::io::IsTerminal;
@@ -35,10 +25,7 @@ use crate::cli::{McpKeyCommand, McpKeyNewArgs, McpKeyShowArgs};
 use crate::exit::{ExitCode, ExitError};
 use crate::ui;
 
-/// The variable a server reads its key from instead of the keyring. A
-/// client reads its copy from a variable of another name (`config::TOKEN`),
-/// so that a person who exports one for a client does not hand the key to
-/// every server.
+/// The variable a server reads its key from instead of the keyring.
 pub const ENV: &str = "SNOB_MCP_KEY";
 
 /// What every key starts with, so that one found in a file or a log says
@@ -58,17 +45,12 @@ const FINGERPRINT: usize = 12;
 /// A key in snob's form. The text is the key, as a client sends it.
 pub struct Key(Secret);
 
-/// Why a text is not a key. Never the text itself, which may be one with a
-/// typo, and is a secret either way.
+/// Why a text is not a key.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Malformed;
 
 impl Key {
     /// The text, if it is a key in snob's form.
-    ///
-    /// The decoder refuses trailing bits that are not zero, so a key has
-    /// exactly one spelling: two texts that are the same key would be two
-    /// keys to a server comparing what it is sent.
     pub fn parse(text: &str) -> Result<Self, Malformed> {
         let encoded = text.strip_prefix(PREFIX).ok_or(Malformed)?;
         if encoded.len() != ENCODED {
@@ -254,9 +236,8 @@ fn new(args: &McpKeyNewArgs, store: &SecretStore) -> Result<ExitCode> {
     if args.env {
         return for_the_environment(printable);
     }
-    // Read before anything is drawn: whether there is one decides whether
-    // to go on at all. A key in a form snob does not take is replaced the
-    // same, with --force, which is what the refusal of one says to do.
+    // Read before anything is drawn: whether there is one decides whether to go
+    // on at all.
     let stored = store.load_secret(Kind::McpKey)?;
     let plan = plan(&stored, args.force);
     let replacing = matches!(stored, Stored::Found(_));

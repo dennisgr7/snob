@@ -1,18 +1,7 @@
 //! `--dry-run` on the list commands: what the walks would cost, against what
 //! today has left, said and not done.
 //!
-//! **Nothing is sent, nobody is asked, and nothing stored is changed.** The
-//! account is not resolved over the network, so the consent a stranger's
-//! lists need is not asked either, as `--offline` does not ask it: nothing is
-//! enumerated. The estimate is `engine::estimate`'s, out of what is stored
-//! here.
-//!
-//! One of the listed exceptions to "commands take an App", for the reason
-//! `snob status` is: an `App` creates the database, refreshes the User-Agent
-//! and settles the day's retention, each a write, and builds a client. This
-//! reads the session, the account's database and `shared.db` the way `status`
-//! does, and asks whether a client would send from the browser without
-//! building one.
+//! **Nothing is sent, nobody is asked, and nothing stored is changed.**
 
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};

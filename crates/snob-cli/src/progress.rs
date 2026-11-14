@@ -1,18 +1,8 @@
 //! Turns walk events into a stack of progress bars.
 //!
-//! **Rule of this module: no data ever goes through the bars.** `println` on a
-//! bar silently discards output when there is no terminal, so using it for
-//! results would make them vanish when redirecting to a file. Data goes to
-//! standard output and these bars to standard error, so the two never collide.
+//! **Rule of this module: no data ever goes through the bars.**
 //!
-//! **One bar per walk, and a finished walk keeps its line.** A crossing walks
-//! two lists, and one bar reset in between would show someone glancing back a
-//! bar that had been nearly full sitting near zero, which reads as a restart,
-//! not as progress. So the finished walk freezes into a plain line — the name,
-//! a full bar, the count and how long it took — and the next walk draws below
-//! it. `finish()` still clears the whole stack: the summary lines the commands
-//! print carry the same numbers, and the last thing on screen should be the
-//! answer, not the scaffolding.
+//! **One bar per walk, and a finished walk keeps its line.**
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -24,12 +14,6 @@ use snob_core::model::StopReason;
 use snob_ig::pager::{Event, WaitKind};
 
 /// The moment the wait being drawn right now ends, if one is under way.
-///
-/// Shared with the style, which reads it on every redraw. That sharing is the
-/// whole trick behind the countdown: the bar ticks to animate itself, and this
-/// gives it something new to say each time rather than the same frozen number.
-/// While it is set the bar ticks at [`WAITING_TICK`], since a countdown in
-/// whole seconds has nothing new to say any faster.
 type Deadline = Arc<Mutex<Option<Instant>>>;
 
 /// `--progress-json`, set once by `main` before any command runs.
@@ -38,11 +22,9 @@ static PROGRESS_JSON: AtomicBool = AtomicBool::new(false);
 /// Makes every stack this run builds say how its walks go as JSON lines on
 /// standard error, one per page and per wait, and draw nothing.
 ///
-/// For a job's walk (`jobs/supervise.rs`), whose standard error is a file the
-/// job is read back from (`jobs::show`): a bar there would be escape codes
-/// nobody reads. **It wins over `--no-progress`**, which the walk's command
-/// line may carry from the call that started it, and which would otherwise
-/// leave the job with nothing to say for how far it is.
+/// **It wins over `--no-progress`**, which the walk's command line may carry
+/// from the call that started it, and which would otherwise leave the job with
+/// nothing to say for how far it is.
 pub fn progress_json() {
     PROGRESS_JSON.store(true, Ordering::SeqCst);
 }
@@ -70,31 +52,22 @@ struct Told {
 pub struct Progress {
     /// The stack: finished walks above, the live bar at the bottom.
     stack: MultiProgress,
-    /// The bar events land on. Swapped for a fresh one after a freeze, which
-    /// is why it sits behind a lock rather than being a field.
+    /// The bar events land on.
     bar: Arc<Mutex<ProgressBar>>,
-    /// Whether the current bar has been frozen as a finished walk. A frozen
-    /// bar is done drawing; the next thing that needs a bar gets a new one.
+    /// Whether the current bar has been frozen as a finished walk.
     frozen: Arc<AtomicBool>,
-    /// The frozen bars still on screen. Kept so [`Progress::finish`] can
-    /// take them out of the stack — indicatif keeps a finished bar's line
-    /// until it is removed, and a run that walks again later (the profile
-    /// browser does) must not resurrect the previous walk's receipts.
+    /// The frozen bars still on screen.
     done: Arc<Mutex<Vec<ProgressBar>>>,
     quiet: bool,
     waiting_until: Deadline,
-    /// How often the current bar's ticker runs, or `None` while it has none:
-    /// a fresh bar before [`Progress::animate`], a frozen or finished one
-    /// after. Kept so a wait starting or ending changes the rate of a bar that
-    /// is drawing, and never starts one that is not.
+    /// How often the current bar's ticker runs, or `None` while it has none: a
+    /// fresh bar before [`Progress::animate`], a frozen or finished one after.
     ticking: Arc<Mutex<Option<Duration>>>,
     /// When the first bar of this stack started drawing, for
     /// [`Progress::finish`] to tell somebody who may have gone to another
     /// window that a long run is done (`ui::notify`).
     since: Arc<Mutex<Option<Instant>>>,
-    /// Whether this terminal can draw block and braille characters. Worked out
-    /// once: it cannot change while the process runs, and it is read on every
-    /// style rebuild.
+    /// Whether this terminal can draw block and braille characters.
     rich: bool,
     /// Under `--progress-json`, where the walk is, for the lines
     /// ([`progress_json`]); `None` otherwise.
@@ -106,13 +79,6 @@ pub struct Progress {
 const TICK: Duration = Duration::from_millis(120);
 
 /// How often a bar redraws itself while a wait is counted down.
-///
-/// The countdown moves in whole seconds, so a faster tick redraws the same
-/// number. And the waits are where a walk spends its life: a sitting's rest is
-/// five to fifteen minutes and a day's wait can be hours, during which
-/// [`TICK`] wakes the process thirty thousand times an hour to say nothing new.
-/// At one second it is three thousand six hundred. The spinner turns slower
-/// while it waits, which is also what it is saying.
 const WAITING_TICK: Duration = Duration::from_secs(1);
 
 impl Progress {
@@ -132,11 +98,7 @@ impl Progress {
         let waiting_until: Deadline = Arc::new(Mutex::new(None));
         let rich = rich_glyphs();
 
-        // Asked from the stack, not taken from the flag. `indicatif` hides
-        // itself when standard error is not a terminal, and a message set on
-        // a bar that never draws is a message nobody reads — and
-        // `snob unfollowers 2>log` would swallow every wait announcement,
-        // which is the one thing that explains a run standing still.
+        // Asked from the stack, not taken from the flag.
         let quiet = !enabled || stack.is_hidden();
 
         let progress = Self {
@@ -190,13 +152,6 @@ impl Progress {
     }
 
     /// A stack that draws nowhere but still behaves as though it draws.
-    ///
-    /// **Tests only.** `Progress::new(true)` would decide `quiet` from whatever
-    /// stderr the harness happens to have — hidden on CI, a real terminal when
-    /// somebody runs `cargo test` in one — so a test built on it asserts a
-    /// different thing depending on where it runs. This fixes the drawing path
-    /// without a terminal: `indicatif` tracks prefix, message and position on a
-    /// hidden bar just the same.
     #[cfg(test)]
     fn drawing() -> Self {
         let mut progress = Self::new(false);
@@ -208,19 +163,12 @@ impl Progress {
         self.bar.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The bar events land on right now. `ProgressBar` is a handle over shared
-    /// state, so the clone is the same bar.
+    /// The bar events land on right now.
     fn current(&self) -> ProgressBar {
         self.lock().clone()
     }
 
     /// A new bar at the bottom of the stack — added, but **not yet drawing**.
-    ///
-    /// The steady tick is what makes indicatif render, and it is deliberately
-    /// not armed here: a `Progress` exists from `App::open` onward, and a
-    /// command that walks nothing for a while — the interactive profile, a
-    /// run waiting on a prompt — must not sit behind an idle spinner.
-    /// [`Progress::animate`] arms it at the moments work really starts.
     fn fresh(&self) -> ProgressBar {
         let bar = self.stack.add(ProgressBar::no_length());
         bar.set_style(style(
@@ -232,11 +180,6 @@ impl Progress {
     }
 
     /// Arms the current bar's steady tick, which is what makes it draw.
-    ///
-    /// Called at every point work becomes visible — a walk named, a walk
-    /// started, a wait announced — rather than once, because each fresh bar
-    /// needs its own ticker: `indicatif` ends the ticker thread when a bar
-    /// finishes and `reset` does not bring it back.
     fn animate(&self) {
         if !self.quiet {
             self.since
@@ -275,19 +218,7 @@ impl Progress {
     /// Says that nothing will happen for a while, and keeps saying how much
     /// longer.
     ///
-    /// The number is deliberately **not** written into the message. It is read
-    /// from the deadline by the style, on every redraw, so it counts down
-    /// rather than insisting for fifteen seconds that there are fifteen seconds
-    /// left.
-    ///
-    /// The whole announcement is dimmed. A rest is the walk doing exactly what
-    /// it should, and drawn with the same weight as the pages it would make the
-    /// line's loudest moments the ones where nothing is wrong and nothing is
-    /// happening. Muted, it reads as idle rather than stuck.
-    ///
-    /// With no bar to draw on, it is said once with the number in it, because
-    /// there is nothing to animate and a line per second down a pipe would be
-    /// noise.
+    /// The number is deliberately **not** written into the message.
     pub fn waiting(&self, reason: &str, duration: Duration) {
         self.wait_for("budget", reason, duration);
     }
@@ -311,9 +242,7 @@ impl Progress {
     }
 
     /// Starts or ends the countdown, and moves a bar that is drawing to the
-    /// rate that goes with it. `indicatif` replaces a ticker it is given again,
-    /// so the change is one call; it is made only when the rate changes,
-    /// because each call is a new ticker thread.
+    /// rate that goes with it.
     fn set_deadline(&self, at: Option<Instant>) {
         *self.waiting_until.lock().unwrap_or_else(|e| e.into_inner()) = at;
         let rate = self.rate();
@@ -343,10 +272,7 @@ impl Progress {
                     serde_json::json!({ "resumed": resumed }),
                 );
                 // A finished walk's bar stays where it is; this walk gets its
-                // own. `begin` has usually renewed already — it runs first and
-                // names the walk — so this is for the caller that never named
-                // one. The reset underneath is for the *first* bar, which may
-                // carry a position from a wait announced before any walk.
+                // own.
                 self.renew_if_frozen();
                 self.animate();
                 let bar = self.current();
@@ -402,9 +328,7 @@ impl Progress {
                 );
                 let running_total = *running_total as u64;
                 let bar = self.current();
-                // Instagram's counter sometimes undercounts. If we overshoot,
-                // stretch the bar rather than leaving it past one hundred
-                // percent.
+                // Instagram's counter sometimes undercounts.
                 if bar.length().is_some_and(|l| running_total > l) {
                     bar.set_length(running_total);
                 }
@@ -420,9 +344,7 @@ impl Progress {
                     ));
                 }
                 // No page number: pages are how the API paginates, not how
-                // anybody counts their followers. With a total on screen the
-                // fraction already moves; without one, the running count is
-                // the number that means something.
+                // anybody counts their followers.
                 bar.set_message(if bar.length().is_some() {
                     String::new()
                 } else {
@@ -432,11 +354,7 @@ impl Progress {
                 self.set_deadline(None);
             }
             Event::Waiting { kind, duration } => {
-                // Only the sitting's rest is announced. A step is a second
-                // or two between every page, and a message that appeared and
-                // vanished that often would be harder to read than the
-                // spinner already saying the same thing; the dwell before a
-                // list's first page is a few seconds once, likewise.
+                // Only the sitting's rest is announced.
                 match kind {
                     WaitKind::Sitting => {
                         self.wait_for("sitting", "resting between sittings", *duration);
@@ -492,12 +410,6 @@ impl Progress {
 
     /// Ends the current bar as a plain line that stays on screen: the name, a
     /// bar, the count and how long the walk took.
-    ///
-    /// On a complete walk the length is set to what really arrived, so the bar
-    /// draws full: the counter that estimated the total can lie in both
-    /// directions, and a finished list behind a bar stuck at ninety per cent
-    /// reads as a walk that gave up. An incomplete walk keeps its honest
-    /// fraction — the gap is the news.
     fn freeze(&self, users: usize, reason: StopReason) {
         let bar = self.current();
         let complete = reason == StopReason::Completed;
@@ -512,9 +424,8 @@ impl Progress {
             self.rich,
         ));
         bar.set_message(String::new());
-        // `abandon`, not `finish`: `finish` helpfully moves the position to
-        // the length, which would draw a rate-limited walk as if it had
-        // completed. The fraction is the news; it stays where it stopped.
+        // `abandon`, not `finish`: `finish` helpfully moves the position to the
+        // length, which would draw a rate-limited walk as if it had completed.
         bar.abandon();
         *self.ticking() = None;
         self.done
@@ -526,21 +437,10 @@ impl Progress {
 
     /// Names what is being walked, for as long as it is being walked.
     ///
-    /// The prefix rather than the message, because the message is transient: it
-    /// is overwritten by every pause. Set before `engine::list`, so it is up
-    /// during consent, resolution and the counter poll — the seconds where the
-    /// bar otherwise says nothing at all.
-    ///
-    /// It is a label, not a claim: `engine::list` can answer out of storage
-    /// without walking anything, in which case the name flashes and `finish`
-    /// clears it. `snob scan someone` walks four lists in a row, and without
-    /// this every one of them would look identical.
-    ///
-    /// A label that flashes costs nothing. A **line** that says it does is
-    /// different, and the two runs that have no bar are `--no-progress`, where
-    /// the user asked for silence, and `--offline`, which walks nothing at all
-    /// and answers from the database: a line would tell both about a walk that
-    /// never happens. So without a bar there is nothing to name.
+    /// A **line** that says it does is different, and the two runs that have no
+    /// bar are `--no-progress`, where the user asked for silence, and
+    /// `--offline`, which walks nothing at all and answers from the database: a
+    /// line would tell both about a walk that never happens.
     pub fn begin(&self, subject: &str) {
         if !self.quiet {
             self.renew_if_frozen();
@@ -560,13 +460,6 @@ impl Progress {
 
     /// Runs something that writes to the terminal itself, with the bars out of
     /// the way and put back afterwards.
-    ///
-    /// For a prompt. `ui::prompt_line` writes to standard error and so do the
-    /// bars, so the consent question would land on the line the animation owns
-    /// and be erased by the next tick — leaving somebody staring at a spinner,
-    /// waiting for input they have not been asked for. `warn` goes through
-    /// `suspend` for the same reason; the question needs it more, because it is
-    /// what the run is waiting on.
     pub fn while_paused<T>(&self, f: impl FnOnce() -> T) -> T {
         if self.quiet {
             f()
@@ -585,21 +478,7 @@ impl Progress {
 
     /// Under `--progress-json`, where a list came from once the engine has
     /// answered for it: `{"progress": {"event": "served", "list", "from",
-    /// "taken_at", "cooldown_until", "reason"}}`. `from` is the provenance's
-    /// word (`engine::Provenance::as_str`), `taken_at` when the list was
-    /// read, in seconds, `cooldown_until` when a cooldown that had it served
-    /// from storage lifts, and `reason` how the walk that read it ended
-    /// (`StopReason::as_str`; `completed` for a stored list): a list cut
-    /// short by `--max-pages` is answered as a success, and only this says
-    /// it is not the whole list, with `accounts` and `of` (the walk's, as on
-    /// every line) saying how much of it was read. A job's reader hands it
-    /// on (`jobs::show::finished`), and so does `snob mcp` for a call it ran
-    /// with this flag, so an agent is told a stored list is one, and how old,
-    /// and a short one is short, as a person is told in the warning and the
-    /// summary; nothing is drawn for it. `own_changes`, only when there are
-    /// some, is how many of the account's own follows and unfollows a stored
-    /// following list was handed out with (`engine::ListOutcome::
-    /// own_changes`).
+    /// "taken_at", "cooldown_until", "reason"}}`.
     pub fn served(
         &self,
         list: snob_core::model::ListKind,
@@ -622,18 +501,8 @@ impl Progress {
         self.tell("served", |_| {}, said);
     }
 
-    /// Ends the stack, frozen lines included, and leaves it ready for the
-    /// next walk. Called by the commands when a run is over — and by the
-    /// interactive profile after each suspended walk, which is why the bars
-    /// are really *removed*: indicatif keeps a finished bar's line until
-    /// then, and a later walk would redraw the previous walk's receipts
-    /// above its own.
-    ///
-    /// A run that drew for longer than [`crate::ui::notify::LONG`] says it is
-    /// done outside the window too, where the terminal can (`ui::notify`): a
-    /// plain command cannot tell whether anybody is looking, and somebody who
-    /// started an hour's walk has probably gone elsewhere. Its progress comes
-    /// off the taskbar either way.
+    /// Ends the stack, frozen lines included, and leaves it ready for the next
+    /// walk.
     pub fn finish(&self) {
         if !self.quiet {
             crate::ui::notify::progress(crate::ui::notify::Progress::Clear);
@@ -663,14 +532,7 @@ impl Progress {
 
 /// Named rather than written inline, because the fallback below swallows a
 /// broken one: a typo here would not fail, it would quietly draw indicatif's
-/// default bar with no countdown in it and nobody would know why. A test
-/// checks that all of these parse and that none has lost a key.
-///
-/// `{prefix}` is what the walk is walking and stays put; `{msg}` is what is
-/// happening right now and is overwritten by every page and every pause. Both
-/// live templates carry both, because a pause has to be sayable whichever one
-/// is up — and the one with a total is the common case, since the counter poll
-/// usually supplies a length.
+/// default bar with no countdown in it and nobody would know why.
 const TEMPLATE_WITHOUT_TOTAL: &str = "{spinner:.cyan} {prefix} {msg}{countdown}";
 /// No percentage and no ETA: the total comes from a counter that can lie, and a
 /// bar going past one hundred percent looks worse than no bar at all.
@@ -682,22 +544,14 @@ const TEMPLATE_WITH_TOTAL: &str =
     "{prefix} {bar:30.cyan/blue} {human_pos}/{human_len} {msg}{countdown}";
 
 /// A finished walk, frozen in place while the next one draws below it.
-///
-/// No spinner: a finished line that still animates reads as work still going
-/// on. Green, full (`freeze` set the length to what arrived), the count and
-/// the time — the shape of a receipt rather than of an activity.
 const TEMPLATE_DONE: &str = "{prefix} {bar:30.green/blue} {human_pos} accounts in {elapsed}";
-/// A walk that stopped early, with the honest fraction kept. The warning lines
-/// above the stack have already said why.
+/// A walk that stopped early, with the honest fraction kept.
 const TEMPLATE_DONE_STOPPED: &str =
     "{prefix} {bar:30.yellow/blue} {human_pos}/{human_len} in {elapsed}";
 /// A stopped walk that never had a total: the count is all there is.
 const TEMPLATE_DONE_NO_TOTAL: &str = "{prefix} {human_pos} accounts in {elapsed}";
 
 /// Which frozen line a finished walk leaves behind.
-///
-/// A complete walk always has a length — `freeze` sets it from the real count
-/// — so the no-total case only arises for a walk that stopped early.
 fn done_template(has_total: bool, complete: bool) -> &'static str {
     if complete {
         TEMPLATE_DONE
@@ -709,15 +563,6 @@ fn done_template(has_total: bool, complete: bool) -> &'static str {
 }
 
 /// Whether stderr can be trusted with block and braille characters.
-///
-/// A deny-list, not an allow-list, and that is the whole design. `console`'s
-/// own `wants_emoji` answers this on Windows with `WT_SESSION.is_ok()`, which
-/// is false in VS Code's terminal, in Git Bash and in WezTerm — all three of
-/// which draw braille perfectly well. The terminals that genuinely cannot are
-/// countable: the Linux kernel console, which sets a UTF-8 locale and then
-/// draws from a 512-glyph font, `dumb`, and anything that is not a terminal.
-///
-/// Asked by the views too, for the spinner of `ui::browser::busy`.
 pub(crate) fn rich_glyphs() -> bool {
     if !console::Term::stderr().features().is_attended() {
         return false;
@@ -725,8 +570,7 @@ pub(crate) fn rich_glyphs() -> bool {
     !matches!(std::env::var("TERM").as_deref(), Ok("linux" | "dumb"))
 }
 
-/// The spinner frames. The last one is the "finished" frame and is not part of
-/// the cycle, which is why both lists end in a space.
+/// The spinner frames.
 pub(crate) fn tick_chars(rich: bool) -> &'static str {
     if rich {
         "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ "
@@ -735,8 +579,7 @@ pub(crate) fn tick_chars(rich: bool) -> &'static str {
     }
 }
 
-/// Filled, partial, empty. Every entry has to be one column wide or indicatif
-/// panics mid-walk, which is why the test builds both styles both ways.
+/// Filled, partial, empty.
 fn progress_chars(rich: bool) -> &'static str {
     if rich {
         "█▉▊▋▌▍▎▏ "
@@ -745,8 +588,7 @@ fn progress_chars(rich: bool) -> &'static str {
     }
 }
 
-/// Dimmed for standard error, where the bars draw. A wait announcement is the
-/// walk behaving well, and it should not carry the same weight as the pages.
+/// Dimmed for standard error, where the bars draw.
 fn muted(text: &str) -> String {
     console::Style::new()
         .dim()
@@ -756,12 +598,6 @@ fn muted(text: &str) -> String {
 }
 
 /// The style for any of the templates.
-///
-/// One function rather than one per template: the glyphs and the countdown key
-/// are the same in all of them, and those are exactly the pair a test exists
-/// to catch drifting apart. `progress_chars` is set unconditionally — indicatif
-/// only consults it to draw a `{bar}`, so on a template that has none it is
-/// inert.
 fn style(template: &str, deadline: &Deadline, rich: bool) -> ProgressStyle {
     ProgressStyle::with_template(template)
         .unwrap_or_else(|_| ProgressStyle::default_bar())
@@ -771,11 +607,6 @@ fn style(template: &str, deadline: &Deadline, rich: bool) -> ProgressStyle {
 }
 
 /// Renders the time left in the current wait, or nothing at all.
-///
-/// Called by the bar on every redraw, which is what makes the number move. It
-/// holds the lock for the length of a subtraction, several times a second, and
-/// nothing else contends for it. Dimmed like the message it follows, so the
-/// whole announcement reads as one quiet clause.
 fn countdown(deadline: &Deadline, rich: bool) -> impl ProgressTracker + 'static {
     let deadline = Arc::clone(deadline);
     let separator = if rich { " · " } else { " - " };
@@ -797,9 +628,6 @@ fn countdown(deadline: &Deadline, rich: bool) -> impl ProgressTracker + 'static 
 }
 
 /// Seconds remaining, rounded up.
-///
-/// Up rather than down so that the last second of a wait reads as `1 s` and
-/// then disappears, instead of sitting on `0 s` for a whole second.
 fn seconds_left(left: Duration) -> u128 {
     left.as_millis().div_ceil(1_000)
 }

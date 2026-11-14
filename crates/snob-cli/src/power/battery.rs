@@ -1,26 +1,15 @@
 //! Whether the machine is about to run out of battery.
 //!
-//! **One question, for the monitor**: is the battery critical, which is when
-//! a run started now would be cut off by the system hibernating or shutting
-//! down under it. Not "on battery", which is most of a laptop's life and no
-//! reason for a run that was asked for to wait; not a level of the user's own
-//! choosing either. The scheduled monitor holds a due run back while the
-//! answer is yes and runs it when power comes back, and a run in progress
-//! stops between two pages, where it can be picked up again
-//! (`commands::watch`).
+//! **One question, for the monitor**: is the battery critical, which is when a
+//! run started now would be cut off by the system hibernating or shutting down
+//! under it.
 //!
 //! **Critical** is the system's own word where it has one (Windows), and
 //! otherwise discharging at [`CRITICAL_PERCENT`] or less, which is where the
-//! systems' own critical actions sit by default. A machine with no battery,
-//! or whose battery cannot be read, is never critical.
+//! systems' own critical actions sit by default.
 
-/// At or under this, a battery that is discharging is critical where the
-/// system does not say so itself.
-///
-/// Five: the default critical level of Windows' own power plans, around which
-/// macOS forces a sleep and GNOME's and KDE's power managers act. Above it a
-/// run has room to finish a page and save it; below it the system is about to
-/// take the decision itself.
+/// At or under this, a battery that is discharging is critical where the system
+/// does not say so itself.
 pub const CRITICAL_PERCENT: u8 = 5;
 
 /// What the battery says, read once.
@@ -52,8 +41,7 @@ impl Battery {
     }
 }
 
-/// Whether the battery is critical right now. `false` on a machine without
-/// one, or where it cannot be read.
+/// Whether the battery is critical right now.
 pub fn critical() -> bool {
     read().is_some_and(|battery| battery.critical)
 }
@@ -106,9 +94,7 @@ mod linux {
     use super::Battery;
 
     /// Every supply under `root`: on power when any mains or USB supply is
-    /// online, discharging when a system battery says so. A battery of a
-    /// device, a mouse or a headset, has `scope` `Device` and is not the
-    /// machine's.
+    /// online, discharging when a system battery says so.
     pub(super) fn read(root: &Path) -> Option<Battery> {
         let mut on_power = false;
         let mut battery = None;

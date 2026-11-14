@@ -1,28 +1,4 @@
 //! The session the browser kept current, written back where it is stored.
-//!
-//! **Why.** Once the browser has the session it is where the session lives:
-//! Instagram rotates `csrftoken` — and now and then `sessionid` itself —
-//! through the answers it sends, and the browser keeps whatever it is sent.
-//! Without this the stored copy learns none of it, and a profile that is lost
-//! — deleted, damaged, or a machine restored from an older backup — comes back
-//! as the session it was a login ago, which Instagram may no longer take, with
-//! every rotated token forgotten the moment the profile went.
-//!
-//! **When.** When a command leaves the owner's browsers (`owner`), and when a
-//! process closes browsers it ran itself — at the end of a run and between
-//! the monitor's runs: the cookies are read once, and written only when they
-//! differ from what is stored. A browser the owner closes later, idle, writes
-//! nothing back; what it rotated since stays in its profile, where the next
-//! command's browser reads it. So does one killed rather than closed — a
-//! second Ctrl+C, a panic.
-//!
-//! **What wins.** A login is authoritative: the stored session is written over
-//! only while it is still the one the browser holds, as it was handed to it
-//! ([`Rotated`] carries which). A `snob login` in another terminal meanwhile
-//! stored a different one, and that one stays. The account has to match too;
-//! a browser never carries another account's session to the store. What is
-//! not guarded is a login stored between this reading the store and writing
-//! it, a moment with no lock around it.
 
 use snob_core::Pk;
 use snob_core::session::Session;
@@ -49,9 +25,7 @@ impl Rotated {
 }
 
 /// Writes back whatever the browsers rotated, each to its own account's
-/// session, where that session was found. A failure is said and nothing else:
-/// the run has done its work, and the browser still holds the cookies for the
-/// next one.
+/// session, where that session was found.
 pub fn keep(secrets: &SecretStore, paths: &AppPaths, rotated: Vec<Rotated>) {
     for rotated in rotated {
         let store = secrets.session_of(&paths.account(rotated.pk));
@@ -75,9 +49,8 @@ pub fn keep(secrets: &SecretStore, paths: &AppPaths, rotated: Vec<Rotated>) {
         }
         tracing::debug!("stored the cookies the browser rotated");
         // A new `sessionid` is a new fingerprint: the mark follows, so the next
-        // run does not take the stored copy for a login since and write it
-        // over the browser's. Were this lost, the browser holding exactly the
-        // stored session would still say so (`sync_cookies`).
+        // run does not take the stored copy for a login since and write it over
+        // the browser's.
         if fresh.sessionid.expose() != stored.sessionid.expose() {
             let profile = paths.browser_profile_for(rotated.pk);
             let mut mark = ProfileMark::read(&profile);
@@ -102,9 +75,8 @@ pub fn merged(stored: &Session, handed: &str, jar: &BrowserCookies) -> Option<Se
     if snob_core::session::account_in(held) != Some(stored.ds_user_id) {
         return None;
     }
-    // A login since this run began stored a session of its own, and a login
-    // is authoritative. What the browser holds is either that login's session
-    // or an older one; either way there is nothing to write.
+    // A login since this run began stored a session of its own, and a login is
+    // authoritative.
     if stored.fingerprint() != handed && stored.sessionid.expose() != held {
         return None;
     }

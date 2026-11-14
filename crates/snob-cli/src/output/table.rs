@@ -1,9 +1,5 @@
 //! The human-facing shape of a list: what the terminal draws, and what the
 //! markdown export mirrors.
-//!
-//! The machine formats spell out all six fields of an account. This one shows
-//! the three things a person reads a list for — who it is, what they are
-//! called, and what stands out about them.
 
 use comfy_table::{Attribute as Style, Cell, ContentArrangement, Table, presets};
 use snob_core::filters::Attribute;
@@ -17,39 +13,17 @@ pub(crate) const HEADER: [&str; 3] = ["Username", "Full name", "Attributes"];
 
 /// Where the addresses are, said once for a terminal that cannot put them
 /// behind the names.
-///
-/// A column of them would be the same twenty-six characters on every row,
-/// wrapped over two lines, next to the username it already repeats.
 const PROFILE_NOTE: &str = "Profiles: https://www.instagram.com/<username>";
 
 /// The real table, for a terminal someone is reading.
 ///
-/// An empty list draws nothing rather than an empty frame: the summary on
-/// standard error already says the count was zero.
-///
 /// **Drawn, then checked, and drawn again without links if the check fails.**
-/// A linked username is a short name wrapped in about fifty-five characters of
-/// invisible address. comfy-table *measures* that cell with a parser that knows
-/// what OSC 8 is, and then *wraps* it with one that does not — `console`'s
-/// `AnsiCodeIterator` has a transition for `ESC [` and none for `ESC ]` — so
-/// once a column is narrow enough to wrap, the address is cut in the middle and
-/// the opener reaches the terminal with its terminator several drawn lines
-/// away. Everything in between, borders and other columns and following rows,
-/// is swallowed into the link. No error and no exit code, on a 70-column
-/// terminal with an ordinary name.
 ///
-/// Predicting the arrangement here would mean reimplementing it. Asking the
-/// drawn table whether the links came out whole is exact, costs one linear
-/// scan, and keeps being true when comfy-table changes its mind. The fallback
-/// is the branch that already exists for terminals with no link support: the
-/// plain name, and the address named once underneath.
-///
-/// **It did change its mind, with `console` 0.16.6**, whose parser learned
-/// OSC: a wrapped link is no longer cut inside the address but closed with a
-/// style reset at the end of the line and reopened on the next — so every
-/// opener still found a terminator on its line, the old check passed, and the
-/// link ran across the border and the other columns anyway. The check now
-/// pairs openers with closers and wants every line to end outside a link.
+/// **It did change its mind, with `console` 0.16.6**, whose parser learned OSC:
+/// a wrapped link is no longer cut inside the address but closed with a style
+/// reset at the end of the line and reopened on the next — so every opener
+/// still found a terminator on its line, the old check passed, and the link ran
+/// across the border and the other columns anyway.
 pub(crate) fn table(users: &[User], presentation: Presentation) -> String {
     if users.is_empty() {
         return String::new();
@@ -71,14 +45,6 @@ pub(crate) fn table(users: &[User], presentation: Presentation) -> String {
 }
 
 /// Whether every hyperlink in a drawn table is still in one piece.
-///
-/// Every OSC 8 sequence on a line has to be terminated there, every opener
-/// (a sequence with an address) has to be closed (one without) before the
-/// line ends, and no closer may come without its opener — which is what a
-/// line continuing a link from the one above looks like. Nothing else in a
-/// cell can hold an `ESC`: both strings a row is built from go through
-/// `printable` first, which is what makes this a question about the layout
-/// rather than about the accounts.
 fn links_are_whole(drawn: &str) -> bool {
     drawn.lines().all(|line| {
         let mut open = false;
@@ -102,11 +68,6 @@ fn links_are_whole(drawn: &str) -> bool {
 }
 
 /// Takes out every `ESC [ … m` the table library added on its own.
-///
-/// comfy-table, on `console` 0.16.6, closes each cell holding a hyperlink
-/// with a style reset whether or not styling was asked for, so a table drawn
-/// without color carried styling anyway. Only the library can have put one
-/// there: the names in the cells went through `printable`.
 fn without_styling(drawn: &str) -> String {
     let mut out = String::with_capacity(drawn.len());
     let mut rest = drawn;
@@ -153,8 +114,7 @@ fn draw(users: &[User], presentation: Presentation) -> String {
     table.set_header(header_cells(&HEADER, presentation));
 
     // Without this, comfy-table drops styling whenever it cannot see a
-    // terminal, which in a test is always. Deciding that is this crate's job,
-    // and the answer already travels in `presentation`.
+    // terminal, which in a test is always.
     if presentation.color {
         table.enforce_styling();
     }
@@ -188,18 +148,11 @@ fn draw(users: &[User], presentation: Presentation) -> String {
 }
 
 /// Wraps text in an OSC 8 hyperlink.
-///
-/// The sequence is understood by Windows Terminal, iTerm2, WezTerm, kitty,
-/// Ghostty, Alacritty and GNOME Terminal. Whether the terminal at the other
-/// end is one of those is not decided here.
 fn hyperlink(text: &str, url: &str) -> String {
     format!("\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\")
 }
 
 /// The marks an account carries, spelled the way `--hide` takes them.
-///
-/// Worked out with the very predicate the filters use, so what a row shows and
-/// what `--hide verified` would drop can never disagree.
 pub(crate) fn attributes(user: &User) -> String {
     [
         (Attribute::Verified, "verified"),
@@ -214,15 +167,6 @@ pub(crate) fn attributes(user: &User) -> String {
 }
 
 /// One name per line, no decoration.
-///
-/// The contract for pipes and files: a script reading `snob unfollowers` has
-/// always got this, and the real table arriving for terminals does not change
-/// it.
-///
-/// Filtered like the drawn table above. "Not a terminal" is where the output
-/// goes, not where it ends up: `snob followers > people.txt` is followed by
-/// somebody reading `people.txt`, and `| less -r` is a terminal with one step
-/// in between.
 pub(crate) fn plain(users: &[User]) -> String {
     let mut out = String::new();
     for user in users {

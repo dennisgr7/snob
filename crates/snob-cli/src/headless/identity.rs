@@ -10,19 +10,11 @@ use super::tab::{evaluate, navigate_tab};
 use super::{COMMAND_TIMEOUT, attach_to_a_tab};
 use crate::cdp::Cdp;
 
-/// What this browser says about the machine: the brands, the architecture,
-/// the bitness, the operating system's version — the client hints a page can
-/// ask for.
+/// What this browser says about the machine: the brands, the architecture, the
+/// bitness, the operating system's version — the client hints a page can ask
+/// for.
 ///
-/// **Asked of a second browser, once, and kept.** The browser the requests go
-/// from runs with `--user-agent`, and that flag makes Chromium blank every one
-/// of these fields (see [`probe_platform`]); the fallbacks for a blank are only
-/// true on some machines — an empty platform version is Linux's answer and
-/// nobody else's. So a throwaway browser with no such flag is asked, on a
-/// profile of its own that is deleted after, and the answer is kept in
-/// [`KnownHints`] for this browser and version. It costs a browser start the
-/// first time and after each browser update, and nothing on any other run. A
-/// failure costs only the fallbacks.
+/// **Asked of a second browser, once, and kept.**
 pub(super) async fn machine_hints(
     browser: &crate::browser::Browser,
     paths: &AppPaths,
@@ -45,23 +37,16 @@ pub(super) async fn machine_hints(
     }
 }
 
-/// The browser's own description of the machine, kept per browser and
-/// version. Not a secret, and not about any account.
+/// The browser's own description of the machine, kept per browser and version.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MachineHints {
     pub browser: std::path::PathBuf,
-    /// The browser's whole version when it was asked. A new one is asked
-    /// again: the full version list changes with every update.
+    /// The browser's whole version when it was asked.
     pub version: String,
     pub values: Value,
 }
 
 /// Every browser's [`MachineHints`], in one file beside the profiles.
-///
-/// **Beside them, not in them.** They are about the machine, so one answer
-/// serves every account's profile, and a new account pays no browser start to
-/// ask again what the machine already said. One entry per browser, so a
-/// machine with an account on Chrome and another on Edge keeps both.
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct KnownHints {
     #[serde(default)]
@@ -104,14 +89,6 @@ impl KnownHints {
 
     /// Keeps what `browser` answered if the build that answered is the one
     /// detected, and says whether it did.
-    ///
-    /// While an update waits for the browser to close, the new version is on
-    /// disk and the old build is the one that starts. Its brands filed under
-    /// the new version would be served beside the new version's User-Agent
-    /// until the next update, so an answer from another major version, or one
-    /// that does not say which it is, is used this once and not kept. By the
-    /// major version, which is all the brands carry: the full version list is
-    /// used only when it names the build running ([`metadata`]).
     pub fn remember_answer(&mut self, browser: &crate::browser::Browser, values: &Value) -> bool {
         let answered = values
             .get("uaFullVersion")
@@ -134,9 +111,7 @@ async fn ask_without_the_flag(
     paths: &AppPaths,
 ) -> Result<Value> {
     /// A probe's profile, removed however the probe ends, a probe given up
-    /// half-way included. A browser that was killed rather than closed holds
-    /// its files a moment longer on Windows, so what the first attempt could
-    /// not remove is removed patiently, off the async workers.
+    /// half-way included.
     struct Throwaway(std::path::PathBuf);
 
     impl Drop for Throwaway {
@@ -180,8 +155,8 @@ async fn ask_without_the_flag(
     found
 }
 
-/// What a browser says about itself and the machine: its brands, the
-/// operating system's version, the architecture, the bitness.
+/// What a browser says about itself and the machine: its brands, the operating
+/// system's version, the architecture, the bitness.
 ///
 /// Asked of the throwaway browser [`machine_hints`] starts **without**
 /// `--user-agent`, because with it Chromium blanks every field but the brands,
@@ -190,13 +165,10 @@ async fn ask_without_the_flag(
 /// Chromium 153, `Chromium` and the GREASE entry, no `HeadlessChrome` — and
 /// computing them from the User-Agent instead named every Chromium on Linux
 /// `Google Chrome`, since the two send the same User-Agent and only the brand
-/// list tells them apart. [`metadata`] still treats an empty string as "not
-/// said", for the day a field comes back blank anyway.
+/// list tells them apart.
 ///
 /// Only readable from a secure context, and `about:blank` is not one;
-/// `http://127.0.0.1` is. So a page is served on a loopback port for the
-/// length of one question. Nothing leaves the machine, and nothing about
-/// Instagram is involved.
+/// `http://127.0.0.1` is.
 async fn probe_platform(cdp: &Cdp, tab: &str) -> Result<Value> {
     /// The page's server, stopped however the question ends: a dropped task
     /// handle would leave it listening until the process exits.
@@ -239,12 +211,6 @@ async fn probe_platform(cdp: &Cdp, tab: &str) -> Result<Value> {
 }
 
 /// The client-hints metadata the override states.
-///
-/// The brands are the browser's own when it said them (see
-/// [`probe_platform`]), and computed from the User-Agent only when it did
-/// not. Every other field is what the browser said, unless it said nothing —
-/// an empty string included — and then the one thing this process knows for
-/// itself, or empty rather than invented.
 pub(super) fn metadata(user_agent: &str, full_version: &str, platform: Option<&Value>) -> Value {
     let said = platform
         .and_then(|p| p.get("brands"))
@@ -278,11 +244,7 @@ pub(super) fn metadata(user_agent: &str, full_version: &str, platform: Option<&V
             .unwrap_or(fallback)
             .to_string()
     };
-    // **The browser's own list, when it was said by this very version.** The
-    // computed one gives every real brand the product's version, which is
-    // right for Chrome and wrong for Edge, whose own number is not
-    // Chromium's: `"Chromium";v="141.0.3537.57"` names a Chromium build that
-    // never existed, on the browser most Windows machines have.
+    // **The browser's own list, when it was said by this very version.**
     let said_in_full = platform
         .filter(|p| p.get("uaFullVersion").and_then(Value::as_str) == Some(full_version))
         .and_then(|p| p.get("fullVersionList"))

@@ -1,14 +1,4 @@
 //! The sentences a person reads.
-//!
-//! The other half of a report from `super::wire`, and the split is by audience
-//! rather than by layer: that module decides what a receiver is sent, this one
-//! decides what is printed. Rewording anything here is free; rewording anything
-//! there is an integration change.
-//!
-//! What actually moved is `crate::engine::watch`'s answer and nothing in here
-//! recomputes any of it — the module rule that `engine` never decides how
-//! something looks has a matching half, which is that this never decides what
-//! is true.
 
 use snob_core::Epoch;
 use snob_core::model::{ListKind, User, printable};
@@ -22,10 +12,6 @@ use crate::report;
 use snob_core::watch::posts::Basis as PostsBasis;
 
 /// Why a list was not compared, said in a sentence.
-///
-/// `engine` handed over what happened and nothing else; which words that
-/// deserves is this module's question, which is why the tokens are matched
-/// here rather than carried as strings.
 pub(super) fn refusal_line(kind: ListKind, skipped: Skipped) -> String {
     match skipped {
         Skipped::NobodyLooked(provenance) => format!(
@@ -41,8 +27,6 @@ pub(super) fn refusal_line(kind: ListKind, skipped: Skipped) -> String {
             }
         ),
         // The same half-sentence the summary uses for the same situation.
-        // Writing a second one here is how two commands end up describing one
-        // event in two ways.
         Skipped::Incomplete(reason, _) => format!(
             "the {kind} list could not be read in full ({}), so it was not compared: the \
              accounts missing from it would have been reported as people who left",
@@ -52,8 +36,7 @@ pub(super) fn refusal_line(kind: ListKind, skipped: Skipped) -> String {
 }
 
 /// Why the posts of `account` were not looked at, said in a sentence; the
-/// sibling of [`refusal_line`]. `None` for posts read less than an hour ago,
-/// which is the rule working and not worth a warning.
+/// sibling of [`refusal_line`].
 pub(super) fn posts_refusal_line(account: Option<&str>, skipped: PostsSkipped) -> Option<String> {
     let whose = match account {
         Some(name) => format!("the posts of @{}", printable(name)),
@@ -80,16 +63,6 @@ pub(super) fn posts_refusal_line(account: Option<&str>, skipped: PostsSkipped) -
 
 /// What is wrong with something `snob watch check` looked at, said in a
 /// sentence.
-///
-/// The same split as [`refusal_line`] above, for the other half of the monitor:
-/// `engine::check` hands over what it found and this decides the words, for
-/// the terminal report and `--json` alike.
-///
-/// Two of them are consts in `report` rather than literals here.
-/// `NOTHING_CONFIGURED` because `watch::status` answers that same question
-/// about the same machine and the two probes must not disagree, and
-/// `NO_RECORDED_CONSENT` because two arms below are one condition with one
-/// clause between them.
 pub(super) fn problem_line(problem: &Problem) -> String {
     match problem {
         Problem::NothingConfigured => report::NOTHING_CONFIGURED.to_string(),
@@ -156,14 +129,6 @@ pub(super) fn problem_line(problem: &Problem) -> String {
 }
 
 /// Says that reports were abandoned, because nothing else will.
-///
-/// The sweep marks a report `expired` once it is too old to be news, and that
-/// is the moment a set of arrivals and departures stops existing: `due` has
-/// already been refusing to hand it back, so the retry ladder never reaches the
-/// sentence in `send_one` that was written for exactly this. Without this line
-/// the event would be a row changing state in silence: `status` counts only
-/// `pending`, and the health verdict goes from `warning` to `ok` at the instant
-/// the news is lost.
 pub(super) fn say_what_was_given_up(given_up: usize) {
     if given_up == 0 {
         return;
@@ -172,9 +137,6 @@ pub(super) fn say_what_was_given_up(given_up: usize) {
 }
 
 /// The abandoned-reports sentence, plural tuple and all, written once.
-///
-/// `status` prints the same event -- rows the sweep marked `expired` -- so both
-/// read this one string rather than two copies that drift.
 pub(super) fn given_up_sentence(given_up: usize) -> String {
     let (subject, what) = if given_up == 1 {
         ("report was", "what it said is")
@@ -222,9 +184,8 @@ pub(super) fn describe_tick(tick: &TickReport) -> Vec<String> {
     lines
 }
 
-/// When a run the schedule asked for was due, began and ended, and how late
-/// it began when that is late (`RunTiming::late`). Nothing for a run started
-/// by hand, which was due for nothing.
+/// When a run the schedule asked for was due, began and ended, and how late it
+/// began when that is late (`RunTiming::late`).
 pub(super) fn timing_line(timing: &crate::engine::watch::RunTiming) -> Option<String> {
     let due = timing.due_at?;
     let mut line = format!(
@@ -248,12 +209,6 @@ pub(super) fn timing_line(timing: &crate::engine::watch::RunTiming) -> Option<St
 }
 
 /// The answer as a person reads it.
-///
-/// Returned as lines rather than printed, so a test can read them without
-/// capturing standard output.
-///
-/// The lists first, then the posts. An account whose posts alone were
-/// reported says nothing about its lists, which it does not watch.
 pub(super) fn describe(report: &WatchReport, refused: bool) -> Vec<String> {
     let lists_reported = report.followers.is_some() || report.following.is_some();
     let mut lines = if lists_reported || report.posts.is_none() {
@@ -383,9 +338,7 @@ fn describe_lists(report: &WatchReport, refused: bool) -> Vec<String> {
     if report.followers.is_none() && report.following.is_none() {
         // A run in which every list was refused concluded nothing, and that is
         // not the same as an account nothing has ever been walked for: two
-        // complete captures may be on disk. The reason comes from the refusal
-        // lines the caller prints next, so this only has to not claim the
-        // opposite.
+        // complete captures may be on disk.
         if refused {
             return vec![format!("Nothing could be looked at for {who} this time.")];
         }
@@ -433,27 +386,7 @@ fn describe_lists(report: &WatchReport, refused: bool) -> Vec<String> {
     let changes = report.changes();
     if changes.is_empty() {
         if baselines.is_empty() {
-            // **Say what was done, rather than asserting the negative.** Three
-            // different runs reach this point and only one has earned "nothing
-            // has changed".
-            //
-            // A list whose counter had not moved is served from storage without
-            // being read, which is where nearly all of this tool's savings come
-            // from and is worth keeping — walking three hundred accounts costs
-            // twenty-five requests and asking whether they changed costs one. But
-            // a counter cannot see a swap: one departure and one arrival leave
-            // it identical, and a rename does not move it at all. Nothing is
-            // lost — the walk happens once the capture ages out and the
-            // comparison is against the last *reported* capture — but until
-            // then the tool must not state a fact it has not checked.
-            //
-            // And a run where one list was refused and the other had no news
-            // gets here too, because the refusal branch above is gated on there
-            // being nothing stored at all and one surviving list gets past it.
-            //
-            // The distinction is already in the domain type:
-            // `Basis::Unchanged` is documented as "this one did not have to
-            // look", against a `Compare` that read both and found nothing.
+            // **Say what was done, rather than asserting the negative.**
             let nobody_looked = [report.followers.as_ref(), report.following.as_ref()]
                 .into_iter()
                 .flatten()
@@ -498,8 +431,7 @@ fn describe_lists(report: &WatchReport, refused: bool) -> Vec<String> {
 
     if !changes.renamed.is_empty() {
         // The verb agrees, because one rename is the common case: it is what
-        // `once`, `diff` and the loop print most often. The baseline sentence
-        // a screen up branches this way for the same reason.
+        // `once`, `diff` and the loop print most often.
         let renamed = changes.renamed.len();
         lines.push(format!(
             "  {renamed} now {} by another name",
@@ -516,8 +448,7 @@ fn describe_lists(report: &WatchReport, refused: bool) -> Vec<String> {
 
     // **Said in the summary itself**, the last line of it: the chat formats
     // send the summary alone, and the refusal's own warning goes to standard
-    // error, which a Slack channel never sees. Without it a report of changes
-    // in one list reads as the whole story of both.
+    // error, which a Slack channel never sees.
     if refused {
         lines.push(String::new());
         lines.push(
@@ -568,11 +499,6 @@ pub(super) fn since_line(report: &WatchReport) -> String {
 }
 
 /// The older of the two receipts.
-///
-/// The two lists are marked apart and can be reported at different moments, so
-/// the interval the user is being shown starts at whichever was reported first
-/// — saying the later one would claim a window shorter than the one the numbers
-/// actually cover.
 pub(super) fn earliest_since(report: &WatchReport) -> Option<Epoch> {
     [report.followers.as_ref(), report.following.as_ref()]
         .into_iter()

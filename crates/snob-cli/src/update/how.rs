@@ -1,16 +1,10 @@
 //! How this copy of snob was installed, which decides how it is updated.
 //!
-//! Read from where the running binary really is (its path with every link
-//! followed), the way `exe::stable_exe` finds the path a package manager
-//! keeps: each manager puts its programs somewhere of its own, and that is
-//! the one thing every install leaves without being asked. **A guess that
-//! could be wrong is never acted on as a manager's**: a path that matches no
-//! rule is a copy snob may replace itself only when its directory is this
-//! user's to write ([`Method::Script`], what the install scripts leave), and
-//! otherwise is [`Method::Unknown`], which is only told about.
-//!
-//! What is read goes through [`Look`], so every rule is tested on paths of
-//! every platform from any one of them.
+//! **A guess that could be wrong is never acted on as a manager's**: a path
+//! that matches no rule is a copy snob may replace itself only when its
+//! directory is this user's to write ([`Method::Script`], what the install
+//! scripts leave), and otherwise is [`Method::Unknown`], which is only told
+//! about.
 
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
@@ -110,10 +104,9 @@ impl Method {
         }
     }
 
-    /// What fetches `version` ahead of putting it in place, where the
-    /// manager can: its bottle or archive lands in its own cache, and the
-    /// upgrade later is quick. The `.deb` and a script install are downloaded
-    /// by snob itself, not by a step.
+    /// What fetches `version` ahead of putting it in place, where the manager
+    /// can: its bottle or archive lands in its own cache, and the upgrade later
+    /// is quick.
     pub(crate) fn prefetch(&self) -> Vec<Step> {
         match self {
             // The formula is read from the tap, which only `brew update`
@@ -218,10 +211,7 @@ impl Look for System {
         unsafe { libc::access(dir.as_ptr(), libc::W_OK) == 0 }
     }
 
-    /// Windows: inside this user's profile. Asking the access list would be
-    /// right and long; the install script puts snob under
-    /// `%LOCALAPPDATA%\Programs`, and anything elsewhere is left to
-    /// [`Method::Unknown`] rather than written to on a guess.
+    /// Windows: inside this user's profile.
     #[cfg(windows)]
     fn writable(&self, dir: &Path) -> bool {
         ["LOCALAPPDATA", "USERPROFILE"]
@@ -376,8 +366,7 @@ pub(crate) fn a_build(real: &Path) -> bool {
 }
 
 /// Whether this binary is a developer's build, asked on every start; cheap,
-/// since it reads nothing but the path. A binary that cannot say where it is
-/// cannot be replaced either, and counts as one.
+/// since it reads nothing but the path.
 pub(crate) fn this_is_a_build() -> bool {
     real_exe().map_or(true, |real| a_build(&real))
 }

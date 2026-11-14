@@ -1,14 +1,4 @@
 //! Getting a report to a receiver.
-//!
-//! One file, because the rules here are about one another. Whether a stored
-//! credential may be attached is decided in [`plan`]; whether the address it
-//! would go to can be posted to at all is decided by `watch::webhook::check`,
-//! which [`delivery_from`] calls in the very next statement. What a queued
-//! report may be handed to on a later run is [`destination_of`] and [`drain`],
-//! and that rule is the same rule again, one process later.
-//!
-//! The split is by question rather than by layer: [`super`] decides what a
-//! report says, this decides where it goes and what travels with it.
 
 use anyhow::{Context, Result, bail};
 use snob_core::secret::Secret;
@@ -32,19 +22,12 @@ pub(super) struct Delivery {
     pub(super) heartbeat: bool,
     /// What a report this run queues is made into (`wire::outgoing`).
     pub(super) format: WebhookFormat,
-    /// Whether the body will carry `X-Snob-Signature`. Held so `check` can say
-    /// what it just sent rather than guessing at what the client did.
+    /// Whether the body will carry `X-Snob-Signature`.
     pub(super) signed: bool,
-    /// The address this run posts to, as [`destination_of`] spells it. Written
-    /// onto every report it queues and used to filter the outbox, so a queued
-    /// report can only ever be sent to the address it was addressed to — and
-    /// read back by `snob watch status`, which has to ask the queue the same
-    /// question a run would.
+    /// The address this run posts to, as [`destination_of`] spells it.
     pub(super) destination: String,
-    /// Whether a report this run tried was left undelivered, queued or given
-    /// up on. Set by [`send_one`] and read by `once`, which exits 1 for it:
-    /// a run on a timer that said 0 while its report sat in the queue left
-    /// nobody to notice, since nothing tries it again before the next run.
+    /// Whether a report this run tried was left undelivered, queued or given up
+    /// on.
     pub(super) undelivered: std::sync::atomic::AtomicBool,
 }
 
@@ -57,10 +40,6 @@ impl Delivery {
 
 /// What this run would send, worked out without touching the keyring or the
 /// network.
-///
-/// Split out of [`delivery_from`] so the four rules it holds can be reached by a
-/// test at all: that function takes a `&SecretStore` and hands back a live HTTP
-/// client.
 struct Planned {
     webhook: Webhook,
     heartbeat: bool,
@@ -70,15 +49,7 @@ struct Planned {
 /// Decides what to send, and what to say about it.
 ///
 /// **The warnings come back rather than being printed**, because a decision that
-/// prints is a decision that cannot be checked. They are in the order they have
-/// to be said: either the no-webhook one on its own, or the withheld-headers one
-/// and then the withheld-token one.
-///
-/// The two stored secrets are read by the caller rather than in here, which is
-/// what makes this reachable without a keyring. One consequence: a machine whose
-/// keyring is broken reports the keyring's error ahead of the clearer one about
-/// an empty `--sign-with`. The session opened moments later would report it
-/// anyway.
+/// prints is a decision that cannot be checked.
 fn plan(
     args: &WebhookArgs,
     from_file: Option<&WebhookConfig>,
@@ -89,14 +60,6 @@ fn plan(
 
     // Whether the credential store could be consulted at all, asked before the
     // secrets are unwrapped.
-    //
-    // "Nothing is stored" and "this process cannot reach the store" are
-    // different answers. Both of the warning arms below sit inside a `Some`, so
-    // an unreachable store would otherwise produce no warning and a client with
-    // neither an `Authorization` nor a signing key: the report would go out
-    // unauthenticated and unsigned. `setup` stores the token keyring-only
-    // whatever `--no-keyring` said, so a login with `--no-keyring`, then
-    // `setup`, then cron with no session bus reaches this.
     let store_unreadable = stored_token.is_unreachable() || stored_key.is_unreachable();
     let (stored_token, stored_key) = (stored_token.found(), stored_key.found());
 
@@ -119,9 +82,8 @@ fn plan(
 
     // Never the address itself: the likeliest one that does not parse is one
     // hand-edited without its scheme, where `shown` cannot take a Slack or
-    // Discord secret out of the path, and this is the error every scheduled
-    // run fails with into the log of an unattended service. Where it came
-    // from says which, and the parse error carries none of the input.
+    // Discord secret out of the path, and this is the error every scheduled run
+    // fails with into the log of an unattended service.
     let url = Url::parse(&url).with_context(|| {
         if args.webhook.is_some() {
             "the address given with --webhook is not an address"
@@ -136,25 +98,8 @@ fn plan(
     // `snob watch once --webhook https://webhook.site/<id>` is precisely what
     // somebody does to see what the payload looks like, and the file's headers
     // and the keyring token must not follow it to a host nobody configured.
-    // `check` cannot tell: the new address is https.
     //
-    // Compared by origin rather than by string, so a path or a query on the same
-    // host is still the same destination. The project already has the pattern:
-    // `CdnClient::check_downloadable` exists so the CDN cannot be handed a
-    // credential meant for somewhere else.
-    //
-    // **An origin there is nothing to compare against is not a match.** Two
-    // cases have none: a keyring token with no `[webhook]` in the file at all
-    // (which `setup` can leave behind, since it stores the secrets before
-    // writing the file), and a `[webhook]` whose `url` does not parse (nothing
-    // validates it, because the file is documented as safe to hand-edit).
-    // Reading absence as sameness would send the stored token to whatever
-    // `--webhook` named.
-    //
-    // The question is really "did anything override the configured address",
-    // so that is what is asked. Without `--webhook` the address came from the
-    // file and is the configured one by construction; with it, sameness has to
-    // be demonstrated rather than assumed.
+    // **An origin there is nothing to compare against is not a match.**
     let configured_origin = from_file
         .and_then(|w| Url::parse(&w.url).ok())
         .map(|configured| configured.origin());
@@ -168,9 +113,8 @@ fn plan(
     // refusal that printed the secret first is not a refusal.
     let shown = crate::watch::webhook::shown(&url);
 
-    /// Names the origin a stored credential belongs to, for a warning about
-    /// not sending it. "the configuration" when the file has no usable address
-    /// to name, one of the cases the guard above treats as not a match.
+    /// Names the origin a stored credential belongs to, for a warning about not
+    /// sending it.
     fn configured_for(origin: Option<&url::Origin>) -> String {
         origin.map_or_else(
             || "the configuration".to_string(),
@@ -203,16 +147,10 @@ fn plan(
         headers.push((name.trim().to_string(), value.trim().to_string()));
     }
 
-    // Stored secrets fill in what was not passed. This is the whole point of
-    // `setup` having put them in the keyring: a systemd unit runs `snob watch`
-    // with no arguments and the token is not in the unit file, the process
-    // table, or anybody's shell history.
+    // Stored secrets fill in what was not passed.
     //
     // The guard looks at the **merged** list, not only at the flags, or a
     // configured `Authorization` and a stored token would both go out.
-    //
-    // And only to the address it was stored for: a token is a credential like
-    // the session cookie.
     let authorization_given = headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
@@ -231,21 +169,13 @@ fn plan(
     let key = match args.sign_with.clone() {
         // An empty `--sign-with` is not a request to sign with nothing: it is
         // `--sign-with ${SNOB_KEY}` in a unit file where the variable is unset.
-        // Taken literally it signs with a zero-length key -- a well-formed
-        // signature anybody can forge -- and, because this arm wins over the
-        // keyring, it would silently replace a key that was configured
-        // correctly. `ask_webhook` already refuses an empty one; the flag has
-        // to agree with it.
         Some(given) if given.trim().is_empty() => bail!(
             "--sign-with was given an empty value. If that came from an environment variable \
              that is not set, leave the flag out: the key stored by \"snob watch setup\" is \
              used when it is absent."
         ),
         Some(given) => Some(Secret::from(given)),
-        // The same gate as the token. A third party handed a body and its MAC
-        // has everything needed to guess a human-chosen shared secret offline,
-        // at leisure: a signature is a credential in the same way a token is,
-        // proof of who the message is from.
+        // The same gate as the token.
         None if same_destination => stored_key,
         None => {
             if stored_key.is_some() {
@@ -260,12 +190,10 @@ fn plan(
     };
 
     // Said whatever the file asks for, because the file is what says a
-    // credential was ever meant to travel. It cannot be asked whether one was
-    // stored -- that is the question that could not be answered. **It names
-    // only what is really missing**: a key from `--sign-with` or
-    // `SNOB_SIGNING_KEY` still signs, and a header still authenticates, and a
-    // warning that said otherwise sent somebody looking for a fault there
-    // was not.
+    // credential was ever meant to travel. **It names only what is really
+    // missing**: a key from `--sign-with` or `SNOB_SIGNING_KEY` still signs,
+    // and a header still authenticates, and a warning that said otherwise sent
+    // somebody looking for a fault there was not.
     let authenticated = headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
@@ -309,10 +237,6 @@ fn plan(
 }
 
 /// Reads the webhook arguments, or explains what is wrong with them.
-///
-/// Called before anything is opened or spent. A run that would have shouted a
-/// token over plain HTTP fails while somebody is still there to read the
-/// message, rather than six hours later into a log.
 pub(super) fn delivery_from(
     args: &WebhookArgs,
     configured: Option<&WatchConfig>,
@@ -349,20 +273,13 @@ pub(super) fn delivery_from(
 
 /// The address a report is addressed to, as the outbox records it.
 ///
-/// **The whole URL, and deliberately not the origin `plan` compares.** Two
-/// questions look alike here and want different units:
+/// **The whole URL, and deliberately not the origin `plan` compares.**
 ///
-/// - *May this credential travel there?* The origin. A path that changed is the
-///   same destination and the same credential, where a host that changed is
-///   neither. That question is asked in [`plan`], against `Url::origin()`, and
-///   it is right as it stands.
-/// - *May this queued report go there?* The address it was addressed to, which
-///   is a URL. An origin cannot tell two workflows on one host apart, which is
-///   exactly the shape n8n ships with: `https://n8n.local/webhook/snob` in the
-///   file and `https://n8n.local/webhook-test/snob` typed to see what the
-///   payload looks like. `plan` correctly attaches the token, because the
-///   origin really is the same; `drain` must still not hand the production
-///   backlog to the test workflow (the failure `deliveries::due` documents).
+/// - *May this queued report go there?* An origin cannot tell two workflows on
+///   one host apart, which is exactly the shape n8n ships with:
+///   `https://n8n.local/webhook/snob` in the file and
+///   `https://n8n.local/webhook-test/snob` typed to see what the payload looks
+///   like.
 pub(crate) fn destination_of(url: &Url) -> String {
     url.as_str().to_string()
 }
@@ -370,18 +287,13 @@ pub(crate) fn destination_of(url: &Url) -> String {
 /// Commits the report and gets it to the webhook, if there is one.
 ///
 /// The order is the whole of it: the report is queued and the marks retire in
-/// **one transaction**, and only then is anything sent. A send that fails
-/// leaves a row for the next run to retry; a mark that moved without the row
-/// would lose the change for good.
+/// **one transaction**, and only then is anything sent.
 pub(super) async fn deliver(
     app: &mut crate::app::App,
     tick: &TickReport,
     delivery: Option<&Delivery>,
 ) -> Result<()> {
     // Silence when nothing happened, unless somebody asked to hear it anyway.
-    // An automation where every message means something is the point of that;
-    // a heartbeat is for the opposite case, where the absence of messages is
-    // the signal and "quiet" has to be told from "stopped".
     let news = tick.report.has_changes();
     let body = match delivery.and_then(|d| Some((d, event_for(news, d.heartbeat)?))) {
         Some((delivery, event)) => {
@@ -389,10 +301,7 @@ pub(super) async fn deliver(
             // What a person reads of it, as the terminal prints it: the
             // summary a chat service is sent, and `summary` in the JSON.
             let summary = super::say::describe_tick(tick).join("\n");
-            // Made once, here, and stored as the string that goes on the
-            // wire. `serde_json` may render one value two ways, and the
-            // signature covers bytes — so a retry that rendered it again could
-            // be rejected after the first attempt was accepted.
+            // Made once, here, and stored as the string that goes on the wire.
             let made = outgoing(delivery.format, payload(tick, &run_id, event), &summary);
             Some((
                 run_id,
@@ -442,12 +351,8 @@ pub(super) async fn deliver(
 /// `run_id` is what the receiver is told to deduplicate on, and it is **not**
 /// the row id.
 ///
-/// The row id is a SQLite rowid with no AUTOINCREMENT, so it is reused after
-/// `prune` empties the table — which happens on any account quiet for longer
-/// than `deliveries::KEEP_SETTLED_FOR_SECS`, the default case. A receiver doing
-/// what AGENTS.md and the tests tell it to do would then drop a real report as
-/// a repeat. `run_id` is `UNIQUE` in the schema and already inside the body, so
-/// it is the one value that means what the header claims.
+/// A receiver doing what AGENTS.md and the tests tell it to do would then drop
+/// a real report as a repeat.
 async fn send_one(
     db: &Store,
     delivery: &Delivery,
@@ -480,9 +385,6 @@ async fn send_one(
         // `permanent` is for a request that could not be sent at all, and
         // nothing else: every HTTP answer, 4xx included, is retried within the
         // attempt and age budget, for the reason `Attempt::Failed` gives.
-        //
-        // No status: the request was never built, so no server answered
-        // anything, and the column's NULL already says that.
         Attempt::Refused { error } => {
             deliveries::failed(db.conn(), id, None, error, true, now).map(Some)
         }
@@ -507,10 +409,8 @@ async fn send_one(
     // must not be announced as "it is queued and will be tried again".
     match (&outcome, settled) {
         (Attempt::Delivered { .. }, _) => {}
-        // Not "in 1m": the queue is drained once per run, so nothing tries
-        // it before the next run, however soon its backoff ends. Said as the
-        // moment from which a run will, which holds on a timer and in the
-        // scheduled mode alike.
+        // Not "in 1m": the queue is drained once per run, so nothing tries it
+        // before the next run, however soon its backoff ends.
         (_, Some(deliveries::Outcome::Retrying(at))) => ui::warn(&format!(
             "the report could not be delivered ({}); it is queued, and {}",
             outcome.error(),
@@ -527,8 +427,7 @@ async fn send_one(
                 deliveries::GaveUp::TooOld => "It is too old to be news now.",
             }
         )),
-        // `failed` itself would not record. The row is untouched, so the next
-        // run tries it again.
+        // `failed` itself would not record.
         (_, None) => ui::warn(&format!(
             "the report could not be delivered ({})",
             outcome.error()
@@ -549,26 +448,11 @@ fn describe_when(at: Epoch, now: Epoch) -> String {
 }
 
 /// Whether this run has anything to say, and what it would be called.
-///
-/// One function rather than a guard and a name computed from the same fact ten
-/// lines apart: `None` means the run is quiet and nothing is queued at all.
-/// Collapsing the guard so every run speaks turns a `--every 30m` monitor from
-/// a handful of messages a week into forty-eight a day, which is the opposite
-/// of what "nothing is sent when nothing changed" promises -- and it is the
-/// point of `--heartbeat` that the *absence* of a message means something.
-///
-/// `news` is whether the report holds a change of a list, a rename or a new
-/// post (`WatchReport::has_changes`): a run whose only news is a post is sent
-/// as one with a change, heartbeat or not.
 fn event_for(news: bool, heartbeat: bool) -> Option<&'static str> {
     (news || heartbeat).then(|| event(news))
 }
 
 /// The event name a queued body carries.
-///
-/// Read back out of the body rather than remembered alongside it, so the header
-/// and the body cannot disagree. A retry days later reads the same string from
-/// the same bytes, so it stays true then too.
 fn event_of(body: &str) -> &'static str {
     let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
     // Anything but a heartbeat, including a body that does not parse, is a
@@ -581,21 +465,9 @@ fn event_of(body: &str) -> &'static str {
 
 /// Tries whatever is owed from earlier runs.
 ///
-/// **Once per run, after every account**, not once per account. The backoff is
-/// a stored wall-clock moment while a tick takes minutes, so draining inside
-/// the per-account loop would spend an owed report's retry ladder inside a
-/// single run, and make up to `accounts × DRAIN_LIMIT` POSTs at somebody's
-/// server in one go, which is the thing `DRAIN_LIMIT` exists to bound.
+/// **Once per run, after every account**, not once per account.
 ///
-/// **And it stops when the user does.** `WebhookClient::post` holds no token,
-/// so this loop is where a Ctrl+C is heard; otherwise a receiver that accepts
-/// and stalls would buy several more minutes of a run the terminal has already
-/// said is stopping. Nothing is gained by finishing: the rows stay pending and
-/// the next run drains them, which is the whole point of the queue.
-///
-/// `at_once` is `snob watch deliver`'s: a person asked to send now, so the
-/// rows still waiting out their backoff go too (`deliveries::owed_now`).
-/// Returns how many it tried.
+/// **And it stops when the user does.**
 pub(super) async fn drain(
     db: &Store,
     cancel: &CancelToken,
@@ -618,9 +490,7 @@ pub(super) async fn drain(
 
     let mut tried = 0;
     for report in owed {
-        // Asked before each one rather than only before the first. A POST has
-        // its own timeout, so the token can be set at any point in this loop,
-        // and the answer has to be read where the next request would go out.
+        // Asked before each one rather than only before the first.
         if cancel.is_canceled() {
             return tried;
         }
@@ -640,25 +510,9 @@ pub(super) async fn drain(
 }
 
 /// How many owed reports one run will try before leaving the rest.
-///
-/// Bounded so a queue that built up over a weekend does not turn one run into a
-/// hundred requests at somebody's server all at once. The rest go on the next
-/// run, and `deliveries::MAX_AGE_SECS` is what stops them lingering forever.
-///
-/// It is also the size of the interruption `drain` has to be able to stop in
-/// the middle of: ten POSTs at thirty seconds each is five minutes of a run the
-/// terminal has already said is stopping.
 const DRAIN_LIMIT: usize = 10;
 
 /// An id for this report, unique enough for a receiver to deduplicate on.
-///
-/// The moment and a random suffix rather than a UUID: the column is `UNIQUE`,
-/// so a collision is an error rather than a silent overwrite, and this avoids a
-/// dependency for a value nothing derives meaning from.
-///
-/// `now` is an argument rather than read inside, which is this project's shape
-/// for anything with arithmetic in it -- and here it is also what lets the
-/// uniqueness be tested without building a whole tick.
 pub(super) fn run_id(now: Epoch, account_pk: Pk) -> String {
     format!(
         "{}-{:08x}",

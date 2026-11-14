@@ -2,21 +2,6 @@
 //!
 //! **A job runs a list walk and nothing else**, with a handful of flags that
 //! shape what the walk returns and none that change where it reads or writes.
-//! The command line is stored in `job.json`, a file on disk that anything
-//! running as this user can edit, so the supervisor checks it again before it
-//! runs it ([`check`] in `supervise.rs` as in `start.rs`) and refuses what does
-//! not pass, running nothing. It is never re-planned from the call's
-//! arguments: `-y` is in the stored command line because the call that
-//! started the job was given it, and re-planning would put it there for a
-//! call that never was.
-//!
-//! The command is judged by clap, on the subcommand it parses to, and the
-//! flags token by token against [`ALLOWED`]: an account called `follow` is a
-//! positional argument of `followers`, not a `follow`.
-//!
-//! The global flags a job's processes run with are never read from disk:
-//! [`globals`] builds them from the command line of the process that starts
-//! the supervisor, and the supervisor's own command line is what it passes on.
 
 use std::ffi::OsString;
 
@@ -43,9 +28,6 @@ pub(crate) struct Checked {
 }
 
 /// The flags a job's command may carry, beside the account it names.
-/// `--format` only as `json`, and `--no-progress` is taken out rather than
-/// refused (see [`Checked::args`]); the two `--confirmed-*` are how a walk run
-/// on a yes is recorded (`cli::AgentArgs`).
 const ALLOWED: &[&str] = &[
     "--format",
     "--no-interactive",
@@ -70,9 +52,6 @@ const TAKES_A_VALUE: &[&str] = &[
 ];
 
 /// Checks `args`, a command line with no program name, as one a job may run.
-///
-/// The error says why in words a person can read, and names no more of the
-/// command line than the flag that was refused.
 pub(crate) fn check(args: &[String]) -> Result<Checked, String> {
     let Some(first) = args.first() else {
         return Err("a job needs a command to run".into());
@@ -221,9 +200,7 @@ pub(crate) fn globals(cli: &Cli, account: Pk) -> std::io::Result<Vec<OsString>> 
 }
 
 /// [`globals`] and the job's `--max-wait`, **once**: what a supervisor is
-/// started with ahead of `__job run <id>`. The value is the one the process
-/// starting the job was given, and is never appended to one already there,
-/// which clap refuses (a global flag given twice is an error).
+/// started with ahead of `__job run <id>`.
 pub(crate) fn supervisor(cli: &Cli, account: Pk) -> std::io::Result<Vec<OsString>> {
     let mut args = globals(cli, account)?;
     push_max_wait(&mut args, cli.max_wait);

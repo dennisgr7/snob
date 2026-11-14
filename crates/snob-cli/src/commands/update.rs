@@ -1,15 +1,4 @@
 //! `snob update`: the latest release, now, the way snob was installed.
-//!
-//! One of the listed exceptions to "commands take an App": it reads no
-//! account and sends nothing to Instagram. It asks GitHub (`update::github`),
-//! asks the person before changing anything (`-y` answers in advance), and
-//! then lets the package manager upgrade snob, replaces the binary itself
-//! where the install script put it, or, for the `.deb`, runs or prints the
-//! `apt` command only root can run. Unlike the automatic update, it does not
-//! wait for a cold start: a person asked for it now, and a snob already
-//! running keeps the file it started from (on Windows, the renamed `.old`).
-//!
-//! The rest of the updater's choices are `update`'s; this is the wording.
 
 use anyhow::Result;
 use snob_store::paths::AppPaths;

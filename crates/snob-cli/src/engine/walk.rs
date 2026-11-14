@@ -1,9 +1,4 @@
 //! The walk itself: opening a snapshot, filling it page by page, closing it.
-//!
-//! Each page commits in its own transaction, which is what makes saving partial
-//! progress not an action that has to run in time but simply a matter of
-//! stopping — and that matters because neither `exit()` nor `panic = "abort"`
-//! run destructors.
 
 use anyhow::Result;
 use snob_core::Epoch;
@@ -17,12 +12,8 @@ use crate::app::App;
 use crate::engine::target::Target;
 use crate::engine::{ListOutcome, ListQuery, Provenance};
 
-/// About how many accounts one request brings back: the most a page is
-/// asked for, which the web app gets eight to twelve of.
-///
-/// It is here to turn a follower count into a number of requests for a
-/// sentence a person agrees to, and nothing depends on it being exact: it is
-/// an estimate, labeled as one.
+/// About how many accounts one request brings back: the most a page is asked
+/// for, which the web app gets eight to twelve of.
 const ACCOUNTS_PER_REQUEST: u64 = snob_ig::pace::ACCOUNTS_PER_PAGE as u64;
 
 /// About how many pages a list of `accounts` is: at least one, since an
@@ -40,9 +31,8 @@ pub fn pages_to_walk_at_most(accounts: u64) -> u64 {
 }
 
 /// About how many requests walking `pages` takes: from the browser, the
-/// navigation that opens the list, and each page followed by its
-/// `show_many`, as the app sends them; without it, one a page. No page is
-/// no request: a walk capped at none stops before the navigation.
+/// navigation that opens the list, and each page followed by its `show_many`,
+/// as the app sends them; without it, one a page.
 pub fn requests_for_pages(pages: u64, browser: bool) -> u64 {
     match pages {
         0 => 0,
@@ -76,9 +66,7 @@ pub async fn fetch(
         }
     };
 
-    // Somebody else's lists give up sooner on a network failure. This is the
-    // one place that decides it, so the set commands and `scan` inherit it by
-    // coming through here rather than each remembering to ask.
+    // Somebody else's lists give up sooner on a network failure.
     let pace = if target.is_self {
         Pace::default()
     } else {
@@ -120,8 +108,7 @@ pub async fn fetch(
         .with_heartbeat(&still_wanted)
         .with_stop(&stopping);
     // The machine is kept from sleeping on its own while the walk reads, and
-    // let go while it waits for the day's accounts (`power::KeepAwake`). A
-    // walk against a test server sleeps through nothing and asks for nothing.
+    // let go while it waits for the day's accounts (`power::KeepAwake`).
     let mut awake =
         crate::power::KeepAwake::new("snob is reading an Instagram list", client.is_live());
 
@@ -154,16 +141,10 @@ pub async fn fetch(
     // Asked of the store rather than inferred from the stop reason, and asked
     // with the same predicate the next run will use — so "it can be continued"
     // means the next run really would, cursor and resume window included.
-    //
-    // `is_resumable` and not `resumable`: the latter takes the claim in the
-    // statement that finds the row, and would hand this process the claim
-    // `close` has just released, moments before it exits.
     let resumable = snapshots::is_resumable(app.db().conn(), target.pk, kind)?;
 
     // What Instagram said, said out loud: the walker keeps the error next to
     // the stop reason, and a checkpoint carries the address that clears it.
-    // Through `report`, because two of the client's messages end in advice
-    // about a `snob` subcommand and that half is `report`'s.
     let stopped_by = summary.error.map(|error| {
         app.warn(&crate::report::what_instagram_said(&error));
         crate::exit::from_ig_error(&error)
@@ -188,20 +169,10 @@ pub async fn fetch(
     ))
 }
 
-/// What to do if the day's accounts run out mid-walk, and saying so first
-/// when it will matter.
+/// What to do if the day's accounts run out mid-walk, and saying so first when
+/// it will matter.
 ///
 /// **It pauses unless `--same-day` said otherwise, and it asks nothing.**
-/// Pausing is the answer that cannot make things worse with Instagram, and a
-/// question here would be a second one per command (a crossing walks two
-/// lists), which `-y` could not answer. The warning names the flag that gives
-/// the other answer; a caller passing `Some(Pause)` pauses without it.
-///
-/// The warning is only worth giving when the rest of the list is larger than
-/// what the day has left, and only a walk against Instagram has a day to
-/// spend — the pager ignores the budget against a test server. Without a
-/// counter the size is unknown and nothing is said; the walk pauses if it has
-/// to.
 fn choose_over_budget(
     app: &App,
     args: &ListQuery,
@@ -231,8 +202,7 @@ fn walk_failed(app: &App, error: WalkError, target: &Target, kind: ListKind) -> 
     match error {
         // Reachable only when the cooldown lands between the check in
         // `engine::list` and the walk: set by another process, or by a 429 on
-        // the counter poll just before it (`freshness`). Another process is
-        // also how the brake arrives, so it is worded as the gates word it.
+        // the counter poll just before it (`freshness`).
         WalkError::Cooldown { until_ms, .. } => {
             let held = app.held().ok().flatten().unwrap_or(crate::app::Held {
                 until_ms,
@@ -241,9 +211,7 @@ fn walk_failed(app: &App, error: WalkError, target: &Target, kind: ListKind) -> 
             crate::report::refuse_cooldown_mid_walk(&held)
         }
         // A crossing walks two lists in the same run, so "the walk failed" would
-        // not say which one stopped. The name goes through `printable` for the
-        // same reason every other account name this tool prints does: it came
-        // off Instagram, not out of anybody's keyboard.
+        // not say which one stopped.
         error => {
             let who = crate::app::target_label(target.username.as_deref());
             anyhow::Error::new(error).context(format!("could not read {who}'s {kind} list"))
@@ -252,9 +220,7 @@ fn walk_failed(app: &App, error: WalkError, target: &Target, kind: ListKind) -> 
 }
 
 /// Lets go of the capture after a failure, so the next run resumes it rather
-/// than paying for its pages again; see `snapshots::release`. A release that
-/// fails costs only that, and the failure that led here is the one worth
-/// reporting.
+/// than paying for its pages again; see `snapshots::release`.
 fn let_go(db: &Store, id: i64) {
     if let Err(e) = snapshots::release(db.conn(), id) {
         tracing::debug!(error = %e, "could not let go of the capture");
@@ -262,24 +228,17 @@ fn let_go(db: &Store, id: i64) {
 }
 
 /// The snapshot this walk will fill, and what is already known about it.
-///
-/// A struct rather than a tuple: `(i64, Epoch, Option<String>, usize)` at a
-/// call site says nothing about which is which.
 struct Opened {
     id: i64,
     /// Read from the row rather than taken now, so a resumed walk keeps the
-    /// moment its **first** page was asked for. That is the honest start of the
-    /// interval this list covers: it does reflect everything from that page
-    /// onward, and `snapshots::RESUME_WINDOW_SECS` has already decided a pause
-    /// of that length is one capture.
+    /// moment its **first** page was asked for.
     started_at: Epoch,
     cursor: Option<String>,
     already_stored: usize,
 }
 
 /// Continues an interrupted walk when one is still usable, and starts a fresh
-/// snapshot otherwise. Either way, half-finished ones that no longer serve are
-/// cleared out rather than piling up.
+/// snapshot otherwise.
 fn open_snapshot(
     app: &App,
     args: &ListQuery,

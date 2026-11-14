@@ -1,34 +1,16 @@
-//! The owner of the browsers: the process that runs them, for every command
-//! of this user's.
-//!
-//! It holds one browser per account in use (`headless`), each on the
-//! account's profile, and sends what each command asks as the session the
-//! command hands it. A browser closes [`IDLE`] after its last
-//! request, or — once Instagram has pushed back on it, or in a sandbox —
-//! as soon as none of the commands that used it is still connected. The
-//! owner leaves when it holds no browser and no command is connected.
+//! The owner of the browsers: the process that runs them, for every command of
+//! this user's.
 //!
 //! **The site's app keeps running in a browser while it lingers**, making its
 //! own calls, and the listener keeps hearing them: a push-back heard then is
-//! recorded, and the next command meets the cooldown. That is kept: a
-//! person's tab does not go quiet the moment they stop clicking, and the next
-//! command finds the browser warm. Nobody waits on it meanwhile, so it runs
-//! efficiently (`power::qos`): at the normal pace only while a command
-//! somebody waits on is using it ([`ToOwner::Attention`]).
+//! recorded, and the next command meets the cooldown.
 //!
 //! **Nothing is sent as a session its account was signed out of**
-//! (`owner::sign_out`) and no login let in again since, whoever hands it:
-//! the command asks before each request, the owner asks again here, and the
-//! account's browser once it holds it (`headless::Headless`), so a command
-//! that slipped a request in as `logout` began starts no browser on the
-//! profile going.
-//!
-//! The one thing stored from here is the cooldown such a push-back earns,
-//! written by the listener (`headless::listen`) to the account's database,
-//! and from it to `shared.db` when that opens. What a browser rotated is
-//! written back by the command that leaves it, which asks for the cookies
-//! first ([`ToOwner::Cookies`]); a browser that closes later, idle, keeps
-//! anything rotated since in its profile, where the next command reads it.
+//! (`owner::sign_out`) and no login let in again since, whoever hands it: the
+//! command asks before each request, the owner asks again here, and the
+//! account's browser once it holds it (`headless::Headless`), so a command that
+//! slipped a request in as `logout` began starts no browser on the profile
+//! going.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -52,13 +34,6 @@ pub struct Linger {
     /// than keep it for the next.
     pub close_when_unused: bool,
     /// The longest the owner sleeps without looking.
-    ///
-    /// **Not how often it looks.** It wakes when something happens — a command
-    /// connecting or leaving, a push-back heard, a request to leave — and
-    /// otherwise when the first open browser would idle out
-    /// ([`crate::headless::Reaped::next`]); this only bounds the sleep, in case
-    /// something changes that tells nobody. A browser crashing is such a
-    /// thing, and was never noticed by looking either.
     pub tick: Duration,
 }
 
@@ -89,9 +64,7 @@ impl Linger {
 const FIRST_COMMAND: Duration = Duration::from_secs(30);
 
 /// Whether `open` is to be closed now, `users` commands being connected that
-/// used it. An owner that was asked to leave closes at once every browser no
-/// connected command uses, and keeps the others for the commands still on
-/// them.
+/// used it.
 fn due(open: &Open, users: usize, linger: &Linger, retiring: bool) -> bool {
     open.idle >= IDLE || (users == 0 && (retiring || open.latched || linger.close_when_unused))
 }
@@ -186,9 +159,7 @@ pub(super) async fn run_on(
     let started = Instant::now();
     let mut quit = std::pin::pin!(asked_to_quit());
     // A push-back latches a browser, which then closes once no connected
-    // command uses it; hearing it is what wakes the loop to look. The sender
-    // lives in `engine`, which this holds, so the channel never closes under
-    // it and a closed one cannot spin the loop.
+    // command uses it; hearing it is what wakes the loop to look.
     let mut hear = engine.hear();
     let mut sleep = linger.tick;
     loop {
@@ -317,9 +288,7 @@ where
     });
 
     let mut used = HashSet::new();
-    // Whether somebody waits on this command. Taken as yes until it says
-    // otherwise, which a command of this build does at once: a browser runs
-    // efficiently only when nobody is said to be waiting.
+    // Whether somebody waits on this command.
     let mut attended = true;
     // Whatever the command is, it is told who this is and whom else this
     // serves; one of another build then asks this owner to leave, or goes.
@@ -484,14 +453,7 @@ fn reconsider(engine: &Headless, state: &State, pk: Pk) {
     crate::power::qos::own(crate::power::qos::Mode::for_attention(any));
 }
 
-/// A command is done with the browsers it used. With nothing to linger for,
-/// each one no other command is using is closed before it is told. Each one
-/// that stays is efficient from now on unless another command somebody waits
-/// on is using it: a browser lingering for the next command waits on nobody.
-///
-/// Closed before it is reconsidered, so a browser on its way out is not made
-/// efficient first: its close is what the command, and the next one, wait for
-/// (`Cdp::close`).
+/// A command is done with the browsers it used.
 async fn leave(
     engine: &Headless,
     state: &State,

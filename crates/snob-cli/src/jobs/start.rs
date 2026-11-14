@@ -1,17 +1,6 @@
 //! `snob __job start`: checks a walk, makes it a job, starts its supervisor,
 //! and answers with **exactly one compact JSON document** on standard output.
 //!
-//! The document is the job's record (`show::record`), with `reused` beside
-//! it, and the walk's answer under `finished` when it ended within `--wait`.
-//! One document and nothing before it, so a caller reads it the way it reads
-//! any command's output, once it has ended; a first line with the id would be
-//! read as a document of its own.
-//!
-//! What it does, in order:
-//! - checks the command (`argv::check`) and that a session is stored, which
-//!   sends nothing (exit 3 without one);
-//! - estimates the walk out of what is stored (`commands::dry_run`), which
-//!   sends nothing either;
 //! - under the account's jobs lock, so two starts at once make one job:
 //!   checks the session again (a purge or a logout deletes it holding that
 //!   lock, so a start that waited makes nothing); sweeps (`jobs::sweep`);
@@ -23,26 +12,14 @@
 //!   `canceled`); refuses a walk of a list a lost job may still hold, saying
 //!   until when (`walked_elsewhere`); and makes the job's directory and
 //!   record;
-//! - starts the supervisor, detached (`detach.rs`), with the global flags of
-//!   this run that decide where its files are and nothing else
-//!   (`argv::globals`); never `--stop-when-stdin-closes`, which this process
-//!   may carry;
-//! - waits up to 10 s for the supervisor, then up to `--wait` for the walk.
 //!
-//! **`--check` makes nothing**: past the command's and the session's checks
-//! it answers `{"would": "start"}`, or `{"would": "reuse", "job_id": …}`, or
-//! the refusal a start would meet now, reading the jobs and writing nothing,
-//! and in a cooldown the refusal the walk itself would meet then (a refresh,
-//! or nothing stored to serve). It is what the MCP server asks before it asks
-//! the person for a yes, so nobody says yes to a walk a running job or a
-//! cooldown then refuses.
+//! **`--check` makes nothing**: past the command's and the session's checks it
+//! answers `{"would": "start"}`, or `{"would": "reuse", "job_id": …}`, or the
+//! refusal a start would meet now, reading the jobs and writing nothing, and in
+//! a cooldown the refusal the walk itself would meet then (a refresh, or
+//! nothing stored to serve).
 //!
-//! **A job is left running only once its id has been handed over.** Asked to
-//! stop before it has answered (Ctrl+C, or, under `--stop-when-stdin-closes`,
-//! its caller closing its standard input because the tool call was canceled
-//! or the client went away), it asks the job it made to stop, and exits 130
-//! with nothing on standard output. A job it only found and reused is left
-//! alone: its id was handed to whoever started it.
+//! **A job is left running only once its id has been handed over.**
 
 use std::ffi::OsString;
 use std::time::Duration;
@@ -102,10 +79,8 @@ pub async fn run(
     }
 }
 
-/// What [`run`] prints, or `None` when it was stopped before the job's id
-/// could be handed over (the job it made then asked to stop). For a list
-/// command's `--background` too (`commands::background`), which says it in
-/// words at a terminal.
+/// What [`run`] prints, or `None` when it was stopped before the job's id could
+/// be handed over (the job it made then asked to stop).
 pub async fn start(
     cli: &Cli,
     args: &JobStartArgs,
@@ -233,11 +208,10 @@ pub async fn start(
     Ok(Some(out))
 }
 
-/// Whether the walk `checked` may start now among the account's `jobs`, read
-/// at `now`: the job already running it, to reuse; or a refusal, for another
-/// job running, one asked to stop that has not stopped yet, or a lost job's
-/// claim on a list it walks. It writes nothing: a start calls it under the
-/// jobs lock, and `--check` without it.
+/// Whether the walk `checked` may start now among the account's `jobs`, read at
+/// `now`: the job already running it, to reuse; or a refusal, for another job
+/// running, one asked to stop that has not stopped yet, or a lost job's claim
+/// on a list it walks.
 fn vet(jobs: &[super::Seen], checked: &argv::Checked, now: i64) -> Result<Found> {
     if let Some(running) = jobs.iter().find(|seen| !seen.status.is_over()) {
         // On its way out: reused, it would hand this start a walk about to
@@ -279,10 +253,9 @@ fn vet(jobs: &[super::Seen], checked: &argv::Checked, now: i64) -> Result<Found>
         .with_hint("wait for it to finish, or stop it with \"snob jobs cancel\"")
         .into());
     }
-    // A job that died without letting go of its list: another walk of the
-    // list is refused until its claim runs out, and saying when is the one
-    // useful answer. A lost job that never started a walk holds nothing
-    // (`Seen::claim_frees_at`).
+    // A job that died without letting go of its list: another walk of the list
+    // is refused until its claim runs out, and saying when is the one useful
+    // answer.
     if let Some((lost, frees_at)) = jobs.iter().find_map(|seen| {
         let frees_at = seen.claim_frees_at().filter(|&at| at > now)?;
         seen.job
@@ -312,13 +285,10 @@ fn vet(jobs: &[super::Seen], checked: &argv::Checked, now: i64) -> Result<Found>
     Ok(Found::Free)
 }
 
-/// For `--check`: the refusal the walk `checked` would meet now in a
-/// cooldown, **reading only**: a refresh, an account never resolved here, or
-/// a list with nothing stored, each refused as the walk's own run refuses it
-/// (`engine::cooldown::stored`). With something stored, the walk serves it
-/// and this answers nothing: the call is then asked about as any other, its
-/// command carrying `-y`, which a question skipped would hand a walk with no
-/// yes once the cooldown had lifted.
+/// For `--check`: the refusal the walk `checked` would meet now in a cooldown,
+/// **reading only**: a refresh, an account never resolved here, or a list with
+/// nothing stored, each refused as the walk's own run refuses it
+/// (`engine::cooldown::stored`).
 fn refused_in_cooldown(
     account: &AccountPaths,
     checked: &argv::Checked,
@@ -335,10 +305,9 @@ fn refused_in_cooldown(
     Ok(())
 }
 
-/// Whether two command lines walk the same list in the same way: the same
-/// but for how a yes to them was given (`--confirmed-via`, `--confirmed-for`),
-/// which shapes what is recorded, not what is walked. A yes given in a form
-/// and one given in the chat are for the same walk.
+/// Whether two command lines walk the same list in the same way: the same but
+/// for how a yes to them was given (`--confirmed-via`, `--confirmed-for`),
+/// which shapes what is recorded, not what is walked.
 fn same_walk(one: &[String], other: &[String]) -> bool {
     fn walk(line: &[String]) -> Vec<&str> {
         let mut kept = Vec::with_capacity(line.len());
@@ -364,9 +333,7 @@ fn same_walk(one: &[String], other: &[String]) -> bool {
 /// **The session is asked about again under the lock**, which a purge or a
 /// logout holds while it deletes the session (`jobs::Stopping`): a start that
 /// passed the first check and then waited on the lock finds the session gone
-/// and makes nothing (exit 3), rather than a job in what is being removed. An
-/// account whose directory has gone is refused the same way, and its
-/// directory is not made again (`jobs::lock_jobs`).
+/// and makes nothing (exit 3), rather than a job in what is being removed.
 fn make(
     account: &AccountPaths,
     secrets: &snob_store::secrets::SessionStore,

@@ -1,10 +1,8 @@
 //! Which account a command acts as.
 //!
-//! **Everything that acts as an account is handed one resolved here**, and
-//! the order is fixed: `--account`, then `SNOB_ACCOUNT`, then the active
-//! account, then the only one there is. A name is an id when it is the id of
-//! an account signed in here, and otherwise a username, compared without
-//! regard to case as Instagram compares them.
+//! **Everything that acts as an account is handed one resolved here**, and the
+//! order is fixed: `--account`, then `SNOB_ACCOUNT`, then the active account,
+//! then the only one there is.
 
 use snob_core::Pk;
 use snob_core::model::printable;
@@ -21,9 +19,8 @@ pub fn username(registry: &Registry, pk: Pk) -> Option<&str> {
         .filter(|name| !name.is_empty())
 }
 
-/// The account as a run acting as it is reported, with the username it had
-/// when it last signed in. An empty one is no name, so the label falls back to
-/// the id.
+/// The account as a run acting as it is reported, with the username it had when
+/// it last signed in.
 impl From<&Registered> for Viewer {
     fn from(account: &Registered) -> Self {
         Self {
@@ -101,8 +98,7 @@ pub fn resolve(
         .ok_or(Unresolved::NoneChosen)
 }
 
-/// The name this run was given, by `--account` or else `SNOB_ACCOUNT`. Set
-/// and empty is unset, as a shell leaves it after `SNOB_ACCOUNT=`.
+/// The name this run was given, by `--account` or else `SNOB_ACCOUNT`.
 pub fn given<'a>(flag: Option<&'a str>, env: Option<&'a str>) -> Option<&'a str> {
     flag.or(env).map(str::trim).filter(|name| !name.is_empty())
 }

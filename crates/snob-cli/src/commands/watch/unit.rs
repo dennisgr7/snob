@@ -2,17 +2,7 @@
 //!
 //! **Every unit runs `snob watch once --when-due` every quarter of an hour**,
 //! whatever the schedule is, and the run decides whether it is due
-//! (`once::is_due`, the evaluator the scheduled mode sleeps on). Translating
-//! the schedule into each scheduler's own language would copy the rules of
-//! `snob_core::watch::schedule` five times, and some of them cannot be said
-//! there at all: cron has no "every two weeks on Monday", systemd's calendar
-//! has no cron's OR between the day of the month and the day of the week,
-//! and none of them knows the jitter. A run asked for and not due reads no
-//! session and sends nothing, so asking often costs nothing; the schedule
-//! stays in `watch.toml`, where `watch setup` and `watch status` read it.
-//!
-//! Nothing here writes a file, enables a unit or calls a scheduler: the
-//! person reads what it prints and puts it where it says.
+//! (`once::is_due`, the evaluator the scheduled mode sleeps on).
 
 use anyhow::Result;
 
@@ -49,11 +39,7 @@ pub(super) fn unit(args: WatchUnitArgs, paths: &snob_store::paths::AppPaths) -> 
     Ok(ExitCode::Ok)
 }
 
-/// Said when `watch.toml` names no webhook. A run on a timer prints its
-/// reports on standard output and moves the monitor on, so `watch diff`
-/// stops showing them; what the scheduler does with that output is a log
-/// at best (systemd's journal, cron's mail where a mail agent is set up),
-/// and nothing at all for a launch agent or a scheduled task.
+/// Said when `watch.toml` names no webhook.
 const NO_WEBHOOK: &str = "watch.toml names no [webhook], so the reports these runs make are \
      printed where the scheduler keeps a run's output, if it keeps any, and \"snob watch diff\" \
      no longer shows them once a run has made them. Set one with \"snob watch setup\".";
@@ -68,9 +54,7 @@ fn render(kind: UnitKind, exe: &str) -> String {
     }
 }
 
-/// A user service and its timer. `SuccessExitStatus` names 5 (cooling down)
-/// and 130 (held for a critical battery), which are a run declining to run,
-/// not a failing unit; `Persistent` runs a start the machine slept through.
+/// A user service and its timer.
 fn systemd(exe: &str) -> String {
     // systemd reads `%` as a specifier, `$` as a variable, quoted or not,
     // and splits on spaces outside quotes.
@@ -166,22 +150,12 @@ fn launchd(exe: &str) -> String {
     )
 }
 
-/// A scheduled task, registered by the user who pastes it, while signed in:
-/// the keyring snob uses there is this user's Credential Manager.
+/// A scheduled task, registered by the user who pastes it, while signed in: the
+/// keyring snob uses there is this user's Credential Manager.
 ///
 /// **Written for PowerShell**, the console Windows opens by default, with the
 /// Task Scheduler's own cmdlets, which are the same in Windows PowerShell 5.1
-/// and in PowerShell 7. A `schtasks /TR "\"...\" ..."` line only parses in
-/// `cmd.exe`: PowerShell does not read a backslash as an escape, so the path
-/// and its arguments reached `schtasks` split in pieces, and `rem` is no
-/// command there. In single quotes PowerShell expands nothing, `$` and a
-/// backtick included, and a single quote is written twice.
-///
-/// The settings are the ones a person on a laptop would expect: the task's
-/// defaults start it only on mains power and stop it on battery, and a run
-/// still going when the next look comes is left to finish rather than joined
-/// by a second one (`IgnoreNew`). A trigger that repeats with no end is one
-/// `-RepetitionInterval` and no `-RepetitionDuration`.
+/// and in PowerShell 7.
 fn schtasks(exe: &str) -> String {
     let quoted = |text: &str| format!("'{}'", text.replace('\'', "''"));
     format!(

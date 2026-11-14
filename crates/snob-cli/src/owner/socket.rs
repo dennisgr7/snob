@@ -1,26 +1,13 @@
-//! Where the owner listens and how a command reaches it, per platform, and
-//! who may.
+//! Where the owner listens and how a command reaches it, per platform, and who
+//! may.
 //!
-//! **Only the user running snob, on both ends.** The session crosses this
-//! channel with every request, so reaching it has to be as hard as reading
-//! the stored session:
+//! **Only the user running snob, on both ends.**
 //!
 //! - **Unix**: a socket in the data directory, which is `0700`, itself `0600`,
 //!   and each end asks the kernel who is at the other (`peer_cred`) and hangs
-//!   up on anybody but this user. One owner at a time is a lock on a file
-//!   beside it, held while the owner listens; the socket file is only ever
-//!   replaced by whoever holds it. A retired owner lets both go while it
-//!   finishes with the commands still connected to it.
+//!   up on anybody but this user.
 //! - **Windows**: a named pipe, whose name anybody on the machine can open or
-//!   take first, so the name is not trusted at all. The owner creates it
-//!   owned by this user, with a DACL naming only this user, as the first
-//!   instance of that name — it refuses to join a pipe somebody else made —
-//!   and refuses remote clients. A command, before it sends anything, checks
-//!   that the pipe's owner is this user; the owner checks that the process
-//!   at the other end of each connection runs as this user. A pipe another
-//!   user took first is therefore a pipe this user will not talk to, and the
-//!   command runs its browser itself. The name lasts while any instance of
-//!   it is open, so a retired owner keeps it until its last command leaves.
+//!   take first, so the name is not trusted at all.
 
 use std::io;
 #[cfg(unix)]
@@ -132,8 +119,7 @@ mod unix {
         Ok(stream)
     }
 
-    /// The owner's process, to wait for. Only Windows needs it gone before
-    /// its files are: here a file that is still open is removed all the same.
+    /// The owner's process, to wait for.
     pub(crate) struct Owner;
 
     impl Owner {
@@ -323,9 +309,7 @@ mod windows {
     }
 
     /// A security descriptor owned by this user, whose DACL allows this user
-    /// and nobody else, and the attributes that carry it. Boxed, since the
-    /// attributes point at the descriptor and the descriptor at the ACL and
-    /// the SID.
+    /// and nobody else, and the attributes that carry it.
     struct OnlyThisUser {
         user: User,
         acl: OneUserAcl,

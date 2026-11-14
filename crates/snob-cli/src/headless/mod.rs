@@ -1,67 +1,30 @@
-//! The browser snob sends its requests from.
+//! The browser snob sends its requests from: the Chromium-based browser
+//! installed on the machine, headless, on snob's own profile, each request a
+//! `fetch()` from an instagram.com tab (AGENTS.md, "Talking to Instagram").
+//! One browser per account, run by the owner (`owner`) or, without one, by the
+//! command itself ([`alone`]). Nothing that spends no network starts one.
 //!
-//! **Why a browser.** A request sent with `reqwest` carries this process's TLS
-//! handshake and HTTP/2 settings, cookies the login handed over and nothing
-//! updates, and headers computed to agree with a Chrome this process is not.
-//! A session a browser created, used by something that is visibly not that
-//! browser, is the textbook stolen-session signature. So the requests come
-//! from the browser itself: the Chrome, Edge, Brave or Chromium installed on
-//! the machine, running without a window against snob's own profile — the
-//! same profile the login happens in — and sending each request with
-//! `fetch()` from an open instagram.com tab.
+//! **What a headless Chrome gives away, and what is done about each**
+//! (the first four measured on Chromium 141, the rest on Chromium 153 on
+//! Linux ARM64, September 2026, from a page's script and a service worker):
 //!
-//! There is a browser per account, each on the account's own profile,
-//! started on the first request sent as that account. They run in the owner
-//! of the browsers (`owner`), one process shared by every command of this
-//! user's, which closes each a few minutes after its last request; a command
-//! that cannot reach the owner, or is told `SNOB_NO_OWNER`, runs them itself,
-//! closing each after the same idle time ([`alone`]) and the rest at its end
-//! ([`crate::owner::finish`]). Nothing that spends no network starts one.
-//!
-//! **What a headless Chrome gives away, and what is done about each.** The
-//! first four were measured against Chromium 141, the rest against Chromium
-//! 153 on Linux ARM64, in September 2026, each from a script on a page and a
-//! service worker the way a site would ask:
-//!
-//! - `navigator.webdriver` is `true` under the debugging pipe, headless or
-//!   not. `--disable-blink-features=AutomationControlled`, in `cdp`.
-//! - The User-Agent says `HeadlessChrome`. `--user-agent` with the launched
-//!   browser's own; it is what covers the few requests that belong to no
-//!   target, a service worker's script among them.
-//! - That flag blanks the high-entropy client hints — architecture, bitness,
-//!   platform version, full version list — which is worse than the name it
-//!   hides. They are asked once of a browser started without it, and kept
-//!   ([`machine_hints`]); the brands are the ones the browser reports for
-//!   itself, so a Chromium does not claim to be Google Chrome.
-//! - `setUserAgentOverride` holds for one target, and a worker or the
-//!   service worker a site registers is a target of its own: the service
-//!   worker called itself `HeadlessChrome`. Every target is paused as it
-//!   attaches and handed the same override (`cdp::OnAttach`). Its requests
-//!   carry no `Sec-CH-UA` either way — neither does a windowed Chromium's,
-//!   measured under Xvfb, so that is Chromium and not a tell.
+//! - `navigator.webdriver` is `true` under the debugging pipe:
+//!   `--disable-blink-features=AutomationControlled`, in `cdp`.
+//! - The User-Agent says `HeadlessChrome`: `--user-agent` with the launched
+//!   browser's own.
+//! - That flag blanks the high-entropy client hints: they are asked once of a
+//!   browser started without it, and kept ([`machine_hints`]).
+//! - `setUserAgentOverride` holds for one target: every target is paused as
+//!   it attaches and handed the same override (`cdp::OnAttach`).
 //! - `document.hasFocus()` was `false`: focus is emulated.
-//! - The screen was all work area, `availHeight` equal to `height`, and the
-//!   window ran off it from (10,10): a taskbar's strip is kept, and the window
-//!   fills the rest from the corner.
-//! - `(pointer: fine)` and `(hover: hover)` were both false, a phone's answer:
-//!   a mouse is declared through `--blink-settings`.
-//! - The requests ran in the page's main world, where a `fetch` the site
-//!   wrapped and its resource timing list both see them; they run in an
-//!   isolated world ([`tab::isolated_world`]).
+//! - The screen was all work area: a taskbar's strip is kept.
+//! - `(pointer: fine)` and `(hover: hover)` were false: a mouse is declared
+//!   through `--blink-settings`.
+//! - The requests ran in the page's main world, where a wrapped `fetch` sees
+//!   them: they run in an isolated world ([`tab::isolated_world`]).
 //!
-//! And two things that are not about looking like a browser but about what
-//! a browser does to other people: the feed plays videos on its own, and a
-//! play counts, so no video reaches the page; and the site's app sends calls
-//! of its own, seen signals among them, so every request the app sends is
-//! judged before it leaves, by the rule [`guard`] writes down.
-//!
-//! What is left is left knowingly: WebGL is absent — `getContext` returns
-//! nothing without a GPU the browser will use headless — and the switch that
-//! brings in the software renderer is one Chromium itself calls unsafe, and
-//! would only name SwiftShader instead. Whether a headless browser on a
-//! Windows desktop reaches the real GPU is to be measured there first.
-//! `navigator.languages` and `Accept-Language` are the profile's own, which is
-//! what the login sent.
+//! Left knowingly: WebGL is absent headless. No video reaches the page and
+//! every request the app sends is judged before it leaves ([`guard`]).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -105,11 +68,9 @@ const SETTLE: Duration = Duration::from_millis(1_500);
 /// any browser command gets.
 const COMMAND_TIMEOUT: Duration = crate::cdp::CALL_TIMEOUT;
 
-/// How long a browser is kept after its last request, whether or not a
-/// command that used it is still connected: an interactive view left open
-/// does not hold a browser for as long as it stays open. Until then a browser
-/// outlives the commands that used it, which is what spares the next a cold
-/// start. A few minutes, since memory is what a browser costs.
+/// How long a browser is kept after its last request, whether or not a command
+/// that used it is still connected: an interactive view left open does not hold
+/// a browser for as long as it stays open.
 pub(crate) const IDLE: Duration = Duration::from_secs(5 * 60);
 
 /// How often an efficient browser's processes are looked at again for the
@@ -123,31 +84,16 @@ const PROFILE_RETRY: Duration = Duration::from_secs(5);
 /// How long the owner keeps starting a browser on a profile the one before it
 /// has not let go of yet.
 ///
-/// The browser closed for the last command, the owner's own or one a previous
-/// owner closed, has let go of the profile by the time its close returns, as a
-/// rule. On a loaded machine its last helpers can outlast that by moments, and
-/// the next browser then finds the profile held and leaves, which failed the
-/// command for a browser that was already on its way out. Measured on Windows
-/// under load, once in some sixty starts. Ten seconds is many times what such a
-/// browser takes to finish leaving, and short beside the patience a command
-/// gives the owner (`owner::ALLOWANCE`). Past it, what holds the profile is
-/// another snob in the middle of a run, and the command is told so.
-///
-/// The owner does not wait out a whole run, as a process with no owner does
-/// ([`PROFILE_RETRY`]): a command's patience with it is bounded, and the owner
-/// has nobody to say "waiting" to.
+/// Measured on Windows under load, once in some sixty starts.
 const PROFILE_LETTING_GO: Duration = Duration::from_secs(10);
 
-/// The shortest and the longest pause between those starts. The first comes
-/// soon, since a browser on its way out is usually gone in a fraction of a
-/// second; they double from there.
+/// The shortest and the longest pause between those starts.
 const LETTING_GO_PAUSES: (Duration, Duration) =
     (Duration::from_millis(250), Duration::from_secs(1));
 
-/// How long a call waits for the app's own calls on the tab's document to
-/// carry what it copies from them, which they do as the document boots:
-/// the app sends its first ones within a second or two of the load. Past
-/// it the call is not built, and the page is not ready.
+/// How long a call waits for the app's own calls on the tab's document to carry
+/// what it copies from them, which they do as the document boots: the app sends
+/// its first ones within a second or two of the load.
 const APP_CALLS_PATIENCE: Duration = Duration::from_secs(8);
 
 /// How often a call waiting on the app's calls looks again.
@@ -161,11 +107,7 @@ const APP_CALLS_QUIET: Duration = Duration::from_secs(1);
 
 /// The most a page may hand back, measured the way it travels: as a protocol
 /// message on the pipe, where every character outside printable ASCII is six
-/// bytes (`\uXXXX`) and a quote or backslash two. Two megabytes short of the
-/// pipe's ceiling, for the envelope. A message over that ceiling is dropped on
-/// the way in and fails its request as a browser failure, so the cap is
-/// applied in the page, before anything is sent back: an answer too large then
-/// arrives as `too_large`, which the client reads as what it is.
+/// bytes (`\uXXXX`) and a quote or backslash two.
 const PAGE_WIRE_CAP: u64 = (crate::pipe::MAX_MESSAGE_BYTES - 2 * 1024 * 1024) as u64;
 
 /// How much of the app's answers the browser keeps for the listener to read:
@@ -193,22 +135,11 @@ pub(crate) fn local(paths: &AppPaths) -> Arc<Headless> {
         .clone()
 }
 
-/// The browsers of a process with no owner to send through
-/// (`owner::Remote::send_as` sends through this when it has none), each closed once it has been idle
-/// for [`IDLE`]: a walk asleep on the day's budget would otherwise hold its
-/// profile against every other command for hours. What a browser rotated
-/// stays in its profile, where the next one reads it.
+/// The browsers of a process with no owner to send through (`owner::Remote::send_as` sends through
+/// this when it has none), each closed once it has been idle for [`IDLE`]: a walk asleep on the
+/// day's budget would otherwise hold its profile against every other command for hours.
 ///
-/// **The reaper wakes when there is something to close, not on a timer.** It
-/// sleeps until the first open browser would be idle for [`IDLE`], and with no
-/// browser open it sleeps until one starts. Looked at once a second instead, a
-/// `snob watch` running without an owner woke eighty-six thousand times a day
-/// for a browser that is open a few minutes of it, while the monitor's own
-/// loop goes out of its way to wake a few hundred times
-/// (`commands::watch::scheduled::nap_for`).
-///
-/// Such a process waits for a profile another snob's browser holds, rather
-/// than failing: with no owner there is nobody to share that browser through.
+/// **The reaper wakes when there is something to close, not on a timer.**
 pub(crate) fn alone(paths: &AppPaths) -> Arc<Headless> {
     static REAPING: std::sync::Once = std::sync::Once::new();
     let headless = local(paths);
@@ -249,9 +180,8 @@ pub(crate) fn attended_here(attended: bool) {
     }
 }
 
-/// A mode forced from the environment, `SNOB_TEST_QOS=eco` or `normal`, for
-/// the measurement in `tests/headless.rs` that compares the two. In the
-/// `testing` build only.
+/// A mode forced from the environment, `SNOB_TEST_QOS=eco` or `normal`, for the
+/// measurement in `tests/headless.rs` that compares the two.
 #[cfg(feature = "testing")]
 fn forced_mode() -> Option<crate::power::qos::Mode> {
     match std::env::var("SNOB_TEST_QOS").ok()?.as_str() {
@@ -261,12 +191,9 @@ fn forced_mode() -> Option<crate::power::qos::Mode> {
     }
 }
 
-/// How long the owner pauses before starting a browser again on a profile
-/// still held, having waited `waited` already: the shortest pause, doubling
-/// up to the longest, and `None` once the next would go past
-/// [`PROFILE_LETTING_GO`]. Never again after a browser that handed over:
-/// what holds the profile took its command line, and each start would open
-/// another tab in it.
+/// How long the owner pauses before starting a browser again on a profile still
+/// held, having waited `waited` already: the shortest pause, doubling up to the
+/// longest, and `None` once the next would go past [`PROFILE_LETTING_GO`].
 fn letting_go(handed_over: bool, waited: Duration) -> Option<Duration> {
     let (shortest, longest) = LETTING_GO_PAUSES;
     let pause = waited.clamp(shortest, longest);
@@ -280,8 +207,6 @@ pub(super) fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, 
 }
 
 /// Whether a switch in the environment is on: set, and neither empty nor `0`.
-/// `SNOB_NO_BROWSER` and `SNOB_NO_OWNER` are both read this way, so a unit
-/// file that writes `=0` to be explicit gets what it wrote.
 pub fn env_flag(name: &str) -> bool {
     is_on(std::env::var_os(name).as_deref())
 }
@@ -318,13 +243,11 @@ pub(crate) struct Headless {
     /// and one account's slow start never holds up another's requests.
     accounts: std::sync::Mutex<HashMap<Pk, Arc<Account>>>,
     /// Told the first push-back each browser hears, and for which account.
-    /// The owner passes it on to every command it serves.
     heard: tokio::sync::broadcast::Sender<(Pk, PushedBack)>,
     /// Set by [`alone`]: a profile another snob holds is waited for.
     waits: AtomicBool,
     /// Poked when a browser starts, for [`alone`]'s reaper asleep with none
-    /// open. `notify_one`, so a start that comes between the reaper looking
-    /// and the reaper waiting is kept for it rather than lost.
+    /// open.
     started: tokio::sync::Notify,
     /// Per account, whether anybody waits on its browser, as the owner works
     /// it out from the commands connected ([`Headless::attend`]).
@@ -340,9 +263,8 @@ pub(crate) struct Headless {
 #[derive(Default)]
 struct Account {
     live: tokio::sync::Mutex<Option<Live>>,
-    /// Its listener's share, where `Page::heard` can reach it without
-    /// waiting on a request in flight. Emptied when the browser closes: what
-    /// it heard is recorded, and a browser started after is not stopped by it.
+    /// Its listener's share, where `Page::heard` can reach it without waiting
+    /// on a request in flight.
     listened: std::sync::Mutex<Option<Arc<listen::Shared>>>,
     /// When it last finished a request, or started.
     used: std::sync::Mutex<Option<std::time::Instant>>,
@@ -376,10 +298,8 @@ impl Account {
 pub(crate) struct Reaped {
     /// The browsers still open, busy ones included.
     pub(crate) open: usize,
-    /// How long until the first of them has been idle for [`IDLE`], when one
-    /// is open: the next moment there may be something to close. A busy one
-    /// counts as a whole [`IDLE`] away, since it is touched again when its
-    /// request ends.
+    /// How long until the first of them has been idle for [`IDLE`], when one is
+    /// open: the next moment there may be something to close.
     pub(crate) next: Option<Duration>,
 }
 
@@ -402,8 +322,7 @@ struct Live {
     /// The origin the tab is on. `about:blank` until the first request.
     origin: String,
     /// The isolated world the requests are sent from, with the loader of the
-    /// document it was made in; `None` until one is made. See
-    /// [`tab::isolated_world`].
+    /// document it was made in; `None` until one is made.
     world: Option<(String, i64)>,
     /// The values the document that world was made in carries, read with it.
     page: snob_ig::page_values::PageValues,
@@ -433,24 +352,16 @@ struct Live {
 }
 
 impl Live {
-    /// The session the browser holds, by its fingerprint, once its cookies
-    /// have been checked: the one it was handed, a later login it kept
-    /// instead ([`sync_cookies`]), or what a write-back stored from it. A new
-    /// login for the same account is a different session, and has to reach a
-    /// browser that is still open; the mark's `made` is how two logins of one
-    /// account are told apart when two commands hand them in turn.
+    /// The session the browser holds, by its fingerprint, once its cookies have
+    /// been checked: the one it was handed, a later login it kept instead
+    /// ([`sync_cookies`]), or what a write-back stored from it.
     fn held(&self) -> Option<&str> {
         self.checked.then_some(())?;
         self.mark.session.as_deref()
     }
 
     /// What the browser holds for the site it was sending to: read before it
-    /// closes, for [`write_back`]. Nothing for a browser that never reached a
-    /// site or was never handed a session.
-    ///
-    /// The site is the one the requests were sent to, not wherever the tab
-    /// ended up: a tab stopped on `about:blank` after a push-back, or one a
-    /// read left off the site, still holds that site's session.
+    /// closes, for [`write_back`].
     async fn cookies(&self) -> Option<snob_ig::login::BrowserCookies> {
         self.held()?;
         let host = lock(&self.listened.site).clone()?;
@@ -478,16 +389,13 @@ impl Live {
         Some(write_back::Rotated::new(pk, handed, jar))
     }
 
-    /// The values the tab's current document carries, with the web session
-    /// id its app last sent from that document: what a request built like
-    /// the app's is built from.
+    /// The values the tab's current document carries, with the web session id
+    /// its app last sent from that document: what a request built like the
+    /// app's is built from.
     ///
     /// **The document is checked first**, as for a request sent: the app can
-    /// load another one by itself, and values read from the old document
-    /// would go out beside the new one's calls. A new document's values are
-    /// read here, and the app's calls are taken from the entry of the loader
-    /// it came from; one whose app has sent nothing yet has no entry, and a
-    /// call that needs one is `Missing`.
+    /// load another one by itself, and values read from the old document would
+    /// go out beside the new one's calls.
     async fn page_values(&mut self) -> Result<snob_ig::page_values::PageValues, PageError> {
         tab::isolated_world(self).await?;
         let mut values = self.page.clone();
@@ -515,42 +423,31 @@ impl Live {
             .is_some_and(|(asked, at)| !loader.is_empty() && asked == loader && at == path)
     }
 
-    /// The request `call` asks for, built as `session` from the tab's
-    /// current document: its values, the app's calls on it, and what the
-    /// app last sent with the operation asked, from any document
+    /// The request `call` asks for, built as `session` from the tab's current
+    /// document: its values, the app's calls on it, and what the app last sent
+    /// with the operation asked, from any document
     /// ([`snob_ig::web::build_call`]): its variables, whose flags are copied,
     /// and the number it sent the read under.
     ///
     /// **A value only the app's calls carry is waited for**, up to
     /// [`APP_CALLS_PATIENCE`]: the app sends them as its document boots, a
-    /// moment after the load. Each try reads the document again, so a new
-    /// one the app loaded is built from with its own calls. Past the
-    /// patience, and at once for any other gap, nothing is built and the
-    /// page is not ready — never a browser failure, which would close it.
+    /// moment after the load.
     ///
-    /// **A write is built only on the document it is made from**: the one
-    /// the last [`Ask::Document`] loaded at `call`'s referrer, still the
-    /// tab's. Its route, its referrer and the cold-start navigation chain
-    /// describe that document, so one built on any other would carry values
-    /// the document it names never gave. The tab moves between the two asks
-    /// when another command on the account loads a page, when a newer login
-    /// reloads the site, or when an idle browser is closed and the next one
-    /// starts on the home page; the write is then not built, and nothing is
-    /// sent.
+    /// **A write is built only on the document it is made from**: the one the
+    /// last [`Ask::Document`] loaded at `call`'s referrer, still the tab's.
     ///
     /// **A read is made from the page the tab is on**: the queries the app
-    /// sends about an account it is not showing (a profile's, a hover
-    /// card's, the story viewer's) go out as it sends them, from the page it
-    /// is on, on that page's route, so the `Referer` and `__crn` agree with
-    /// where the tab really is rather than with a page it never went to
+    /// sends about an account it is not showing (a profile's, a hover card's,
+    /// the story viewer's) go out as it sends them, from the page it is on, on
+    /// that page's route, so the `Referer` and `__crn` agree with where the tab
+    /// really is rather than with a page it never went to
     /// ([`Live::made_from_where_the_tab_is`]).
     ///
-    /// **What the live check asks is said in the owner log**, at debug:
-    /// once per document, which of its two tokens the app's Relay and Comet
-    /// calls carry; and for a query built, whether it took the app's
-    /// variables or its own, and which keys its variables and the app's for
-    /// the same operation on this document each lack. Names only: never a
-    /// token, a form or a variable's value.
+    /// **What the live check asks is said in the owner log**, at debug: once
+    /// per document, which of its two tokens the app's Relay and Comet calls
+    /// carry; and for a query built, whether it took the app's variables or its
+    /// own, and which keys its variables and the app's for the same operation
+    /// on this document each lack.
     async fn build(&mut self, session: &Session, call: &Call) -> Result<PageRequest, PageError> {
         let deadline = tokio::time::Instant::now() + APP_CALLS_PATIENCE;
         loop {
@@ -746,10 +643,9 @@ impl Headless {
     }
 
     /// Moves `live` to the mode the account calls for, when it is not in it
-    /// already, and once in a while while it is efficient: the browser starts
-    /// a helper for each page it opens, and a helper started since the last
-    /// time is not efficient until it is moved too. After every request, so
-    /// at most every [`MODE_AGAIN`].
+    /// already, and once in a while while it is efficient: the browser starts a
+    /// helper for each page it opens, and a helper started since the last time
+    /// is not efficient until it is moved too.
     fn keep_mode(&self, pk: Pk, live: &mut Live) {
         let wanted = self.mode_of(pk);
         let due = match live.mode {
@@ -853,10 +749,7 @@ impl Headless {
     /// Sends `request` as `session`, from the account's own browser
     /// ([`Self::on_ready_tab`]).
     ///
-    /// **A navigation is never a plain request.** The tab goes to a document
-    /// only as an [`Ask::Document`] or an [`Ask::Pk`], whose answers carry no
-    /// HTML, so no document leaves this process; one sent as a request is
-    /// refused before a browser is started for it, and nothing is sent.
+    /// **A navigation is never a plain request.**
     pub(crate) async fn send_as(
         &self,
         session: &Session,
@@ -878,12 +771,11 @@ impl Headless {
     /// Answers `call` as `session`, from the account's own browser
     /// ([`Self::on_ready_tab`]): the request it asks for built in the tab
     /// beside the page's values and sent, or what the tab's document says
-    /// itself ([`answer_on`]). A page that is not ready leaves the browser
-    /// as it is.
+    /// itself ([`answer_on`]).
     ///
     /// **The intent is checked here again**, before a browser is started for
-    /// it: whatever handed it over, the owner's socket included, it is held
-    /// to the allowlist by the process that would send it.
+    /// it: whatever handed it over, the owner's socket included, it is held to
+    /// the allowlist by the process that would send it.
     pub(crate) async fn ask_as(&self, session: &Session, call: Call) -> Result<Told, PageError> {
         if let Some(what) = snob_ig::allowlist::refused_ask(&call.ask) {
             tracing::error!(request = %what, "refused a call snob may not send");
@@ -899,26 +791,16 @@ impl Headless {
         .await
     }
 
-    /// Runs `step` on the account's own browser as `session`, once its tab
-    /// is ready on `origin` ([`Self::ready`]), with the world a fetch is
-    /// sent from.
-    ///
-    /// A browser started for this step that fails before the step runs is
-    /// closed and started once more: a fresh browser can stall on a profile
-    /// the helpers of the one before it still hold, and nothing has been
-    /// sent yet. Not once Instagram has pushed back on it: that failure is
-    /// the push-back, and nothing more is sent. The step itself runs once,
-    /// whatever happens: a write would go out twice.
+    /// Runs `step` on the account's own browser as `session`, once its tab is
+    /// ready on `origin` ([`Self::ready`]), with the world a fetch is sent
+    /// from.
     ///
     /// **A session its account was signed out of is refused here too**
-    /// (`owner::signed_out`), once the account's browser is this request's:
-    /// a `logout` or `purge` may have begun while it waited for it, or while
-    /// the browser started, and a browser started for it would make the
-    /// profile being removed again, with the session's cookies written in
-    /// (`sync_cookies`). Asked before the browser starts, before every
-    /// start while it waits for another snob's browser to let go of the
-    /// profile ([`Self::start_when_free`]), and again before the session is
-    /// handed to it, closing a browser started for it.
+    /// (`owner::signed_out`), once the account's browser is this request's: a
+    /// `logout` or `purge` may have begun while it waited for it, or while the
+    /// browser started, and a browser started for it would make the profile
+    /// being removed again, with the session's cookies written in
+    /// (`sync_cookies`).
     async fn on_ready_tab<T>(
         &self,
         session: &Session,
@@ -985,9 +867,7 @@ impl Headless {
         }
         if let Err(PageError::Browser(_)) = &result {
             // A browser that failed once is not trusted with the next request:
-            // it may be gone. The next request starts a fresh one. Only then —
-            // a request the network dropped says nothing about the browser,
-            // and relaunching it would load the site again for nothing.
+            // it may be gone.
             account.close(&mut slot).await;
         }
         result
@@ -1027,10 +907,7 @@ impl Headless {
             live.checked = true;
         } else if !holds_it && live.holds(session).await {
             // What a write-back stored from this browser comes back as a
-            // session of its own, made when the one it was handed was. The
-            // browser holds it already, and it is the one a write-back may
-            // replace from now on. Asked of the cookies at each request of a
-            // command whose session the browser does not hold.
+            // session of its own, made when the one it was handed was.
             live.mark.handed(session);
             live.mark.write(&live.profile);
         }
@@ -1057,10 +934,6 @@ impl Headless {
     }
 
     /// Writes `request` from `world`, and reads its answer.
-    ///
-    /// Held to the allowlist here as well, whoever handed it over: the
-    /// client's page checks it, and a request that reaches the owner some
-    /// other way is checked by the process that holds the browser.
     async fn send_on(
         &self,
         live: &mut Live,
@@ -1078,14 +951,13 @@ impl Headless {
 
     /// Starts the browser, in a process with no owner once no other snob's
     /// holds the profile: looked at again every [`PROFILE_RETRY`], until
-    /// Ctrl+C. Said once per wait. In the owner, once the browser before it
-    /// has let go of the profile, for up to [`PROFILE_LETTING_GO`].
+    /// Ctrl+C.
     ///
     /// **Asks whether the session was signed out of before every start**
-    /// (`owner::signed_out`), and starts nothing once it was: the wait may
-    /// last minutes, a `logout` may come in it, and the browser holding the
-    /// profile then closes and the profile goes, which a start would make
-    /// again, or race the removal of.
+    /// (`owner::signed_out`), and starts nothing once it was: the wait may last
+    /// minutes, a `logout` may come in it, and the browser holding the profile
+    /// then closes and the profile goes, which a start would make again, or
+    /// race the removal of.
     async fn start_when_free(
         &self,
         session: &Session,
@@ -1132,15 +1004,12 @@ impl Headless {
         }
     }
 
-    /// Starts the browser. A second snob already running one on this profile
-    /// makes Chrome hand over to it and exit, which `Cdp::connect` recognizes
-    /// and says in so many words.
+    /// Starts the browser.
     async fn start(&self, session: &Session, account: &Account) -> Result<Live> {
         let (profile, _) = profile::for_account(&self.paths, session.ds_user_id)?;
         let mut mark = ProfileMark::read(&profile);
         // The browser that made the profile, while it is still installed; then
-        // the one the session names; then the first found. See `ProfileMark`
-        // for why the first answer is the one that matters.
+        // the one the session names; then the first found.
         let made_it = mark.browser.as_deref().and_then(|path| {
             crate::browser::detect_all()
                 .into_iter()
@@ -1165,15 +1034,11 @@ impl Headless {
             })?;
         refuse_root()?;
         // A profile nothing has claimed yet, or whose browser is gone: from
-        // here on it is this one's. Written once the launch has created the
-        // directory it lives in.
+        // here on it is this one's.
         let claim = mark.browser.as_deref() != Some(browser.path.as_path());
         mark.browser = Some(browser.path.clone());
-        // The User-Agent of the binary being started, never the one stored
-        // with the session, pinned at login or not. The brands below are what
-        // this binary reports, and a stored string would put another version
-        // or system in the User-Agent than in every client hint beside it. A
-        // pinned one is for the requests sent without a browser.
+        // The User-Agent of the binary being started, never the one stored with
+        // the session, pinned at login or not.
         let user_agent = browser.user_agent();
 
         // What this browser says about the machine, asked of it once without
@@ -1199,13 +1064,10 @@ impl Headless {
             target: tab_target,
         } = attach_to_a_tab(&cdp).await?;
 
-        // **Every target, not only the tab.** A worker, a frame and the
-        // service worker the site registers are targets of their own, and
-        // `setUserAgentOverride` holds for the one it was sent to; measured,
-        // a service worker's requests carried no client hints at all. With
-        // auto-attach each one is paused before it runs and handed the same
-        // override (`cdp::OnAttach`). The language is left alone everywhere:
-        // the profile's own, which is what the login sent.
+        // **Every target, not only the tab.** A worker, a frame and the service
+        // worker the site registers are targets of their own, and
+        // `setUserAgentOverride` holds for the one it was sent to; measured, a
+        // service worker's requests carried no client hints at all.
         let metadata = metadata(&user_agent, &full_version, hints.as_ref());
         let identity = json!({ "userAgent": user_agent, "userAgentMetadata": metadata });
         let page_commands = vec![
@@ -1266,17 +1128,14 @@ impl Headless {
         .await?;
         // So that a tab that crashes says so, and the request waiting on it
         // fails at once rather than at its timeout: `Inspector.targetCrashed`
-        // is only sent to a session that asked for the domain. Nothing about
-        // it reaches the page.
+        // is only sent to a session that asked for the domain.
         cdp.page_call(&tab, "Inspector.enable", json!({}), COMMAND_TIMEOUT)
             .await?;
 
         // The calls Instagram's own app makes on this tab are listened to for
-        // push-back (`listen`): their answers, with room for a page's worth
-        // and no more, and the tab's address as it changes, which is where an
-        // in-app route to the challenge shows without a request. Their forms
-        // come with them, which is what a request built like theirs copies;
-        // the largest the capture shows is a few KiB.
+        // push-back (`listen`): their answers, with room for a page's worth and
+        // no more, and the tab's address as it changes, which is where an
+        // in-app route to the challenge shows without a request.
         cdp.page_call(
             &tab,
             "Network.enable",
@@ -1349,29 +1208,9 @@ fn refuse(request: &PageRequest, found: &Rediscovered) -> Result<(), PageError> 
     }
 }
 
-/// The tab's answer to `call`, asked as `session`: what its document says,
-/// or the answer to the request it asks for, built beside the document's
-/// values ([`Live::build`]) and sent from the isolated world.
-///
-/// - [`Ask::Viewer`] and [`Ask::Tray`] are read from the document, and send
-///   nothing.
-/// - [`Ask::Pk`] asks the route definitions when the app has made a route
-///   call on the document to copy, and otherwise loads the profile and reads
-///   its route props ([`pk_of_the_document`]). Either way only once the
-///   document is `session`'s: a document served to nobody, or to another
-///   account, sends nothing.
-/// - [`Ask::Asset`] fetches a file from the CDN ([`asset`]).
-/// - [`Ask::Document`] loads the page, and hands back the bundles it names
-///   and not its HTML, once the document is `session`'s. On a profile, it
-///   waits for the app's own profile query first, and then for the app's
-///   calls to pause for [`APP_CALLS_QUIET`], each up to
-///   [`APP_CALLS_PATIENCE`]: the app sends its calls as the document boots
-///   (its profile, highlights-tray and hover-card queries among them), and
-///   a write asked next is built after them, as a person's click comes
-///   after the page has loaded, with its `__req` past theirs. The document
-///   is the one a write asked next is built on, while it is the tab's
-///   ([`Live::build`]).
-/// - The rest are built and sent.
+/// The tab's answer to `call`, asked as `session`: what its document says, or
+/// the answer to the request it asks for, built beside the document's values
+/// ([`Live::build`]) and sent from the isolated world.
 async fn answer_on(live: &mut Live, session: &Session, call: &Call) -> Result<Told, PageError> {
     match &call.ask {
         Ask::Viewer => signed_in(live, session).await.map(Told::Viewer),
@@ -1437,10 +1276,7 @@ async fn answer_on(live: &mut Live, session: &Session, call: &Call) -> Result<To
 /// The file at `url`, fetched from the isolated world as the app's own page
 /// would fetch one from the CDN: the browser's TLS and HTTP/2, `Sec-Fetch-*`,
 /// the page's `Referer` and none of the site's cookies, which are not the
-/// CDN's. Handed back as base64 and never a video, which the guard fails by
-/// address (the client keeps those). Not read as an answer from Instagram: a
-/// CDN's refusal is no push-back, so the listener's rule is not applied.
-/// Nothing is fetched once a push-back has been heard.
+/// CDN's.
 async fn asset(live: &mut Live, call: &Call, url: &str) -> Result<PageResponse, PageError> {
     if let Some(cause) = live.listened.latch.get() {
         return Err(PageError::PushedBack(cause));
@@ -1498,18 +1334,10 @@ async fn loaded(live: &mut Live, call: &Call, path: &str) -> Result<PageResponse
     own_answer(live, &request, response).await
 }
 
-/// The pk behind `route`, read from the profile document the tab loads for
-/// it: the id of the route props the document embeds.
+/// The pk behind `route`, read from the profile document the tab loads for it:
+/// the id of the route props the document embeds.
 ///
-/// **The app's own profile query is a second witness.** It sends one as a
-/// profile document boots, by the id it read from the same props; when its
-/// variables arrive on the new document within [`APP_CALLS_PATIENCE`], their
-/// id is checked against the document's. Two that disagree are an error,
-/// as is a document that names neither: a wrong pk would read another
-/// account. The document's HTML is not handed back.
-///
-/// A document that is not a success, a name nobody owns among them, is
-/// handed back at once: the app sends no profile query from it to wait for.
+/// **The app's own profile query is a second witness.**
 async fn pk_of_the_document(live: &mut Live, call: &Call, route: &str) -> Result<Told, PageError> {
     let mut answer = loaded(live, call, route).await?;
     let from_the_document = document_pk(&answer.body);
@@ -1562,9 +1390,8 @@ async fn the_apps_query(live: &Live, operation: Operation) -> Option<String> {
 }
 
 /// Waits until the app has sent no call from the tab's document for
-/// [`APP_CALLS_QUIET`], up to [`APP_CALLS_PATIENCE`]; says whether it
-/// paused by then. A call the app makes after, such as a poll, is not
-/// waited for.
+/// [`APP_CALLS_QUIET`], up to [`APP_CALLS_PATIENCE`]; says whether it paused by
+/// then.
 async fn the_apps_calls_paused(live: &Live) -> bool {
     let loader = live.loader();
     let heard = || {
@@ -1602,17 +1429,6 @@ fn id_in(variables: &str) -> Option<Pk> {
 }
 
 /// One of snob's own answers, on its way back to the client.
-///
-/// A push-back is recorded here, by the process holding the browser, rather
-/// than by the client ([`listen::heard`]): the command that asked may have
-/// stopped waiting, and the owner's browser still heard it. It is then
-/// refused like everything after it, so the client never records it.
-/// The row is committed before the refusal is handed back, so the command
-/// that asked finds it. Nothing is passed on once the latch is claimed,
-/// whatever this answer says: the listener may have sent the tab to
-/// `about:blank` under it. The hops of an answer refused as a push-back are
-/// not charged: the cooldown is already committed, and the pacer would
-/// refuse the charge.
 async fn own_answer(
     live: &Live,
     request: &PageRequest,
@@ -1643,8 +1459,7 @@ async fn own_answer(
 /// Chromium will not run as root with its sandbox on, and snob does not turn
 /// the sandbox off for anybody: this browser loads pages and media a server
 /// chose, which is what the sandbox is for. Measured: it exits 1 at once, and
-/// "exited with code 1" says nothing about why. Root is the ordinary user in
-/// a container, which is where this is most likely to be met.
+/// "exited with code 1" says nothing about why.
 pub(crate) fn refuse_root() -> Result<()> {
     #[cfg(unix)]
     {
@@ -1662,8 +1477,6 @@ pub(crate) fn refuse_root() -> Result<()> {
 }
 
 /// The flags a browser without a window starts with, saying `user_agent`.
-/// Each corrects one of the things a headless browser gives away that this
-/// module's header lists.
 fn windowless_flags(user_agent: &str) -> Vec<String> {
     vec![
         "--headless=new".to_string(),
@@ -1677,10 +1490,9 @@ fn windowless_flags(user_agent: &str) -> Vec<String> {
         ),
         "--window-position=0,0".to_string(),
         format!("--window-size={},{}", SCREEN.0, SCREEN.1 - TASKBAR),
-        // A headless browser has no pointer: `(pointer: fine)` and
-        // `(hover: hover)` were both false, which is a phone's answer on a
-        // desktop's screen. A mouse is what the machine this claims to be
-        // has.
+        // A headless browser has no pointer: `(pointer: fine)` and `(hover:
+        // hover)` were both false, which is a phone's answer on a desktop's
+        // screen.
         "--blink-settings=primaryPointerType=4,availablePointerTypes=4,\
          primaryHoverType=2,availableHoverTypes=2"
             .to_string(),
@@ -1697,12 +1509,9 @@ async fn running_build(cdp: &Cdp, browser: &crate::browser::Browser) -> Result<(
         .and_then(|product| product.split('/').nth(1))
         .unwrap_or_default()
         .to_string();
-    // The build that runs, which is not always the one detection read: an
-    // update waiting for the browser to close puts the new version beside
-    // the old, and the old one is what starts — and what answered the
-    // probe. The User-Agent states the running build's major version, as
-    // every client hint beside it does; `--user-agent` (`windowless_flags`), which only
-    // the few requests of no target carry, keeps the detected one.
+    // The build that runs, which is not always the one detection read: an update
+    // waiting for the browser to close puts the new version beside the old, and the old
+    // one is what starts — and what answered the probe.
     let running = full_version
         .split('.')
         .next()
@@ -1728,14 +1537,11 @@ pub(crate) struct RemoteLogin {
 ///
 /// **The same identity as the requests that follow**, from the first request
 /// the login page sends: the flags, the client hints, the override on every
-/// target, the focus. The login is the device's first appearance, and a
-/// device that changed its screen, its pointer or its name between signing in
-/// and asking for anything is not one device.
+/// target, the focus.
 ///
-/// **Without the guard** (`guard`): what the person does here is a login,
-/// with its own posts — the form, a two-factor code, a challenge — and none
-/// of them is a call of snob's to judge. The windowed login has no guard
-/// either.
+/// **Without the guard** (`guard`): what the person does here is a login, with
+/// its own posts — the form, a two-factor code, a challenge — and none of them
+/// is a call of snob's to judge.
 pub(crate) async fn for_a_remote_login(
     browser: &crate::browser::Browser,
     profile: &std::path::Path,
@@ -1800,20 +1606,10 @@ fn broken(e: anyhow::Error) -> PageError {
     PageError::Browser(format!("{e:#}"))
 }
 
-/// Whether `session` is to be written into a browser that already holds
-/// another of the account's, made at `held_since`: only a later login is. Two
-/// commands on one account can hold two of its sessions — one started before
-/// a login in another terminal — and the browser keeps the later rather than
-/// trading one for the other at every request, which would also hand back a
-/// session the browser has since rotated. A login is authoritative;
-/// `write_back` holds the same rule.
+/// Whether `session` is to be written into a browser that already holds another
+/// of the account's, made at `held_since`: only a later login is.
 ///
-/// **Later by the wall clock** when each was made, to the second. A login
-/// made in the same second as the one before, or while the clock stood
-/// behind where it was then, does not reach a browser that is open; a login
-/// closes the account's browser first (`owner::release`), so its own check
-/// meets a new one, and what is left is a command started before it that
-/// sends after it.
+/// **Later by the wall clock** when each was made, to the second.
 fn newer_login(held_since: Option<snob_core::Epoch>, session: &Session) -> bool {
     held_since.is_none_or(|at| session.created_at > at)
 }

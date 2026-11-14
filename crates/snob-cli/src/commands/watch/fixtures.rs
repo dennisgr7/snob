@@ -1,10 +1,4 @@
 //! What the tests of every file here build their reports out of.
-//!
-//! Gathered in one place rather than left loose in one test module, because
-//! every file here has a test module of its own and a fixture private to a
-//! sibling is a fixture that gets written twice. `pub(in ...watch)` and no
-//! further: they are shapes for tests, and nothing outside this module has any
-//! business with them.
 
 use snob_core::Pk;
 use std::time::Duration;
@@ -169,9 +163,7 @@ pub(in crate::commands::watch) fn watch_toml(body: &str) -> WatchConfig {
     config::parse(body, std::path::Path::new("watch.toml")).expect("the fixture parses")
 }
 
-/// A report queued longer ago than it can be news for, in a store at
-/// `paths`. Nothing but a settle can move it: `due` will not hand back an
-/// over-age row, and only a failed attempt expires one.
+/// A report queued longer ago than it can be news for, in a store at `paths`.
 pub(in crate::commands::watch) fn owed_long_ago(
     paths: &snob_store::paths::AccountPaths,
     now: Epoch,

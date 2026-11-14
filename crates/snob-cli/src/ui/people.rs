@@ -1,63 +1,12 @@
 //! The interactive account list: arrow keys, Enter to open a profile, `/` to
 //! filter.
 //!
-//! Like the media browsers, this is the default at a human terminal: the
-//! rule is `BrowseArgs::browses` in `cli.rs`, which applies
-//! `cli::browse_decision`, and a pipe, a redirect, `--format`, `-o` and
-//! `--no-interactive` all print the listing. Open, it earns its keep with the
-//! two things scrollback cannot do: it narrows a long list as you type, and
-//! it shows the account under the cursor without anybody retyping a username
-//! into a command.
+//! **Enter opens the account's profile inside the view.**
 //!
-//! It can be entered with a guard somebody else already holds: the profile
-//! card lends its own `Tui` through [`browse_in`], because two guards would
-//! be two claims on one terminal; `browse` is the standalone door that makes
-//! a guard and prints the receipts. Like the highlights browser it is one loop over
-//! two levels — `snob scan -i` starts at a tray of the five crossings and
-//! Enter walks into one — and a single list is the same loop with the tray
-//! skipped.
-//!
-//! **Changing accounts walks the list again.** A list is what one account was
-//! shown, so `a` picks another account and then asks whether to walk the same
-//! list as it, saying about what that costs. Yes leaves the view for the
-//! command to walk it as that account, under its own consent question and
-//! budget, and draw the view again; no stays here as the account it was. The
-//! lists the profile card opens change accounts from the card.
-//!
-//! **Enter opens the account's profile inside the view.** It reads the profile
-//! the way `snob profile` does (`commands::profile::fetch`, deferring the
-//! mutual walk), through the client the command already holds, so the read is
-//! paced and charged like any other and a cooldown or a rate limit comes back
-//! as an error to say, never as a request sent anyway. One Enter is one such
-//! read: nothing is fetched ahead of it, and nothing is kept for the next
-//! Enter on the same account. While it runs the list stays on screen under a
-//! "reading" box and `q` or Ctrl+C cancels, as in the card. A failure (not
-//! found, private, cooldown, rate limit) is a red note on the list's bottom
-//! edge, and the list is where it was. The profile itself is the card of
-//! `ui::profile::peek`, which opens what that read already holds a file
-//! away, the picture and the stories, and nothing that is a walk; they are
-//! written into the scratch directory of whoever made this view (`browse`
-//! makes one, `browse_in` is lent the card's). Esc, `q`, Backspace or Left
-//! come back to the list with its selection and its filter untouched, and
-//! `w`, there and on
-//! the list itself for the account under the selection, hands the address
-//! to the system browser, which is `User::profile_url` the way the
-//! printed table already puts it behind every username: encoded, never
-//! filtered, so a name with an odd character in it opens the account it
-//! names. That differs from the story browser's refusal to hand over CDN
-//! addresses because a signed link to somebody's story is a credential in a
-//! browser history, and a profile address is public and carries nothing.
-//!
-//! **The filter is the one text mode in the tool**, and it is why
-//! `input::read` exists beside `input::next`: while a query is being typed a
-//! `q` is a letter of somebody's name, so the browser binds keys itself here
-//! rather than through `action_of`. A paste lands in the query — text typed
-//! fast and text pasted mean the same thing in a search box — with anything
-//! below space dropped, so a multi-line paste cannot smuggle an Enter. While
-//! the query owns the keyboard the frame shows a real cursor at the end of
-//! it, which is the terminal's own way of saying where typing goes. Enter
-//! there opens the account the query was steering toward, and Ctrl+U and
-//! Ctrl+W edit the query as a shell's line editor does.
+//! **The filter is the one text mode in the tool**, and it is why `input::read`
+//! exists beside `input::next`: while a query is being typed a `q` is a letter of
+//! somebody's name, so the browser binds keys itself here rather than through
+//! `action_of`.
 
 use anyhow::Result;
 use console::measure_text_width;
@@ -86,9 +35,6 @@ use crate::ui::profile::{self, Answer, answer, question_modal};
 use crate::ui::tui::{self, Tui};
 
 /// What the browser shows: one list, or a tray of them.
-///
-/// The lists are borrowed, not owned — the commands already hold them, and
-/// the browser only reads them.
 pub struct Shelf<'a> {
     /// "unfollowers of @someone" — what the heading says the rows are.
     pub title: String,
@@ -199,13 +145,9 @@ struct State {
     mode: Mode,
     query: String,
     /// Indices into the current set's people that the query lets through.
-    /// The whole list when the query is empty.
     shown: Vec<usize>,
-    /// The shown rows, ready to draw: one entry per entry of `shown`, built
-    /// by `refilter` and read on every frame. `printable` walks every
-    /// character and allocates, and the width scan is another walk, so doing
-    /// both for the whole list inside `draw` would be most of what a frame
-    /// costs.
+    /// The shown rows, ready to draw: one entry per entry of `shown`, built by
+    /// `refilter` and read on every frame.
     prepared: Vec<Prepared>,
     /// The selected row of the current level's list.
     selected: usize,
@@ -213,17 +155,8 @@ struct State {
     tray_selected: usize,
 }
 
-/// The refusal `-i` earns where no browser can be drawn, for every command
-/// that browses, not only the lists.
-///
-/// Asked at the top of the command, before the session is opened and long
-/// before a request is spent — the same order `-o` is checked in, and for the
-/// same reason: a walk that succeeds and then cannot be shown is the
-/// expensive order to find out in. The predicate is [`crate::ui::can_show_a_menu`],
-/// because a browser needs what a menu needs: keys from standard input,
-/// drawing on standard error. Standard output is deliberately not consulted —
-/// `-i` was said, so nothing is being detected, and the listing it would
-/// protect is exactly what `-i` asks to withhold.
+/// The refusal `-i` earns where no browser can be drawn, for every command that
+/// browses, not only the lists.
 pub fn check_drawable() -> Result<()> {
     if crate::ui::can_show_a_menu() {
         return Ok(());
@@ -236,9 +169,7 @@ pub fn check_drawable() -> Result<()> {
 }
 
 /// Drives the list until the user leaves it, or agrees to walk it as another
-/// account, with a terminal of its own. `note` is said on the first frame.
-/// `app` is the account the list was walked as, and what Enter reads a
-/// profile with.
+/// account, with a terminal of its own.
 pub async fn browse(
     app: &mut App,
     shelf: &Shelf<'_>,
@@ -246,7 +177,6 @@ pub async fn browse(
     note: String,
 ) -> Result<Browsed> {
     // Where the card of an account opens its picture and its stories from.
-    // Made before the terminal is claimed, as the media views make theirs.
     snob_store::paths::sweep_old_scratch(&rewalk.paths.stories_root(), ABANDONED_AFTER);
     let scratch = Scratch::new(rewalk.paths.story_scratch())?;
 
@@ -270,12 +200,6 @@ pub async fn browse(
 }
 
 /// The same list on a guard somebody else holds.
-///
-/// The profile card enters here: it already owns the terminal, and two `Tui`s
-/// would be two claims on it. Receipts belong to the guard's owner too — they
-/// are printed after *that* guard drops, not here. So does the scratch
-/// directory: a second one would be made on the first one's path, and take
-/// the files the card has open with it when it went.
 pub(crate) async fn browse_in(
     tui: &mut Tui,
     app: &mut App,
@@ -289,7 +213,6 @@ pub(crate) async fn browse_in(
 }
 
 /// The loop, and the account the user agreed to walk the list as, if any.
-/// Without `rewalk` the list cannot change accounts.
 async fn run(
     tui: &mut Tui,
     app: &mut App,
@@ -495,9 +418,7 @@ enum Asked {
     Leave(ExitCode),
 }
 
-/// A key while the question is open. Like the profile card's, it owns the
-/// keyboard: y walks, n or Esc declines, Ctrl+C still interrupts, and nothing
-/// else does anything.
+/// A key while the question is open.
 fn asked(to: Viewer, from: &Viewer, event: Raw) -> Asked {
     let Raw::Key(key) = event else {
         return Asked::Wait(to);
@@ -519,10 +440,6 @@ fn rows_in(shelf: &Shelf<'_>, state: &State) -> usize {
 }
 
 /// Recomputes which rows the query lets through, from the top.
-///
-/// The selection goes back to the first match rather than trying to follow a
-/// row that may no longer be shown: while somebody is typing, the first match
-/// is the row they are steering toward.
 fn refilter(shelf: &Shelf<'_>, state: &mut State) {
     let Level::Inside(index) = state.level else {
         return;
@@ -550,8 +467,7 @@ fn refilter(shelf: &Shelf<'_>, state: &mut State) {
     state.selected = 0;
 }
 
-/// One shown account, ready to draw. See `State::prepared` for why this is
-/// done here and not in `draw`.
+/// One shown account, ready to draw.
 struct Prepared {
     /// `@username`, already through `printable`.
     username: String,
@@ -677,8 +593,7 @@ fn keys_of(state: &State, flat: bool, switches: bool) -> Vec<help::Key> {
     keys
 }
 
-/// `/`, which only this view has. While the query is being typed every key
-/// is a letter of it, `?` among them, so the box is not offered there.
+/// `/`, which only this view has.
 const FILTER_KEY: help::Key = help::key("/", "filter by name", KeyCode::Char('/'));
 
 /// Enter, wherever the selection is.
@@ -701,9 +616,8 @@ fn open(shelf: &Shelf<'_>, state: &mut State) -> Step {
     }
 }
 
-/// The profile read behind an Enter: `snob profile`'s own, with the mutual
-/// walk left for a click that this view does not have. The id comes from the
-/// list, so the name is not resolved again.
+/// The profile read behind an Enter: `snob profile`'s own, with the mutual walk
+/// left for a click that this view does not have.
 pub async fn read_profile(app: &App, person: &User) -> Result<profile_read::Profile> {
     profile_read::fetch(
         app.client(),
@@ -715,8 +629,7 @@ pub async fn read_profile(app: &App, person: &User) -> Result<profile_read::Prof
     .await
 }
 
-/// The note a failed read leaves on the list. The first line of the error
-/// only: the footer is one row, and the reason is on it.
+/// The note a failed read leaves on the list.
 fn could_not_read(person: &User, error: &anyhow::Error) -> String {
     let why = error.to_string();
     let why = why.lines().next().unwrap_or_default();
@@ -738,8 +651,7 @@ fn drop_last_word(query: &mut String) {
 fn filtering(shelf: &Shelf<'_>, state: &mut State, event: Raw) -> Step {
     match event {
         Raw::Tick | Raw::Resized => Step::Go,
-        // Pasting into a search box is typing fast. Anything below space is
-        // dropped so a multi-line paste cannot carry an Enter in it.
+        // Pasting into a search box is typing fast.
         Raw::Paste(text) => {
             state.query.extend(text.chars().filter(|c| !c.is_control()));
             refilter(shelf, state);
@@ -757,10 +669,8 @@ fn filtering_key(shelf: &Shelf<'_>, state: &mut State, key: KeyEvent) -> Step {
     if ctrl && key.code == KeyCode::Char('l') {
         return Step::Redraw;
     }
-    // The two a shell's line editor has taught every hand: Ctrl+U empties
-    // the line and Ctrl+W takes the last word, which a full name has. No
-    // other key with Ctrl is this box's: a letter typed with it is not a
-    // letter of anybody's name.
+    // The two a shell's line editor has taught every hand: Ctrl+U empties the
+    // line and Ctrl+W takes the last word, which a full name has.
     if ctrl {
         match key.code {
             KeyCode::Char('u') => state.query.clear(),
@@ -772,11 +682,7 @@ fn filtering_key(shelf: &Shelf<'_>, state: &mut State, key: KeyEvent) -> Step {
     }
     let rows = rows_in(shelf, state);
     match key.code {
-        // Esc gives the whole list back. Enter opens the account the query
-        // was steering toward, the one under the selection, and leaves the
-        // list narrowed for the way back: typing a name and seeing its
-        // profile is one motion, not a mode change and a second Enter. Both
-        // put the arrows back in charge.
+        // Esc gives the whole list back.
         KeyCode::Esc => {
             state.mode = Mode::Moving;
             state.query.clear();
@@ -891,9 +797,8 @@ fn draw(
         tui::scrollbar(frame, area, total, state.selected, viewport as u16);
     }
 
-    // The cursor is the terminal's own way of saying where typing goes, and
-    // it is shown only while there is somewhere for typing to go. Drawn last,
-    // over the bottom border, at the end of the query.
+    // The cursor is the terminal's own way of saying where typing goes, and it
+    // is shown only while there is somewhere for typing to go.
     if state.mode == Mode::Filtering {
         let x = area.x
             + 1
@@ -908,10 +813,6 @@ fn draw(
 
 /// What the top border calls the current level, in the other views' shape:
 /// capitalized, its parts apart by ` · ` (`Stories · @someone · 3 up`).
-///
-/// The shelf's title stays lowercase where the commands build it, because
-/// the same words go in the middle of a sentence too ("Walk unfollowers of
-/// @x as @y?"); only the heading capitalizes it.
 fn title_of(shelf: &Shelf<'_>, state: &State) -> String {
     let heading = capitalized(&shelf.title);
     match state.level {
@@ -989,14 +890,7 @@ fn footer_line(
     tui::hint_line(hint, colors)
 }
 
-/// The account list's columns, measured in display columns from what is
-/// shown. Only `Length`: under `Flex::Start` the spare width stays unused on
-/// the right, which is exactly what is wanted — a rail on the left, not
-/// three facts scattered to the ends of a two-hundred-column terminal.
-///
-/// Narrow terminals drop whole columns rather than clip them: the badge
-/// falls away first, then the full name, and the username column is the one
-/// that never goes.
+/// The account list's columns, measured in display columns from what is shown.
 fn columns(prepared: &[Prepared], width: u16) -> Vec<Constraint> {
     let user_w = prepared
         .iter()
@@ -1010,8 +904,7 @@ fn columns(prepared: &[Prepared], width: u16) -> Vec<Constraint> {
         .max()
         .unwrap_or(0)
         .min(32) as u16;
-    // The widest badge is "verified, private". Left-aligned: badges are
-    // words, not numbers.
+    // The widest badge is "verified, private".
     let badge_w = if prepared.iter().any(|p| p.badges.is_some()) {
         17u16
     } else {

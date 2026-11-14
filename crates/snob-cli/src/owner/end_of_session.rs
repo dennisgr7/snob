@@ -1,21 +1,5 @@
 //! Hearing that Windows is ending the session, in the owner of the browsers.
 //!
-//! **The owner hears nothing else.** It runs detached from any console
-//! (`spawn`), so it is sent none of the console's events, and Windows tells a
-//! process that the user is signing out or the machine is shutting down
-//! through the one channel left: `WM_QUERYENDSESSION` and `WM_ENDSESSION`,
-//! sent to every top-level window. A process with no window is simply ended
-//! when the time comes, and the owner then took its browsers down with it
-//! through their job, mid-write: whatever the browser had not yet put in its
-//! profile, the cookies Instagram rotated a moment before among it, was lost.
-//!
-//! So the owner keeps one window, never shown, on a thread of its own that
-//! does nothing but answer those two messages. To the question it says yes,
-//! the session may end; when it ends, it wakes the owner's loop, which closes
-//! every browser the way it closes them on its way out, and the window holds
-//! the message until that is done, or [`PATIENCE`] has passed: Windows ends a
-//! process whose window has not answered after about five seconds.
-//!
 //! **A window only for messages would not do**: such windows are not sent
 //! broadcasts, and the end of a session is one.
 

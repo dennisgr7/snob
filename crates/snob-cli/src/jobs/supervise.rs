@@ -1,52 +1,22 @@
 //! `snob __job run <id>`: the supervisor, which runs a job's walk and writes
 //! what it came to.
 //!
-//! Started detached by `__job start` (`detach.rs`), with the null device for
-//! its input and output, so nothing it does reaches whoever started the job.
-//! It holds the job's `lock` for its whole life: a held lock is how every
-//! other process knows the job is running (`jobs::derive`), and the
-//! operating system lets go of it when the process ends, however it ends.
+//! **What it runs is checked here, again**, and is this binary (`current_exe`):
+//! `job.json` names no program, and its command line passes `argv::check` or
+//! the job ends `failed` with `refused_argv` and nothing run.
 //!
-//! **What it runs is checked here, again**, and is this binary
-//! (`current_exe`): `job.json` names no program, and its command line passes
-//! `argv::check` or the job ends `failed` with `refused_argv` and nothing run.
-//! The global flags are this process's own (`argv::globals`), never read from
-//! the record.
+//! **A walk it killed ended as asked** ([`status_for`]), whatever exit the kill
+//! left it with: none on Unix, 1 on Windows, where a kill is
+//! `TerminateProcess`.
 //!
-//! The walk is run with `--spend-alone`, so it refuses while another agent's
-//! run holds the account; `--stop-when-stdin-closes`, on a pipe this process
-//! holds; and `--progress-json`, which `show` reads the walk's progress from.
-//! Its output goes to `out.json.partial`, renamed `out.json` once it has
-//! ended, and its errors to `err.log`.
-//!
-//! **Stopping is closing that pipe.** Every second it asks whether a `stop`
-//! file is there, or whether it was itself asked to stop (`interrupt::install`:
-//! on Unix `SIGTERM` and `SIGHUP`, which reach it in its own session at the
-//! end of the person's); then it closes the walk's standard input, which
-//! stops the walk as Ctrl+C does, its page saved and its claim given back,
-//! and kills it through its own handle only after [`GRACE`]. It never
-//! signals a process id it read from a file. **A walk it killed ended as
-//! asked** ([`status_for`]), whatever exit the kill left it with: none on
-//! Unix, 1 on Windows, where a kill is `TerminateProcess`.
-//!
-//! **On Windows it hears no end of session.** Started detached, it has no
-//! console, so it is sent none of the console's events, and a process with
-//! no window is simply ended at sign-out or shutdown (as
-//! `owner/end_of_session.rs` says of the owner). Its job is then read as
-//! `lost`, and the list it walked is refused as `walked_elsewhere` until its
-//! claim frees. The owner's remedy, a hidden window that hears
-//! `WM_ENDSESSION`, is not taken here: the walk is ended at the same moment,
-//! within the few seconds Windows allows, so its claim on the list would
-//! stay all the same, and the job would read `stopped` rather than `lost`
-//! for no gain to whoever asks next. The walk runs with a console of its
-//! own and may give its claim back if it hears the console's end.
+//! **On Windows it hears no end of session.**
 //!
 //! **A job read as lost stays lost** ([`gone_already`]): a supervisor that
 //! comes to a job after another one ran it and went away, or later than
 //! [`super::LOST_AFTER`] after the job was made, by when every reader (a
 //! waiter, `tasks/get`, a start's check of the list) has taken it as over,
-//! writes `lost` and runs nothing, rather than revive it beside a job that
-//! may have started since.
+//! writes `lost` and runs nothing, rather than revive it beside a job that may
+//! have started since.
 
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -206,12 +176,8 @@ pub async fn run(cli: &Cli, account: &AccountPaths, id: &str) -> Result<ExitCode
     end(&dir, state, status, exited, None)
 }
 
-/// How a walk ended, from its exit, whether this supervisor killed it past
-/// the grace, and whether its stop was asked for (`cancel`, the `stop`
-/// file). A walk that finished is a success, whatever came after; one killed
-/// was stopped, as it was asked to be, whatever the kill left it exiting
-/// with, which differs by platform; otherwise 130 is a stop, and nothing at
-/// all (a signal from elsewhere, on Unix) a stop only when one was asked for.
+/// How a walk ended, from its exit, whether this supervisor killed it past the
+/// grace, and whether its stop was asked for (`cancel`, the `stop` file).
 fn status_for(exited: Option<i32>, killed: bool, cancel: bool) -> Status {
     match exited {
         Some(0) => Status::Succeeded,
@@ -223,8 +189,7 @@ fn status_for(exited: Option<i32>, killed: bool, cancel: bool) -> Status {
     }
 }
 
-/// Writes the job's ending. The lock is let go of after this, by the caller
-/// returning.
+/// Writes the job's ending.
 fn end(
     dir: &std::path::Path,
     mut state: State,

@@ -18,9 +18,7 @@ pub(super) async fn navigate(live: &mut Live, url: &str) -> Result<(), PageError
     Ok(())
 }
 
-/// The navigation itself. A page that could not be reached, or never finished
-/// loading, is the network's failure and says so; a protocol command that
-/// failed is the browser's.
+/// The navigation itself.
 pub(super) async fn navigate_tab(cdp: &Cdp, tab: &str, url: &str) -> Result<(), PageError> {
     let went = cdp
         .page_call(tab, "Page.navigate", json!({ "url": url }), COMMAND_TIMEOUT)
@@ -52,13 +50,10 @@ pub(super) async fn navigate_tab(cdp: &Cdp, tab: &str, url: &str) -> Result<(), 
 
 /// A navigation whose answer is the document it lands on.
 ///
-/// **The status and the address are the ones the browser saw**, not assumed:
-/// a 429 on the page a write reads its tokens from, or a redirect to the login
-/// or challenge page, has to reach the client as what it is, not as a page
-/// with no tokens in it. The navigation's own timing entry carries the status
-/// (Chromium 109 and later) and how many redirects led to it; a browser too
-/// old to say is taken at its word that the page loaded. Read from the
-/// isolated world, like every request, where the page's scripts cannot see it.
+/// **The status and the address are the ones the browser saw**, not assumed: a
+/// 429 on the page a write reads its tokens from, or a redirect to the login or
+/// challenge page, has to reach the client as what it is, not as a page with no
+/// tokens in it.
 pub(super) async fn navigate_and_read(
     live: &mut Live,
     url: &str,
@@ -140,25 +135,13 @@ fn same_document(asked: &str, landed: &str) -> bool {
 
 /// The script that sends one request from the page.
 ///
-/// **It fills in headers, and never adds one.** The app's families differ in
-/// which of the two they carry (Relay never the claim, a route call neither),
-/// so only a request that already names one gets it. `X-CSRFToken` is read
-/// from the cookie at the moment of sending, because the browser rotates it
-/// and this process never sees the rotation; with no cookie it is left off a
-/// GET and a POST is refused. The claim is the page's when it keeps one —
-/// the app on the tab and this script both keep it current from every
-/// answer — and the one this process passed otherwise. It hands back which
-/// of the two, or `0`, went out, and whether the answer handed out a new
-/// one, never the claim itself ([`note_the_claim`]).
+/// **It fills in headers, and never adds one.** It hands back which of the two,
+/// or `0`, went out, and whether the answer handed out a new one, never the
+/// claim itself ([`note_the_claim`]).
 ///
-/// **No redirect is followed, GET or POST.** A hop the browser follows by
-/// itself is a request sent before this process could pay for it, and to
-/// wherever the answer pointed — so it could only be charged afterwards and
-/// held to the origin rule after it had already gone. Instagram's API does
-/// not redirect a working call; the one it is known to redirect is a dead
-/// session's, to the login page. With `manual` that arrives as an opaque
-/// redirect, status 0, and is refused without a second request having been
-/// made. For a POST a followed redirect would be a write sent twice.
+/// **No redirect is followed, GET or POST.** With `manual` that arrives as an
+/// opaque redirect, status 0, and is refused without a second request having
+/// been made.
 const FETCH: &str = r#"(async (q) => {
   const headers = new Headers(q.headers);
   if (headers.has('X-CSRFToken')) {
@@ -208,8 +191,7 @@ const FETCH: &str = r#"(async (q) => {
 /// Writes down, for a request that carried a claim, which claim went out:
 /// `page` (the one the page keeps under `www-claim-v2`), `snob` (one this
 /// process kept from its own answers, the page keeping none) or `0`; and
-/// whether the answer handed out a new one. Never the claim: the live check
-/// reads from it whether the app's claim reaches snob's reads.
+/// whether the answer handed out a new one.
 fn note_the_claim(answer: &Value) {
     let Some(sent) = answer.get("claim").and_then(Value::as_str) else {
         return;
@@ -240,10 +222,8 @@ pub(super) async fn fetch(
         "cap": request.cap.min(PAGE_WIRE_CAP),
         "timeout_ms": request.timeout_ms,
     });
-    // Named, so the browser names it as the initiator of the request it
-    // sends, and the listener does not read its answer a second time. The
-    // name is seen by the protocol and nothing else: the script runs in a
-    // world the page cannot reach.
+    // Named, so the browser names it as the initiator of the request it sends,
+    // and the listener does not read its answer a second time.
     let expression = format!(
         "(() => {{ {WIRE_LENGTH} return {FETCH}({argument}); }})()\n//# sourceURL={}",
         super::listen::OWN_SCRIPT
@@ -313,9 +293,8 @@ pub(super) async fn fetch(
 /// **No cookie and no header of its own**: a cross-site `fetch` carries none of
 /// the site's cookies, and the browser adds the rest. **No redirect is
 /// followed**, for the reason [`FETCH`] gives: it arrives as an opaque redirect,
-/// status 0, and the client asks the other way, which follows the CDN's own,
-/// hop by hop. A file longer than `cap` comes back as `tooLarge` without being
-/// read when its length says so.
+/// status 0, and the client asks the other way, which follows the CDN's own, hop
+/// by hop.
 const FETCH_ASSET: &str = r#"(async (q) => {
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), q.timeout_ms);
@@ -345,8 +324,7 @@ const FETCH_ASSET: &str = r#"(async (q) => {
 })"#;
 
 /// Fetches `url` from `world`, which [`isolated_world`] made, and hands it back
-/// as [`FETCH_ASSET`] does: the body base64. `cap` is in bytes of the file,
-/// held to what a protocol message carries once it is base64.
+/// as [`FETCH_ASSET`] does: the body base64.
 pub(super) async fn fetch_asset(
     live: &mut Live,
     world: i64,
@@ -408,10 +386,6 @@ pub(super) async fn fetch_asset(
 }
 
 /// Runs an expression in the tab and hands back its value.
-///
-/// `Runtime.evaluate` without `Runtime.enable`: enabling the domain is what
-/// makes the console report objects back over the pipe, and that reporting is
-/// the side effect pages use to notice a debugger is attached.
 pub(super) async fn evaluate(
     cdp: &Cdp,
     tab: &str,
@@ -469,18 +443,9 @@ thread_local! {
 
 /// The world the requests are sent from, made once per document.
 ///
-/// **Not the page's own.** `Runtime.evaluate` runs in the page's main world by
-/// default, where the site's scripts run too: a `fetch` they have wrapped sees
-/// every call snob makes, and the page's resource timing lists each one —
-/// both measured. An isolated world shares the document, its cookies and its
-/// storage, sends as the page's origin, and is out of the page's reach.
-///
-/// It dies with its document, and the document can change without snob
-/// asking — the app reloads, or sends a dead session to the login page — so
-/// the one kept is used only while the tab's document is still the one it was
-/// made in, by the loader that document came from. The document's values
-/// ([`PageValues`]) are read as each world is made, so they too are always
-/// the current document's.
+/// `Runtime.evaluate` runs in the page's main world by default, where the
+/// site's scripts run too: a `fetch` they have wrapped sees every call snob
+/// makes, and the page's resource timing lists each one — both measured.
 pub(super) async fn isolated_world(live: &mut Live) -> Result<i64, PageError> {
     #[cfg(test)]
     if STALL_FRAME_TREE.replace(false) {
@@ -547,9 +512,8 @@ const DEFINITIONS: &str = r#"((markers, reach) => markers.map((marker) => {
   return null;
 }))"#;
 
-/// The values the document in `world` carries, read from the scripts the
-/// server wrote into it. A read that fails leaves them all absent: nothing
-/// is built from a value the page was not seen to carry.
+/// The values the document in `world` carries, read from the scripts the server
+/// wrote into it.
 async fn page_values(cdp: &Cdp, tab: &str, world: i64) -> PageValues {
     let markers: Vec<String> = page_values::DEFINED
         .iter()

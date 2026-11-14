@@ -1,27 +1,16 @@
 //! `snob likers LINK`: the accounts that liked a post, as many as Instagram
 //! shows the web app.
 //!
-//! **A sample, never the whole list.** The app is shown about a hundred
-//! (105 of 603,328 twice in the capture of 2026-11-13, 125 of 1,796 in the
-//! capture of 2026-11-14), the viewer's contacts first, with no cursor to a
-//! second page (the list scrolled to its end on 2026-11-14 asked for none);
-//! snob reads what the app is shown and says so, beside the count when the
-//! owner did not hide it.
-//!
-//! Two reads, the app's when a post opens and its "others" is clicked: the
-//! post (`posts::fetch_link`), then its likers from the post's page
-//! (`IgClient::media_likers`). The post first because that is the order the
-//! app sends them in, and because it says whether the owner hid the counts,
-//! which the likers' own count is not taken to override. The app's
-//! `show_many` after the likers is not sent: their answer already says how
-//! the viewer stands with each.
+//! The app is shown about a hundred (105 of 603,328 twice in the capture of
+//! 2026-11-13, 125 of 1,796 in the capture of 2026-11-14), the viewer's
+//! contacts first, with no cursor to a second page (the list scrolled to its
+//! end on 2026-11-14 asked for none); snob reads what the app is shown and says
+//! so, beside the count when the owner did not hide it.
 //!
 //! **They are other people's accounts**, so this keeps the rule a list walk
 //! keeps (AGENTS.md, "Consent"): asked first, before any request, since the
 //! question cannot name the owner before the post is read; `-y` answers in
-//! advance, and no terminal without `-y` is exit 130 with nothing sent. They
-//! are charged to the day's accounts as a list page's are, and a day with
-//! fewer than [`LIKERS_AT_MOST`] left is refused before anything is asked.
+//! advance, and no terminal without `-y` is exit 130 with nothing sent.
 
 use anyhow::Result;
 use snob_core::model::post::{Liker, Likers};
@@ -124,9 +113,7 @@ fn refuse_short_day(left: u64) -> Result<()> {
 
 /// What `snob mcp` asks before it puts the question to the person
 /// (`--check-ahead`): what would refuse the read now, **sending nothing and
-/// writing nothing**. Another of the account's runs on Instagram, a
-/// cooldown, the day's accounts; or `{"would": "send"}`. The post is not
-/// read, so a link that names nobody's post is only found out by the read.
+/// writing nothing**.
 fn check_ahead(store: &SecretStore, paths: &AccountPaths) -> Result<ExitCode> {
     let now = snob_core::clock::now_ms();
     common::alone_ahead(&store.session_of(paths), paths, now)?;
@@ -139,9 +126,8 @@ fn check_ahead(store: &SecretStore, paths: &AccountPaths) -> Result<ExitCode> {
     Ok(ExitCode::Ok)
 }
 
-/// Asks before the likers of `code` are read, as a walk of somebody else's
-/// list asks. `someone_is_there` is `ui::can_be_asked()`, an argument so a
-/// test can say it.
+/// Asks before the likers of `code` are read, as a walk of somebody else's list
+/// asks.
 async fn ask(app: &App, yes: bool, someone_is_there: bool, code: &str) -> Result<()> {
     if yes {
         return Ok(());
@@ -185,9 +171,8 @@ fn likers_of(post: &Post, page: &snob_ig::model::post::LikersPage) -> Likers {
             follows_you: standing.as_ref().map(|s| s.followed_by),
         })
         .collect();
-    // The post's count first, the one the app prints; the likers' own when
-    // the post said none. Never either when the owner hid them: what
-    // Instagram answers then is not what the owner chose to show.
+    // The post's count first, the one the app prints; the likers' own when the
+    // post said none.
     let likes = if post.likes_hidden {
         None
     } else {

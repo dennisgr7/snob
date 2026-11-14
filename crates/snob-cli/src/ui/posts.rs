@@ -1,46 +1,18 @@
-//! The interactive posts browser: a profile's grid as a list, and inside
-//! each post what it says, its items and its comments.
+//! The interactive posts browser: a profile's grid as a list, and inside each
+//! post what it says, its items and its comments.
 //!
-//! The highlights browser's shape, two levels in one loop, so that the
-//! terminal and the scratch directory last the session. At the grid a row is
-//! a post: Enter opens it, D keeps all of it, and reaching the last row reads
-//! the grid's next page, as scrolling the app's grid does. Inside, the post is
-//! what the app shows under it: whose it is and with whom, when and where, the
-//! caption, who is tagged and mentioned, "Liked by ...", and its items, with
-//! its comments a key away. `snob post LINK` opens straight inside.
-//!
-//! **A post is opened with the two reads the app opens it with** (its info
-//! and its first page of comments, [`crate::posts::open`]), once a session:
-//! walking out and back in costs nothing. More comments are one read a page,
-//! on `n`, never on their own; the replies under a comment are one read, on
-//! `r`, for the topmost comment on screen whose thread holds more than the
-//! page showed ([`replies_target`]).
-//!
-//! The keys are the other browsers' where they mean the same thing; inside a
-//! post the arrows across, and `h` and `l` with them, move between its items,
-//! as the app's arrows do, and Esc or Backspace walk back out. `?` shows the
-//! keys of the level, `w` hands the post's page to the system's browser, and
-//! `p` draws the item on screen in a build that draws pictures
-//! (`ui::preview`). Not bound, and kept for what comes next: `L`, a post's
-//! likers, which asks first as `snob likers` does.
+//! **A post is opened with the two reads the app opens it with** (its info and
+//! its first page of comments, [`crate::posts::open`]), once a session: walking
+//! out and back in costs nothing.
 //!
 //! **Every wait is under a box that says what it is** (`ui::browser::busy`):
 //! opening a post, an item, a page of the grid or of the comments, saving.
-//! The post a command asked for is read that way too, on the first frame,
-//! so that nothing is fetched with the screen saying nothing.
 //!
-//! **What does not fit is said where there is room for it.** A narrow grid
-//! drops its columns from the right, comments first; a wide one puts all the
-//! selected post says in a panel beside the list, from what the grid already
-//! read, and Space puts the same in a box at any width. Inside a post the
-//! text is wrapped here and not by the paragraph, so that the comments
-//! scroll to their last row and no further ([`visual`]), and so that the
-//! item on screen stays in view under a caption taller than the terminal.
+//! **What does not fit is said where there is room for it.**
 //!
-//! **It can be entered on a terminal somebody else holds**: the profile
-//! card's posts tile comes in through [`browse_grid_in`], with the card's
-//! guard and its scratch directory, and Esc at the grid goes back to the
-//! card.
+//! **It can be entered on a terminal somebody else holds**: the profile card's
+//! posts tile comes in through [`browse_grid_in`], with the card's guard and
+//! its scratch directory, and Esc at the grid goes back to the card.
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -94,9 +66,7 @@ enum Key {
     Back,
 }
 
-/// Binds one key. Plain, or with shift, and nothing else, as every browser
-/// binds them (`input::action_of` says why). A key this browser gives a
-/// meaning of its own is one line here and one in the table `?` shows.
+/// Binds one key.
 fn key_of(key: KeyEvent) -> Key {
     let plain = !key.modifiers.contains(KeyModifiers::CONTROL)
         && !key.modifiers.contains(KeyModifiers::ALT);
@@ -246,8 +216,7 @@ pub async fn browse_grid(
     session.run(viewer, paths).await
 }
 
-/// Browses the one post a link named, inside it from the first frame. Its
-/// comments are read as it opens, as the app reads them.
+/// Browses the one post a link named, inside it from the first frame.
 pub async fn browse_post(
     client: &IgClient,
     post: Post,
@@ -271,13 +240,6 @@ pub async fn browse_post(
 }
 
 /// The same grid on a terminal somebody else holds.
-///
-/// The profile card enters here with its own guard and its own scratch
-/// directory: a second of either is a second claim on the one terminal, and
-/// a directory made on the path of the first, which takes the first one's
-/// files with it when it goes. The receipts are the card's to print, after
-/// its guard drops. `None` is back to the card; `Some` leaves the view with
-/// that code.
 pub(crate) async fn browse_grid_in(
     tui: &mut Tui,
     scratch: &Scratch,
@@ -832,9 +794,7 @@ impl<'a> Session<'a> {
     }
 
     /// Opens post `index` of the grid: the app's two reads the first time,
-    /// under a box that says so, nothing after. A post that could not be
-    /// read stays at the grid, the reason in the note line. `Some` is the
-    /// way out.
+    /// under a box that says so, nothing after.
     async fn open_post(
         &mut self,
         index: usize,
@@ -1010,9 +970,7 @@ impl<'a> Session<'a> {
 /// The least width the caption keeps before a column is given up for it.
 const CAPTION_MIN: u16 = 20;
 
-/// Which of the grid's columns a width has room for. The number, the kind
-/// and the caption are always there; the rest go from the right, the
-/// comments first, then the likes, then the date, as the account list's do.
+/// Which of the grid's columns a width has room for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Columns {
     posted: bool,
@@ -1036,8 +994,7 @@ fn columns(width: u16) -> Columns {
 }
 
 /// From this many columns the grid has a panel beside it that says all the
-/// selected post does. Under it the list needs the room, and Space opens
-/// the same in a box.
+/// selected post does.
 const PANEL_FROM: u16 = 110;
 
 /// The panel's width, its left border and padding in it: about a third of
@@ -1267,8 +1224,7 @@ fn about_modal(frame: &mut Frame<'_>, post: &Post, colors: bool) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Space: [`about_modal`] over the view `under` draws, until a key is
-/// pressed. The key is spent closing it, as in `help::show`.
+/// Space: [`about_modal`] over the view `under` draws, until a key is pressed.
 fn show_about(tui: &mut Tui, post: &Post, mut under: impl FnMut(&mut Frame<'_>)) -> Result<()> {
     let colors = tui::colors_enabled();
     loop {
@@ -1282,14 +1238,13 @@ fn show_about(tui: &mut Tui, post: &Post, mut under: impl FnMut(&mut Frame<'_>))
     }
 }
 
-/// The rows `lines` take at `width` columns, each line that is too wide
-/// wrapped at its blanks under its own indent, in its own style.
+/// The rows `lines` take at `width` columns, each line that is too wide wrapped
+/// at its blanks under its own indent, in its own style.
 ///
 /// **Wrapped here, and not by the paragraph that draws them**: a paragraph
 /// wraps as it draws and tells nobody how many rows that made, so a scroll
-/// bounded by the lines that went in stops short of the bottom as soon as
-/// one comment takes two rows. With the rows counted before they are drawn
-/// the comments scroll to their last row and stop ([`furthest`]).
+/// bounded by the lines that went in stops short of the bottom as soon as one
+/// comment takes two rows.
 fn visual(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
     let width = width.max(8);
     let mut rows = Vec::with_capacity(lines.len());
@@ -1323,13 +1278,8 @@ fn furthest(detail: &Detail, seen: &Seen) -> usize {
         .saturating_sub(seen.page_rows.max(1))
 }
 
-/// Draws one post: what it says, its items with the one on screen marked,
-/// and its comments when they are shown. `out` is what Esc is called here.
-///
-/// With the comments hidden nothing scrolls by a key, and the arrows move
-/// between the items: the item on screen is kept in view, even under a
-/// caption taller than the terminal, which would otherwise push the items
-/// under the bottom edge with no key to reach them.
+/// Draws one post: what it says, its items with the one on screen marked, and
+/// its comments when they are shown.
 #[expect(clippy::too_many_arguments, reason = "one frame's worth of state")]
 fn draw_post(
     frame: &mut Frame<'_>,
@@ -1425,10 +1375,9 @@ fn post_lines(detail: &Detail, colors: bool) -> Vec<Line<'static>> {
     marked_lines(detail, colors).0
 }
 
-/// Which comment `r` reads the replies of: of the comments shown, the
-/// topmost one at or under row `scroll` of the post's text wrapped to
-/// `width` (what the screen starts at) whose thread holds more than the
-/// page showed. An index into the comments; `None` when there is none.
+/// Which comment `r` reads the replies of: of the comments shown, the topmost
+/// one at or under row `scroll` of the post's text wrapped to `width` (what the
+/// screen starts at) whose thread holds more than the page showed.
 fn replies_target(detail: &Detail, width: usize, scroll: usize) -> Option<usize> {
     let comments = detail.comments.as_ref()?;
     let (lines, marks) = marked_lines(detail, false);

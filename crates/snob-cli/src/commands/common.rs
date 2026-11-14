@@ -5,9 +5,7 @@
 //! The order between the first two and the session matters: for the list
 //! commands, the destination is checked **before** the session is opened and
 //! long before a request is spent, so `-o` pointing somewhere impossible costs
-//! nothing to find out. The media listings, `stories` and `highlights`, check
-//! their format and destination through [`checked_format`] once the tray has
-//! been fetched.
+//! nothing to find out.
 
 use std::path::PathBuf;
 
@@ -29,9 +27,8 @@ use crate::report;
 use crate::ui::accounts::Browsed;
 
 /// The three forms either media listing has, and the refusal for the others —
-/// so `-o out.xlsx` cannot fall through to a table with a spreadsheet's name
-/// on it. One copy for `stories` and both levels of `highlights`, so the
-/// refusal is spelled once.
+/// so `-o out.xlsx` cannot fall through to a table with a spreadsheet's name on
+/// it.
 pub fn checked_format(
     format: Option<crate::cli::StoryFormat>,
     destination: Option<&std::path::Path>,
@@ -53,8 +50,7 @@ pub fn open(walk: &WalkArgs, secrets: &SessionStore, paths: &AccountPaths) -> Re
     app(secrets, paths, shows_progress(walk))
 }
 
-/// Whether a list command draws a bar. None when the answer comes out of
-/// storage: there is nothing to watch.
+/// Whether a list command draws a bar.
 pub fn shows_progress(walk: &WalkArgs) -> bool {
     !walk.progress.no_progress && !walk.offline
 }
@@ -120,23 +116,15 @@ pub async fn rewalk<T>(
 }
 
 /// Opens the app, or refuses because there is no session.
-///
-/// An error with the code and the hint every other refusal carries, not a
-/// line printed before an `Ok`: it goes through `report::print_error`, so a
-/// caller that asked for JSON gets JSON for the one failure it is likeliest
-/// to meet.
 pub fn app(secrets: &SessionStore, paths: &AccountPaths, with_progress: bool) -> Result<Box<App>> {
     App::open(secrets, paths, with_progress)?
         .map(Box::new)
         .ok_or_else(no_session)
 }
 
-/// How a client is named in the record of what it was told yes to: its name
-/// and version as it declared them, **through `printable`, then cut to
-/// letters, digits, spaces and `._/-`, and to 64 characters**. It is the
-/// client's own text, it becomes an argument of a command line, and the
-/// person reads it in `snob status` and `snob jobs`. `None` when nothing is
-/// left.
+/// How a client is named in the record of what it was told yes to: its name and
+/// version as it declared them, **through `printable`, then cut to letters,
+/// digits, spaces and `._/-`, and to 64 characters**.
 pub fn client_label(name: &str, version: &str) -> Option<String> {
     let said = snob_core::model::printable(&format!("{name} {version}"));
     let kept: String = said
@@ -155,16 +143,8 @@ pub fn client_label(name: &str, version: &str) -> Option<String> {
 }
 
 /// Records what an agent was told yes to through `snob mcp`, for a run given
-/// `--confirmed-via` (`cli::AgentArgs`), **before the run sends anything**,
-/// and refuses a write past the day's cap with nothing sent. The id of the
-/// row, or `None` for a run that was not an agent's, and for a walk in a
-/// cooldown, which reads nothing.
-///
-/// `action` is the command (`follow`, `followers`, ...), `target` the account
-/// as the call named it. `write_cap` is `--mcp-write-cap`, which counts only
-/// for a write, and is [`mcp_acts::WRITES_A_DAY`] when not given.
-///
-/// [`mcp_acts::WRITES_A_DAY`]: snob_store::store::mcp_acts::WRITES_A_DAY
+/// `--confirmed-via` (`cli::AgentArgs`), **before the run sends anything**, and
+/// refuses a write past the day's cap with nothing sent.
 pub fn record_agent_act(
     app: &mut App,
     agent: &AgentArgs,
@@ -176,11 +156,9 @@ pub fn record_agent_act(
     let Some(via) = agent.confirmed_via else {
         return Ok(None);
     };
-    // A walk in a cooldown reads nothing of the account: `engine::list`
-    // serves what is stored, or refuses, so there is no act to record, and
-    // recording one would show the person a walk that never ran. (A write
-    // in a cooldown is refused before it is recorded, by
-    // `refuse_during_cooldown`.)
+    // A walk in a cooldown reads nothing of the account: `engine::list` serves
+    // what is stored, or refuses, so there is no act to record, and recording
+    // one would show the person a walk that never ran.
     if !mcp_acts::is_write(action) && app.held()?.is_some() {
         return Ok(None);
     }
@@ -200,10 +178,8 @@ pub fn record_agent_act(
     }
 }
 
-/// The refusal of a write an agent asked for once `writes` of them in the
-/// last day reach the cap; the next is free at `free_at`. One home, for the
-/// run that would record it ([`record_agent_act`]) and for the check `snob
-/// mcp` makes before it asks the person (`follow --check-ahead`).
+/// The refusal of a write an agent asked for once `writes` of them in the last
+/// day reach the cap; the next is free at `free_at`.
 pub fn write_cap_reached(writes: u32, free_at: snob_core::EpochMs) -> anyhow::Error {
     ExitError::new(
         ExitCode::Error,
@@ -227,12 +203,11 @@ pub fn write_cap_reached(writes: u32, free_at: snob_core::EpochMs) -> anyhow::Er
 }
 
 /// The half of a check made before `snob mcp` asks the person for a yes
-/// (`--check-ahead`: `follow`, `likers`) that every such call shares,
-/// **sending nothing and writing nothing**: the session stored, this
-/// account's own and not one this computer signed out of
-/// (`owner::signed_out`), and nothing else of the account's using it on
-/// Instagram, neither a job walking a list nor a run holding `spend.lock`.
-/// The session, for what the caller checks next.
+/// (`--check-ahead`: `follow`, `likers`) that every such call shares, **sending
+/// nothing and writing nothing**: the session stored, this account's own and
+/// not one this computer signed out of (`owner::signed_out`), and nothing else
+/// of the account's using it on Instagram, neither a job walking a list nor a
+/// run holding `spend.lock`.
 pub fn alone_ahead(
     secrets: &SessionStore,
     paths: &AccountPaths,
@@ -281,12 +256,10 @@ pub fn alone_ahead(
     Ok(session)
 }
 
-/// The account's database and its request budget as they stand at `now`,
-/// read **writing nothing**: an account that has never sent anything is read
-/// over an empty database rather than having its file made, and a
-/// `shared.db` that cannot be read counts no brake. What `--dry-run` reads,
-/// and the checks `snob mcp` makes before it asks the person for a yes
-/// (`follow --check-ahead`, `__job start --check`).
+/// The account's database and its request budget as they stand at `now`, read
+/// **writing nothing**: an account that has never sent anything is read over an
+/// empty database rather than having its file made, and a `shared.db` that
+/// cannot be read counts no brake.
 pub fn standing(
     paths: &AccountPaths,
     now: snob_core::EpochMs,
@@ -341,10 +314,6 @@ pub fn signed_out_here() -> anyhow::Error {
 }
 
 /// The part of the command line the engine is asked with.
-///
-/// Here and not in `engine`, so the engine knows nothing about clap: this is
-/// the one place the parser's structs are read for what the engine needs.
-/// Two commands carry a walk, and both become the same query.
 pub(crate) fn query(target: &Option<String>, walk: &WalkArgs) -> engine::ListQuery {
     engine::ListQuery {
         target: target.clone(),
@@ -373,12 +342,8 @@ impl From<&ScanArgs> for engine::ListQuery {
     }
 }
 
-/// What is left of a list after the filter and the cap, and how many there
-/// were at each step -- the three numbers the summary line is built from.
-///
-/// The numbers have to be taken in this order -- total before the filter,
-/// kept after it, shown after the cap -- and both commands that print a list
-/// take them here.
+/// What is left of a list after the filter and the cap, and how many there were
+/// at each step -- the three numbers the summary line is built from.
 pub struct Narrowed {
     pub shown: Vec<User>,
     /// After the filter, before the cap.
@@ -399,11 +364,6 @@ pub fn narrow(users: Vec<User>, filter: &Filter, limit: Option<usize>) -> Narrow
 
 /// Opens the session of a command that reads one account's page: `profile`,
 /// `pfp`, `stories` and `highlights`.
-///
-/// `-i` is refused before the session opens and before anything is spent,
-/// like a bad `-o` -- the expensive order to find out in is the other one.
-/// Then nothing is spent during a cooldown: there is nothing stored to serve
-/// instead.
 pub fn reader(
     secrets: &SecretStore,
     paths: &AccountPaths,
@@ -419,13 +379,7 @@ pub fn reader(
 }
 
 /// The account a read names, or with no name the viewer's own, like the list
-/// commands. The viewer's username is known from the session, or, when the
-/// session never learned it, from the browser's document, so this costs
-/// nothing extra.
-///
-/// A name read from the document is not stored: `whoami` is the one command
-/// that writes the session back, and the document says it again for nothing.
-/// Without a browser, a session with no name is refused.
+/// commands.
 pub async fn target_or_own(app: &App, target: Option<&str>) -> Result<String> {
     if let Some(target) = target {
         return Ok(target.to_string());
@@ -442,13 +396,6 @@ pub async fn target_or_own(app: &App, target: Option<&str>) -> Result<String> {
 }
 
 /// Refuses a command outright while the account is in cooldown.
-///
-/// For the commands that have nothing stored to serve instead -- a picture,
-/// a story, a write. The list commands do not come here: `engine::cooldown`
-/// answers them out of storage, which a refusal cannot. The gate is still
-/// explicit in each command (the readers' is in [`reader`]), before anything
-/// is asked of a person and before anything is spent; what is shared is the
-/// sentence.
 pub fn refuse_during_cooldown(app: &App, doing: &str) -> Result<()> {
     match app.held()? {
         Some(held) => Err(in_cooldown(&held, doing)),
@@ -477,14 +424,6 @@ pub enum Switched<S> {
 
 /// Opens the session of the account `to` that a view switched to, and reads
 /// with `read` what the view shows as that account.
-///
-/// Nothing of the account the view was, `from`, is closed first, so a refusal
-/// goes back to it as it was, for no request: no session stored, a cooldown
-/// or the pause on every account, and a read that is declined, fails or has
-/// nothing to show. Only what would have ended the run as either account ends
-/// it: an interruption, a push-back or a challenge on the read. A declined
-/// question carries the interruption's code without being one, so an
-/// interruption is told by the process's token.
 pub async fn switch<T>(
     secrets: &SecretStore,
     paths: &AppPaths,
@@ -524,12 +463,6 @@ pub async fn switch<T>(
 
 /// Runs an interactive view over `session`, and again over each session it
 /// switches to, until the view is left.
-///
-/// `browse` draws the view, opening with the note it is handed; `switch`
-/// opens the account picked, usually through [`switch`]; `leave` is called
-/// on each session as it is left, told whether the view acted as more than
-/// one account, and before a failed switch ends the run. A refused switch
-/// draws the view again over the same session with the reason as its note.
 pub async fn switching<S>(
     mut session: S,
     mut browse: impl AsyncFnMut(&mut S, String) -> Result<Browsed>,
@@ -561,9 +494,6 @@ pub async fn switching<S>(
 }
 
 /// Where the result goes and what shape it takes.
-///
-/// Worked out once, up front, and carried around: a destination that cannot
-/// hold the format must not cost a walk — or two — to find out about.
 pub struct Destination {
     format: Format,
     presentation: Presentation,
@@ -616,8 +546,7 @@ pub fn prepare(
         crate::ui::people::check_drawable()?;
     }
     // Decided before anything is spent, like the destination: what was said
-    // first, detection only for a run that asked for nothing. The matrix is
-    // `BrowseArgs::browses`.
+    // first, detection only for a run that asked for nothing.
     let browses = browse.browses(
         output.format.is_some() || output.path.is_some(),
         crate::ui::a_human_would_watch_the_listing_scroll_by(),
@@ -669,19 +598,9 @@ pub fn require_complete(kind: ListKind, outcome: &ListOutcome, misreading: &str)
 /// One walk, with the bar named while it runs and taken down before anything
 /// gives up.
 ///
-/// The rule this holds is "finish the bar before the `?`". `indicatif` leaves
-/// its last line on screen when it is dropped, so a run ending in a cooldown
-/// refusal, a private account or an incomplete list would print the error
-/// underneath a spinner that had stopped spinning. Held here, in the one place
-/// every walk goes through, so no caller can forget it.
-///
-/// `check` runs inside the guarded region rather than after it. A crossing has
-/// to know its first list is complete before spending the second walk, and that
-/// refusal leaves through the same door as any other.
-///
 /// It does **not** finish on success: a crossing walks two lists through one
 /// bar, and clearing it in between would make the second half start from a
-/// blank line. The caller ends it when the run is over.
+/// blank line.
 pub async fn walk_named(
     app: &mut App,
     args: &engine::ListQuery,
@@ -693,8 +612,7 @@ pub async fn walk_named(
     app.progress().walking(kind);
 
     // Both failures leave through one door, so the rule this function exists to
-    // hold is written once inside it too. Two copies of `finish()` here would
-    // make a third failure point added between them one more place to remember.
+    // hold is written once inside it too.
     let result = engine::list(app, args, kind).await.and_then(|pair| {
         check(&pair.1)?;
         Ok(pair)

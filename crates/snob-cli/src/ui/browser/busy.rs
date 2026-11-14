@@ -1,25 +1,6 @@
 //! The box a view puts over itself while it waits on the network.
 //!
-//! A request made from a view may sit behind the pacer for seconds before it
-//! is even sent, and a download is as long as the file is large. A view that
-//! says nothing meanwhile looks hung, and the one thing a person can do about
-//! a hung program is the thing the view least wants: kill it. So every fetch
-//! a key starts is run under a [`Busy`], which names what is going on and how
-//! to stop it, with a spinner that turns to show the program is alive.
-//!
-//! **Two steps, because of the borrows.** The view under the box is drawn
-//! from the same state the fetch is about to change: a folder's items are
-//! read by the frame and filled by the walk. [`Busy::begin`] draws the view
-//! once and keeps the cells; [`Busy::run`] then owns the wait, and paints the
-//! box over those kept cells without asking the view anything.
-//!
-//! **Nothing is shown before the first [`input::TICK`].** Most opens are
-//! answered from what the session already holds, and a box that flashed for
-//! a frame on each of them would be noise. `begin`'s own frame is the view as
-//! it already was, which writes nothing.
-//!
-//! The keyboard stays alive through [`input::watching_cancel_keys`], which
-//! this wraps: `q` and Ctrl+C cancel the token the fetch races.
+//! **Nothing is shown before the first [`input::TICK`].**
 
 use std::future::Future;
 use std::pin::Pin;
@@ -43,8 +24,7 @@ pub struct Busy {
 }
 
 impl Busy {
-    /// Draws the view through `under` and keeps what it drew. `text` is what
-    /// the box will say: `Opening story 3`, `Reading @someone`.
+    /// Draws the view through `under` and keeps what it drew.
     pub fn begin(
         tui: &mut Tui,
         text: impl Into<String>,
@@ -67,25 +47,10 @@ impl Busy {
         }
     }
 
-    /// Runs `work` to its end with the keyboard alive and, once it has
-    /// lasted a tick, the box up and its spinner turning.
+    /// Runs `work` to its end with the keyboard alive and, once it has lasted a
+    /// tick, the box up and its spinner turning.
     ///
-    /// A frame that fails to draw is ignored on purpose: the fetch is the
-    /// job and the box is the report, and the view's next ordinary frame
-    /// repaints whatever this left behind.
-    ///
-    /// **The wait lives on the heap, and that is not a nicety.** Every
-    /// command's future is held inside the one `main` awaits, a view's with
-    /// the rest, and a debug build copies that future from frame to frame on
-    /// its way into the runtime. With this an `async fn`, each wait a view
-    /// makes stood in the view's future by value, the work with the loop
-    /// around it and the watcher around that, and took the whole from 13,736
-    /// bytes to 22,728 (`size_of_val` of what `main` awaits, a debug build
-    /// with `testing`, November 2026). On Windows, where the main thread has
-    /// 1 MiB, that was enough for a command that draws nothing to overflow
-    /// its stack: the sandbox test `a_job_polled_to_its_end_gives_the_walks_answer`
-    /// failed on it every time. Boxed, a wait is a pointer in the view's
-    /// future whatever the work is, and the whole is 13,736 bytes again.
+    /// **The wait lives on the heap, and that is not a nicety.**
     pub fn run<'a, T: 'a>(
         self,
         tui: &'a mut Tui,
@@ -117,10 +82,6 @@ impl Busy {
     }
 
     /// One frame of the wait: the kept view, dimmed, and the box over it.
-    ///
-    /// A terminal resized since the view was kept has cells of another
-    /// shape, and the kept ones would land in the wrong places: the box is
-    /// then drawn alone, and the view comes back with its next frame.
     fn draw(&self, frame: &mut Frame<'_>, turn: usize) {
         let buffer = frame.buffer_mut();
         if buffer.area == self.under.area {

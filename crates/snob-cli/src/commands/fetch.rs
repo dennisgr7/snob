@@ -1,17 +1,4 @@
 //! `snob fetch`: one file from Instagram's CDN, by an address already known.
-//!
-//! **No account is behind it.** The address came out of an authenticated
-//! answer earlier (a listing's JSON, a post's items); fetching its bytes needs
-//! nothing of the account, so this builds a [`CdnClient`] and nothing else: no
-//! `App`, no budget, no browser, no database, and no session sent anywhere.
-//! One of the listed exceptions to "commands take an App", because an `App` is
-//! exactly the account this does not use. The one thing read off the account,
-//! when `--user-agent` does not say it, is its browser's User-Agent.
-//!
-//! The rule about where a file may come from is the client's own
-//! ([`CdnClient::check_downloadable`], `allowlist::refused_asset`), the one
-//! every download is held to: the CDN's hosts, over HTTPS, and never
-//! instagram.com itself.
 
 use std::path::{Path, PathBuf};
 
@@ -25,10 +12,8 @@ use crate::output;
 use crate::posts::MAX_POST_BYTES;
 use crate::ui;
 
-/// Fetches `args.url`, sending `--user-agent`, else the one `account_ua`
-/// reads off the account, else the installed browser's. Asked in that order
-/// and only as far as needed, after the address has been judged: a refused
-/// address costs nothing, not even a look for a browser.
+/// Fetches `args.url`, sending `--user-agent`, else the one `account_ua` reads
+/// off the account, else the installed browser's.
 pub async fn run(
     args: FetchArgs,
     account_ua: impl FnOnce() -> Result<Option<String>>,
@@ -92,10 +77,8 @@ async fn to_stdout(cdn: &CdnClient, url: &str) -> Result<()> {
     sink.finish(streamed.map_err(explained))
 }
 
-/// The file, saved in the working directory under the address's own name
-/// and the extension its bytes say, as every other download is named. It
-/// streams to `<stem>.<pid>.part`, removed on any failure, and takes its
-/// name only once it is whole; a name already there is never written over.
+/// The file, saved in the working directory under the address's own name and
+/// the extension its bytes say, as every other download is named.
 async fn to_named_file(cdn: &CdnClient, url: &url::Url) -> Result<PathBuf> {
     let (stem, from_address) = name_of(url);
     let dir = Path::new(".");

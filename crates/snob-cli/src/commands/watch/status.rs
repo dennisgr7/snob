@@ -1,10 +1,5 @@
 //! `snob watch status`: what is configured, and whether it is working.
 //!
-//! The other half of not having to remember flags. `super::setup` writes the
-//! file; this reads it back alongside what the runs actually did, and answers
-//! the one question a scheduled thing cannot answer for itself — a monitor that
-//! found nothing and a monitor that quietly stopped look identical from outside.
-//!
 //! `health` is where that answer is decided, in `status`'s output **and** in its
 //! exit code, so a machine and a person are told the same thing.
 
@@ -89,9 +84,7 @@ pub fn status(
     }
 
     // Two lines, about two different sets of rows: `pending` is every row in the
-    // state, while only the ones addressed here are ever handed back. Each line
-    // is true of the rows it counts, and which is which is exactly what the
-    // reader needs.
+    // state, while only the ones addressed here are ever handed back.
     if owed.waiting > 0 || owed.elsewhere > 0 || owed.given_up > 0 {
         crate::ui::say!();
     }
@@ -141,13 +134,6 @@ pub fn status(
 }
 
 /// Whether the monitor is doing what it was configured to do.
-///
-/// The verdict, made of what `status` already reads, so a monitor that stopped
-/// working does not have to be read to be known — the same problem the reports
-/// themselves have and which `--json` exists to solve.
-///
-/// Pure, and separate from the printing, because the interesting part is which
-/// states count as broken and that is a thing worth pinning.
 pub(super) struct Health {
     pub(super) verdict: Verdict,
     pub(super) notes: Vec<String>,
@@ -155,15 +141,6 @@ pub(super) struct Health {
 
 /// The accounts the configuration has `viewer` watch right now, as ids, with
 /// `db` being `viewer`'s database.
-///
-/// `None` means it could not be settled, and every run is then treated as
-/// watched — the direction that does not fail a probe on a guess. That happens
-/// with no configuration at all, and when an entry is read as the account in
-/// use and no account is signed in. `self` is the account its entry is read
-/// as, and a name is looked up where that account's runs recorded it.
-///
-/// `watched` must come from `watched_from`, so this and a run agree on which
-/// accounts the file names.
 fn watched_pks(db: &Store, watched: Option<&[Watched]>, viewer: Pk) -> Result<Option<Vec<Pk>>> {
     let Some(watched) = watched else {
         return Ok(None);
@@ -189,15 +166,11 @@ fn watched_pks(db: &Store, watched: Option<&[Watched]>, viewer: Pk) -> Result<Op
 
 /// One account's newest run, with the two things [`health`] cannot work out for
 /// itself: what to call the account, and whether the file still names it.
-///
-/// Built by [`recorded`], which has the store open and is already resolving
-/// both for its own lines.
 pub(super) struct RunOf {
     pub(super) run: watch_store::Run,
     /// `@name`, or the id when the name was never learned.
     who: String,
-    /// Whether `watch.toml` still lists this account. `true` when it cannot be
-    /// settled, which is the direction that does not fail a probe on a guess.
+    /// Whether `watch.toml` still lists this account.
     watched: bool,
     /// The account whose database recorded it: the one the run read as.
     pub(super) viewer: Viewer,
@@ -221,10 +194,7 @@ pub(super) struct PostsOf {
 
 /// What every account's database says the monitor did.
 ///
-/// **Every database, not the account in use's.** A run reads each entry as its
-/// viewer and records it in that viewer's database, so the answer to "is it
-/// working" is spread over all of them: this is one of the listed places that
-/// open another account's database, and it only reads.
+/// **Every database, not the account in use's.**
 #[derive(Default)]
 struct Recorded {
     /// The accounts read, in the order their databases were.
@@ -237,8 +207,7 @@ struct Recorded {
     reported: Vec<HalfRead>,
 }
 
-/// Reads what every account with a database recorded. None is created for an
-/// account that never had one.
+/// Reads what every account with a database recorded.
 fn recorded(
     paths: &AppPaths,
     config: Option<&WatchConfig>,
@@ -261,9 +230,7 @@ fn recorded(
             pk: account.pk(),
             username: crate::account::username(&registry, account.pk()).map(str::to_string),
         };
-        // Gone since it was listed: `purge` removed it meanwhile. Read and
-        // never written: `open_existing` migrates, compacts and checkpoints,
-        // and `status` says it writes nothing.
+        // Gone since it was listed: `purge` removed it meanwhile.
         let Some(db) = Store::read_existing(&account)? else {
             continue;
         };
@@ -303,11 +270,6 @@ impl Recorded {
         // Per account, and reported per account: a run covers every configured
         // one, so one unqualified "last ran" line is whichever account happened
         // to be last in the file.
-        //
-        // Asked of the run log rather than of the marks. A mark only moves when
-        // a list was compared, so an account whose every tick was refused — a
-        // fresh setup whose first runs met a cooldown, a stranger who went
-        // private — has no mark and plenty of runs.
         let named = watched_pks(db, watched, viewer.pk)?;
         for run in watch_store::last_runs(conn)? {
             self.runs.push(RunOf {
@@ -363,9 +325,7 @@ impl Recorded {
             lines.push(String::new());
             lines.push(format!("As {}:", viewer.label()));
             // Said before the marks, because it answers the question somebody
-            // opening `status` actually has. A run that could not look moves no
-            // mark, so a monitor that has been in a cooldown since Monday looks,
-            // from the marks alone, exactly like one that was killed on Monday.
+            // opening `status` actually has.
             let mut ran = false;
             for RunOf { run, who, .. } in self.runs.iter().filter(|of| of.viewer.pk == viewer.pk) {
                 ran = true;
@@ -451,15 +411,10 @@ impl Recorded {
 
 /// How many scheduled runs may be missed before silence is a failure rather
 /// than a warning.
-///
-/// One missed run is a machine that was asleep, a laptop that was shut, a
-/// cooldown that ran long. Three is nobody coming back.
 const MISSED_BEFORE_FAILED: i64 = 3;
 
-/// When a recorded run was due and began, when it was recorded with both:
-/// what `status` and its `--json` tell a late run by. The jitter it was
-/// allowed is not recorded, so none is allowed here, which only ever calls a
-/// run late that the run itself, allowed its jitter, did not.
+/// When a recorded run was due and began, when it was recorded with both: what
+/// `status` and its `--json` tell a late run by.
 pub(super) fn timing_of(run: &watch_store::Run) -> Option<crate::engine::watch::RunTiming> {
     Some(crate::engine::watch::RunTiming {
         ended_at: run.finished_at,
@@ -478,27 +433,8 @@ const TIMER_ASKS_EVERY_SECS: i64 = 15 * 60;
 
 /// How long this configuration means the monitor may be silent for.
 ///
-/// Asked of the schedule rather than guessed at: six hours for `--every 6h`,
-/// and a week for `--on mon --at 09:00`, which is the point — a weekly monitor
-/// that has not run since Tuesday is not late.
-///
 /// **The widest gap in a cycle, not the distance between the next two
-/// moments.** Those are the same number only on a uniform grid, and the wizard
-/// prompts for something that is not one, back to back: "Which days?
-/// (mon,thu)" and "At what times? (09:00,21:00)". Answer both with the example
-/// and the real gaps are 12h, 60h, 12h, 84h. On a Saturday the next two
-/// moments are Monday 09:00 and Monday 21:00, and measuring 12h from them would
-/// call a last run on Thursday evening three missed runs: `status` red for 48
-/// hours every week, on a monitor doing exactly what it was told.
-///
-/// Bounded two ways so an `--every 5m` file does not walk a week of moments:
-/// a horizon of eight days, which covers any weekly pattern, and a hard cap on
-/// iterations. A uniform schedule reaches its widest gap on the first step, so
-/// the cap costs it nothing.
-///
-/// `None` when the file has no schedule this can build, or names one that never
-/// fires. Both of those are their own line elsewhere and neither is a reason to
-/// call the monitor late as well.
+/// moments.**
 fn expected_gap(config: &WatchConfig, now: Epoch) -> Option<i64> {
     /// Far enough to see a whole week's pattern, and one day over so a weekly
     /// schedule is measured rather than truncated.
@@ -527,10 +463,6 @@ fn expected_gap(config: &WatchConfig, now: Epoch) -> Option<i64> {
 }
 
 /// An account with exactly one of its two lists ever reported on.
-///
-/// Built by `status` from the marks it already reads. A mark moves only when a
-/// list was actually compared, so a list with none while its sibling has one has
-/// never been read — which nothing else in the tool can say.
 struct HalfRead {
     who: String,
     reported: ListKind,
@@ -569,19 +501,9 @@ fn health(
 
     // **One list being read while the other never is.**
     //
-    // `watch_runs.outcome` is one column for a tick that covers two lists, and
-    // `TickReport::looked()` asks `any`, not `all` — so a run where followers
-    // completed and following was refused records `ok`. Every run, forever, on
-    // the account AGENTS.md files under "Known walls": `following` meets the
-    // truncation wall on every walk while `followers` completes. Nothing else
-    // tells that from a quiet account.
-    //
-    // Asked of the marks rather than of the run log, because the marks are
-    // where the durable answer already is: a mark moves only when a list was
-    // actually compared, so a list with none while its sibling has one has
-    // never once been read. That needs no new column and no threshold, and it
-    // catches the permanent case, which is the one that matters. A single
-    // half-blind run is the payload's question, not this one.
+    // Every run, forever, on the account AGENTS.md files under "Known walls":
+    // `following` meets the truncation wall on every walk while `followers`
+    // completes.
     for half in reported.iter().filter(|r| r.missing.is_some()) {
         let (read, never) = (half.reported, half.missing.expect("filtered"));
         at_least(Verdict::Warned);
@@ -593,8 +515,6 @@ fn health(
     }
 
     // A schedule the scheduler refuses is a monitor that cannot start.
-    // `describe_config` prints the clauses without evaluating anything, so this
-    // is where the schedule is built.
     //
     // **A file that names no schedule is not one of those**: the schedule can
     // come from the command line, as `snob watch --every 6h` run as a service
@@ -618,8 +538,7 @@ fn health(
     // And an address the delivery refuses is a monitor that cannot finish:
     // `delivery_from` runs before anything is opened or spent, so a bad address
     // kills every run before `record_failed_run` can file one, and the table
-    // stays empty. `webhook::problem_with_config` is the same question
-    // `snob watch check` asks.
+    // stays empty.
     if let Some(webhook) = config.and_then(|c| c.webhook.as_ref())
         && let Some(problem) =
             crate::watch::webhook::problem_with_config(&webhook.url, &webhook.headers)
@@ -628,28 +547,7 @@ fn health(
         notes.push(problem);
     }
 
-    // **Whether it is still running at all.** An `outcome` that succeeded says
-    // nothing about how old it is, and `prune` keeps the newest row per account
-    // whatever its age, precisely so this can read it. A unit that was
-    // disabled, a container nobody restarted, a process the kernel killed:
-    // `002_watch.sql` says `watch_runs` exists because "a monitor that quietly
-    // stopped looks exactly like a quiet account", and this is the reader that
-    // tells them apart.
-    //
-    // The gap comes from the schedule rather than from a guess, so a weekly
-    // monitor is not called late after two days.
-    //
-    // **Except while it waits for power.** A monitor on a laptop whose battery
-    // is critical holds the run that is due until the machine is on power
-    // again (`run::waits_for_power`); that is the monitor doing what it
-    // should, and it is said as such rather than counted late.
-    //
-    // **Only while somebody is still looking.** A monitor stopped, killed, or
-    // shut down with the machine while it waited never says that power is
-    // back, and its marker would hide a dead monitor for good. The scheduled
-    // loop looks every minute and `watch once` on a timer every period, so a
-    // last look older than one period is a monitor that is no longer there,
-    // and the lateness check below takes over from it.
+    // **Whether it is still running at all.**
     let gap = config.and_then(|c| expected_gap(c, now));
     let waiting_for_power =
         waiting_for_power.filter(|wait| gap.is_none_or(|gap| now - wait.seen <= gap));
@@ -662,11 +560,9 @@ fn health(
     } else if let Some(gap) = gap
         && let Some(newest) = runs.iter().map(|r| r.run.started_at).max()
     {
-        // A run on time may still start this much after its moment: the
-        // jitter only ever delays it, and the timer `watch unit` prints asks
-        // once a quarter of an hour. Counted without it, a healthy monitor
-        // read as "one was due by now" for part of every cycle, and a probe on
-        // `--json` flickered.
+        // A run on time may still start this much after its moment: the jitter
+        // only ever delays it, and the timer `watch unit` prints asks once a
+        // quarter of an hour.
         let slack = config
             .and_then(|c| schedule_from(&Default::default(), Some(c)).ok())
             .map_or(0, |schedule| schedule.jitter().as_secs() as i64)
@@ -688,18 +584,9 @@ fn health(
         }
     }
 
-    // What stopped the last run of each account. A cooldown lifts on its own
-    // and is worth saying rather than alarming about; a session that has gone
-    // will not come back without somebody logging in, and every run until then
-    // does nothing.
+    // What stopped the last run of each account.
     //
-    // **Only for accounts the file still names.** `last_runs` answers about
-    // every account that has ever run, and one old failed run for a stranger
-    // since removed from `watch.toml` must not pin the verdict at `Failed` for
-    // good: that is how people learn to ignore a probe. It is still worth a
-    // line, because a row nobody watches is worth explaining, and the line
-    // names the account, so several accounts do not print one sentence N
-    // times.
+    // **Only for accounts the file still names.**
     for RunOf {
         run, who, watched, ..
     } in runs
@@ -722,8 +609,7 @@ fn health(
         }
         // A last run that began well after the moment it was due for: the
         // machine slept through it, the timer missed it, or it waited for the
-        // budget or a cooldown. Worth a look, and it ends with the next run
-        // on time.
+        // budget or a cooldown.
         if *watched
             && let Some(timing) = timing_of(run).filter(|t| t.late())
             && let Some(late) = timing.late_by()
@@ -746,16 +632,9 @@ fn health(
         // **Matched as an outcome, not against literals spelled again here**:
         // `as_str`'s own doc says the vocabulary exists "so nothing has to
         // invent tokens inline, which is how two spellings of one condition get
-        // shipped". The row arrives typed, parsed at the store.
-        //
-        // A token this build does not know is `None` and falls to the arm below:
-        // a failure it cannot explain, which is the direction a probe should be
-        // wrong in. It is still printed as the word the row holds, because
-        // "ended in something this build does not know" is less use to whoever
-        // has to look than the word itself.
+        // shipped".
         match code.known() {
-            // A cooldown lifts by itself and an interrupt was the user. Neither
-            // is a monitor that needs anybody.
+            // A cooldown lifts by itself and an interrupt was the user.
             Some(RunOutcome::RateLimited | RunOutcome::Interrupted) => {
                 at_least(Verdict::Warned);
                 notes.push(format!("{who}'s last run ended in {code}"));
@@ -771,8 +650,7 @@ fn health(
     // of the file: a monitor whose `[webhook] url` moved must not be scored on
     // rows `due` can never return, and a run given the address on the command
     // line from a unit with no `watch.toml` (the README's own example) has rows
-    // with a real address the next run drains. A probe that pages for a
-    // healthy service is how people learn to ignore a probe.
+    // with a real address the next run drains.
     if owed.elsewhere > 0 {
         if config.and_then(|c| c.webhook.as_ref()).is_some() {
             // The file names an address and these are for a different one, so
@@ -789,8 +667,6 @@ fn health(
             // With no address in the file, a run given `--webhook` and a
             // `[webhook]` somebody deleted look identical from here, and
             // guessing in the alarming direction would fail the supported one.
-            // Worth a line, not a verdict — the direction `watched_pks` takes
-            // when it cannot settle who is watched.
             at_least(Verdict::Warned);
             notes.push(format!(
                 "{} queued report(s) are addressed to a webhook this file does not name, so \
@@ -839,13 +715,7 @@ pub(super) enum NextRun {
 
 /// The next run, asked of the evaluator the scheduled mode sleeps on
 /// (`schedule::due`) from the last run it would start from
-/// (`scheduled::seed_as_stored`, read and never written). Costs nothing:
-/// no session, no request. `None` when the file names no schedule that can
-/// be built, or one that never comes round, which `health` says.
-///
-/// Since when a timer has asked is read too, never written, so a calendar
-/// that has never run says what `watch once --when-due` would answer
-/// (`schedule::due_asked_since`) rather than a moment it would not keep.
+/// (`scheduled::seed_as_stored`, read and never written).
 fn next_run(paths: &AppPaths, config: &WatchConfig, now: Epoch) -> Option<NextRun> {
     let schedule = schedule_from(&Default::default(), Some(config)).ok()?;
     let last_run = super::scheduled::seed_as_stored(paths, &schedule).ok()?;
@@ -902,9 +772,8 @@ pub(super) fn describe_config(config: &WatchConfig) -> Vec<String> {
         lines.push(sentence);
     }
 
-    // Redacted, not just filtered: `webhook::check` refuses an address
-    // carrying a password because it would be echoed by `status`. One address,
-    // cleaned once, and both sentences below read it.
+    // Redacted, not just filtered: `webhook::check` refuses an address carrying
+    // a password because it would be echoed by `status`.
     let address = config
         .webhook
         .as_ref()
@@ -918,9 +787,7 @@ pub(super) fn describe_config(config: &WatchConfig) -> Vec<String> {
             }
         }
         // What the **file** says, which is not the whole of where a report can
-        // go. `--webhook` on the command line is a supported way to run this and
-        // leaves nothing here to read back, so a flat "sends nothing" would
-        // describe a monitor that delivers on every run as one that does not.
+        // go.
         _ => lines.push(
             "No address here: the report goes to standard output unless a run is given \
              --webhook"
@@ -932,9 +799,7 @@ pub(super) fn describe_config(config: &WatchConfig) -> Vec<String> {
 
     // The two facts above are one fact, not two unrelated lines: somebody
     // else's names leaving this machine on every run is the part of this
-    // configuration a person would most want to be reminded of. "Their" rather
-    // than a count, because `watching_line` directly above has just said how
-    // many.
+    // configuration a person would most want to be reminded of.
     if let Some(address) = &address
         && config.accounts.iter().any(|a| !a.is_own())
     {
@@ -949,12 +814,7 @@ pub(super) fn describe_config(config: &WatchConfig) -> Vec<String> {
 /// Who a run over this file would actually walk.
 ///
 /// **Asked of `watched_from`, which is the function that decides it**, so the
-/// sentence cannot describe a run that does something else. The hard shape is a
-/// file naming one stranger and not you: `watched_from` falls back to the
-/// viewer only when the account list is empty.
-///
-/// `None` for the target, because there is no command line here: this is what a
-/// scheduled run over this file alone would walk.
+/// sentence cannot describe a run that does something else.
 fn watching_line(config: &WatchConfig) -> String {
     let watched = watched_from(None, Some(config), None);
     // A `self` is its viewer's own account, so each viewer's counts once.

@@ -1,16 +1,4 @@
 //! The profile-picture viewer: one row, two verbs.
-//!
-//! At a terminal a person usually wants to *look* at the full-size picture,
-//! and only sometimes to keep it, so the row takes the story browser's verbs
-//! exactly: Enter writes the bytes into the session's scratch directory and
-//! hands the file to the system viewer, D saves them here under the name the
-//! static command writes. The bytes are already in hand when this opens — the fetch
-//! happened before, where the cancel check and the cooldown gate live — so
-//! nothing in this loop touches the network.
-//!
-//! A list of one is still drawn as a list, deliberately: the row is where
-//! the picture's size and kind are said, and the frame is the same shape a
-//! reader already knows from `stories` and `highlights`.
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -137,8 +125,7 @@ const KEYS: &[help::Key] = &[
     help::STOP,
 ];
 
-/// Draws the one row inside the shared chrome. The row is always the
-/// selection — there is nothing else to select.
+/// Draws the one row inside the shared chrome.
 fn draw(frame: &mut Frame<'_>, picture: &Picture, viewer: &Viewer, note: &str, colors: bool) {
     let area = frame.area();
     let block = tui::top_right(

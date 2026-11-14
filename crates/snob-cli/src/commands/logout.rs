@@ -11,9 +11,6 @@ use crate::ui;
 /// Deletes the session and the browser profile of `account`, the account
 /// resolved for this run, or of every account with `--all` or with none
 /// resolved.
-///
-/// The accounts' data stays, and so do their places in the registry, as
-/// accounts with no session: logging out is not forgetting.
 pub async fn run(
     args: LogoutArgs,
     secrets: SecretStore,
@@ -30,42 +27,28 @@ pub async fn run(
         _ => everyone.clone(),
     };
     // Every profile there is when no other account's is to be kept: with
-    // `--all` or no account resolved, and where there is no other account. A
-    // login's unfinished profile and one nobody could be named for hold live
-    // sessions too, and nothing else would ever clear them.
+    // `--all` or no account resolved, and where there is no other account.
     let sweep = all || everyone.len() <= 1;
-    // The jobs of the accounts leaving first: a walk still running would go
-    // on with the session being deleted, and start a browser again on the
-    // profile about to go. Their locks are held to the end, an account's
-    // that never ran a job included, so none starts meanwhile: a start
-    // waiting on one checks the session again once it has it, and finds it
-    // gone (`jobs::start::make`).
+    // The jobs of the accounts leaving first: a walk still running would go on
+    // with the session being deleted, and start a browser again on the profile
+    // about to go.
     let _stopping =
         crate::jobs::stop_before_leaving(leaving.iter().map(|pk| paths.account(*pk)).collect())
             .await?;
     // Then every other process still holding one of these sessions: a walk
-    // typed in another terminal, the monitor's run, an agent's call. Each is
-    // refused its next request, and starts no browser on the profile about
-    // to go; before the browsers close, so none is started again after. For
-    // good: a later login lets in its own session, not these.
+    // typed in another terminal, the monitor's run, an agent's call.
     crate::owner::sign_out(paths, &leaving);
-    // A browser still running on a profile about to go would write into it
-    // as it went, or keep Windows from removing it. Only the profiles going:
-    // another account's browser is left to the commands using it.
+    // A browser still running on a profile about to go would write into it as
+    // it went, or keep Windows from removing it.
     crate::owner::release(paths, if sweep { None } else { account.map(|a| a.pk()) }).await;
     let stores: Vec<_> = leaving
         .iter()
         .map(|pk| secrets.session_of(&paths.account(*pk)))
         .collect();
     // Read through the store, which owns what counts as a stored session and why
-    // — a corrupt credential is still a credential. `purge::survey` asks the same
-    // question the same way.
+    // — a corrupt credential is still a credential.
     let had_session = stores.iter().any(|s| s.something_is_stored());
-    // Not `?`. A keyring that refuses must not take the browser profiles with
-    // it: each holds a logged-in session too, and `purge` already refuses to
-    // let one locked item hold the rest back for exactly this reason. Every
-    // session is tried, and the first refusal is carried to the end and
-    // returned there.
+    // Not `?`.
     let mut removal = Ok(());
     for store in &stores {
         let deleted = store.delete();
@@ -85,9 +68,7 @@ pub async fn run(
             );
         }
         (Ok(()), false) => crate::ui::say!("There was no session stored."),
-        // Nothing is claimed here. What refused says so itself, printed by
-        // `main`, and "the session is still active on Instagram" would read as
-        // though the local copy were the part that had gone.
+        // Nothing is claimed here.
         (Err(_), _) => {}
     }
 
@@ -95,7 +76,6 @@ pub async fn run(
     // (`headless/`), so it holds the live session — kept current by the
     // browser, fresher than the stored copy — and a logout that left it would
     // leave the session on the machine while saying it had gone.
-    // `--purge-profile` is accepted and changes nothing.
     let _ = args.purge_profile;
     let profiles = if sweep {
         crate::headless::profile::every_profile(paths)
@@ -115,11 +95,7 @@ pub async fn run(
         if !profile.exists() {
             continue;
         }
-        // Guarded like every other recursive delete in the tool. The path
-        // comes from `directories` rather than from anything typed, but that
-        // is exactly the case the guard is for: a `ProjectDirs` that resolved
-        // oddly is what turns "remove the browser profile" into something far
-        // worse, and `purge` treats this check as mandatory.
+        // Guarded like every other recursive delete in the tool.
         if !paths::is_safe_to_remove(&profile) {
             ui::warn(&format!(
                 "{} is too close to the root to remove; delete it by hand",
@@ -127,11 +103,9 @@ pub async fn run(
             ));
             continue;
         }
-        // Collected rather than `?`-ed, for the same reason `removal` above
-        // is: one refusal must not decide the other, and a keyring that also
-        // refused is still said at the end. A browser still open on a profile
-        // makes this fail — another snob mid-run — and one the owner closed
-        // a moment ago is let go of patiently.
+        // Collected rather than `?`-ed, for the same reason `removal` above is:
+        // one refusal must not decide the other, and a keyring that also
+        // refused is still said at the end.
         match paths::remove_tree_patiently(&profile) {
             Ok(()) => deleted = true,
             Err(e) => {
@@ -147,14 +121,7 @@ pub async fn run(
         }
     }
 
-    // After the profiles, so that one refusal does not decide the other. There
-    // is no documented exit code for "a local delete was refused", and neither
-    // 3 nor 5 would be true, so this becomes the generic failure.
-    //
-    // The credential goes first when both refused: a browser profile left
-    // behind is a housekeeping failure, and a session left in the keyring is a
-    // failure at the only thing this command exists for. The other is still
-    // said out loud rather than swallowed.
+    // After the profiles, so that one refusal does not decide the other.
     if removal.is_err()
         && let Some((profile, io)) = &profile_failure
     {

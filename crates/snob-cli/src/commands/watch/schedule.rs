@@ -1,8 +1,4 @@
 //! The schedule, from the flags or from the file.
-//!
-//! The translation layer and nothing more: what either source wrote becomes a
-//! `snob_core::watch::schedule::Schedule` here, and every rule about when that
-//! schedule comes round is the domain's.
 
 use anyhow::Result;
 use snob_core::watch::schedule::{self, Schedule, Weekday};
@@ -13,9 +9,6 @@ use crate::report;
 
 /// The schedule as written, before it is built: whichever of the two sources
 /// won, in the words it was given in.
-///
-/// The flags win as a set rather than field by field, because a schedule half
-/// from the file and half from the command line is one nobody can read.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct When {
     cron: Option<String>,
@@ -27,29 +20,13 @@ pub(super) struct When {
 
 /// Resolves which source the schedule comes from.
 ///
-/// Asked by [`schedule_from`] and by the line printed at startup, so the
-/// sentence on screen cannot describe a different schedule from the one that
-/// runs.
-///
-/// **It chooses a source; it does not copy fields.** A hand-written copy drops
-/// the next field added to `watch.toml` silently, with the banner announcing
-/// whatever the default happened to be. The two `From` impls are the only place
-/// the fields are named, so a field added to either source arrives here by
-/// being a field.
+/// **It chooses a source; it does not copy fields.**
 pub(super) fn when_from(args: &WatchRunArgs, configured: Option<&WatchConfig>) -> When {
     let given =
         args.cron.is_some() || !args.at.is_empty() || !args.on.is_empty() || args.every.is_some();
 
     // The schedule halves come as a set, so a flag does not merge into a
-    // configured calendar — but the jitter is not one of those halves. `given`
-    // looks only at `cron`/`at`/`on`/`every`, so `snob watch --jitter 0` must
-    // survive a schedule from the file, and a file's `jitter = "0"` must survive
-    // a schedule typed on the command line: both are documented as turning
-    // jitter off, unqualified.
-    //
-    // Worked out once, over both sources, because it does not depend on which of
-    // them won the halves — and applied after the choice rather than inside it,
-    // so it cannot be forgotten in one arm and not the other.
+    // configured calendar — but the jitter is not one of those halves.
     let jitter = args.jitter.or_else(|| configured.and_then(|c| c.jitter));
 
     let mut when = match (given, configured) {
@@ -88,11 +65,6 @@ impl From<&WatchConfig> for When {
 }
 
 /// The two halves of a calendar, parsed and checked together.
-///
-/// Shared by the wizard validating what it is about to write and a run
-/// validating what it read back: two halves of one contract, down to the
-/// sentence that says what a day looks like, and a contract with two
-/// implementations is one that can be half-changed.
 pub(super) fn calendar_from<S: AsRef<str>>(days: &[S], times: &[S]) -> Result<Schedule> {
     let days = days_named(days)?;
     let times = times
@@ -103,10 +75,6 @@ pub(super) fn calendar_from<S: AsRef<str>>(days: &[S], times: &[S]) -> Result<Sc
 }
 
 /// The `--on` half, parsed, for both of the schedules that have one.
-///
-/// Shared for the reason the function above is: `--on tues` must not mean one
-/// thing to a calendar and another to a days-only schedule, and the sentence
-/// that says what a day looks like is part of that contract.
 fn days_named<S: AsRef<str>>(days: &[S]) -> Result<Vec<Weekday>> {
     days.iter()
         .map(|day| {
@@ -117,11 +85,7 @@ fn days_named<S: AsRef<str>>(days: &[S]) -> Result<Vec<Weekday>> {
         .collect()
 }
 
-/// Whether `config` names no schedule at all: no `every`, `at`, `on` or
-/// `cron`. Not a broken file: the schedule can come from the flags, as
-/// `snob watch --every 6h` run as a service does, so `status` and `check`
-/// call it a warning, and `watch once --when-due`, which reads the file
-/// alone, says where to put one.
+/// Whether `config` names no schedule at all: no `every`, `at`, `on` or `cron`.
 pub(super) fn names_no_schedule(config: &WatchConfig) -> bool {
     config.every.is_none() && config.at.is_empty() && config.on.is_empty() && config.cron.is_none()
 }
@@ -129,10 +93,7 @@ pub(super) fn names_no_schedule(config: &WatchConfig) -> bool {
 /// Builds the schedule from the flags, or the file, or explains what is
 /// missing.
 ///
-/// **A flag replaces the schedule rather than merging with it.** Half from the
-/// file and half from the command line is a schedule nobody can read back: the
-/// only honest reading of `--every 6h` against a configured `--on mon` is the
-/// one the person typing meant, and there is no way to know which.
+/// **A flag replaces the schedule rather than merging with it.**
 pub(super) fn schedule_from(
     args: &WatchRunArgs,
     configured: Option<&WatchConfig>,
@@ -156,7 +117,6 @@ pub(super) fn schedule_from(
         // names none, and it would be refused with "a calendar needs a time of
         // day" without `every` being looked at — the one shape README.md and
         // AGENTS.md both advertise.
-        // Schedule::days says why the interval cannot be added afterwards.
         Schedule::days(&days_named(&on)?, every)?
     } else if !at.is_empty() || !on.is_empty() {
         calendar_from(&on, &at)?
@@ -171,11 +131,6 @@ pub(super) fn schedule_from(
     };
 
     // An interval alongside a calendar is a floor on it, not a second schedule.
-    // `--every 2w --on mon --at 09:00` is "one Monday in every two weeks".
-    //
-    // Not for the days-only branch above: `Schedule::days` has already set the
-    // interval, because a grid naming every minute of the day does not survive
-    // `validated` without one.
     if let Some(every) = every
         && (cron.is_some() || !at.is_empty())
     {
@@ -188,9 +143,6 @@ pub(super) fn schedule_from(
 }
 
 /// The opening line, so somebody starting this can see it understood them.
-///
-/// It names the schedule, not only the jitter: a monitor about to sit for a
-/// fortnight should not open with a sentence about seconds.
 pub(super) fn describe_schedule(when: &When, schedule: &Schedule, now: bool) -> String {
     let parts = report::schedule_clauses(when.every, &when.on, &when.at, when.cron.as_deref());
 

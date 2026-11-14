@@ -7,9 +7,7 @@ pub(super) struct Request(
 );
 
 /// An `idle` lock in `block` mode, which delays automatic sleep and leaves a
-/// suspend somebody asks for alone. Asked over the system bus with a blocking
-/// call, which takes milliseconds and happens at most once per stretch of a
-/// walk.
+/// suspend somebody asks for alone.
 pub(super) fn request(reason: &'static str) -> Option<Request> {
     let asked = || -> zbus::Result<zbus::zvariant::OwnedFd> {
         let bus = zbus::blocking::Connection::system()?;

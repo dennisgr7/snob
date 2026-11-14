@@ -1,8 +1,4 @@
 //! Markdown tables.
-//!
-//! A format for people rather than for parsers: same columns as the terminal
-//! table, with the usernames as links so they stay clickable once the file is
-//! pasted somewhere.
 
 use snob_core::model::User;
 
@@ -60,27 +56,17 @@ fn link(user: &User) -> String {
 /// Escapes what would otherwise break the table or the link around it, or be
 /// read as HTML.
 ///
-/// The backslash goes first: doing it after the pipe would escape the escape
-/// and leave the pipe bare. A newline cannot live in a cell at all, so it
-/// becomes a space.
-///
-/// **`<`, `>` and `&` become entities**, because CommonMark passes inline
-/// HTML through and the renderers people open these files in (GitHub, VS
-/// Code's preview, Obsidian) draw it: a display name of
-/// `<img src="https://somewhere.test/t.png">` fetched that picture from
-/// whoever named it, telling them when the file was opened and from where,
-/// and an `<a href>` put a link in the row as though this file had written
-/// it. The `&` goes first, so the entities written here are not escaped again,
-/// and is escaped at all because an entity a name spells out (`&#8238;`) would
-/// otherwise be drawn as the character `printable` took away. Entities rather
-/// than backslashes: every renderer reads an entity, and not every one takes
-/// a backslash before `<`.
+/// **`<`, `>` and `&` become entities**, because CommonMark passes inline HTML
+/// through and the renderers people open these files in (GitHub, VS Code's
+/// preview, Obsidian) draw it: a display name of `<img
+/// src="https://somewhere.test/t.png">` fetched that picture from whoever named
+/// it, telling them when the file was opened and from where, and an `<a href>`
+/// put a link in the row as though this file had written it.
 ///
 /// The brackets are here because every string this escapes is then wrapped in
 /// `[…]` by [`link`], and a `]` in a name ends that label early — so a username
 /// of `x](http://evil.test)` produced a second, working link to somewhere else,
-/// sitting in the row as though this file had put it there. The destination is
-/// a separate problem with a separate answer: `User::profile_url` encodes.
+/// sitting in the row as though this file had put it there.
 pub(crate) fn escape(text: &str) -> String {
     text.replace('\\', "\\\\")
         .replace('&', "&amp;")

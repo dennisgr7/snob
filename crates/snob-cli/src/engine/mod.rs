@@ -1,24 +1,7 @@
 //! Getting a list, and everything that decides how.
-//!
-//! This is the part of the tool that has rules rather than opinions: who is
-//! being asked about, whether the network has to be touched at all, what a
-//! walk costs, and when a stored answer is still true. It returns data and a
-//! description of where the data came from; it never decides how any of it
-//! looks. That is [`crate::commands`]' job.
-//!
-//! Every list, crossing and summary the tool prints comes out of [`list`];
-//! what only reads captures it stored, without walking, includes
-//! `freshness::fresh_members`, [`people::in_common`] and the monitor's
-//! comparison in [`watch`].
 
 /// How old a stored capture whose counter has not moved may be and still be
-/// served: a day. `--max-age`'s default, the profile browser's and the
-/// monitor's.
-///
-/// Longer than any schedule's interval plus its jitter, so the monitor serves
-/// an unchanged capture on its next run instead of walking it again; and short
-/// enough to catch, within a day, the change a counter cannot see (one arrival
-/// and one departure between two looks).
+/// served: a day.
 pub const DEFAULT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
 pub mod check;
@@ -43,11 +26,10 @@ use crate::ui;
 /// Where a returned list came from, in the sense that decides whether two of
 /// them may be crossed against each other.
 ///
-/// The distinction that matters is not how old a stored list is. It is whether
-/// anything in **this run** established that it still describes the account:
-/// two lists a month apart are fine to cross if both counters were checked just
-/// now and neither had moved, and two lists an hour apart are not fine if
-/// nobody looked.
+/// It is whether anything in **this run** established that it still describes
+/// the account: two lists a month apart are fine to cross if both counters were
+/// checked just now and neither had moved, and two lists an hour apart are not
+/// fine if nobody looked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provenance {
     /// Walked in this run. It is the account as it is.
@@ -61,27 +43,18 @@ pub enum Provenance {
     /// Stored, served because `--offline` said not to look.
     CacheFlag,
     /// Stored, served because the counter moved but the list was walked less
-    /// than [`ListQuery::walk_at_most_every`] ago. The change is real and is
-    /// left for a later walk to read: a monitor re-walking a list every time a
-    /// counter ticks is the volume Instagram judges an account on.
+    /// than [`ListQuery::walk_at_most_every`] ago.
     WalkedRecently,
 }
 
 impl Provenance {
     /// Whether this list is known to describe the account as it is now.
-    ///
-    /// The four that answer `false` are the four where nothing in this run
-    /// read the list: during a cooldown, after a failed poll or under
-    /// `--offline` nothing was spent finding out, and for `WalkedRecently` the
-    /// counter was polled and had moved, but the list was left for a later
-    /// walk. That is what makes them safe to *serve* and unsafe to *cross*.
     pub fn describes_now(self) -> bool {
         matches!(self, Self::Walked | Self::CounterVerified)
     }
 
-    /// The word a program reads this by (`--progress-json`'s `served`
-    /// event, which `snob mcp` hands an agent as `served`). Part of that
-    /// contract.
+    /// The word a program reads this by (`--progress-json`'s `served` event,
+    /// which `snob mcp` hands an agent as `served`).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Walked => "walked",
@@ -96,80 +69,33 @@ impl Provenance {
 
 #[derive(Debug)]
 pub struct ListOutcome {
-    /// How this list was obtained, and therefore what is known about whether
-    /// it is still true. Whether it is stored falls out of it
-    /// ([`Self::is_stored`]), which is why there is no second field that could
-    /// disagree with this one.
+    /// How this list was obtained, and therefore what is known about whether it
+    /// is still true.
     pub provenance: Provenance,
     pub reason: StopReason,
     pub requests: u32,
     /// When the walk that produced this list **began**.
-    ///
-    /// Half of an interval. A list is not an instant: walking six thousand
-    /// accounts at the documented pace takes hours of sittings and rests, and
-    /// days under the daily ceiling on accounts, and whether two lists
-    /// describe one moment is a question about the time between the two
-    /// walks, not between the two moments they happened to finish at.
     pub started_at: Epoch,
-    /// When it finished. The date shown to a person, and the one the store
-    /// orders by.
+    /// When it finished.
     pub taken_at: Epoch,
     /// Whose list this is.
-    ///
-    /// The caller asked with a name and gets back an id, which is the only
-    /// answer that cannot be wrong: a name has to be resolved, may not be the
-    /// spelling Instagram uses, and — for your own account — may not be known
-    /// at all until something goes and looks it up.
     pub account_pk: Pk,
     /// The stored capture these users came out of.
-    ///
-    /// Carried rather than looked up afterwards. The monitor has to know which
-    /// row this is to compare it against the one it last reported, and asking
-    /// the store for "the newest one" after the fact is a different question:
-    /// another process sharing this database — the very thing the request
-    /// budget is built to expect — can have closed a walk in between, and the
-    /// answer would then name a capture these users did not come from.
     pub snapshot_id: i64,
     /// What Instagram actually said, when a walk stopped because it said
     /// something.
-    ///
-    /// [`StopReason`] is coarser than the error behind it on purpose — the
-    /// store only needs to know whether the list is usable. But
-    /// `SessionInvalid` covers both "log in again" and "Instagram wants the
-    /// account verified", and those are exit code 3 and exit code 4, which a
-    /// script reading the exit code has to be able to tell apart without
-    /// reading English.
     pub stopped_by: Option<ExitCode>,
     /// Whether a second run would continue this walk rather than start it
     /// again.
-    ///
-    /// Asked of the store once the snapshot is closed, rather than worked out
-    /// from [`Self::reason`], because the reason does not know: `Truncated`
-    /// arrives both from the reclassification that happens after pagination has
-    /// already ended — no cursor to store — and from the four guards that stop
-    /// in the middle of it with one saved. Only the store can tell those apart,
-    /// and only the store knows whether the partial has already aged out of the
-    /// resume window.
     pub resumable: bool,
     /// How many follows and unfollows the account made through snob since a
-    /// stored list of its own following was walked, which it is handed out
-    /// with applied (`serve_stored`). Zero for a walk, and for every other
-    /// list. Said beside the list, never folded into its date: the list is
-    /// still the walk's, plus what this computer knows it changed.
+    /// stored list of its own following was walked, which it is handed out with
+    /// applied (`serve_stored`).
     pub own_changes: usize,
 }
 
 impl ListOutcome {
-    /// What a stored snapshot answers with. Complete by construction: the
-    /// store only ever hands back snapshots that are.
-    ///
-    /// The provenance is not defaulted here: every caller has to say which of
-    /// the storage paths it is, because that is what decides whether the list
-    /// may be crossed.
-    ///
-    /// The row itself rather than fields picked out of it, so the two epochs
-    /// cannot be transposed and the account cannot come from anywhere but the
-    /// row the members come from.
+    /// What a stored snapshot answers with.
     pub(crate) fn cached(snapshot: &snapshots::Snapshot, provenance: Provenance) -> Self {
         debug_assert!(
             !matches!(provenance, Provenance::Walked),
@@ -207,10 +133,6 @@ impl ListOutcome {
     }
 
     /// The code a command should exit with when it has to refuse this result.
-    ///
-    /// What Instagram said beats what the store had to record, because the
-    /// store's vocabulary is about whether the list is usable and the exit
-    /// code is about what the caller should do next.
     pub fn exit_code(&self) -> ExitCode {
         self.stopped_by
             .unwrap_or_else(|| crate::exit::from_stop_reason(self.reason))
@@ -218,15 +140,6 @@ impl ListOutcome {
 
     /// The code for a result that **was printed** out of this list, short or
     /// not.
-    ///
-    /// A cap the user asked for is not a failure, so `PageLimit` sits with
-    /// `Completed`; everything else keeps the code that says what stopped the
-    /// walk, so a script can tell "wait" from "log in again". `lists` and
-    /// `sets` both ask it, so a page cap exits alike from either.
-    ///
-    /// A stored list needs no arm of its own. `ListOutcome::cached` is the
-    /// only way to a provenance other than `Walked` and it records
-    /// `Completed`, so anything out of storage arrives at the first arm.
     pub fn exit_code_for_a_printed_result(&self) -> ExitCode {
         match self.reason {
             StopReason::Completed | StopReason::PageLimit => ExitCode::Ok,
@@ -234,9 +147,8 @@ impl ListOutcome {
         }
     }
 
-    /// A walked-or-stored outcome with every other field at its plainest:
-    /// one request, epoch zero, account and capture 1. Tests override what
-    /// they assert on.
+    /// A walked-or-stored outcome with every other field at its plainest: one
+    /// request, epoch zero, account and capture 1.
     #[cfg(test)]
     pub(crate) fn for_test(provenance: Provenance, reason: StopReason) -> Self {
         Self {
@@ -260,11 +172,6 @@ impl ListOutcome {
 }
 
 /// What a list is asked for: which account, and how the answer may be got.
-///
-/// Only what the engine reads: the rest of `cli::ListArgs` is presentation
-/// (the format, the output path, the filters, the cap), and the monitor asks
-/// for lists without a command line at all. `commands::common` is where a
-/// `ListArgs` becomes one.
 #[derive(Debug, Clone)]
 pub struct ListQuery {
     /// The account, as typed. `None` is the session's own.
@@ -281,9 +188,7 @@ pub struct ListQuery {
     pub no_resume: bool,
     /// Stop after this many pages.
     pub max_pages: Option<u32>,
-    /// What a walk does when the day's accounts run out before the list
-    /// does. `None` pauses, and says so first when the list will not fit;
-    /// `Some` is a caller that already knows and wants nothing said.
+    /// What a walk does when the day's accounts run out before the list does.
     pub over_budget: Option<snob_ig::pager::OverBudget>,
     /// The shortest gap between two walks of one list, whatever the counter
     /// says. `None` walks whenever the stored list no longer answers.
@@ -291,29 +196,12 @@ pub struct ListQuery {
 }
 
 /// Gets one list, deciding along the way whether anything needs fetching.
-///
-/// The order of the checks is the whole policy, and each one exists to stop a
-/// request being spent that did not have to be:
-///
-/// 1. In cooldown nothing may be spent, so only storage can answer.
-/// 2. With `--offline` the network is off, resolution included — and with it the
-///    consent question, which is about enumerating somebody rather than about
-///    reading what was already enumerated.
-/// 3. Otherwise, someone else's account needs consent before it is enumerated,
-///    and before it is resolved.
-/// 4. The cooldown is checked again, because it can land while step 3 waits.
-/// 5. One counter poll says whether the list moved at all.
-/// 6. If it did not, and what is stored is fresh enough, storage answers.
-/// 7. Otherwise, walk.
 pub async fn list(
     app: &mut App,
     args: &ListQuery,
     kind: ListKind,
 ) -> Result<(Vec<User>, ListOutcome)> {
-    // Measured rather than added up along the way. Every request goes through
-    // the pacer, including the ones a retry makes and the ones spent before
-    // the walk begins, so asking it afterwards is the only count that cannot
-    // drift from what was really charged.
+    // Measured rather than added up along the way.
     let before = app.client().pacer().spent();
     let (users, mut outcome) = decide(app, args, kind).await?;
     outcome.requests = app.client().pacer().spent().saturating_sub(before);
@@ -332,11 +220,6 @@ async fn decide(
     // **`--offline` is not asked about**, because there is nothing to agree to:
     // consent governs enumerating somebody else's lists, and this reads a list
     // that was already walked — with permission — off this machine's own disk.
-    // Nothing is resolved over the network either, so the rule that consent
-    // comes before resolution is not in play. Asking would also make `snob
-    // unfollowers someone --offline` from cron or down a pipe exit 130 over an
-    // answer that costs nothing, and `cooldown::serve` asks nothing about the
-    // same stored lists either.
     if !args.cache {
         ask_consent_with(app, args, ui::can_be_asked()).await?;
     }
@@ -350,9 +233,7 @@ async fn decide(
         return cooldown::serve(app, args, kind, &held);
     }
 
-    // A crossing asks for two lists, and resolving is a request. Reusing what
-    // the first call worked out is what stops the second asking Instagram the
-    // identical question about the identical account seconds later.
+    // A crossing asks for two lists, and resolving is a request.
     let target = match app.resolved_target(args.target.as_deref()) {
         Some(target) => target,
         None => {
@@ -368,11 +249,6 @@ async fn decide(
 
     // The user row has to exist before the account row: `accounts.pk`
     // references `users.pk`.
-    //
-    // Two calls rather than one, because "we know this account exists" and "we
-    // know what it is called" are different claims: writing a name never
-    // learned would put the numeric id in `users.username`, clobbering a
-    // correct stored one and filing a rename that never happened.
     match target.username.as_deref() {
         Some(username) => {
             users::upsert(app.db().conn(), &User::named(target.pk, username)).map(|_| ())?
@@ -391,8 +267,7 @@ async fn decide(
             ));
         };
         // `--offline` is a promise not to spend a request, so nothing here
-        // checked whether the stored list is still true. That is exactly what
-        // makes it unsafe to cross against another one.
+        // checked whether the stored list is still true.
         return serve_stored(app, &snapshot, Provenance::CacheFlag);
     }
 
@@ -401,13 +276,11 @@ async fn decide(
 
 /// A stored capture as the answer: its members, and where they came from.
 ///
-/// **The account's own following is handed out with the follows and
-/// unfollows it made through snob since the walk applied**
+/// **The account's own following is handed out with the follows and unfollows
+/// it made through snob since the walk applied**
 /// (`snob_store::store::own_writes`), and says so, naming them: the list is
-/// still the walk's, of its date and provenance, plus what this computer
-/// knows it changed, having sent it. Every other list is the walk's alone.
-/// The monitor compares captures by their id, not these members, so what it
-/// reports is what was walked.
+/// still the walk's, of its date and provenance, plus what this computer knows
+/// it changed, having sent it.
 pub(super) fn serve_stored(
     app: &App,
     snapshot: &snapshots::Snapshot,
@@ -435,16 +308,8 @@ pub(super) fn serve_stored(
 /// a request: asking afterwards means that answering "no" has still spent one
 /// on a run the user never authorized.
 ///
-/// The price of asking first is that the name shown is the one typed rather
-/// than the one Instagram spells. That costs nothing when it is wrong, and the
-/// only account it can wrongly ask about is your own, which needs you to have
-/// typed your own name.
-///
 /// **The third argument is for tests only**; `decide` passes
-/// `ui::can_be_asked()`. Being a terminal is a property of the process's
-/// streams, which `cargo test` answers differently depending on where the
-/// suite was started from — the same reason `Presentation` carries
-/// `interactive` as data rather than asking at the point of use.
+/// `ui::can_be_asked()`.
 #[doc(hidden)]
 pub async fn ask_consent_with(
     app: &mut App,
@@ -455,17 +320,13 @@ pub async fn ask_consent_with(
         return Ok(()); // your own account, nothing to agree to
     };
     // Cleaned before it is used as a key, so the answer is filed under the
-    // account rather than under a spelling of it. `clean` only strips a leading
-    // at sign and is idempotent, so this holds whether or not the name arrives
-    // already cleaned.
+    // account rather than under a spelling of it.
     let name = target::clean(typed);
     if args.yes || app.has_consent(name) {
         return Ok(());
     }
 
-    // Compared raw, deliberately. A typed name with a zero-width character in
-    // it is not your own account, and filtering before this comparison would
-    // make it match — which skips the question for somebody else's lists.
+    // Compared raw, deliberately.
     let is_own_name = app
         .viewer()
         .username
@@ -481,14 +342,9 @@ pub async fn ask_consent_with(
     // `report` want.
     let shown = target::label(app, args.target.as_deref());
 
-    // Being unable to ask and being told no are two different events:
-    // `confirm` answers with its default the moment nobody can answer, which
-    // would blame the user for a "no" nobody gave.
-    //
-    // What is asked here is whether somebody is at the keyboard, and nothing
-    // else. The question is written to standard error and the answer read from
-    // standard input, so a pipe or a redirect on standard output does not touch
-    // it — and `snob scan someone | jq` is a shape the README promises.
+    // Being unable to ask and being told no are two different events: `confirm`
+    // answers with its default the moment nobody can answer, which would blame
+    // the user for a "no" nobody gave.
     if !someone_is_there {
         // Which way to answer in advance is the *caller's* fact, not this
         // function's, and it is the one thing this hands over: the sentence
@@ -509,8 +365,7 @@ pub async fn ask_consent_with(
     {
         return Err(crate::report::refuse_declined(&shown));
     }
-    // Asked and answered. A crossing wants two lists and a summary four, and
-    // asking again about the same account reads as not having listened.
+    // Asked and answered.
     app.record_consent(name);
     Ok(())
 }

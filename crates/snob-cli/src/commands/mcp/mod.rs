@@ -1,67 +1,19 @@
 //! `snob mcp`: snob as a Model Context Protocol server, on standard input and
-//! output, for an agent's client to start, or with `--listen` over HTTP on
-//! loopback, behind a key, for a tunnel of the person's own (`http.rs`).
+//! output, or with `--listen` over HTTP on loopback behind a key (`http.rs`).
+//! AGENTS.md, "The MCP server", has the rules this keeps.
 //!
-//! The server is a dispatcher and nothing else. It builds no client, opens no
-//! database and spends nothing; the one thing it reads is the MCP key, and
-//! only to serve over HTTP. Each tool call becomes one `snob` command
-//! (`tools.rs`), run as a child process (`child.rs`), whose answer is filtered
-//! and handed back (`answer.rs`). AGENTS.md, "The MCP server", has the rules
-//! this keeps.
-//!
-//! **What reaches someone else runs only after a yes for that one call**: a
-//! follow, an unfollow, and walking another account's lists. Three ways of
-//! asking, tried in this order ([`Server::consent`]):
-//!
-//! 1. **A form the client shows.** On 2026-07-28 and later the server may not
-//!    send a request of its own, so the call answers `input_required` with
-//!    the question, and the client calls again with the answer and the ticket
-//!    handed out with it (`seal.rs`). On older revisions the server asks with
-//!    `elicitation/create` while the call waits.
-//! 2. **The chat**, for a client that cannot show a form (most cannot): the
-//!    call answers, as a result that is not an error, with the question and a
-//!    `confirmation` token, which the agent puts to the person and hands back
-//!    on the same call only if they say yes. `--confirm-in-chat` says what
-//!    that may cover.
-//! 3. Neither: refused, and nothing is run.
-//!
-//! Every ticket is good once, for the command it was asked about, for ten
-//! minutes. **The yes comes from the client, not provably from the person**:
-//! the client declares what it can show, and an agent can answer a question
-//! in the chat itself. So the tickets keep an agent to the call it asked
-//! about and to one run of it, and the real gate on a write is the client's
-//! own permission prompt before a tool runs, which `snob mcp config` says to
-//! keep on "ask".
-//!
-//! **A few calls at a time, and one that may reach Instagram** (`limits.rs`),
-//! decided before anything is asked; a call past a limit answers `busy` and
-//! is never queued.
-//!
-//! **What was done on a yes is recorded where the person sees it.** A call
-//! run on a yes hands its child how the yes was given and the client's name
-//! (`tools::Confirmed`), and the child records the act in the account's
-//! database before its first request; `snob status` lists the last day's.
-//! The follows and unfollows made that way are capped at
-//! `--max-writes-per-day` (10 when not given) in any 24 hours, counted on
-//! the account, whichever server or client made them.
-//!
-//! **A long list is handed back a page at a time** (`answer::page`), and a
-//! page after the first walks nothing: it is handed back from the whole list
-//! the first call read, which the server holds a while (`pages.rs`), or else
-//! read from the store, and it asks nothing.
-//!
-//! **A list that may be walked runs as a job** (`jobs/`, `tools::Run::Job`),
-//! started by a `snob __job start` child and answered with its result when
-//! it ends within the call's `wait_seconds`, or else with its id, which
-//! `snob_job` asks about (`job.rs`). A job outlives the call, the client and
-//! this server; the call's child is what is stopped when the call is
-//! canceled, and it stops the job only while it has not handed the id over.
-//!
-//! **A client that takes MCP Tasks gets a task for that job** (`tasks.rs`):
-//! the call waits a few seconds for the walk and then answers with a task
-//! whose id is the job's, which `tasks/get` and `tasks/cancel` read and stop
-//! through the same `snob __job` children `snob_job` and `snob_job_cancel`
-//! run. The yes, when the call needs one, is settled before the job starts.
+//! - **Every tool call is a child `snob`** (`tools.rs`, `child.rs`); the
+//!   server builds no client and opens no database.
+//! - **What reaches someone else runs only after a yes for that one call**,
+//!   asked in a form the client shows, else in the chat with a `confirmation`
+//!   token (`seal.rs`). The yes comes from the client, not provably from the
+//!   person.
+//! - **A few calls at a time, and one that may reach Instagram**
+//!   (`limits.rs`), decided before anything is asked; past a limit a call
+//!   answers `busy` and is never queued.
+//! - A long list is handed back a page at a time (`answer::page`,
+//!   `pages.rs`); a list that may be walked runs as a job (`job.rs`), and a
+//!   client that takes MCP Tasks gets a task for it (`tasks.rs`).
 
 pub mod answer;
 pub mod child;
@@ -99,9 +51,7 @@ use crate::exit::ExitCode;
 use child::Launch;
 use tools::{About, Run};
 
-/// How often a running call tells the client it is alive. A walk is minutes
-/// of deliberate pacing with nothing to show, and a client that hears nothing
-/// for long enough gives up on a call.
+/// How often a running call tells the client it is alive.
 const HEARTBEAT: Duration = Duration::from_secs(15);
 
 /// How long the person has to answer a question asked with
@@ -109,30 +59,17 @@ const HEARTBEAT: Duration = Duration::from_secs(15);
 /// in a form or in the chat, stays good for the answer.
 const ANSWER_WITHIN: Duration = Duration::from_secs(10 * 60);
 
-/// `--max-wait` for a tool call when the server was given none. A call that
-/// sat for the hours the daily ceiling can impose would outlast the client's
-/// patience and the person's; refused, it says how long the wait is and the
-/// agent can say so. `main` hands it to the children, and `config` counts it
-/// into the longest call.
+/// `--max-wait` for a tool call when the server was given none.
 pub const MAX_WAIT: Duration = Duration::from_secs(5 * 60);
 
 /// `--max-wait` for a list walked as a job when the server was given none.
-/// Longer than a call's ([`MAX_WAIT`]): nobody waits on a job, which is asked
-/// about later, so a wait for the budget costs the agent nothing but time,
-/// while a walk refused past a short one would have to be started again by
-/// hand. An hour, and not the hours the daily ceiling can impose: past it the
-/// walk stops, keeping what it read, and the agent can say when to ask again.
 pub const JOB_MAX_WAIT: Duration = Duration::from_secs(60 * 60);
 
 /// The one path `snob mcp --listen` serves (`http::PATH`), and the one a
-/// configuration for a remote server points at (`config`). Here, outside the
-/// `mcp-http` feature, since a build without the server still prints the
-/// configuration of one.
+/// configuration for a remote server points at (`config`).
 pub const HTTP_PATH: &str = "/mcp";
 
-/// What every MCP key starts with (`key::PREFIX`). Here, outside the
-/// `mcp-http` feature, so that a configuration for a remote server can
-/// refuse an address with a key in it in every build (`config`).
+/// What every MCP key starts with (`key::PREFIX`).
 pub const KEY_PREFIX: &str = "snob_mcp_";
 
 /// How long the children of a call may wait for the request budget
@@ -168,37 +105,20 @@ impl Waits {
 
 /// The longest one tool call may take when children wait at most `max_wait`
 /// for the budget, for a client that cuts calls short (`config`, Codex's
-/// `tool_timeout_sec`): the longer of two calls, then the grace a stopped
-/// child gets, and half a minute for the request itself.
+/// `tool_timeout_sec`): the longest of these, then the grace a stopped child
+/// gets, and half a minute for the request itself.
 ///
-/// - **A call that asks**: the person's answer to the question, asked with
-///   `elicitation/create` while the call waits ([`ANSWER_WITHIN`]), then the
-///   longer of the wait for the budget and a list's wait for its job (at
-///   most [`tools::MOST_WAIT_SECONDS`], once its supervisor has started). A
-///   list walked as a job is bounded here whatever its length: the call
-///   answers with the job's id once its wait is over, and the walk goes on.
-/// - **A profile** (`snob_profile`), which asks nothing and is run inline,
-///   and whose walk of the mutual followers counts toward the account's
-///   sitting, so it may wait out one rest between sittings before or
-///   between its pages (one an earlier walk left owed, or one its own
-///   pages draw), which `--max-wait` never cuts (AGENTS.md, "Pace"): the
-///   wait for the budget and the longest rest. One at most: a rest paid
-///   leaves a fresh sitting, which its ten pages cannot fill.
-/// - **A post read as far as it goes** (`snob_post` with `comments` and
-///   `replies` at their most), also inline and asking nothing: twenty pages
-///   of comments and ten threads, each but the first a comment step after
-///   the read before (at most [`snob_ig::pace::COMMENT_STEP_MS`]'s longest),
-///   all of them pages of the sitting, so one rest between sittings may fall
-///   among them as it may among a profile's, and the wait for the budget.
-///   The longest of the three.
+/// - **A call that asks**: the person's answer ([`ANSWER_WITHIN`]), then the
+///   longer of the wait for the budget and a list's wait for its job (at most
+///   [`tools::MOST_WAIT_SECONDS`], once its supervisor has started).
+/// - **A profile**, run inline: the wait for the budget and the longest rest
+///   between sittings, which `--max-wait` never cuts (AGENTS.md, "Pace").
+/// - **A post read as far as it goes**, also inline: those two, and a comment
+///   step before each page and thread but the first.
 ///
-/// **A download is not counted** (`snob_post_download`): it waits for the
-/// budget, then starts no file after [`tools::SAVE_WITHIN`], two minutes,
-/// which is under the ten a call that asks is given for its answer alone;
-/// only the file it is on when that time comes can take it past, and a
-/// client that cuts the call there stops the child, which removes the part
-/// it had and leaves the files already saved, so the call made again goes
-/// on from them.
+/// **A download is not counted**: it starts no file after
+/// [`tools::SAVE_WITHIN`], which is under what a call that asks is given for
+/// its answer alone.
 pub fn longest_call(max_wait: Duration) -> Duration {
     let job = Duration::from_secs(tools::MOST_WAIT_SECONDS) + crate::jobs::start::SUPERVISOR_WITHIN;
     let asked = ANSWER_WITHIN + max_wait.max(job);
@@ -227,8 +147,6 @@ pub struct Settings {
     /// it was not given.
     pub in_chat: Option<ConfirmInChat>,
     /// `--max-writes-per-day`, [`mcp_acts::WRITES_A_DAY`] when not given.
-    ///
-    /// [`mcp_acts::WRITES_A_DAY`]: snob_store::store::mcp_acts::WRITES_A_DAY
     pub writes_a_day: Option<u32>,
     /// The server's own `--max-wait` ([`Waits`]).
     pub max_wait: Option<Duration>,
@@ -245,14 +163,12 @@ pub struct Settings {
 ///
 /// **Then waits for the calls still running**, which the SDK does not: it
 /// cancels their handlers and returns, and a process that exited then would
-/// take its children's pipes with it before any had stopped in order. Each
-/// handler, canceled, closes its child's standard input and gives it
-/// [`child::GRACE`]; this waits that long and a little more.
+/// take its children's pipes with it before any had stopped in order.
 ///
-/// `--confirm-in-chat`, **not given, is `all` here**: over standard input
-/// and output the client is a program the person started themselves, and
-/// refusing the chat would leave most clients, which show no form, unable
-/// to make any call that asks. Over HTTP it is narrower (`http.rs`).
+/// `--confirm-in-chat`, **not given, is `all` here**: over standard input and
+/// output the client is a program the person started themselves, and refusing
+/// the chat would leave most clients, which show no form, unable to make any
+/// call that asks.
 pub async fn serve(launch: Launch, settings: Settings) -> anyhow::Result<ExitCode> {
     let in_chat = settings.in_chat.unwrap_or(ConfirmInChat::All);
     // Nothing stops this server but its client: the token is never
@@ -622,8 +538,7 @@ impl ServerHandler for Server {
             }
         };
         // A later page of a list this server read: handed back from what it
-        // read, with nothing run. One it no longer holds is read from the
-        // store, unless the walk that read it may have stopped short.
+        // read, with nothing run.
         if let Some(page) = plan.page.as_ref().filter(|page| page.offset > 0) {
             if let Some(whole) = self.pages.get(&page.of) {
                 return Ok(result(
@@ -652,10 +567,9 @@ impl ServerHandler for Server {
             )
             .into());
         }
-        // Before the person is asked, too: a yes to a call then refused as
-        // busy is a question wasted, and the ticket it came back with would
-        // be spent on nothing. Held until this call returns, which is after
-        // its child has exited.
+        // Before the person is asked, too: a yes to a call then refused as busy
+        // is a question wasted, and the ticket it came back with would be spent
+        // on nothing.
         let _permits = match self.limits.take(plan.spends) {
             Ok(permits) => permits,
             Err(busy) => return Ok(refusal("busy", &busy.why()).into()),
@@ -723,11 +637,9 @@ impl ServerHandler for Server {
         // A client that takes tasks is answered with one for a walk that has
         // not ended (`tasks.rs`), and polls it itself: held in the call a few
         // seconds, not the wait it asked of a call that would answer with the
-        // walk.
-        // **Not for a walk as an account the call named**: a task is polled
-        // by its id alone (`tasks/get`), which is read as the account the
-        // server acts as, where such a job is not. It is answered with the
-        // job, which `snob_job` asks about with the same `as_account`.
+        // walk. **Not for a walk as an account the call named**: a task is
+        // polled by its id alone (`tasks/get`), which is read as the account
+        // the server acts as, where such a job is not.
         let as_task = matches!(plan.run, Run::Job { .. })
             && plan.acting_as.is_none()
             && context
@@ -799,34 +711,20 @@ impl ServerHandler for Server {
 }
 
 impl Server {
-    /// What would refuse a call that may reach Instagram once it was given
-    /// its yes, asked before the person is, so nobody says yes to a call
-    /// that is then refused and no ticket is spent on one: everything that
-    /// costs nothing to know and that this server's permits do not see.
-    /// Read through a `snob` child that sends nothing and writes nothing,
-    /// since the server opens no store (AGENTS.md, "The MCP server"), whose
-    /// refusal is the call's own.
+    /// What would refuse a call that may reach Instagram once it was given its
+    /// yes, asked before the person is, so nobody says yes to a call that is
+    /// then refused and no ticket is spent on one: everything that costs
+    /// nothing to know and that this server's permits do not see. Read through
+    /// a `snob` child that sends nothing and writes nothing, since the server
+    /// opens no store (AGENTS.md, "The MCP server"), whose refusal is the
+    /// call's own.
     ///
-    /// - A walk run as a job: `__job start --check` ([`tools::Plan::
-    ///   check_line`]): the account's jobs (`too_many_jobs`, `job_stopping`,
-    ///   `walked_elsewhere`), no session, and in a cooldown a refresh or a
-    ///   list with nothing stored to serve.
-    /// - A write: `follow --check-ahead` ([`tools::Plan::ahead_line`]): a job
-    ///   walking or another run holding the account (`busy`), no session or
-    ///   no CSRF token, the cooldown, the day's cap on an agent's writes
-    ///   (`mcp_write_cap`), and a wait for the budget past `--max-wait`
-    ///   (`budget_wait`).
-    ///
-    /// And a follow it finds would change nothing, answered as it is with no
-    /// question asked (`already_following`, from a following list walked in
-    /// the last hour).
-    ///
-    /// **Still refused after the yes**: what changes between the check and
-    /// the yes (another process taking the account, which the child refuses
-    /// as `busy`; a cooldown starting; the budget or the cap taken by another
-    /// call), and what only a request tells (a write already so, a name that
-    /// is nobody's), or a crossing whose stored lists, served in a cooldown,
-    /// were walked too far apart.
+    /// **Still refused after the yes**: what changes between the check and the
+    /// yes (another process taking the account, which the child refuses as
+    /// `busy`; a cooldown starting; the budget or the cap taken by another
+    /// call), and what only a request tells (a write already so, a name that is
+    /// nobody's), or a crossing whose stored lists, served in a cooldown, were
+    /// walked too far apart.
     async fn refused_ahead(
         &self,
         plan: &tools::Plan,
@@ -866,9 +764,8 @@ impl Server {
         Ok(None)
     }
 
-    /// What a call's child said, as the call's result, read as its plan
-    /// says it runs. `as_task`: a walk that has not ended is answered with
-    /// a task rather than with how its job stands (`tasks.rs`).
+    /// What a call's child said, as the call's result, read as its plan says it
+    /// runs.
     fn told(
         &self,
         tool: &str,
@@ -902,8 +799,7 @@ impl Server {
             return saying(told, Some(said)).into();
         }
         match job::finished_of(&doc) {
-            // Going on, to a client that polls a task: the task. A lost job
-            // is a failure, told now as any other client is told it.
+            // Going on, to a client that polls a task: the task.
             None if as_task && job::going(&doc) => {
                 CallToolResponse::Task(CreateTaskResult::new(tasks::task(&doc)))
             }
@@ -1090,9 +986,7 @@ impl Server {
         let in_chat = may_confirm_in_chat(self.in_chat, asked.question.about);
         let chat_binding = chat_binding(&asked.binding, asked.session);
 
-        // A yes given in the chat, coming back. Spent by the first call
-        // that brings it for its own command; one for another call, or too
-        // late, is no yes, and that call is asked again as if none came.
+        // A yes given in the chat, coming back.
         let mut previous = None;
         if let Some(token) = asked.offered {
             if !in_chat {
@@ -1143,9 +1037,7 @@ impl Server {
         )))
     }
 
-    /// Asks in a form the client shows. `None` when the client, asked on an
-    /// older revision, answers that it has no such method: it declared
-    /// elicitation and cannot do it, which is no answer from the person.
+    /// Asks in a form the client shows.
     async fn in_a_form(
         &self,
         asked: &Asked<'_>,
@@ -1204,14 +1096,9 @@ impl Server {
         }
 
         // Raced against the call being canceled, **and the server stopping**
-        // ([`Server::stopped`]): a person who never answers is not a reason
-        // to hold a canceled call for ten minutes, nor to keep a stopping
-        // server from answering it. A call still asking has no child, so it
-        // is not among those the server waits for; it answers here, at once,
-        // within the time the server gives every answer to be written
-        // (`http::CLOSING_WITHIN`), rather than be dropped with the form on
-        // screen. No ticket here: the answer comes back to this very call,
-        // which runs once.
+        // ([`Server::stopped`]): a person who never answers is not a reason to
+        // hold a canceled call for ten minutes, nor to keep a stopping server
+        // from answering it.
         let asking = context
             .peer
             .create_elicitation_with_timeout(form()?, Some(ANSWER_WITHIN));
@@ -1293,12 +1180,9 @@ fn cannot_confirm(about: About) -> String {
     )
 }
 
-/// What a yes given in the chat is bound to: the command and, when the
-/// request carries a session ([`session_of`]), the session, so that a token
-/// handed out in one is no yes in another. With none (stdio, or a stateless
-/// call over HTTP), the command alone: any conversation that holds the key
-/// may then redeem the token, once, before it expires. JSON, as the binding
-/// is, so neither can run into the other.
+/// What a yes given in the chat is bound to: the command and, when the request
+/// carries a session ([`session_of`]), the session, so that a token handed out
+/// in one is no yes in another.
 fn chat_binding(binding: &str, session: Option<&str>) -> String {
     match session {
         None => binding.to_string(),
@@ -1307,9 +1191,7 @@ fn chat_binding(binding: &str, session: Option<&str>) -> String {
 }
 
 /// The answer of a call to be asked in the chat: **not an error**, since
-/// nothing went wrong, and nothing was done. The text says what to do with
-/// it, for a client that shows the model only the text, and the structured
-/// content carries the same, for one that reads it.
+/// nothing went wrong, and nothing was done.
 ///
 /// **Composed of our words, the question (`tools::Question`, our words and a
 /// validated username), the tool's name and the token**, nothing else: the
@@ -1371,16 +1253,14 @@ fn redeemed(spent: Result<(), seal::Spoiled>, yes: bool) -> Consent {
 
 /// Whether a client that declared `elicitation` can show a form: it said
 /// `form`, or said neither `form` nor `url`, as a client declares it that was
-/// written before the modes existed, and which the SDK reads as form for
-/// that reason (`Peer::supported_elicitation_modes`). A client that offers
-/// only `url` cannot show the box to tick.
+/// written before the modes existed, and which the SDK reads as form for that
+/// reason (`Peer::supported_elicitation_modes`).
 fn can_show_a_form(capability: &ElicitationCapability) -> bool {
     capability.form.is_some() || capability.url.is_none()
 }
 
 /// Whether the call was made on a revision where the server may not send
-/// requests of its own: 2026-07-28 and later. The revisions are dates, so
-/// their order is the order of their names.
+/// requests of its own: 2026-07-28 and later.
 fn stateless(version: Option<ProtocolVersion>) -> bool {
     version.is_some_and(|version| version.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
 }

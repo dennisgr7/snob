@@ -1,20 +1,8 @@
 //! `snob` with no command, on a terminal: where to start.
 //!
-//! Clap's answer to a missing command is an error that lists every command,
-//! the hidden plumbing (`__browser-owner`, `__job`) included, and says nothing
-//! about which one to type first. A person who types the name of the tool
-//! is asking what it does, so on a terminal the answer is a short screen
-//! built from what is stored here: who is signed in, which lists are kept and
-//! from when, and the handful of commands worth knowing first.
-//!
-//! **Sends nothing and writes nothing**, for the same reasons as `snob
-//! status`, whose rules it keeps: no request, no browser, no keyring read, no
-//! database brought into being (`Store::read_existing`). Off a terminal it is
-//! not shown at all: a script that forgot its command gets the error and
-//! exit 2 that every other mistake on the command line gets (`main`).
-//!
-//! One of the listed exceptions to "commands take an App", for the reason
-//! `status` gives: an `App` would write.
+//! **Sends nothing and writes nothing**, for the same reasons as `snob status`,
+//! whose rules it keeps: no request, no browser, no keyring read, no database
+//! brought into being (`Store::read_existing`).
 
 use anyhow::Result;
 use snob_core::model::ListKind;
@@ -25,17 +13,13 @@ use snob_store::store::{Store, snapshots};
 use crate::exit::ExitCode;
 use crate::report;
 
-/// What is said when the command is missing on a terminal. `flag` and `env`
-/// are `--account` and `SNOB_ACCOUNT`, so the screen speaks of the account
-/// the next command would act as.
+/// What is said when the command is missing on a terminal.
 pub fn run(paths: &AppPaths, flag: Option<&str>, env: Option<&str>) -> Result<ExitCode> {
     crate::ui::say!("{}", screen(paths, flag, env));
     Ok(ExitCode::Ok)
 }
 
-/// The screen, as text. Whatever cannot be read is left out rather than
-/// failing: this is a greeting, and every command it suggests says for
-/// itself what is wrong.
+/// The screen, as text.
 fn screen(paths: &AppPaths, flag: Option<&str>, env: Option<&str>) -> String {
     let mut out = String::from("snob: Instagram from the terminal.\n\n");
     let registry = Registry::load(paths).unwrap_or_default();

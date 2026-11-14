@@ -1,19 +1,4 @@
 //! Spreadsheet workbooks.
-//!
-//! A list of accounts is the same six columns as the csv, so the two formats
-//! answer alike, plus what a spreadsheet can carry and a text file cannot: real
-//! booleans, a numeric id, and a username that is a link to the profile.
-//!
-//! `scan`'s summary is one row rather than a list, and there the two formats
-//! diverge in exactly one cell each: the moment a list was taken is epoch
-//! seconds in the csv, matching the JSON, and a real date here, because a
-//! column of epoch integers in a spreadsheet is unreadable. `scan::row_cells`
-//! is where that is decided and this is the claim it points at, so the two say
-//! the same thing about it.
-//!
-//! What goes in each cell is decided first, as plain data, and only then
-//! handed to the writer. A workbook is a zip archive, so that split is what
-//! makes the interesting half testable without unpacking anything.
 
 use anyhow::{Context, Result};
 use rust_xlsxwriter::{ExcelDateTime, Format, FormatAlign, Workbook, Worksheet};
@@ -26,8 +11,7 @@ use crate::output::USER_COLUMNS as HEADER;
 /// Excel refuses a string longer than this.
 const MAX_TEXT: usize = 32_767;
 
-/// Excel stores at most this many hyperlinks in one worksheet. Past it the
-/// usernames are still there, just not clickable.
+/// Excel stores at most this many hyperlinks in one worksheet.
 const MAX_URLS: usize = 65_530;
 
 /// Above 2^53 a float stops being able to hold every integer, so an id that
@@ -45,9 +29,7 @@ pub(crate) enum Cell {
         text: String,
     },
     /// A moment, as epoch seconds, written as a date the spreadsheet
-    /// understands. `scan` and `output::grid` use it, because a column of epoch
-    /// integers in a spreadsheet is unreadable where the same number in csv is
-    /// exactly what a script wants.
+    /// understands.
     DateTime(Epoch),
     Empty,
 }
@@ -68,7 +50,6 @@ fn rows_with_url_cap(users: &[User], cap: usize) -> Vec<[Cell; 6]> {
             // a workbook is opened and read: characters below 0x20 other than
             // tab, newline and carriage return are **illegal in XML 1.0**, so a
             // hostile name here produced a file that would not open at all.
-            // The address is `profile_url`'s problem, and it encodes.
             let username = if index < cap {
                 Cell::Link {
                     url: user.profile_url(),
@@ -103,10 +84,6 @@ fn number(pk: Pk) -> Cell {
 /// Filtered before it is measured, for the reason `csv::clean` gives: a full
 /// name is whatever its owner typed, and half of the control characters cannot
 /// legally appear in the XML a workbook is made of.
-///
-/// No leading apostrophe, unlike the csv. That defuses a *formula*, and a
-/// formula is a hazard the csv has because a spreadsheet re-parses the text it
-/// imports. `write_string` writes a string cell, which Excel never evaluates.
 fn text(value: Option<&str>) -> Cell {
     match value {
         Some(value) => Cell::Text(truncate(&printable(value))),
@@ -123,8 +100,7 @@ fn flag(value: Option<bool>) -> Cell {
     }
 }
 
-/// Cuts on a character boundary. A name long enough to hit this is nonsense
-/// anyway, and losing its tail beats failing to write the file.
+/// Cuts on a character boundary.
 fn truncate(value: &str) -> String {
     if value.len() <= MAX_TEXT {
         return value.to_string();
@@ -184,10 +160,6 @@ fn write_header(sheet: &mut Worksheet, header: &[&str]) -> Result<()> {
 
 /// Turns epoch seconds into what the spreadsheet writer takes, in UTC like
 /// every other timestamp this tool prints.
-///
-/// The writer converts this itself, and range-checks it against the years a
-/// spreadsheet can hold (1900-9999) on the way, so the "outside what a
-/// spreadsheet can hold" fallback rests on that one documented check.
 fn datetime(at: Epoch) -> Option<ExcelDateTime> {
     ExcelDateTime::from_timestamp(at.get()).ok()
 }

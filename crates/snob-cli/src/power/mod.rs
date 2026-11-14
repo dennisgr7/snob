@@ -1,32 +1,12 @@
 //! What snob asks of the operating system's power management.
 //!
 //! **Keeping the machine awake while a walk sends requests** ([`KeepAwake`]).
-//! A walk is fifteen minutes to over an hour, most of it rests in which
-//! nobody touches the machine, and a laptop left alone that long sleeps by
-//! itself: the walk stops where it stood and picks up hours later, when the
-//! lid opens. So while a walk is reading, snob tells the system it is busy, the
-//! way a download or a backup does.
-//!
-//! **Only idle sleep is held off.** Closing the lid, pressing the power
-//! button, choosing Sleep from a menu or `systemctl suspend` still put the
-//! machine to sleep at once: those are a person's decision, and the walk
-//! picks itself up after them (`snob_ig::awake`). The three backends are
-//! chosen for exactly that:
 //!
 //! - **Windows**: a power request (`PowerSetRequest`, `SystemRequired`), whose
-//!   reason `powercfg /requests` shows. Windows documents that sleeping on
-//!   purpose overrides it, and on a laptop on battery in modern standby it
-//!   gives up on its own five minutes after the sleep timeout.
+//!   reason `powercfg /requests` shows.
 //! - **macOS**: `caffeinate -i -w <pid>`, the system's own tool, which holds
 //!   off idle sleep only, and ends by itself if snob dies without letting go.
-//! - **Linux**: an `idle` inhibitor from logind, in `block` mode. Not a
-//!   `sleep` one, which would also refuse a suspend somebody asks for by hand.
-//!   Where there is no system bus, a Raspberry Pi or a server, there is no
-//!   idle sleep to hold off either, and nothing is done.
-//!
-//! **What failing costs is nothing.** Each backend that cannot be had is
-//! logged and left alone: the walk is not worse off than it was before this
-//! existed.
+//! - **Linux**: an `idle` inhibitor from logind, in `block` mode.
 
 pub mod battery;
 #[cfg(target_os = "linux")]
@@ -57,9 +37,7 @@ pub struct KeepAwake {
 }
 
 impl KeepAwake {
-    /// A guard that holds nothing yet. `wanted` false makes one that never
-    /// holds: a walk against a test server sleeps through nothing, and asks
-    /// the system for nothing.
+    /// A guard that holds nothing yet.
     pub fn new(reason: &'static str, wanted: bool) -> Self {
         Self {
             reason,

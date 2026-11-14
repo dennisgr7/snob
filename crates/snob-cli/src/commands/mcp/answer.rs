@@ -1,33 +1,18 @@
 //! What a finished child is told back to the client as.
 //!
-//! **Every string is filtered on the way out**, whatever field it is in. The
-//! commands already filter the names they print, but a tool result is read by
-//! a model, and the cost of a field that was missed is an instruction in
-//! someone's bio arriving as text nobody on screen can see. `printable` is the
-//! identity on everything a person can read, so filtering what was already
-//! filtered changes nothing.
+//! **Every string is filtered on the way out**, whatever field it is in.
 //!
 //! **A list is handed back a page at a time** ([`page`]): a client reads a
 //! tool's whole result into the model's context, and cuts what is too long
 //! (Claude Code at 25,000 tokens, `MAX_MCP_OUTPUT_TOKENS`, as its documents
-//! were quoted to us; not checked here). The page says the `count` of the
-//! list the command printed and the `next_offset` to call again with, and
-//! the later pages are handed back from what was already read (`pages.rs`,
-//! `tools::Page`), with what the first page said of where the list came from.
+//! were quoted to us; not checked here).
 //!
-//! **A list is never handed back as more than it is.** One served from
-//! storage says so and how old it is (`served`, [`not_read_now`]), and one
-//! a walk cut short by `max_pages` says it is not the whole list
-//! (`complete: false`, [`incomplete`]), since both are a success to the
-//! command, whose warnings a person reads on standard error and an agent
-//! never sees.
+//! **A list is never handed back as more than it is.**
 //!
 //! **A picture is handed back as a picture** ([`take_pictures`]): a listing
-//! asked for with its small pictures carries them in its JSON, in base64,
-//! and they leave it here, to go out as image content beside the answer
-//! (`mod.rs`, `saying`) rather than as text a model would read letter by
-//! letter. A picture cannot be filtered as a string is: the descriptions
-//! say that what one shows or says is data.
+//! asked for with its small pictures carries them in its JSON, in base64, and
+//! they leave it here, to go out as image content beside the answer (`mod.rs`,
+//! `saying`) rather than as text a model would read letter by letter.
 
 use serde_json::{Value, json};
 
@@ -69,22 +54,18 @@ pub const PAGE_BYTES: usize = 30_000;
 
 /// What an agent is told when there is no session to act with.
 ///
-/// **It replaces the command's own hint** (`run "snob login"`), which is
-/// advice to the person at the terminal: read by a model, it is an invitation
-/// to run `login` itself, which no tool offers and which needs the password
-/// or a browser window only the person has. The server's instructions
-/// (`mod.rs`, `get_info`) say the same, so a model that skipped one still
-/// reads the other.
+/// **It replaces the command's own hint** (`run "snob login"`), which is advice
+/// to the person at the terminal: read by a model, it is an invitation to run
+/// `login` itself, which no tool offers and which needs the password or a
+/// browser window only the person has.
 pub const SIGN_IN: &str = "the person signs in with \"snob login\" in their own terminal; \
                            never ask them for a password or a session id";
 
-/// What an agent is told to do about a refusal, by the reason the command
-/// gave it, **in place of the command's own hint**, which is advice to the
-/// person at a terminal: a command to type (`snob jobs cancel`), or a flag
-/// the agent never passed and cannot (`--offline`, which its server adds for
-/// a stored list, `--max-wait`, which its server sets). As [`SIGN_IN`] is
-/// for no session; a reason not named here keeps its hint, which is already
-/// one an agent can act on.
+/// What an agent is told to do about a refusal, by the reason the command gave
+/// it, **in place of the command's own hint**, which is advice to the person at
+/// a terminal: a command to type (`snob jobs cancel`), or a flag the agent
+/// never passed and cannot (`--offline`, which its server adds for a stored
+/// list, `--max-wait`, which its server sets).
 fn agent_hint(reason: &str) -> Option<&'static str> {
     Some(match reason {
         "too_many_jobs" => {
@@ -250,10 +231,9 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
             },
             _ => said(),
         };
-        // A finer reason the command gave (`busy`, from `--spend-alone`) is
-        // the code an agent tells this failure apart by, the same one the
-        // server's own refusal of a busy call has; `exit` keeps the exit's
-        // token. `failure` is an object on every branch above.
+        // A finer reason the command gave (`busy`, from `--spend-alone`) is the
+        // code an agent tells this failure apart by, the same one the server's
+        // own refusal of a busy call has; `exit` keeps the exit's token.
         if let Some(reason) = failure
             .get("reason")
             .and_then(Value::as_str)
@@ -265,10 +245,7 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
             failure["code"] = json!(reason);
         }
         // What a list walk kept is still worth having: it is stored, and the
-        // next call continues from it. One page of it, with no next one:
-        // what a walk stopped short read is not stored as a whole list, so a
-        // later page could not be read back, and the next call for the list
-        // continues the walk instead.
+        // next call continues from it.
         if let Some(partial) = finished.json {
             failure["partial"] = match partial {
                 Value::Array(items) => page(&compact(&items), offset, limit, false),
@@ -293,16 +270,14 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
         };
     };
     // Where the list came from, as its walk said it (`Progress::served`), and
-    // when a cooldown that had it served from storage lifts: a stored list
-    // is handed to the agent as one, with its date, as a person is told it
-    // in the warning, never as if it had just been read. `body` is an object
-    // for every list (a page), and nothing is indexed into one that is not.
+    // when a cooldown that had it served from storage lifts: a stored list is
+    // handed to the agent as one, with its date, as a person is told it in the
+    // warning, never as if it had just been read.
     //
-    // **And whether it is all of the list**: a walk cut short by `max_pages`
-    // is a success, exit 0, and its `reason` (`page_limit`), with how many
-    // accounts it read of how many the counter declared, is the only place
-    // that says the list is short. An agent told nothing would give `count`
-    // as how many followers the account has.
+    // **And whether it is all of the list**: a walk cut short by `max_pages` is
+    // a success, exit 0, and its `reason` (`page_limit`), with how many
+    // accounts it read of how many the counter declared, is the only place that
+    // says the list is short.
     if !finished.served.is_empty() && body.is_object() {
         let served: Vec<Value> = finished
             .served
@@ -383,14 +358,9 @@ const PICTURES: [&str; 3] = ["image/jpeg", "image/png", "image/webp"];
 const MOST_PICTURE: usize = 700 * 1024;
 
 /// Takes the small pictures out of the document a child printed
-/// (`media::small_pictures`, under `pictures`): each as what the answer
-/// says of it, and its bytes when it has them, **which are no longer in
-/// the document**, so nothing after this reads a picture as text.
-///
-/// Read without assuming its shape, for the reason [`from`] gives: an entry
-/// that is no object or has no number is dropped, and bytes that are not
-/// base64, weigh too much or come under a kind that is no picture are
-/// said as missing, never handed on.
+/// (`media::small_pictures`, under `pictures`): each as what the answer says of
+/// it, and its bytes when it has them, **which are no longer in the document**,
+/// so nothing after this reads a picture as text.
 pub fn take_pictures(document: &mut Value) -> Vec<Picture> {
     let Some(Value::Array(entries)) = document
         .as_object_mut()
@@ -475,12 +445,9 @@ fn on_this_page(body: &mut Value, pictures: &[Picture]) -> Vec<Picture> {
     shown
 }
 
-/// The page at `offset` of a list the server holds (`pages.rs`), as the
-/// answer of a call that ran nothing, saying what the first page said of
-/// the whole list.
-///
-/// `brief`: each item as [`briefly`] leaves it. The list is held whole, so a
-/// page may be asked for either way whichever way the first one was.
+/// The page at `offset` of a list the server holds (`pages.rs`), as the answer
+/// of a call that ran nothing, saying what the first page said of the whole
+/// list.
 pub fn held(whole: &Whole, offset: usize, limit: Option<usize>, brief: bool) -> Answer {
     if let Some(refused) = past_the_end(whole.items.len(), offset, limit) {
         return refused;
@@ -498,15 +465,8 @@ pub fn held(whole: &Whole, offset: usize, limit: Option<usize>, brief: bool) -> 
     }
 }
 
-/// The refusal of an `offset` at or past the end of what the call hands
-/// back, `offset_past_end`, with `count` and `total` beside it.
-///
-/// **Refused, not an empty page.** An empty page beside `count: 5` read as a
-/// contradiction, and an empty page at all read as "no more accounts" when
-/// the likelier mistake was taking `limit` for the size of one page: it caps
-/// the whole answer. An agent that follows `next_offset` never gets here,
-/// since the last page has none. An offset of 0 is a page however short
-/// the list, an empty one included.
+/// The refusal of an `offset` at or past the end of what the call hands back,
+/// `offset_past_end`, with `count` and `total` beside it.
 fn past_the_end(total: usize, offset: usize, limit: Option<usize>) -> Option<Answer> {
     let count = limit.map_or(total, |limit| limit.min(total));
     if offset == 0 || offset < count {
@@ -548,10 +508,9 @@ fn past_the_end(total: usize, offset: usize, limit: Option<usize>) -> Option<Ans
 /// and would make most of a page.
 const LEFT_OUT: [&str; 1] = ["pfp_url"];
 
-/// [`LEFT_OUT`] taken out of the accounts a document names, as a list's
-/// are: the mutual followers of a profile (`followed_by.accounts`), whose
-/// pictures' addresses were most of `snob_profile`'s answer. Looked up with
-/// `get_mut`, never indexed, for the reason [`from`] gives.
+/// [`LEFT_OUT`] taken out of the accounts a document names, as a list's are:
+/// the mutual followers of a profile (`followed_by.accounts`), whose pictures'
+/// addresses were most of `snob_profile`'s answer.
 fn leave_out_of_accounts(document: &mut Value) {
     let accounts = document
         .get_mut("followed_by")
@@ -578,16 +537,12 @@ const CHANGES_CUT: &str = "More accounts changed than fit one answer: each list 
                            closer together (from and to, by the ids snob_snapshots lists)";
 
 /// The document `changes` printed, as `snob_changes` hands it back: every
-/// account without the fields [`LEFT_OUT`], as a list's accounts go, and
-/// the accounts of all its lists together within [`PAGE_BYTES`].
+/// account without the fields [`LEFT_OUT`], as a list's accounts go, and the
+/// accounts of all its lists together within [`PAGE_BYTES`].
 ///
 /// **Two captures far apart differ by thousands of accounts**, each printed
-/// with its picture's signed address, and nothing pages this answer: it
-/// was megabytes of query strings in a model's context. What does not fit
-/// is left out, in the order the document has it; `gained_count`,
-/// `lost_count` and `renamed_count` are how many there are whatever was
-/// kept, and `cut` says so in a sentence. Nothing is indexed, for the
-/// reason [`from`] gives.
+/// with its picture's signed address, and nothing pages this answer: it was
+/// megabytes of query strings in a model's context.
 fn bounded_changes(mut document: Value) -> Value {
     let mut left = PAGE_BYTES;
     let mut cut = false;
@@ -659,19 +614,12 @@ const POST_CUT: &str = "More comments and replies were read than fit one answer:
                         replies_left_out say how many. Call again with fewer pages of \
                         comments, or fewer threads (replies_of names only the ones wanted)";
 
-/// The document `post` printed, as `snob_post` hands it back: its comments,
-/// the replies under them and the threads `replies_of` named together
-/// within [`PAGE_BYTES`], the post itself and the rest of the document
-/// counted first.
+/// The document `post` printed, as `snob_post` hands it back: its comments, the
+/// replies under them and the threads `replies_of` named together within
+/// [`PAGE_BYTES`], the post itself and the rest of the document counted first.
 ///
-/// **Twenty pages of comments and ten threads are hundreds of comments**,
-/// and nothing pages this answer. What does not fit is left out in the
-/// order the document has it, a comment before its replies, and the
-/// comments before the named threads; a comment that does not fit leaves
-/// out the rest of the comments and their replies. `comments_left_out` and
-/// `replies_left_out` say how many went, and `cut` says so in a sentence;
-/// none of the three is there when nothing was. Nothing is indexed, for the
-/// reason [`from`] gives.
+/// **Twenty pages of comments and ten threads are hundreds of comments**, and
+/// nothing pages this answer.
 fn bounded_post(mut document: Value) -> Value {
     let Some(fields) = document.as_object_mut() else {
         return document;
@@ -755,9 +703,8 @@ fn compact(items: &[Value]) -> Vec<String> {
         .collect()
 }
 
-/// What `brief` keeps of a post: what tells it from every other, where it
-/// is, and what orders it. Everything an agent needs to say which posts it
-/// does not have yet, and a tenth of what a post's answer weighs.
+/// What `brief` keeps of a post: what tells it from every other, where it is,
+/// and what orders it.
 const BRIEF: [&str; 7] = ["pk", "code", "url", "owner", "kind", "taken_at", "pinned"];
 
 /// `items` as a page hands them back: as they are, or each as [`briefly`]
@@ -770,9 +717,8 @@ fn shaped(items: &[String], brief: bool) -> std::borrow::Cow<'_, [String]> {
     }
 }
 
-/// One item, as its compact JSON, with only the keys of [`BRIEF`] and how
-/// many items it holds (`item_count`). One that is no object stays as it
-/// is. Read with `get`, never indexed, for the reason [`from`] gives.
+/// One item, as its compact JSON, with only the keys of [`BRIEF`] and how many
+/// items it holds (`item_count`).
 fn briefly(item: &str) -> String {
     let Ok(Value::Object(fields)) = serde_json::from_str::<Value>(item) else {
         return item.to_string();
@@ -789,16 +735,8 @@ fn briefly(item: &str) -> String {
 
 /// The page of `items` that starts at `offset`: as many as fit in
 /// [`PAGE_BYTES`], at most [`PAGE`] and at least one, so a page always moves
-/// on. `{total, count, offset, items, next_offset}`, where `total` is how
-/// many the command printed (the whole list, or what a walk cut short read,
-/// which `complete: false` says), `count` how many of them the call hands
-/// back across its pages (`total`, or `limit` when that is fewer), and
-/// `next_offset` is null on the last page, or always when the call cannot
-/// be made again for another (`pages` false). An offset past the end is
-/// refused before this ([`past_the_end`]) on a success, and an empty page
-/// for what a failed walk kept. **Sliced with `get`, never by indexing**:
-/// the offset is the client's number, and a panic here is the whole server
-/// gone.
+/// on. **Sliced with `get`, never by indexing**: the offset is the client's
+/// number, and a panic here is the whole server gone.
 pub fn page(items: &[String], offset: usize, limit: Option<usize>, pages: bool) -> Value {
     let total = items.len();
     let count = limit.map_or(total, |limit| limit.min(total));
@@ -832,9 +770,8 @@ pub fn page(items: &[String], offset: usize, limit: Option<usize>, pages: bool) 
 }
 
 /// What an agent is told of a page with another after it, beside the JSON:
-/// which accounts these are, and how the next ones are had, by calling
-/// `tool` again (`snob_list`, or `snob_job` for a job's result). `None` for
-/// any other answer.
+/// which accounts these are, and how the next ones are had, by calling `tool`
+/// again (`snob_list`, or `snob_job` for a job's result).
 pub fn next_page(body: &Value, tool: &str) -> Option<String> {
     let next = body.get("next_offset")?.as_u64()?;
     let count = body.get("count")?.as_u64()?;
@@ -864,15 +801,12 @@ pub fn next_page(body: &Value, tool: &str) -> Option<String> {
     ))
 }
 
-/// What an agent is told beside a list that was not read now, **however
-/// old it is**: served from storage in a cooldown, or because the check of
-/// its counter failed (`engine::cooldown::serve`, `engine::freshness`), or
-/// because the call asked for what is stored (`mode: "stored"`, and a later
-/// page read from the store), or because its counter moved but it was
-/// walked too recently to walk again. A list whose counter was checked now
-/// and had not moved was as good as read now, and has no sentence. The
-/// moments in UTC: the agent and the person may be in another zone than
-/// this machine. `None` for any other answer.
+/// What an agent is told beside a list that was not read now, **however old it
+/// is**: served from storage in a cooldown, or because the check of its counter
+/// failed (`engine::cooldown::serve`, `engine::freshness`), or because the call
+/// asked for what is stored (`mode: "stored"`, and a later page read from the
+/// store), or because its counter moved but it was walked too recently to walk
+/// again.
 pub fn not_read_now(body: &Value) -> Option<String> {
     let served = body.get("served")?.as_array()?;
     let dated = |wanted: &[&str]| -> Vec<String> {
@@ -949,9 +883,8 @@ fn own_changes(n: u64) -> String {
     )
 }
 
-/// What an agent is told beside a list its `limit` cut, which then has no
-/// next page: that the list has more, so `count` is not read as its size.
-/// A page with another after it says so in [`next_page`] instead.
+/// What an agent is told beside a list its `limit` cut, which then has no next
+/// page: that the list has more, so `count` is not read as its size.
 pub fn limited(body: &Value) -> Option<String> {
     if !body.get("next_offset")?.is_null() {
         return None;
@@ -966,16 +899,15 @@ pub fn limited(body: &Value) -> Option<String> {
     })
 }
 
-/// What an agent is told beside a list that is not all of it: a walk cut
-/// short by `max_pages`, or stopped for another reason that still printed
-/// what it read. `None` for a whole list.
+/// What an agent is told beside a list that is not all of it: a walk cut short
+/// by `max_pages`, or stopped for another reason that still printed what it
+/// read.
 ///
 /// **A crossing is told otherwise**: its `count` is what it found among the
 /// accounts read of a list cut short, against the whole of the other (a cut
 /// list to cross against is refused, `SetOp::require_against_complete`), so
-/// some results are missing and the ones given are right, as a person is
-/// told it (`commands::sets`). Its body is the one that says where two
-/// lists came from.
+/// some results are missing and the ones given are right, as a person is told
+/// it (`commands::sets`).
 pub fn incomplete(body: &Value) -> Option<String> {
     if body.get("complete").and_then(Value::as_bool) != Some(false) {
         return None;
@@ -1055,17 +987,14 @@ fn shows_media(plan: &Plan) -> bool {
     )
 }
 
-/// `value` with every address that is not a page of instagram.com made
-/// null, wherever it is: the pictures and videos a post's answer names, its
-/// best tracks', and the profile pictures of the accounts in it.
+/// `value` with every address that is not a page of instagram.com made null, wherever it is: the
+/// pictures and videos a post's answer names, its best tracks', and the profile pictures of the
+/// accounts in it.
 ///
-/// **An address is a download under another name**, which is the server's
-/// to make, into its own directory and within its bounds (AGENTS.md, the
-/// MCP server), so no agent is handed one, and each is a signed address of
-/// a few hundred bytes that tokenizes at about three bytes a token: a page
-/// of posts would be mostly query strings. Made null rather than removed, so every key the command
-/// prints is still there. Judged by host, so a test's own server counts as a
-/// CDN as Instagram's does, and the post's own link stays.
+/// **An address is a download under another name**, which is the server's to make, into its own
+/// directory and within its bounds (AGENTS.md, the MCP server), so no agent is handed one, and
+/// each is a signed address of a few hundred bytes that tokenizes at about three bytes a token: a
+/// page of posts would be mostly query strings.
 pub fn without_media_addresses(value: Value) -> Value {
     match value {
         Value::String(text) if is_a_media_address(&text) => Value::Null,

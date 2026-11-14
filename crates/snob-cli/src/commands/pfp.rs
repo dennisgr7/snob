@@ -1,16 +1,4 @@
-//! `snob pfp`: saves an account's profile picture at the best size Instagram
-//! serves over the web.
-//!
-//! From the browser, one request and the picture: the profile (two requests
-//! the first time a name is seen), whose query carries the full-size
-//! picture's address with no size beside it, and the picture itself from the
-//! CDN. An account that keeps the default avatar has no picture, and nothing
-//! is downloaded; a profile that names no full-size picture gets the smaller
-//! one, with no lookup by id, which the page does not make. Without a browser, three: the profile, the by-id lookup
-//! that carries the full-size picture, and the picture. It walks no lists and
-//! stores no snapshot, so it never touches the cache the list commands share
-//! — but it does answer to the same budget and the same cooldown, because
-//! those count requests, not lists.
+//! `snob pfp`: saves an account's profile picture at the best size Instagram serves over the web.
 
 use anyhow::{Result, anyhow};
 use snob_core::model::printable;
@@ -35,15 +23,10 @@ pub async fn run(args: PfpArgs, store: SecretStore, paths: &AccountPaths) -> Res
     output::stdout_download_ahead(args.output.as_deref(), Some(1))?;
 
     // No bar: three requests do not need one, and the picture goes to standard
-    // output when there is no `-o`. A picture is cheap, but the rules do not
-    // change with the price: the cooldown refusal is the same as the others'.
+    // output when there is no `-o`.
     let app = common::reader(&store, paths, args.interactive, false)?;
 
-    // Nothing here records a cooldown. `IgClient::classify_and_record` does,
-    // on the request that earned it, which is the one place that sees every
-    // request. A second row within milliseconds would be read by
-    // `start_cooldown` as a repeat offense inside the last day: one 429 would
-    // become two strikes and four hours instead of one strike and two.
+    // Nothing here records a cooldown.
     let before = app.client().pacer().spent();
     let known = target::known_pk(&app, &args.target)?;
     let picture = fetch(app.client(), &args.target, known).await?;
@@ -74,9 +57,8 @@ pub async fn run(args: PfpArgs, store: SecretStore, paths: &AccountPaths) -> Res
             output::one_file_to_stdout(1)?;
             output::write_rendered(&rendered, None)?;
         }
-        // A directory that is there already: the picture goes into it under
-        // the name it would get in the working directory, never replacing
-        // one. Taken as a file name, it failed with "Is a directory".
+        // A directory that is there already: the picture goes into it under the
+        // name it would get in the working directory, never replacing one.
         Some(dir) if dir.is_dir() => {
             let path = dir.join(output::default_path(&dir, &username, extension)?);
             output::write_new(&rendered, &path)?;
@@ -85,9 +67,7 @@ pub async fn run(args: PfpArgs, store: SecretStore, paths: &AccountPaths) -> Res
         Some(path) => output::write_rendered(&rendered, Some(&path))?,
         // A JPEG dumped into a terminal is unreadable noise, so on a terminal
         // it gets a name of its own — created exclusively, because that name
-        // came off a server rather than out of anybody's keyboard. Down a pipe
-        // it goes to standard output, which is what
-        // `snob pfp someone > face.jpg` is asking for.
+        // came off a server rather than out of anybody's keyboard.
         None if output::Presentation::detect(None).interactive => {
             let path = output::default_path(std::path::Path::new("."), &username, extension)?;
             output::write_new(&rendered, &path)?;
@@ -97,10 +77,8 @@ pub async fn run(args: PfpArgs, store: SecretStore, paths: &AccountPaths) -> Res
     Ok(ExitCode::Ok)
 }
 
-/// The viewer, as the account the command runs as and then as each account
-/// it switches to, fetched again as that one. The row says what the picture
-/// is; the closing line says what each account spent on it, once the
-/// terminal is back.
+/// The viewer, as the account the command runs as and then as each account it
+/// switches to, fetched again as that one.
 async fn browse(
     app: Box<App>,
     picture: Picture,
@@ -167,8 +145,7 @@ pub struct Picture {
 
 #[cfg(test)]
 impl Picture {
-    /// A picture the viewer's tests can hold without a fetch. Here rather
-    /// than in the test, because `url` is private on purpose.
+    /// A picture the viewer's tests can hold without a fetch.
     pub(crate) fn for_tests(username: &str, bytes: Vec<u8>) -> Self {
         Self {
             username: username.into(),
@@ -181,10 +158,6 @@ impl Picture {
 
 impl Picture {
     /// Names the file after what actually arrived rather than after the URL.
-    ///
-    /// `media::extension_of` is the one sniffer. Its `ftyp` arm costs nothing
-    /// here: a profile picture that somehow arrives as MP4 is more honestly
-    /// named `.mp4` than mislabeled `.jpg`.
     pub(crate) fn extension(&self) -> &'static str {
         crate::media::extension_of(&self.bytes)
     }
@@ -205,13 +178,6 @@ impl std::fmt::Debug for Picture {
 
 /// The network half, kept apart from the session and the filesystem so a test
 /// can drive it against a mock server.
-///
-/// Each request pays for itself inside the client, so the API calls below
-/// take a slot each. Spending several against one reservation is how a burst
-/// allowance quietly stops meaning what it says.
-///
-/// `known` is the account's pk when this machine has seen it
-/// ([`target::known_pk`]).
 pub async fn fetch(
     client: &IgClient,
     typed: &str,
@@ -232,10 +198,8 @@ pub async fn fetch(
     .await
 }
 
-/// The full-size picture's address, when the profile read carries it: the
-/// web client's profile query answers it (`hd_profile_pic_url_info`), with
-/// no size. `web_profile_info`'s field of the same name is downscaled, so
-/// on that route there is none.
+/// The full-size picture's address, when the profile read carries it: the web
+/// client's profile query answers it (`hd_profile_pic_url_info`), with no size.
 pub(crate) fn full_size_of(profile: &WebProfileInfo) -> Option<String> {
     if profile.via == Via::Graph {
         profile.profile_pic_url_hd.clone()
@@ -251,15 +215,7 @@ pub(crate) fn no_picture(username: &str) -> anyhow::Error {
 }
 
 /// The half after the name is resolved: the choice of URL and the picture
-/// itself. `full_size` is the full-size address when the profile carried
-/// one, and the picture is then all there is to fetch. Without it, from the
-/// browser the smaller picture is all there is: the by-id lookup is not a
-/// call the page makes. Without a browser, the by-id lookup is one paced
-/// request more.
-///
-/// Split from [`fetch`] so the interactive profile view — which already paid
-/// to resolve the name and holds the pk and both addresses — can look at the
-/// picture without reading the profile again.
+/// itself.
 pub(crate) async fn picture(
     client: &IgClient,
     pk: snob_core::Pk,
@@ -276,18 +232,8 @@ pub(crate) async fn picture(
             source: Source::FullSize { size: None },
         });
     }
-    // Otherwise, without a browser, the full-size picture comes from the
-    // by-id endpoint, so this spends a request on it. `web_profile_info` has a field named
-    // `profile_pic_url_hd`, but what it hands back is a URL carrying an
-    // instruction to the CDN to downscale to 320x320 — and that instruction is
-    // covered by the URL's signature, so it cannot simply be stripped off.
-    //
-    // A failure here is not worth losing the picture over: the smaller one
-    // below still works. But the reason is kept and shown rather than logged
-    // at `debug!`, which nobody passes `--verbose` to see on a command that
-    // appears to work -- and it can be the 429 that has just put the account
-    // in cooldown, which the next command's refusal would otherwise leave
-    // unexplained.
+    // Otherwise, without a browser, the full-size picture comes from the by-id endpoint,
+    // so this spends a request on it.
     let (full_size, why_not) = if client.has_page() {
         (
             None,
@@ -326,10 +272,6 @@ pub(crate) async fn picture(
 }
 
 /// Which of the two pictures this is.
-///
-/// Not `Option<(u32, u32)>`: the by-id endpoint can answer with a picture and
-/// no dimensions, which would collapse into the same `None` as not having
-/// answered at all — and those are the two cases the whole command turns on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Source {
     /// The profile query carried it, with no size, or the by-id endpoint
@@ -337,9 +279,7 @@ pub(crate) enum Source {
     /// nothing here decodes the image.
     FullSize { size: Option<(u32, u32)> },
     /// What the profile page offers, which is the one thing this command exists
-    /// not to hand back. `why` is why there is no full-size picture: what the
-    /// by-id endpoint said, when it said anything, or that the profile named
-    /// none.
+    /// not to hand back.
     Smaller { why: Option<String> },
 }
 

@@ -1,11 +1,5 @@
 //! Just enough HTTP/1.1 for one page, its two assets, an event stream and the
 //! input it posts back.
-//!
-//! Hand-written rather than a server crate: the whole surface is five routes
-//! on a connection only this user's tunnel reaches, and the parsing that
-//! matters is the refusing — a head too long, a body too long, a `Host` that
-//! is not a loopback name. A request this does not understand is answered 400
-//! and the connection is closed.
 
 use std::collections::HashMap;
 
@@ -52,8 +46,7 @@ pub(super) enum Unread {
     Bad,
 }
 
-/// Reads the next request off `stream`. `buffered` holds what was read past
-/// the end of the previous one.
+/// Reads the next request off `stream`.
 pub(super) async fn read<S: AsyncRead + Unpin>(
     stream: &mut S,
     buffered: &mut Vec<u8>,
@@ -129,9 +122,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// Whether `host`, a `Host` header, names this machine's loopback: what the
-/// tunnel's near end is reached by. Anything else is a page on some other
-/// name that resolved here, which is how a site the person has open would
-/// reach the relay (DNS rebinding), and is refused.
+/// tunnel's near end is reached by.
 pub(super) fn is_loopback_host(host: &str) -> bool {
     let name = match host.strip_prefix('[') {
         Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
@@ -189,8 +180,7 @@ pub(super) async fn start_events<S: AsyncWrite + Unpin>(stream: &mut S) -> std::
     stream.flush().await
 }
 
-/// One event of an event stream. `data` must hold no line break, which JSON
-/// and base64 never do.
+/// One event of an event stream.
 pub(super) fn event(name: &str, data: &str) -> String {
     debug_assert!(!data.contains('\n'));
     format!("event: {name}\ndata: {data}\n\n")

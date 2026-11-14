@@ -1,18 +1,4 @@
 //! Detection of the installed browser and its User-Agent.
-//!
-//! The headless engine launches a browser found here: [`detect_all`],
-//! [`detect_named`] and [`detect`] are what `headless` picks from, and the
-//! profile mark records the chosen one's path. [`Browser::full_version`] is
-//! what the machine hints are built from and kept against.
-//!
-//! The User-Agent is rebuilt here so the user never has to copy it out of the
-//! developer tools console. That had two serious problems: Instagram shows a
-//! full-width warning in that console saying that anyone asking you to paste
-//! something there is scamming you, and copying from a console easily drags in
-//! dozens of log lines which, pasted into a terminal, run as separate commands.
-//!
-//! Chrome's User-Agent is reconstructible: since Google reduced it, only the
-//! major version number varies, and that comes from the browser itself.
 
 use std::path::PathBuf;
 #[cfg(not(windows))]
@@ -25,9 +11,7 @@ pub struct Browser {
     pub name: &'static str,
     pub path: PathBuf,
     pub major_version: u32,
-    /// The whole version, as the browser spells it: `153.0.8010.52`. What the
-    /// headless browser's description of the machine is kept against, since
-    /// a browser update can change it.
+    /// The whole version, as the browser spells it: `153.0.8010.52`.
     pub full_version: String,
     /// Chromium derivatives append their own brand at the end.
     suffix: Option<String>,
@@ -67,9 +51,6 @@ impl Browser {
 }
 
 /// The platform part of the User-Agent.
-///
-/// On Windows for ARM, Chrome still announces `Win64; x64` for compatibility,
-/// so there is no distinction by architecture.
 fn platform() -> &'static str {
     #[cfg(windows)]
     {
@@ -87,25 +68,9 @@ fn platform() -> &'static str {
 
 /// How long a stored User-Agent is trusted before the installed browser is
 /// looked at again.
-///
-/// Browsers update every few weeks, so a day is far more often than needed. The
-/// point of having an interval at all is that on Linux the check runs the
-/// browser to ask its version, and paying eighty milliseconds on every single
-/// command to learn nothing is not worth it.
 const RECHECK_AFTER_SECS: i64 = 24 * 3600;
 
 /// Brings a stored User-Agent up to date with the browser that is installed now.
-///
-/// A session whose User-Agent says Chrome 141 while the machine has been on 151
-/// for months is an anomaly that grows on its own: the real browser started
-/// sending the new version with that same cookie the moment it updated, so the
-/// stale one is ours alone. Instagram tolerates the version moving — otherwise
-/// every Chrome update would sign everybody out — which is exactly why keeping
-/// up is safe and standing still is not.
-///
-/// Only the version is touched, never the shape. Rebuilding the whole string
-/// would throw away whatever the real browser said about itself, and the point
-/// is to follow that browser rather than to replace it.
 pub fn refresh_user_agent(session: &mut Session) -> bool {
     if session.user_agent_pinned {
         return false;
@@ -142,13 +107,8 @@ pub fn refresh_user_agent(session: &mut Session) -> bool {
     true
 }
 
-/// Rewrites the major version inside a User-Agent, leaving everything else
-/// byte for byte. `None` when there was nothing to change.
-///
-/// Since Chrome reduced its User-Agent the minor, build and patch parts are
-/// frozen at zero, so the major really is the only thing that moves — which is
-/// what makes a substitution correct rather than an approximation. Derivatives
-/// carry their own token (`Edg/`, `OPR/`) and it moves with the same number.
+/// Rewrites the major version inside a User-Agent, leaving everything else byte
+/// for byte.
 fn bumped_to(user_agent: &str, major: u32) -> Option<String> {
     let mut fresh = user_agent.to_string();
     let mut changed = false;
@@ -182,24 +142,15 @@ pub fn detect() -> Option<Browser> {
 }
 
 /// Every Chromium-based browser installed, in order of preference.
-///
-/// Worth having all of them rather than just the first: a machine with both
-/// Chrome and Edge is ordinary, the Instagram session lives in exactly one of
-/// them, and picking for the user is picking wrong half the time.
 pub fn detect_all() -> Vec<Browser> {
     probe(|_| true)
 }
 
 /// The one brand asked for, without launching the others.
 ///
-/// `refresh_user_agent` wants exactly one — the browser the session belongs to.
-/// Off Windows detection launches each candidate with `--version` and blocks
-/// on the answer, so detecting everything to keep one costs three processes.
-///
 /// It keeps `detect_all`'s semantics deliberately: every path of that brand is
 /// tried and it stops on the first that yields a **version**, not on the first
-/// that exists. On Linux the candidates are `$PATH` crossed with several
-/// executable names, so a path can be there and answer nothing.
+/// that exists.
 pub fn detect_named(name: &str) -> Option<Browser> {
     probe(|candidate| candidate == name).into_iter().next()
 }
@@ -309,9 +260,7 @@ fn candidates() -> Vec<Candidate> {
             "Chrome",
             None,
             // `chromium-browser` is the name Ubuntu's snap wrapper and Fedora
-            // install under; Debian's is `chromium`. The label says Chrome
-            // for all four, which only the login's menu shows: what is sent
-            // is the brand list the binary reports for itself.
+            // install under; Debian's is `chromium`.
             on_path(&[
                 "google-chrome-stable",
                 "google-chrome",
@@ -329,12 +278,6 @@ fn candidates() -> Vec<Candidate> {
 }
 
 /// Works out the browser's major version.
-///
-/// On Windows this is read from disk rather than by launching the process:
-/// Chrome is a GUI application, it detaches from the console, and `--version`
-/// leaves nothing for a child process to capture. Conveniently, Chromium keeps
-/// its files in a directory named after the version right next to the
-/// executable, and that holds for Chrome, Edge and Brave alike.
 #[cfg(windows)]
 fn version_of(path: &std::path::Path) -> Option<String> {
     let directory = path.parent()?;
@@ -353,9 +296,6 @@ fn version_of(path: &std::path::Path) -> Option<String> {
 
 /// Off Windows the executable can be asked directly; it prints something like
 /// "Google Chrome 151.0.7922.47".
-///
-/// Started one at a time with the browsers (`pipe`), so that none of their
-/// pipes is caught open across this one's `exec`, and waited for after.
 #[cfg(not(windows))]
 fn version_of(path: &std::path::Path) -> Option<String> {
     use std::process::Stdio;

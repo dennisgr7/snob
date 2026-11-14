@@ -1,10 +1,5 @@
-//! What the page in the person's browser posts back, and the protocol
-//! command each piece becomes.
-//!
-//! Pure, so every translation is tested without a browser. The page sends
-//! coordinates already in the tab's own CSS pixels (it knows the size of the
-//! frame it was sent), so nothing here scales; it only refuses what no mouse
-//! or keyboard would produce.
+//! What the page in the person's browser posts back, and the protocol command
+//! each piece becomes.
 
 use serde::Deserialize;
 use serde_json::{Value, json};

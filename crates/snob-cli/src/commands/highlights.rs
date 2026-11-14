@@ -1,44 +1,12 @@
-//! `snob highlights`: the reels an account chose to keep on its profile, and
-//! how to keep a copy.
+//! `snob highlights`: the reels an account chose to keep on its profile, and how
+//! to keep a copy.
 //!
-//! Two lists, one inside the other, which is the one way this differs from
-//! `stories`. The tray is the row of covers under the bio — a title, a count
-//! and some dates each — and every entry holds items that are stories in all
-//! but expiry. So the command is `stories` twice over: `snob highlights
-//! someone` numbers the tray the way `stories` numbers a reel, and `snob
-//! highlights someone 2` opens the second entry and numbers what it holds,
-//! with `-d`, `-o`, `--format` and `-i` meaning on that listing exactly what
-//! they mean on `stories`. AGENTS.md says why the two are not one command
-//! with a flag.
+//! AGENTS.md says why the two are not one command with a flag.
 //!
-//! Without an entry's number, `-d` takes whole entries — `-d 2` is every item
-//! of the second, `-d all` the whole profile — because that is what a number
-//! means in the listing that is actually on screen. The two readings cannot
-//! collide: one is at the tray, the other inside an entry, and each refuses
-//! numbers its own listing does not have.
+//! **Reading a highlight does not mark it as seen.**
 //!
-//! The requests, from the browser: the profile (two requests the first time
-//! a name is seen, its id and then the profile) and the tray, which is the
-//! web client's and carries no item count and no dates, so those are
-//! unknown there. Without one: the profile, by name, and the tray, which
-//! is not asked for when the profile says there are no highlights. Then one
-//! more per highlight *opened*, either way — the tray does not carry the
-//! items. Each is paid for inside the client like every other read. Downloads come
-//! from the CDN, a different host that is deliberately not paced; the
-//! reasoning is on `CdnClient::download_capped`.
-//!
-//! **Reading a highlight does not mark it as seen.** The browser registers a
-//! view of a highlight item through the very mutation it uses for a story,
-//! with the highlight as the reel; `stories` says why nothing here may send
-//! it, and `crates/snob-core/tests/no_seen.rs` covers the prefixed reel id
-//! too.
-//!
-//! **A private account the viewer does not follow is told apart from an
-//! account with nothing kept.** The tray endpoint answers both with an empty
-//! list; the profile, which is read first anyway, says which is which — the
-//! same two sentences `profile` keeps apart, because "none" and "not shown to
-//! you" are different answers and printing the first for the second would be
-//! wrong.
+//! **A private account the viewer does not follow is told apart from an account
+//! with nothing kept.**
 
 use std::path::Path;
 
@@ -69,14 +37,12 @@ pub struct Entry {
     /// Filtered: it came off somebody else's profile and it is going to a
     /// terminal. Empty when the highlight has none, which happens.
     pub title: String,
-    /// The count the tray declares. Not a promise: what the reel answers is
-    /// what is downloadable, and the two have been seen to disagree.
+    /// The count the tray declares.
     pub declared_items: Option<u64>,
     pub created_at: Option<Epoch>,
     /// When something was last added to it.
     pub updated_at: Option<Epoch>,
-    /// Its cover's address, for a view to draw ([`cover_of`]). Not in the
-    /// JSON contract.
+    /// Its cover's address, for a view to draw ([`cover_of`]).
     pub cover: Option<String>,
 }
 
@@ -105,9 +71,7 @@ pub struct Tray {
 /// What the tray request could see.
 pub enum Fetched {
     Tray(Tray),
-    /// Private, and the viewer does not follow it. Carried as its own case
-    /// for the same reason `profile::Visibility` exists: "no highlights" and
-    /// "highlights you may not see" are different sentences.
+    /// Private, and the viewer does not follow it.
     Hidden {
         username: String,
     },
@@ -179,9 +143,8 @@ pub async fn run(
         return Ok(ExitCode::Ok);
     }
 
-    // Decided once for both levels: the browser is the default for a person
-    // at a terminal, and every explicit flag beats detection.
-    // `MediaActionArgs::browses` is the whole rule.
+    // Decided once for both levels: the browser is the default for a person at
+    // a terminal, and every explicit flag beats detection.
     let browses = args.action.browses(
         args.list.format.is_some(),
         ui::a_human_would_watch_the_listing_scroll_by(),
@@ -206,10 +169,9 @@ pub async fn run(
     }
 }
 
-/// The tray, as the account the command runs as and then as each account
-/// the view switches to, fetched again as that one: a private account keeps
-/// its highlights from those who do not follow it. Drawn again, it opens at
-/// the tray.
+/// The tray, as the account the command runs as and then as each account the
+/// view switches to, fetched again as that one: a private account keeps its
+/// highlights from those who do not follow it.
 async fn browse(
     app: Box<App>,
     tray: Tray,
@@ -343,9 +305,8 @@ async fn inside_one(
     )
 }
 
-/// The network half of the tray, kept apart from the session and the
-/// filesystem so a test can drive it against a mock server. `known` is the
-/// account's pk when this machine has seen it.
+/// The network half of the tray, kept apart from the session and the filesystem
+/// so a test can drive it against a mock server.
 pub async fn fetch_tray(
     client: &IgClient,
     typed: &str,
@@ -390,14 +351,7 @@ pub async fn fetch_tray(
     }))
 }
 
-/// The items of one entry of `tray`. One request.
-///
-/// From the browser the entry is asked for the way the web client opens
-/// one, with every entry of the tray beside it, in the tray's order.
-///
-/// An id the reel no longer answers for — deleted since the tray was fetched —
-/// comes back as no items, and the caller says "empty" for it; there is
-/// nothing to be downloaded either way, and the tray is seconds old.
+/// The items of one entry of `tray`.
 pub async fn items_of_entry(client: &IgClient, tray: &Tray, entry: &Entry) -> Result<Vec<Story>> {
     let ids: Vec<String> = tray.entries.iter().map(|e| e.id.clone()).collect();
     let Some(reel) = client.highlight(&entry.id, &ids, &tray.username).await? else {
@@ -452,16 +406,8 @@ fn whole_highlights_to_stdout() -> anyhow::Error {
     )
 }
 
-/// Downloads whole entries: each one fetched and then saved the way
-/// `stories -d all` saves a reel, into one directory.
-///
-/// Keeps going past an entry that fails, like the story loop keeps going past
-/// a story, and for the same reason: stopping at the first would leave a
-/// partial set with no say about which ones are missing. It stops at a
-/// refusal, which answers every entry after it the same way, names the ones
-/// not tried, and exits with the refusal's own code. The items requests stay
-/// sequential — they are Instagram, paced inside the client — while each
-/// entry's CDN downloads overlap the way `stories` overlaps them.
+/// Downloads whole entries: each one fetched and then saved the way `stories -d
+/// all` saves a reel, into one directory.
 async fn download_entries(
     app: &crate::app::App,
     tray: &Tray,
@@ -471,10 +417,8 @@ async fn download_entries(
     let numbers = media::numbers_of(selection, tray.entries.len(), |number| {
         no_such_highlight(tray, number)
     })?;
-    // A whole highlight is as many files as it holds, which is not known
-    // until it is read: refused before that read rather than after it. `run`
-    // refuses it before the tray is read too; this is the rule kept where
-    // the download is.
+    // A whole highlight is as many files as it holds, which is not known until
+    // it is read: refused before that read rather than after it.
     if destination.is_some_and(crate::output::is_stdout) {
         return Err(whole_highlights_to_stdout());
     }
@@ -498,11 +442,7 @@ async fn download_entries(
             Err(e) if was_canceled(&e) => return Err(e),
             Err(e) => {
                 failed.push(format!("highlight {number}: {e}"));
-                // **Past a failure, not past a refusal.** Keeping going is for
-                // an entry that would not come; a session that has gone, an
-                // account in cooldown or a browser that died answers every
-                // entry after it the same way, and each of those was one more
-                // request into a no.
+                // **Past a failure, not past a refusal.**
                 if is_a_refusal(&e) {
                     stopped_by = Some(crate::exit::exit_code_for(&e));
                     not_tried = &numbers[at + 1..];
@@ -585,8 +525,7 @@ fn no_such_item(tray: &Tray, number: usize, items: &[Story], asked: usize) -> an
     )
 }
 
-/// Prints the tray. The numbers here are what the second positional and a
-/// tray-level `-d` take.
+/// Prints the tray.
 fn list_tray(
     tray: &Tray,
     pictures: Option<Vec<serde_json::Value>>,
@@ -661,8 +600,7 @@ fn tray_table(tray: &Tray, presentation: Presentation) -> String {
 
 fn items_table(items: &[Story], presentation: Presentation) -> String {
     // No "Gone in": nothing in a highlight is going anywhere, which is what a
-    // highlight is. The date carries the year instead of the hour for the
-    // same reason -- see `report::dated`.
+    // highlight is.
     let mut table = media::listing_table(&["#", "Kind", "Posted", "Mentions"], presentation);
 
     for (index, story) in items.iter().enumerate() {
