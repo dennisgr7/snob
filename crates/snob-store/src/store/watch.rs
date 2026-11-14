@@ -57,30 +57,12 @@ pub struct Swept {
     pub given_up: usize,
 }
 
-/// Removes captures nothing needs any more. Kept whatever their age: the
-/// capture every mark points at (the baseline of the next diff; deleting it
-/// is one silently missed report), the newest complete capture of each
-/// account and list (what the cache serves), and every incomplete one (a
-/// resume may be under way; `delete_partials` clears those).
+/// The monitor's sweep: the captures nothing needs any more
+/// ([`super::snapshots::prune`], which says what is kept), the reports too
+/// old to be news, the runs past their keeping and the posts no longer
+/// remembered.
 pub fn prune(conn: &Connection, now: Epoch) -> Result<Swept, StoreError> {
-    let cutoff = now - Duration::from_secs(KEEP_FOR_SECS as u64);
-
-    let removed = conn.execute(
-        "DELETE FROM snapshots
-         WHERE complete = 1
-           AND taken_at IS NOT NULL
-           AND taken_at < ?1
-           AND id NOT IN (SELECT snapshot_id FROM watch_marks WHERE snapshot_id IS NOT NULL)
-           AND id NOT IN (
-             SELECT id FROM (
-               SELECT id, row_number() OVER (
-                 PARTITION BY account_pk, kind ORDER BY taken_at DESC, id DESC
-               ) AS rank
-               FROM usable_snapshots
-             ) WHERE rank = 1
-           )",
-        params![cutoff.get()],
-    )?;
+    let removed = super::snapshots::prune(conn, now)?;
 
     // The outbox's own rules, in its own module. The count of reports given
     // up comes back out: that is news lost, not housekeeping.
@@ -1233,6 +1215,8 @@ mod tests {
     fn an_old_capture_nothing_needs_is_removed_with_its_members() {
         let mut db = Store::in_memory().unwrap();
         let old = account_with_capture(&mut db, Pk::new(7), &[user(1, "one")]);
+        // The one `snob changes` compares the newest with, which is kept.
+        account_with_capture(&mut db, Pk::new(7), &[user(1, "one")]);
         let newer = account_with_capture(&mut db, Pk::new(7), &[user(1, "one")]);
         age(&db, old, KEEP_FOR_SECS + 1);
 
@@ -1255,6 +1239,51 @@ mod tests {
     }
 
     #[test]
+    fn the_capture_before_the_newest_is_kept_however_old_it_is() {
+        let mut db = Store::in_memory().unwrap();
+        let before = account_with_capture(&mut db, Pk::new(7), &[user(1, "one")]);
+        let newest = account_with_capture(&mut db, Pk::new(7), &[user(1, "one")]);
+        age(&db, before, KEEP_FOR_SECS * 5);
+
+        assert_eq!(
+            snapshots::prune(db.conn(), snob_core::clock::now()).unwrap(),
+            0
+        );
+        let whole: Vec<i64> = snapshots::usable(db.conn(), Pk::new(7), ListKind::Followers)
+            .unwrap()
+            .iter()
+            .map(|capture| capture.id)
+            .collect();
+        assert_eq!(whole, [newest, before]);
+    }
+
+    /// The sweep a walk runs is of captures alone: a report still owed is the
+    /// monitor's to give up on, since only the monitor's run can say so.
+    #[test]
+    fn sweeping_captures_expires_no_report() {
+        let mut db = Store::in_memory().unwrap();
+        account_with_capture(&mut db, Pk::new(7), &[user(1, "one")]);
+        let long_ago = Epoch::new(1_000);
+        let id = super::super::deliveries::enqueue(
+            db.conn(),
+            "run-1",
+            Pk::new(7),
+            "{}",
+            long_ago,
+            "https://example.test/hook",
+        )
+        .unwrap();
+
+        snapshots::prune(db.conn(), snob_core::clock::now()).unwrap();
+        assert_eq!(
+            super::super::deliveries::state(db.conn(), id)
+                .unwrap()
+                .as_deref(),
+            Some("pending")
+        );
+    }
+
+    #[test]
     fn the_monitors_last_start_and_a_window_of_renames_are_sought() {
         let db = Store::in_memory().unwrap();
         let last = crate::store::plan(db.conn(), LAST_STARTED);
@@ -1269,6 +1298,9 @@ mod tests {
     /// The rule the whole of retention has to respect. Taking the marked
     /// capture leaves the next run with no baseline, so it reports nothing —
     /// one silently missed report, and no error anywhere.
+    /// `snob changes`, asked nothing else, compares a list's newest whole
+    /// capture with the one before it. A list walked less than once a month
+    /// would otherwise lose that one to the sweep its own next walk runs.
     #[test]
     fn the_capture_a_mark_points_at_is_kept_however_old_it_is() {
         let mut db = Store::in_memory().unwrap();
