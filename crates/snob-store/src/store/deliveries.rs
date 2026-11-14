@@ -1,16 +1,9 @@
 //! The outbox: reports owed to the address the user chose.
 //!
-//! The rules live here rather than in whatever does the sending, because they
-//! are the ones a caller would otherwise have to remember: a report is queued
-//! before the mark that makes it old news moves, a retry sends the bytes that
-//! were signed, the wait between attempts grows, and an attempt that will never
-//! succeed is given up on rather than retried until the end of time.
-//!
-//! Retrying at all is not a contradiction of the project's hard-stop rule. That
-//! rule is about **Instagram** — when a service that did not ask to be talked to
-//! says no, the answer is to stop asking. This is the user's own server, which
-//! they set up to be talked to, and a webhook that drops a report because n8n
-//! was restarting is a webhook nobody can rely on.
+//! A report is queued before the mark that makes it old news moves, a retry
+//! sends the bytes that were signed, the wait between attempts grows, and an
+//! attempt that will never succeed is given up on. Retrying is allowed here
+//! (the user's own server), never against Instagram.
 
 use std::time::Duration;
 
@@ -26,47 +19,18 @@ const FIRST_BACKOFF_SECS: i64 = 60;
 /// day still tries roughly hourly rather than settling into a week.
 const MAX_BACKOFF_SECS: i64 = 3_600;
 
-/// How many attempts before a report is given up on.
-///
-/// **The age below is the bound that decides; this one is the backstop.**
-/// `commit_report` moves the mark in the same transaction that queues the
-/// report, so a report given up on is a set of arrivals and departures that no
-/// later run will find — and the standing rule is that a report is never lost
-/// because its delivery failed. A count that ran out first would lose every
-/// report queued while a receiver was down for an afternoon, and leave
-/// `MAX_AGE_SECS` nothing to judge.
-///
-/// A hundred and eighty is what it takes for the age to win: six doubling
-/// waits (about an hour together) and then hourly, which passes the week of
-/// [`MAX_AGE_SECS`] (168 hours) before this is reached. Every attempt waits,
-/// so this cannot be burned through quickly by an endpoint that answers fast.
+/// How many attempts before a report is given up on: the backstop, since
+/// [`MAX_AGE_SECS`] is the bound meant to decide. Six doubling waits (about
+/// an hour together) and then hourly pass that week (168 hours) before 180.
 const MAX_ATTEMPTS: i64 = 180;
 
-/// How old a report may get before it is given up on whatever its attempt
-/// count says.
-///
-/// Both bounds exist because they catch different failures. The age catches a
-/// process that was stopped for a week, where nothing has been attempted at all
-/// and a report about who unfollowed you last Tuesday is no longer news; the
-/// attempt count catches a queue that somehow keeps being tried without the
-/// clock moving. In ordinary running it is the age that decides.
-///
-/// **A week, not a day.** The queue is drained only by a run, and the
-/// schedule people pick most is daily: the next run comes 24 hours later
-/// plus its jitter, so with a day here a report that failed once was given
-/// up on just before the one run that could have sent it, and since its mark
-/// had moved, the unfollowers it named were reported nowhere. A week rides
-/// out a weekly schedule's single retry too, and is how long a settled
-/// delivery is kept anyway ([`KEEP_SETTLED_FOR_SECS`]).
+/// How old a report may get before it is given up on. **A week, not a day**:
+/// the queue is drained only by a run, and with a daily schedule a day here
+/// gave a report up just before the one run that could have sent it.
 pub const MAX_AGE_SECS: i64 = 7 * 24 * 3_600;
 
-/// A report waiting to be sent.
-///
-/// **`created_at` is a column and not a field.** Nothing reads it, and that
-/// is not an omission: a caller holding it would compute a report's age and
-/// decide something from it, which is [`MAX_AGE_SECS`]'s job and is decided in
-/// one place. The mapper below reads by position, so a field nothing needs is
-/// also one more position to keep in step.
+/// A report waiting to be sent. `created_at` is not a field on purpose: its
+/// age is [`MAX_AGE_SECS`]'s to judge, in one place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivery {
     pub id: i64,
@@ -89,13 +53,9 @@ pub struct Form {
     pub content_type: String,
 }
 
-/// Queues a report of snob's JSON, its event read back from the body when it
-/// is sent. [`enqueue_as`] queues one with its form.
-///
-/// Takes a `&Connection` rather than opening its own transaction on purpose:
-/// the caller has to be able to put this and the mark it makes stale in **one**
-/// transaction, and a function that begins its own makes that impossible.
-/// `destination` is where it is addressed, and it is what [`due`] filters on.
+/// Queues a report of snob's JSON; [`enqueue_as`] queues one with its form.
+/// Runs inside the caller's transaction, with the mark the report makes
+/// stale. `destination` is what [`due`] filters on.
 pub fn enqueue(
     conn: &Connection,
     run_id: &str,
@@ -135,28 +95,17 @@ pub fn enqueue_as(
     Ok(conn.last_insert_rowid())
 }
 
-/// The moment a report has to be newer than to still be news.
-///
-/// One function for [`due`], [`failed`] and [`expire_stale`], so they cannot
-/// disagree about a report at exactly the bound: a report either is news or is
-/// not. It is too old the moment it *reaches* [`MAX_AGE_SECS`], and everything
-/// strictly newer is still news, which
-/// `a_report_too_old_to_be_news_is_given_up_on` pins.
+/// The moment a report has to be newer than to still be news: one function
+/// for [`due`], [`failed`] and [`expire_stale`]. Too old the moment it
+/// reaches [`MAX_AGE_SECS`].
 fn still_news_after(now: Epoch) -> Epoch {
     now - Duration::from_secs(MAX_AGE_SECS as u64)
 }
 
-/// Gives up on reports that have grown too old to be news.
-///
-/// **[`MAX_AGE_SECS`] cannot be left to [`failed`] alone**, which is only
-/// reached by a run that *tries* the report: the age bound must not depend on a
-/// retry happening. Removing `[webhook]` from the configuration, or a walk that
-/// fails before the delivery step, would otherwise leave rows owed forever with
-/// `status` promising the next run would try them.
-///
-/// Marked rather than deleted, so `status` can still say what became of it.
-/// Here rather than in `store::watch::prune`, which calls it, because the
-/// outbox's rules live in this file.
+/// Gives up on reports that have grown too old to be news, tried or not: a
+/// removed `[webhook]` or a run that fails before delivering must not leave
+/// rows owed for ever. Marked rather than deleted, so `status` can say what
+/// became of them.
 pub(super) fn expire_stale(conn: &Connection, now: Epoch) -> Result<usize, StoreError> {
     let expired = conn.execute(
         "UPDATE watch_deliveries
@@ -169,16 +118,10 @@ pub(super) fn expire_stale(conn: &Connection, now: Epoch) -> Result<usize, Store
     Ok(expired)
 }
 
-/// How long a settled delivery is kept, for `status` and for anybody wondering
-/// where a report went. **Seven days**; older ones are only a record that
-/// something arrived.
+/// How long a settled delivery is kept, for `status`.
 const KEEP_SETTLED_FOR_SECS: i64 = 7 * 24 * 3_600;
 
-/// Forgets deliveries settled long enough ago to be history rather than work.
-///
-/// **A pending row is never deleted here.** [`failed`] and [`expire_stale`] are
-/// what decide when a report stops being owed, and removing one from under them
-/// would lose a report that was still going to be tried.
+/// Forgets deliveries settled long ago. A pending row is never deleted here.
 pub(super) fn forget_settled(conn: &Connection, now: Epoch) -> Result<usize, StoreError> {
     let removed = conn.execute(
         "DELETE FROM watch_deliveries
@@ -188,35 +131,13 @@ pub(super) fn forget_settled(conn: &Connection, now: Epoch) -> Result<usize, Sto
     Ok(removed)
 }
 
-/// Reports that may be tried now, oldest first.
+/// Reports that may be tried now, oldest first, as the events they are. One
+/// past the age bound is not due; `store::watch::prune` settles it.
 ///
-/// Oldest first because they are a sequence of events about one account, and a
-/// receiver that gets Tuesday's arrivals after Wednesday's has to sort them out
-/// itself.
-///
-/// The age bound is applied here as well as in [`failed`], and that is not
-/// belt-and-braces: a report nothing retried must not go out as news once it
-/// has aged past it. A row past the bound is simply not due;
-/// `store::watch::prune` is what settles it.
-///
-/// `destination` is the address the caller can post to, and only reports
-/// addressed there come back, so reports queued for one receiver, carrying its
-/// token, never go out through a client pointed somewhere else: `snob watch
-/// once --webhook https://webhook.site/<id>`, run to see what the payload
-/// looks like, must not send the team receiver's backlog to a request bin and
-/// mark it delivered.
-///
-/// **The whole address, not its origin.** This is a URL and it is compared as
-/// one. An origin cannot tell two workflows on one host apart, and that is the
-/// shape the tool is most often pointed at: n8n publishes a workflow at
-/// `/webhook/name` and the same workflow's test run at `/webhook-test/name`, so
-/// the two differ in the path alone, and an origin filter would send the
-/// production backlog to the test workflow with the production token on it.
-///
-/// A row with no destination is never due, and none exists: `003_deliveries`
-/// and `005_destination` first shipped together, in v0.2.0. The note on such
-/// rows in `005_destination.sql` is the rule of its day, left as it is because
-/// a published migration is not edited.
+/// Only reports addressed to `destination` come back, compared as **the
+/// whole address, not its origin**: n8n's `/webhook/name` and
+/// `/webhook-test/name` differ in the path alone, and a `--webhook` typed to
+/// look at a payload must not be sent another receiver's backlog.
 pub fn due(
     conn: &Connection,
     now: Epoch,
@@ -226,10 +147,8 @@ pub fn due(
     owed_to(conn, now, limit, destination, false)
 }
 
-/// Every report still owed to `destination`, whether or not its backoff has
-/// ended: for `snob watch deliver`, which a person types to send now. The
-/// backoff spaces the attempts nobody asked for; one asked for is one more
-/// attempt, and is counted and aged like any other.
+/// Every report still owed to `destination`, backoff ended or not: for `snob
+/// watch deliver`. It is one more attempt, counted and aged like any other.
 pub fn owed_now(
     conn: &Connection,
     now: Epoch,
@@ -287,8 +206,7 @@ fn owed_to(
 pub fn delivered(conn: &Connection, id: i64, status: u16, at: Epoch) -> Result<(), StoreError> {
     conn.execute(
         // `state = 'pending'`: a `watch deliver` and a run's drain can try one
-        // row at the same time, and the second to finish must not undo what
-        // the first settled.
+        // row at once, and the second must not undo what the first settled.
         "UPDATE watch_deliveries
          SET state = 'delivered', settled_at = ?2, next_try_at = NULL,
              attempts = attempts + 1, last_status = ?3, last_error = NULL
@@ -310,10 +228,8 @@ pub enum Outcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GaveUp {
-    /// There was no request to send, so there is none to send again: a header
-    /// the builder cannot construct from what was configured.
-    ///
-    /// **Not "the far end said no"**, for the reason [`failed`] gives.
+    /// There was no request to send: a header that cannot be built from what
+    /// was configured. Not "the far end said no" (see [`failed`]).
     Refused,
     OutOfAttempts,
     TooOld,
@@ -321,13 +237,10 @@ pub enum GaveUp {
 
 /// Records a failed attempt and decides what happens next.
 ///
-/// `permanent` is the caller's reading of the attempt — the store does not know
-/// what an HTTP status means — and it separates "there was no request to send"
-/// from everything else. It is deliberately narrow: a 401 or a 404 from a
-/// webhook is very often transient, the far end is the user's own server, and
-/// the mark has already moved by the time this runs, so giving up on a 4xx
-/// would lose the change the report describes. What bounds the retrying is
-/// [`MAX_ATTEMPTS`] and [`MAX_AGE_SECS`], not a guess about a status code.
+/// `permanent` is the caller's reading, and narrow on purpose: a 401 or a 404
+/// from the user's own server is often transient, and the mark has already
+/// moved, so giving up on one would lose the change. [`MAX_ATTEMPTS`] and
+/// [`MAX_AGE_SECS`] bound the retrying.
 pub fn failed(
     conn: &Connection,
     id: i64,
@@ -377,11 +290,7 @@ pub fn failed(
     }
 }
 
-/// How long to wait before attempt number `attempts + 1`.
-///
-/// Doubling, capped. `checked_shl` rather than `<<`: [`MAX_ATTEMPTS`] attempts
-/// cannot overflow, but a shift by a number this function does not control is
-/// the kind of thing that stops being true when somebody raises the cap.
+/// How long to wait before attempt number `attempts + 1`: doubling, capped.
 fn backoff(attempts: i64) -> i64 {
     let shift = (attempts.max(1) - 1).min(16) as u32;
     FIRST_BACKOFF_SECS
@@ -390,57 +299,27 @@ fn backoff(attempts: i64) -> i64 {
         .min(MAX_BACKOFF_SECS)
 }
 
-/// A count of the queue, split by whether this configuration could post it.
-///
-/// One integer cannot answer both questions. [`pending`] counts every row in
-/// the state — no destination, no age bound — while [`due`] hands back only
-/// what is addressed here: after `[webhook] url` moves from one receiver to
-/// another, one count would have `status` say reports are waiting about rows
-/// `due` can never return, and fail the health verdict over them. Nothing is
-/// lost by refusing an old-destination row — that is the settled rule, and
-/// `store::watch::prune` expires it at a week — but a probe told the wrong
-/// number in the alarming direction is one people switch off.
+/// A count of the queue, split by whether this configuration could post it:
+/// after `[webhook] url` moves, rows addressed to the old one are not owed
+/// here, and `status` must not fail its verdict over them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Owed {
     /// Reports this destination could post: the ones addressed here.
     pub waiting: usize,
-    /// Reports addressed elsewhere. Not owed to this run, and unless something
-    /// else posts to that address they expire where they are — which is worth
-    /// saying separately rather than counting in with the rest.
+    /// Reports addressed elsewhere, which expire where they are.
     pub elsewhere: usize,
-    /// Reports nothing will ever deliver, because they grew too old to be news.
-    ///
-    /// Not owed — the opposite: owing has ended. It is here because `status` is
-    /// where somebody goes to ask what became of a report, and this is the one
-    /// answer it could not give. Kept for `KEEP_SETTLED_FOR_SECS`, which is how
-    /// long the row survives `forget_settled`.
+    /// Reports given up on, kept for `KEEP_SETTLED_FOR_SECS` so that `status`
+    /// can say what became of them.
     pub given_up: usize,
 }
 
-/// What is queued, for `snob watch status` to report.
-///
-/// `destination` is the address the caller could post to, in the spelling
-/// [`enqueue`] recorded — `commands::watch::destination_of`, for a caller that
-/// builds no delivery of its own. `None` is a configuration that names no
-/// address: it can post nothing, so nothing is owed to *it*, whatever the rows
-/// say. That is deliberately not the same as "orphaned". A run given `--webhook`
-/// on the command line — which is how the README's own systemd example runs —
-/// queues rows this file knows nothing about and drains them again on its next
-/// tick, and nothing here can tell that apart from a `[webhook]` somebody
-/// deleted. Whoever reads this decides what a guess is worth; this only counts.
-///
-/// The age bound `due` also applies is deliberately not repeated. A row past it
-/// is expired by `prune` on the next settle rather than left `pending`, so
-/// filtering it out here would print 0 while rows sit in the table — the same
-/// failure this exists to fix, in the other direction.
+/// What is queued, for `snob watch status`. `destination` is the address the
+/// caller could post to, as [`enqueue`] recorded it; `None` can post nothing,
+/// so nothing is owed to it. The age bound is not applied: `prune` expires a
+/// row past it, and filtering here would print 0 over rows still pending.
 pub fn owed(conn: &Connection, destination: Option<&str>) -> Result<Owed, StoreError> {
-    // The third count reads a **settled** row, which is why the `state` test
-    // is in the filters rather than the `WHERE`: a report given up on leaves
-    // `pending`, and counting only `pending` would make it invisible in the
-    // same statement, so `status` would go quiet and the health verdict go
-    // from `warning` to `ok` at exactly the moment the change was thrown away.
-    // `forget_settled` takes the row after `KEEP_SETTLED_FOR_SECS`, which is
-    // the window this has to say it in.
+    // The `state` test is in the filters, not the `WHERE`: a report given up
+    // on has left `pending` and still has to be counted.
     let (waiting, elsewhere, given_up): (i64, i64, i64) = conn.query_row(
         "SELECT
            count(*) FILTER (WHERE state = 'pending' AND destination = ?1),
@@ -460,11 +339,7 @@ pub fn owed(conn: &Connection, destination: Option<&str>) -> Result<Owed, StoreE
     })
 }
 
-/// The whole queue, whoever it belongs to.
-///
-/// Kept for the tests that assert a row was settled. Anything reported to a
-/// person goes through [`owed`], which asks `due`'s question rather than this
-/// one.
+/// The whole queue, whoever it belongs to. For tests; people are told [`owed`].
 pub fn pending(conn: &Connection) -> Result<usize, StoreError> {
     let count: i64 = conn.query_row(
         "SELECT count(*) FROM watch_deliveries WHERE state = 'pending'",

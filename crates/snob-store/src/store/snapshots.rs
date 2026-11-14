@@ -1,10 +1,7 @@
 //! Snapshots: a follower or following list captured at one moment.
 //!
-//! A snapshot is opened when the walk begins, filled in page by page, and
-//! closed at the end. Each page commits in its own transaction, and that is
-//! what makes "save partial progress" not an action to be executed in time but
-//! simply a matter of stopping: whatever committed is durable even if the
-//! process dies outright.
+//! Opened when the walk begins, filled page by page, closed at the end. Each
+//! page commits in its own transaction, so stopping is saving.
 
 use std::time::Duration;
 
@@ -15,78 +12,31 @@ use snob_core::clock::{now, now_ms};
 use snob_core::model::{ListKind, StopReason, User};
 use snob_core::{Epoch, Pk};
 
-/// How long an interrupted walk may still be resumed.
-///
-/// Past the window it is not resumed: stitching two separate moments together
-/// produces a list that reflects no single instant, and comparing it against
-/// another invents arrivals and departures that never happened.
-///
-/// **A day and a half.** Walks read a page every one to three seconds, rest
-/// five to fifteen minutes every forty pages, and sleep when the day's
-/// accounts are spent (`pace.rs`, `budget::accounts_per_day`), so a list
-/// larger than what is left of the day spans two days by design. A day and a
-/// half covers a walk interrupted overnight and the run that picks it up the
-/// next day, instead of paying again for the pages already read.
+/// How long an interrupted walk may still be resumed: past it, the two halves
+/// would describe no single moment. A day and a half, since a list larger
+/// than what is left of the day's accounts spans two days by design.
 pub const RESUME_WINDOW_SECS: i64 = 36 * 3600;
 
-/// How long a claim on a walk outlives the last page it saved.
-///
-/// A different question from [`RESUME_WINDOW_SECS`], and deliberately its own
-/// number: that one asks whether a partial still describes one moment, this one
-/// asks whether anybody is still working on it. A walk that keeps saving pages
-/// keeps its claim however long the list is, because `save_page` refreshes it;
-/// what this bounds is how long a walk whose process was killed goes on looking
-/// busy.
-///
-/// **It has to be strictly shorter than [`RESUME_WINDOW_SECS`], and by enough
-/// to leave a gap somebody can use.** `save_page` refreshes `claimed_at`, so it
-/// is never earlier than `started_at` — which means that with the two constants
-/// equal, "the claim has gone stale" (`claimed_at + CLAIM_TTL_SECS < now`) and
-/// "the partial is still worth resuming" (`started_at + RESUME_WINDOW_SECS >=
-/// now`) cannot both hold, so no process could ever adopt a walk whose own
-/// process was killed: every interrupted walk would start again from page one,
-/// at the full cost of the requests it had already paid for.
-///
-/// Forty-five minutes rather than something tighter because the walker is quiet
-/// for stretches on purpose: the longest between two saved pages is a sitting's
-/// rest, up to fifteen minutes (`pace::SITTING_PAUSE_MS`), plus a retry's
-/// backoff. A walk paused for the day's accounts is quiet for hours, and
-/// refreshes the claim itself with [`keep_claim`] while it waits. And rather
-/// than something looser because losing a claim is not a way to corrupt a
-/// capture: `save_page` refuses to write into a snapshot this process does not
-/// hold, so a walk whose claim was taken stops instead of interleaving with the
-/// walk that took it.
+/// How long a claim on a walk outlives the last page it saved: how long a
+/// killed walk goes on looking busy. Strictly shorter than
+/// [`RESUME_WINDOW_SECS`], or no process could ever adopt one. Forty-five
+/// minutes covers the longest quiet stretch, a sitting's rest of up to fifteen
+/// (`pace::SITTING_PAUSE_MS`), plus a backoff; a walk asleep on the day's
+/// accounts refreshes its claim with [`keep_claim`].
 pub const CLAIM_TTL_SECS: i64 = 45 * 60;
 
-/// The ordering above, enforced where it cannot be argued with: a build in which
-/// a killed walk can never be adopted does not compile.
 const _: () = assert!(CLAIM_TTL_SECS < RESUME_WINDOW_SECS);
 
-/// Who this process is, for the length of this process.
-///
-/// The pid and the moment it was first asked. Neither alone is enough — pids are
-/// reused, and two processes can start in the same second — but a process that
-/// has the same pid as an earlier one necessarily started later, so the pair is
-/// unique among the processes that can be running at once. That is all a claim
-/// needs: it is not an identity, it is "not me".
+/// Who this process is: the pid and the moment it was first asked, unique
+/// among the processes that can be running at once.
 fn this_process() -> &'static str {
     static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     ID.get_or_init(|| format!("{}-{}", std::process::id(), now_ms()))
 }
 
-/// A capture, as much of it as anything reads.
-///
-/// **`complete`, `pages`, `requests` and `resumes` are columns and not
-/// fields.** `complete` is constant per construction path — `latest_complete`
-/// and `find_usable` both select from `usable_snapshots`, and `resumable`
-/// selects `complete = 0` — so `if snapshot.complete` would read as the store's
-/// central safety check while deciding nothing at all. The check is the view,
-/// and it is held there rather than by whoever remembers to ask. And
-/// [`row_to_snapshot`] reads by position, so a field nothing needs is one more
-/// position that has to stay in step with [`SNAPSHOT_COLUMNS`].
-///
-/// The columns stay. `pages` and `requests` are what a walk cost, and the next
-/// thing that wants to say so should find them written down rather than lost.
+/// A capture, as much of it as anything reads. `complete` is not a field on
+/// purpose: the check is the `usable_snapshots` view, not whoever remembers
+/// to ask.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     pub id: i64,
@@ -99,12 +49,8 @@ pub struct Snapshot {
     pub next_cursor: Option<String>,
 }
 
-/// The columns [`row_to_snapshot`] reads, in the order it reads them.
-///
-/// It reads **by position**, so every statement it reads from selects this
-/// list: a miss is not a compile error but an `InvalidColumnIndex` at run time,
-/// on whichever path was missed -- and one of them is the resume path, which
-/// only a walk that was interrupted ever takes.
+/// The columns [`row_to_snapshot`] reads **by position**: every statement it
+/// reads from selects this list.
 const SNAPSHOT_COLUMNS: &str = concat!(
     "id, account_pk, kind, started_at, taken_at, member_count, ",
     "declared_count, next_cursor"
@@ -120,13 +66,7 @@ pub struct SavedPage {
     pub renamed: Vec<(Pk, String)>,
 }
 
-/// The snapshot a walk has just opened: its id, and the moment it opened.
-///
-/// A struct rather than a pair because the caller needs both and they are not
-/// interchangeable. The timestamp is handed back rather than left in the row
-/// because it is one end of the interval the finished list describes, and the
-/// caller has to have the number the row actually holds — not one it read a
-/// moment before or after.
+/// The snapshot a walk has just opened, with the `started_at` the row holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Opened {
     pub id: i64,
@@ -159,26 +99,14 @@ pub fn begin(
     })
 }
 
-/// What makes a partial capture resumable, in one place.
+/// What makes a partial capture resumable, shared by [`resumable`], which
+/// takes it, and [`is_resumable`], which only asks.
 ///
-/// [`resumable`] takes it and [`is_resumable`] asks about it, and the promise
-/// that binds them is that a walk the advice on screen says can be continued is
-/// one the next invocation really will continue, and one predicate is what
-/// keeps the two statements from disagreeing about it.
-///
-/// **The one term that differs is a bound value rather than a difference in the
-/// text.** `?5` is the process a claim may already belong to and still count as
-/// available: `Some(this_process())` when the caller is about to take the row,
-/// because resuming your own work after a restart is the point; `None` when the
-/// caller is only asking, because `claimed_by = NULL` is NULL and the clause
-/// goes inert — and the run that continues the walk is never the one asking.
-/// That asymmetry is real and load-bearing, and it is one parameter instead of
-/// one clause somebody has to notice.
-///
-/// The parameters, in both statements: `?1` the account, `?2` the list, `?3` the
-/// oldest `started_at` still inside the resume window, `?4` the newest
-/// `claimed_at` that counts as abandoned, `?5` the process whose own claim does
-/// not disqualify a row.
+/// `?1` the account, `?2` the list, `?3` the oldest `started_at` inside the
+/// resume window, `?4` the newest `claimed_at` that counts as abandoned, `?5`
+/// the process whose own claim does not disqualify a row: this process when
+/// taking, NULL (which makes the clause inert) when asking, since the run
+/// that continues the walk is never the one asking.
 const RESUMABLE: &str = concat!(
     "account_pk = ?1 AND kind = ?2 AND complete = 0
      AND next_cursor IS NOT NULL AND started_at >= ?3
@@ -186,19 +114,11 @@ const RESUMABLE: &str = concat!(
     claim_available!("?4", "?5")
 );
 
-/// The four terms that decide whether a claim protects a row, spelled once.
-///
-/// [`RESUMABLE`] asks them to find a walk worth continuing; [`delete_partials`]
-/// asks them to know what it must leave alone, and [`walked_elsewhere`] to
-/// know whose walk is live. Hand-typed copies drift, and a drifted copy in
-/// `delete_partials` deletes a walk another process is writing to.
-///
-/// A macro rather than a second const because the two statements number their
-/// parameters differently -- `?4`/`?5` inside `RESUMABLE`, `?4`/`?3` in the
-/// DELETE -- and renumbering a live statement's bindings to share a string is
-/// a worse trade than passing the indexes in. `$stale` is the newest
-/// `claimed_at` that still protects a row; `$process` is the one whose own
-/// claim does not count against it.
+/// Whether a claim leaves a row available, spelled once for [`RESUMABLE`],
+/// [`delete_partials`] and [`walked_elsewhere`]. `$stale` is the newest
+/// `claimed_at` that counts as abandoned, `$process` the one whose own claim
+/// does not count. A macro because the statements number their parameters
+/// differently.
 macro_rules! claim_available {
     ($stale:literal, $process:literal) => {
         concat!(
@@ -212,9 +132,8 @@ macro_rules! claim_available {
 }
 use claim_available;
 
-/// The two moments the resumability predicate binds, worked out together:
-/// a copy that subtracted the wrong constant would move a boundary the
-/// compile-time assertion on [`CLAIM_TTL_SECS`] exists to hold apart.
+/// The oldest `started_at` still resumable, and the newest `claimed_at` that
+/// counts as abandoned.
 fn resume_bounds(now: snob_core::Epoch) -> (i64, i64) {
     (
         (now - Duration::from_secs(RESUME_WINDOW_SECS as u64)).get(),
@@ -222,19 +141,9 @@ fn resume_bounds(now: snob_core::Epoch) -> (i64, i64) {
     )
 }
 
-/// Looks for an interrupted walk this process may continue, and takes it.
-///
-/// **The claim is taken in the same statement that finds the row**, which is
-/// what makes it safe between processes: `UPDATE … WHERE` is atomic under
-/// SQLite's write lock, so two processes racing for one partial cannot both
-/// win. Reading first and claiming afterwards would leave exactly the window
-/// this exists to close.
-///
-/// A partial is available when nobody holds it, when this process already does
-/// — resuming its own work after a restart within the window — or when whoever
-/// held it has not saved a page for [`CLAIM_TTL_SECS`] and is taken to be gone.
-///
-/// Taking the row also counts the resume, in the same statement.
+/// Looks for an interrupted walk this process may continue, and takes it,
+/// counting the resume. **The claim is taken in the statement that finds the
+/// row**, so two processes racing for one partial cannot both win.
 pub fn resumable(
     conn: &Connection,
     account_pk: Pk,
@@ -242,10 +151,8 @@ pub fn resumable(
 ) -> Result<Option<Snapshot>, StoreError> {
     let now = now();
 
-    // `RETURNING`, so what comes back is **the row that was claimed** rather
-    // than the answer to a second, looser question: a read-back keyed on this
-    // process's claim alone would return a newer claimed row without a cursor,
-    // which `walk::fetch` leaves behind when a save or the budget fails.
+    // `RETURNING`, so what comes back is the row that was claimed: a read-back
+    // by this process's claim could return a newer claimed row with no cursor.
     let snapshot = conn
         .query_row(
             &format!(
@@ -263,8 +170,6 @@ pub fn resumable(
                 kind.as_str(),
                 resume_bounds(now).0,
                 resume_bounds(now).1,
-                // `?5`: this process's own claim does not disqualify a row it is
-                // about to take; see `RESUMABLE`.
                 this_process(),
                 now.get(),
             ],
@@ -274,28 +179,14 @@ pub fn resumable(
     Ok(snapshot)
 }
 
-/// Whether an interrupted walk could be continued — asked, not taken.
-///
-/// The same predicate as [`resumable`] and deliberately not the same statement.
-/// `engine::walk` asks this after closing its own snapshot, to choose between
-/// "run it again to continue where it left off" and "run it again to start
-/// over". Asking must not claim: the process that had just released the claim
-/// would take it back as it exited, and the next invocation -- a different
-/// process -- would find a partial with a fresh claim that [`resumable`]
-/// refuses and [`delete_partials`] spares, and begin again at page one while
-/// the advice on screen promised the opposite.
-///
-/// Availability is judged the way the **next** process will judge it, so this
-/// does not count "claimed by me" as available: the run that continues the walk
-/// is never this one.
+/// Whether an interrupted walk could be continued by the **next** process:
+/// asked, never taken, and "claimed by me" does not count as available.
 pub fn is_resumable(conn: &Connection, account_pk: Pk, kind: ListKind) -> Result<bool, StoreError> {
     Ok(resumable_progress(conn, account_pk, kind)?.is_some())
 }
 
-/// How many accounts the walk the next run would continue has stored so far:
-/// [`is_resumable`]'s question, answered with the count, and asked the same
-/// way, without taking anything. What a cost estimate takes off the list's
-/// size.
+/// How many accounts the walk the next run would continue has stored so far,
+/// asked as [`is_resumable`] asks.
 pub fn resumable_progress(
     conn: &Connection,
     account_pk: Pk,
@@ -313,8 +204,6 @@ pub fn resumable_progress(
                 kind.as_str(),
                 resume_bounds(now).0,
                 resume_bounds(now).1,
-                // `?5`: nobody's claim is excused, this process's included; see
-                // `RESUMABLE`.
                 None::<&str>,
             ],
             |row| row.get(0),
@@ -324,9 +213,7 @@ pub fn resumable_progress(
 }
 
 /// Whether another process is walking this list right now: a capture not yet
-/// complete whose claim is somebody else's and still fresh. Every page saved
-/// refreshes it, and [`keep_claim`] does while the walk sleeps on the day's
-/// accounts, so a walk that is only asleep counts.
+/// complete whose claim is somebody else's and still fresh.
 pub fn walked_elsewhere(
     conn: &Connection,
     account_pk: Pk,
@@ -352,14 +239,9 @@ pub fn walked_elsewhere(
     Ok(found.is_some())
 }
 
-/// Tells other processes the walk holding `id` is still here, while it waits
-/// rather than saves.
-///
-/// A walk paused for the day's accounts saves nothing for hours, and without
-/// this its claim would go stale after [`CLAIM_TTL_SECS`] and another process
-/// could adopt a walk whose owner is only asleep. Only the owner may refresh:
-/// `false` means the claim is somebody else's now, and the sleeper should stop
-/// rather than wake up to a row it no longer holds.
+/// Refreshes the claim of a walk that waits rather than saves (asleep on the
+/// day's accounts). `false` means the claim is somebody else's now, and the
+/// sleeper should stop.
 pub fn keep_claim(store: &Store, id: i64) -> Result<bool, StoreError> {
     let held = store.conn().execute(
         "UPDATE snapshots SET claimed_at = ?3
@@ -369,15 +251,9 @@ pub fn keep_claim(store: &Store, id: i64) -> Result<bool, StoreError> {
     Ok(held > 0)
 }
 
-/// Lets go of a walk that stopped on an error, so the next run can resume it.
-///
-/// [`close`] releases the claim of a walk that ended, and a walk that failed
-/// never reaches it. `this_process` is the pid and the moment the process
-/// started, so no later run is ever this one: a claim left behind holds the
-/// partial for [`CLAIM_TTL_SECS`], and every retry in that time would begin a
-/// new capture and pay again for pages already stored, out of the day's
-/// accounts -- the whole list twice. Only the owner's claim is let go, and
-/// the row stays resumable: the cursor and the pages are kept.
+/// Lets go of a walk that stopped on an error, so the next run resumes it at
+/// once instead of starting over while the claim ages. The cursor and the
+/// pages are kept.
 pub fn release(conn: &Connection, id: i64) -> Result<(), StoreError> {
     conn.execute(
         "UPDATE snapshots SET claimed_by = NULL, claimed_at = NULL
@@ -387,29 +263,17 @@ pub fn release(conn: &Connection, id: i64) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Saves a whole page in a single transaction: the users, their membership in
-/// the snapshot, and the cursor advance.
-///
-/// Committing here rather than at the end is what makes partial progress
-/// durable.
+/// Saves a whole page in one transaction: the users, their membership and the
+/// cursor. Committing per page is what makes partial progress durable.
 pub fn save_page(
     store: &mut Store,
     id: i64,
     users: &[User],
     cursor: Option<&str>,
 ) -> Result<SavedPage, StoreError> {
-    // `BEGIN IMMEDIATE` rather than the default deferred one, for the reason
-    // `SqliteRateBudget::reserve` gives at length: this reads before it writes,
-    // and a deferred transaction pins a WAL read snapshot at the `SELECT` below
-    // that the first `INSERT` then has to upgrade. `SQLITE_BUSY_SNAPSHOT` on
-    // that upgrade does **not** invoke the busy handler, so the five-second
-    // `busy_timeout` this connection sets does not cover it and the page would
-    // fail outright, rolling back a page already paid for over one that would
-    // have succeeded a moment later.
-    //
-    // The database is shared between processes on purpose, which is the whole
-    // reason the claim exists; taking the write lock up front is what makes them
-    // queue instead of collide.
+    // `BEGIN IMMEDIATE`: this reads before it writes, and upgrading a deferred
+    // transaction can fail with `SQLITE_BUSY_SNAPSHOT`, which the busy handler
+    // does not cover (see `SqliteRateBudget::reserve`).
     let tx = store
         .conn_mut()
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -423,9 +287,6 @@ pub fn save_page(
     let mut result = SavedPage::default();
 
     {
-        // Compiled once for the whole page rather than once per account. This is
-        // the only per-account loop in the program, and `Connection::execute`
-        // prepares its statement every call.
         let mut member = tx.prepare_cached(
             "INSERT OR IGNORE INTO snapshot_members (snapshot_id, user_pk, ordinal)
              VALUES (?1, ?2, ?3)",
@@ -436,16 +297,9 @@ pub fn save_page(
                 result.renamed.push((u.pk, old));
             }
 
-            // The ordinal counts only the rows that go in, so it advances with
-            // `added` alone. Instagram repeats accounts across pages, as the OR
-            // IGNORE above exists to absorb, and counting a repeat would let a
-            // later page start below an ordinal an earlier one reached, so
-            // `members` would return them out of the order Instagram served.
-            //
-            // The insert's own answer rather than `tx.changes()`: it is the count
-            // for this statement, where the connection-wide one is whatever ran
-            // last and would follow `upsert` if a statement were ever added
-            // between the two.
+            // The ordinal advances with `added` alone: Instagram repeats
+            // accounts across pages, and counting a repeat would put a later
+            // page's ordinals below an earlier one's.
             let inserted = member.execute(params![
                 id,
                 pk_to_sql(u.pk),
@@ -457,17 +311,9 @@ pub fn save_page(
         }
     }
 
-    // `claimed_at` moves with every page, which is what lets a claim outlive a
-    // long walk without outliving a dead process: progress is the evidence that
-    // somebody is still here.
-    //
-    // `claimed_by = ?4` in the WHERE is what makes the claim a rule rather than
-    // a hint. Because `CLAIM_TTL_SECS` is shorter than the resume window, a
-    // walk that goes quiet for long enough really can have its row adopted by
-    // another process — and the page it saves next would otherwise interleave
-    // with the adopter's, inflating `member_count`, scrambling the ordinals and
-    // clobbering the cursor. Refusing the write leaves exactly one writer per
-    // snapshot, which is the invariant the claim exists for.
+    // `claimed_at` moves with every page: progress is the evidence somebody
+    // is still here. `claimed_by = ?4` leaves one writer per snapshot: a walk
+    // whose row was adopted must not interleave its pages with the adopter's.
     let held = tx.execute(
         "UPDATE snapshots
          SET member_count = member_count + ?2,
@@ -479,8 +325,7 @@ pub fn save_page(
         params![id, result.added as i64, cursor, this_process(), now().get()],
     )?;
     if held == 0 {
-        // Dropping the transaction rolls the page back, so the capture is left
-        // exactly as the process that holds it last saw it.
+        // Dropping the transaction rolls the page back.
         return Err(StoreError::ClaimTaken);
     }
 
@@ -488,32 +333,12 @@ pub fn save_page(
     Ok(result)
 }
 
-/// Closes the snapshot. Only a full walk leaves it usable for comparison.
+/// Closes the snapshot, releasing the claim. Only a full walk leaves it
+/// usable for comparison.
 ///
-/// **A finished capture is never unfinished again.** The `complete = 0` guard
-/// is what says so, and it is not defensive coding: two processes that had
-/// adopted one row could have the faster one close it `Completed` and the
-/// slower one, throttled seconds later, close the same row `RateLimit` — and
-/// the account's only usable capture would disappear, with the monitor's mark
-/// already past it. Claims make that pair unreachable; this makes the outcome
-/// unreachable regardless of how the pair arises.
-///
-/// The claim is released either way. The walk is over, so anything else may
-/// have the row.
-///
-/// **And only this process's walk may end it**, like `save_page`: a process
-/// whose claim went stale and was adopted would otherwise close the row and
-/// clear `claimed_by` on the way out, and the adopter's next `save_page` would
-/// answer `ClaimTaken` — both walks dead over one that should simply have
-/// stopped. A rationing budget or a suspend reaches that window, and it is the
-/// exact case the claim exists for.
-///
-/// **And a refusal is answered, not swallowed**, with `ClaimTaken` as
-/// `save_page` does: a walk whose lease had gone stale would otherwise report
-/// a finished capture it does not own, `engine::walk` would build an outcome
-/// that says `Completed` with this id, and the monitor's mark would point at a
-/// row `usable_snapshots` does not return, so the next diff would silently
-/// start over from a baseline.
+/// A finished capture is never unfinished again (`complete = 0`), and only
+/// the process holding the claim may end it; a refusal is `ClaimTaken`, so a
+/// walk whose lease was adopted never reports a capture it does not own.
 pub fn close(conn: &Connection, id: i64, reason: StopReason) -> Result<(), StoreError> {
     let complete = reason.yields_complete_list();
     let closed = conn.execute(
@@ -525,9 +350,8 @@ pub fn close(conn: &Connection, id: i64, reason: StopReason) -> Result<(), Store
         params![id, complete, now().get(), reason.as_str(), this_process()],
     )?;
     if closed == 0 {
-        // Already finished is not a refusal: the capture the caller is about
-        // to report on is whole, whoever closed it. Anything else -- held by
-        // another process, or gone -- is.
+        // Already finished is not a refusal: the capture is whole, whoever
+        // closed it.
         let finished: Option<bool> = conn
             .query_row(
                 "SELECT complete = 1 FROM snapshots WHERE id = ?1",
@@ -542,19 +366,9 @@ pub fn close(conn: &Connection, id: i64, reason: StopReason) -> Result<(), Store
     Ok(())
 }
 
-/// The most recent usable snapshot.
-///
-/// Reads from the view, not the table, so it is impossible to return an
-/// incomplete one even if someone gets the condition wrong.
-///
-/// `id DESC` breaks the tie, and it is not decoration. `taken_at` is in whole
-/// seconds, so two walks that close inside the same second are equally recent
-/// as far as the sort is concerned and SQLite may hand back either — which
-/// makes "the newest capture" a question with two answers. The monitor
-/// compares this id against the one it last reported, so an arbitrary answer
-/// means a run that silently finds no changes.
-/// `id` is the rowid, so it increases with every insert and orders the two the
-/// way they actually happened.
+/// The most recent usable snapshot, read from the view so that it cannot be
+/// an incomplete one. `id DESC` breaks the tie between two walks closed in
+/// the same second: the monitor compares this id against the one it reported.
 pub fn latest_complete(
     conn: &Connection,
     account_pk: Pk,
@@ -575,19 +389,9 @@ pub fn latest_complete(
     Ok(snapshot)
 }
 
-/// Whether anything has ever been captured of this list, finished or not.
-///
-/// A deliberately weaker question than [`latest_complete`], and the difference
-/// is the whole point. A walk that stopped short is not a capture anything may
-/// be compared against — but it ran `save_page`, and `save_page` runs
-/// `users::upsert`, so it filed `username_history` rows for the people it did
-/// see. Those people are members of that list, and a rename among them is a
-/// rename this list could have reported.
-///
-/// So "has this list ever had a *complete* capture" is the wrong test for
-/// whether it may let the rename window close over it: on an account whose
-/// second list meets the truncation wall every time, the answer is `None`
-/// forever while the list goes on filing history rows every run.
+/// Whether anything was ever captured of this list, finished or not: a walk
+/// that stopped short still filed `username_history` rows for the people it
+/// saw, which the rename window must not close over.
 pub fn any_capture(conn: &Connection, account_pk: Pk, kind: ListKind) -> Result<bool, StoreError> {
     let found: Option<i64> = conn
         .query_row(
@@ -599,13 +403,7 @@ pub fn any_capture(conn: &Connection, account_pk: Pk, kind: ListKind) -> Result<
     Ok(found.is_some())
 }
 
-/// One usable snapshot by id.
-///
-/// From the view, like [`latest_complete`], so a caller holding the id of a
-/// walk that stopped short gets `None` rather than a capture with accounts
-/// missing from it. That is the difference between a monitor saying nothing and
-/// a monitor announcing two hundred departures that never happened, and it is
-/// held here rather than by whoever remembers to check `complete`.
+/// One usable snapshot by id; `None` for a walk that stopped short.
 pub fn find_usable(conn: &Connection, id: i64) -> Result<Option<Snapshot>, StoreError> {
     let snapshot = conn
         .query_row(
@@ -619,8 +417,6 @@ pub fn find_usable(conn: &Connection, id: i64) -> Result<Option<Snapshot>, Store
 
 /// The users in a snapshot, in the order Instagram served them.
 pub fn members(conn: &Connection, id: i64) -> Result<Vec<User>, StoreError> {
-    // `USER_COLUMNS`, the list `row_to_user` reads by position. No column of
-    // `snapshot_members` shares a name with one of them, so they need no alias.
     let mut stmt = conn.prepare(&format!(
         "SELECT {} FROM snapshot_members m JOIN users u ON u.pk = m.user_pk
          WHERE m.snapshot_id = ?1
@@ -638,16 +434,9 @@ pub fn delete_partials(
     account_pk: Pk,
     kind: ListKind,
 ) -> Result<usize, StoreError> {
-    // Anything another process is actively writing to is left alone: deleting
-    // it would leave that walk's next `save_page` failing against a row that
-    // no longer exists, having spent its requests for nothing. A claim that
-    // has gone stale is not protection: whoever held it is gone, and the row
-    // is exactly the abandoned partial this is here to clear.
-    //
-    // The claim terms are `claim_available!`, the same four `RESUMABLE`
-    // binds. What this deliberately does not share is the resume window: a
-    // cursor-less or expired partial is not resumable, and it is exactly what
-    // this exists to clear.
+    // A walk another process is writing to is left alone; a stale claim
+    // protects nothing. The resume window is not asked about: an expired or
+    // cursor-less partial is exactly what this clears.
     let deleted = conn.execute(
         concat!(
             "DELETE FROM snapshots
@@ -727,14 +516,8 @@ pub fn usable(
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
-/// Reads one capture, by position, from [`SNAPSHOT_COLUMNS`].
-///
-/// **The `kind` is parsed and not defaulted.** `FromStr for ListKind` exists
-/// for exactly this read and fails rather than guessing, and
-/// `watch::all_marks` obeys it too. The CHECK on the column keeps the state
-/// unreachable only until somebody edits the schema, and a default would then
-/// hand a followers capture back as a following one — the wrong list,
-/// silently, on the path every comparison reads.
+/// Reads one capture, by position, from [`SNAPSHOT_COLUMNS`]. The `kind` is
+/// parsed, never defaulted: a default would hand back the wrong list.
 fn row_to_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snapshot> {
     let kind: String = row.get(2)?;
     let kind = kind.parse::<ListKind>().map_err(|()| {

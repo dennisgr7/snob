@@ -1,9 +1,6 @@
-//! Who a Windows process runs as, and an ACL that lets that user alone in.
-//!
-//! Two things keep other accounts on the machine out: the data directory's
-//! DACL (`paths`) and the owner of the browsers' pipe (`snob-cli`'s
-//! `owner::socket`). Both are built from this, so the unsafe code that reads a
-//! token and lays out an ACL is written once.
+//! Who a Windows process runs as, and an ACL that lets that user alone in:
+//! the unsafe code under the data directory's DACL (`paths`) and the owner
+//! of the browsers' pipe (`snob-cli`'s `owner::socket`), written once.
 
 use std::io;
 
@@ -15,12 +12,8 @@ use windows_sys::Win32::Security::{
 use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-/// The user a process runs as.
-///
-/// The SID points into the buffer, which is why the two are kept together:
-/// the pointer alone would dangle the moment the buffer dropped, and would
-/// still work often enough to look correct. The buffer is `u64`s so that the
-/// `TOKEN_USER` at its start is aligned.
+/// The user a process runs as. The SID points into the buffer, so the two
+/// stay together; `u64`s so that the `TOKEN_USER` at its start is aligned.
 pub struct User {
     buffer: Vec<u64>,
 }
@@ -39,7 +32,6 @@ impl User {
         if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        // Asked for its size first, which is the documented two-call shape.
         let mut needed: u32 = 0;
         // SAFETY: a null buffer with a zero length is how the size is asked
         // for; the call is expected to fail.
@@ -79,9 +71,8 @@ impl User {
     }
 }
 
-/// An ACL with one entry, which allows one user everything.
-///
-/// The buffer is `u32`s, the alignment an ACL and its entries need.
+/// An ACL with one entry, which allows one user everything. `u32`s for the
+/// alignment an ACL and its entries need.
 pub struct OneUserAcl {
     buffer: Vec<u32>,
 }
@@ -93,10 +84,8 @@ impl OneUserAcl {
         let sid = user.sid();
         // SAFETY: a SID alive in `user`.
         let sid_length = unsafe { GetLengthSid(sid) } as usize;
-        // An `ACCESS_ALLOWED_ACE` carries the first `u32` of the SID inside
-        // itself, so the SID's length replaces that field rather than adding
-        // to it. Getting this wrong is how an ACL ends up one DWORD short and
-        // `AddAccessAllowedAceEx` fails with a length error nobody can read.
+        // An `ACCESS_ALLOWED_ACE` holds the SID's first `u32` itself, so the
+        // SID's length replaces that field rather than adding to it.
         let ace =
             std::mem::size_of::<ACCESS_ALLOWED_ACE>() - std::mem::size_of::<u32>() + sid_length;
         let size = std::mem::size_of::<ACL>() + ace;

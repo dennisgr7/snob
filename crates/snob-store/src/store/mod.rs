@@ -1,10 +1,5 @@
-//! SQLite storage.
-//!
-//! One file per account in the local data directory, and `shared.db` for what
-//! every account shares. Synchronous on purpose:
-//! transactions take microseconds and it is not worth dragging in an async
-//! wrapper, especially since none of them is currently kept up to date with the
-//! version of `rusqlite` we use.
+//! SQLite storage: one file per account, and `shared.db` for what every
+//! account shares. Synchronous on purpose: transactions take microseconds.
 
 pub mod accounts;
 pub mod answers;
@@ -37,13 +32,9 @@ pub enum StoreError {
     Migration(#[from] rusqlite_migration::Error),
     #[error(transparent)]
     Paths(#[from] PathError),
-    /// A downgrade -- or a leftover `~/.cargo/bin/snob` earlier on the `PATH`
-    /// -- meets a database written by a build with more migrations than it
-    /// has. Without this the user gets `rusqlite_migration`'s own wording,
-    /// "Attempt to migrate a database with a migration number that is too
-    /// high", about a file they have no reason to think is broken; the
-    /// plausible response is deleting it, which throws away every capture and
-    /// every mark.
+    /// A downgrade, or an older `snob` earlier on the `PATH`, met a database
+    /// with more migrations than it has. Said in our words so that nobody
+    /// deletes a file that is not broken.
     #[error(
         "the database at {path} was written by a newer version of snob: it is at schema \
          {found} and this build knows {known}.\nUpgrade snob, or point this one at a \
@@ -54,33 +45,15 @@ pub enum StoreError {
         found: i64,
         known: usize,
     },
-    /// A page arrived for a walk this process no longer holds.
-    ///
-    /// The one store error that is not a fault: another process decided this
-    /// walk had been abandoned and adopted it, and the honest response is to
-    /// stop rather than to write a second stream of pages into one capture.
+    /// A page arrived for a walk another process adopted: not a fault, and the
+    /// walk stops rather than write a second stream of pages into one capture.
     #[error("another process took over this walk")]
     ClaimTaken,
 }
 
-/// SQLite only has signed 64-bit integers, and `rusqlite` stopped converting
-/// `u64` in 0.38. Instagram ids are at most thirteen digits, eight orders of
-/// magnitude below the ceiling, so the round trip is exact for any value this
-/// tool will ever see.
-///
-/// **These two functions are the only road, and nothing can be written that
-/// goes around them.** [`Pk`] implements neither `ToSql` nor `FromSql`, so
-/// `params![pk]` and `row.get::<_, Pk>(0)` do not compile at all: the
-/// discipline is the compiler's rather than code review's. `rusqlite`'s
-/// `fallible_uint` feature stays off as well, deliberately, for every other
-/// `u64` in the schema; the manifest says so next to the dependency.
-///
-/// Implementing the two traits on [`Pk`] would be better still, because the
-/// bit-cast would live in one place instead of two functions that have to
-/// agree. It is not available: `snob-core` does **no I/O** and must not
-/// compile SQLite — that is what the crate split is for — and the orphan rule
-/// stops this crate writing an impl of `rusqlite`'s trait for a type it does
-/// not own. Two functions in one module is the closest reachable shape.
+/// SQLite has signed 64-bit integers only; Instagram ids are far below the
+/// ceiling, so the cast is exact. **The only road**: [`Pk`] implements neither
+/// `ToSql` nor `FromSql`, and `rusqlite`'s `fallible_uint` stays off.
 #[inline]
 pub(crate) fn pk_to_sql(pk: Pk) -> i64 {
     pk.get() as i64
@@ -120,12 +93,7 @@ impl Store {
     }
 
     /// The account's database **for a report**: read, and nothing stored
-    /// changed. `None` when it has none.
-    ///
-    /// [`Store::open_existing`] migrates a database from an older snob, and
-    /// compacts it after, and its last connection checkpoints the log into
-    /// the file when it closes: three writes, which a command that says it
-    /// writes nothing must not make. See [`read_only`].
+    /// changed. `None` when it has none. See [`read_only`].
     pub fn read_existing(paths: &AccountPaths) -> Result<Option<Self>, StoreError> {
         let conn = read_only(&paths.db_file(), &migrations::MIGRATIONS, migrations::COUNT)?;
         Ok(conn.map(|conn| Self { conn }))
@@ -158,13 +126,7 @@ impl Store {
         &mut self.conn
     }
 
-    /// One remembered fact, by name, from the `meta` table: facts about the
-    /// database itself rather than about an account.
-    ///
-    /// A method so that a caller with a `Store` does not need `rusqlite` in its
-    /// own manifest to reach the table. `snob-cli` is that caller, and adding a
-    /// database crate to it for two lines would put the connection type in a
-    /// place that has no business naming it.
+    /// One remembered fact, by name, from the `meta` table.
     pub fn remembered(&self, key: &str) -> Result<Option<String>, StoreError> {
         meta_get(&self.conn, key)
     }
@@ -175,40 +137,21 @@ impl Store {
     }
 }
 
-/// Runs the migration chain with foreign keys out of the way.
-///
-/// This is the **only** place they can be turned off for a migration.
-/// `rusqlite_migration` runs the whole chain inside one transaction, and SQLite
-/// documents `PRAGMA foreign_keys` as a no-op inside one — so a migration that
-/// writes the pragma itself, the way SQLite's own table-rebuild recipe says to,
-/// would look correct and do nothing.
-///
-/// What that costs is not a failed migration, it is silent data loss. The first
-/// migration to rebuild `snapshots` by create-copy-drop-rename would have its
-/// `DROP TABLE` fire `ON DELETE CASCADE` on `snapshot_members` and empty it.
-/// The rebuilt snapshots still read `complete = 1`, so `usable_snapshots` keeps
-/// serving them, `members()` returns nothing, and `snob unfollowers` reports
-/// everyone you follow as an unfollower.
-///
-/// It takes the migrations rather than reaching for the static so that a test
-/// can run its own chain through the very function production uses. Checking
-/// this against a hand-written copy of the wrapping would prove nothing.
+/// Runs the migration chain with foreign keys off, the **only** place that
+/// can: the chain is one transaction, and `PRAGMA foreign_keys` inside one is
+/// a no-op. Left on, the first table rebuilt by create-copy-drop-rename would
+/// cascade its `DROP TABLE` and silently empty `snapshot_members`.
 fn migrate(conn: &mut Connection, migrations: &Migrations<'_>) -> Result<(), StoreError> {
     let before = user_version(conn).unwrap_or(0);
 
     conn.pragma_update(None, "foreign_keys", "OFF")?;
     let outcome = migrations.to_latest(conn);
-    // Back on even if the chain failed: the connection is handed back to the
-    // caller either way, and `open_at` only stops on the `?` below.
+    // Back on even if the chain failed: the connection is handed back.
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    // **Another process may have got there first.** `rusqlite_migration`
-    // reads the version before it opens its transaction, so two snobs opening
-    // the database for the first time after an upgrade — the monitor and a
-    // command typed by hand — both decide to migrate, and the second waits out
-    // the first's lock and then fails applying the same chain again ("table
-    // already exists"). The chain is one transaction, so nothing is
-    // half-applied; what is left to ask is whether the database is now where
-    // it needed to be, and if it is, the error was only about who did it.
+    // Another process may have migrated first (the runner reads the version
+    // before opening its transaction); the second then fails on "table already
+    // exists". The chain is one transaction, so with nothing pending the
+    // error was only about who did it.
     if let Err(e) = outcome {
         if migrations
             .pending_migrations(conn)
@@ -219,19 +162,9 @@ fn migrate(conn: &mut Connection, migrations: &Migrations<'_>) -> Result<(), Sto
         tracing::debug!(error = %e, "another process migrated the database first");
     }
 
-    // **Once, and only when a migration actually ran.**
-    //
-    // `DROP INDEX` moves the index's pages to the freelist; the file only
-    // shrinks on `VACUUM`, and on the index 010 removes that is 42% of it.
-    // `VACUUM` cannot run inside a transaction, so it cannot live in the
-    // migration, and it rewrites the whole file, so it must not run on every
-    // open — hence the version comparison rather than a flag somebody has to
-    // remember to clear.
-    //
-    // Best-effort. A database that could not be compacted is a database that
-    // works and takes more disk, which is not worth failing an open over: the
-    // space comes back on the next migration, or never, and either way the
-    // user's command runs.
+    // `DROP INDEX` only frees pages (42% of the file for the index 010
+    // removes); the file shrinks on `VACUUM`, which cannot run inside the
+    // chain's transaction. Only after a migration ran, and best-effort.
     if user_version(conn).unwrap_or(0) > before
         && let Err(e) = conn.execute_batch("VACUUM")
     {
@@ -241,7 +174,6 @@ fn migrate(conn: &mut Connection, migrations: &Migrations<'_>) -> Result<(), Sto
     Ok(())
 }
 
-/// One remembered value, from the `meta` table of this connection's database.
 fn meta_get(conn: &Connection, key: &str) -> Result<Option<String>, StoreError> {
     Ok(conn
         .query_row(
@@ -266,71 +198,41 @@ fn user_version(conn: &Connection) -> Result<i64, StoreError> {
     Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?)
 }
 
-/// Settings that have to be applied on every open.
-///
-/// `journal_mode` is the exception: it is written into the file header and
-/// persists across opens. The rest are per connection.
-///
-/// `foreign_keys` is deliberately **not** here: it belongs around the migration
-/// run, which is the one thing that needs it off, and [`migrate`] leaves it on
-/// afterwards. (The bundled SQLite is compiled with
-/// `-DSQLITE_DEFAULT_FOREIGN_KEYS=1`, so in this binary it is on before anyone
-/// asks — but the schema's foreign keys are load-bearing, so it is set rather
-/// than assumed.)
-///
-/// Also called by `SqliteRateBudget::open`, which opens its own connection to
-/// the same file and would otherwise miss every protection below, and by
-/// `shared::Shared::open`. Both override `synchronous` afterwards, and say
-/// there why.
+/// Settings applied on every open, by `SqliteRateBudget::open` and
+/// `Shared::open` too. `foreign_keys` is not here: [`migrate`] owns it.
 fn configure(conn: &Connection) -> Result<(), StoreError> {
     conn.busy_timeout(Duration::from_millis(5_000))?;
 
-    // `PRAGMA journal_mode` returns a row with the resulting mode, so it has to
-    // be queried. With `pragma_update` it fails with "Execute returned results".
+    // `journal_mode` returns a row, so `pragma_update` would fail on it.
     let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
 
     conn.pragma_update(None, "synchronous", "NORMAL")?;
 
-    // Not only a speed setting. Without it SQLite may spill a temporary
-    // b-tree into TMPDIR, which is outside every directory `purge` knows
-    // about — so a query's working copy of the follower list would outlive
-    // the command whose whole job is to leave nothing behind.
+    // Keeps a temporary b-tree (a query's working copy of a list) out of
+    // TMPDIR, which `purge` does not know about.
     conn.pragma_update(None, "temp_store", "MEMORY")?;
     conn.pragma_update(None, "cache_size", -8_000)?; // 8 MiB
 
-    // Deleted rows are overwritten rather than merely unlinked from the page.
-    // This is what any pruning inside the file needs — `delete_partials` on
-    // every walk, and `watch::prune`'s sweeps: they remove content without
-    // removing the file, and the default leaves it legible in the freed pages.
-    // A database of a few megabytes does not notice the cost.
+    // Deleted rows are overwritten, not just unlinked: pruning removes
+    // content without removing the file.
     conn.pragma_update(None, "secure_delete", "ON")?;
 
-    // In WAL mode the log is reused rather than truncated, so it keeps the
-    // pre-image of everything `secure_delete` just scrubbed from the database
-    // proper. Bounding it bounds how much of that history survives.
+    // The log keeps the pre-image of what `secure_delete` scrubbed; bounding
+    // it bounds how much of that survives.
     conn.pragma_update(None, "journal_size_limit", 4 * 1024 * 1024)?;
 
-    // Nothing here uses a virtual table or a function inside the schema, so
-    // this costs nothing — and it is SQLite's own advice for any application
-    // that can manage without them, because the schema of a database file is
-    // executable content and this file sits at a fixed, guessable path.
+    // The schema of a file at a guessable path is executable content, and
+    // nothing here needs a virtual table or a function in the schema.
     conn.pragma_update(None, "trusted_schema", "OFF")?;
     conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
 
     Ok(())
 }
 
-/// The database at `path`, opened to be read and never changed: `None` when
-/// there is no file, and never one created.
-///
-/// - **Nothing written through it**: `query_only` refuses any statement
-///   that would, and the connection does not checkpoint the log into the
-///   file when it closes, which the last connection otherwise does.
-/// - **A schema from an older snob is not migrated in place.** It is copied
-///   into memory and brought up to date there, so the report reads what the
-///   newest schema says; the file itself is migrated by the next command
-///   that writes, as ever.
-/// - One from a newer snob is refused, as every open refuses it.
+/// The database at `path`, opened to be read and never changed; `None` when
+/// there is no file. `query_only` refuses writes and nothing is checkpointed
+/// on close. A schema from an older snob is copied into memory and migrated
+/// there; one from a newer snob is refused.
 pub(crate) fn read_only(
     path: &Path,
     migrations: &Migrations<'_>,
@@ -339,10 +241,9 @@ pub(crate) fn read_only(
     if !path.exists() {
         return Ok(None);
     }
-    // Opened read-write, not `SQLITE_OPEN_READ_ONLY`: a read-only connection
-    // cannot set up the WAL index when the log files are absent, which is
-    // how a database another connection closed cleanly is left.
-    // `query_only` is what keeps it from writing.
+    // Read-write, not `SQLITE_OPEN_READ_ONLY`: a read-only connection cannot
+    // set up the WAL index when the log files are absent. `query_only` is
+    // what keeps it from writing.
     let flags = rusqlite::OpenFlags::default().difference(rusqlite::OpenFlags::SQLITE_OPEN_CREATE);
     let conn = match Connection::open_with_flags(path, flags) {
         Ok(conn) => conn,
@@ -367,8 +268,7 @@ pub(crate) fn read_only(
     }
 
     let mut copy = Connection::open_in_memory()?;
-    // Every page in one step: the copy is of a quiet file, and a step that
-    // met a writer is retried after the pause.
+    // Every page in one step; one that met a writer is retried after the pause.
     rusqlite::backup::Backup::new(&conn, &mut copy)?.run_to_completion(
         i32::MAX,
         Duration::from_millis(50),
@@ -381,11 +281,8 @@ pub(crate) fn read_only(
     Ok(Some(copy))
 }
 
-/// Refuses a database written by a **newer** build, before the migration runner
-/// says so in its own words; [`StoreError::SchemaFromNewerSnob`] says why.
-///
-/// `known` is how many migrations this build has for the file: `shared.db` has
-/// a chain of its own.
+/// Refuses a database written by a newer build. `known` is the length of the
+/// file's own chain: `shared.db` has one of its own.
 fn reject_newer_schema(conn: &Connection, path: &Path, known: usize) -> Result<(), StoreError> {
     let found = user_version(conn)?;
     if found as usize > known {
