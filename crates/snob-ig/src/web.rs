@@ -23,6 +23,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use snob_core::Pk;
+use snob_core::secret::Secret;
 
 use crate::IG_APP_ID;
 use crate::allowlist::{self, Family, Operation, Rediscovered, Rest};
@@ -359,9 +360,9 @@ impl fmt::Debug for Built {
 pub struct AppCalls {
     relay: Option<RelayCopy>,
     /// The `fb_dtsg` of the app's latest Relay or Comet form.
-    dtsg: Option<String>,
+    dtsg: Option<Secret>,
     /// The `fb_dtsg` of the app's latest REST POST ([`Self::rest_token_sent`]).
-    rest_token: Option<String>,
+    rest_token: Option<Secret>,
     comet: Option<Vec<(String, Option<String>)>>,
     /// One past the highest `__req` the app has sent, or snob has taken.
     next_req: u32,
@@ -454,7 +455,7 @@ impl AppCalls {
         let carries_the_relay_token =
             matches!(path, "/api/graphql" | "/graphql/query") || path.starts_with("/ajax/");
         if carries_the_relay_token && let Some(dtsg) = field("fb_dtsg") {
-            self.dtsg = Some(dtsg.clone());
+            self.dtsg = Some(Secret::new(dtsg.clone()));
         }
         if carries_the_relay_token
             && let Some(nonce) = header("x-fb-entry-nonce").filter(|nonce| {
@@ -471,7 +472,7 @@ impl AppCalls {
             && !dtsg.is_empty()
             && jazoest(dtsg) == *sent
         {
-            self.rest_token = Some(dtsg.clone());
+            self.rest_token = Some(Secret::new(dtsg.clone()));
         }
         match path {
             "/api/graphql" | "/graphql/query" => {
@@ -542,7 +543,7 @@ impl AppCalls {
     /// changed with each. So it is taken only from the app's own REST POSTs,
     /// and a call that needs it is not built until the app has sent one.
     pub fn rest_token_sent(&self) -> Option<&str> {
-        self.rest_token.as_deref()
+        self.rest_token.as_ref().map(Secret::expose)
     }
 
     pub fn app_id(&self) -> Option<&str> {
@@ -566,12 +567,11 @@ impl AppCalls {
     /// Which of `page`'s two tokens the app's Relay and Comet calls carry.
     /// Never the token itself.
     pub fn sent_token(&self, page: &PageValues) -> SentToken {
-        let Some(sent) = self.dtsg.as_deref() else {
+        let Some(sent) = self.dtsg.as_ref().map(Secret::expose) else {
             return SentToken::NotYet;
         };
-        let is = |token: &Option<snob_core::secret::Secret>| {
-            token.as_ref().is_some_and(|token| token.expose() == sent)
-        };
+        let is =
+            |token: &Option<Secret>| token.as_ref().is_some_and(|token| token.expose() == sent);
         if is(&page.relay_dtsg) {
             SentToken::Relay
         } else if is(&page.session_dtsg) {
@@ -720,7 +720,7 @@ impl<'a> Context<'a> {
             .ok_or(Missing("the Relay token"))?
             .expose();
         match &self.app.dtsg {
-            Some(sent) if sent == token => Ok(token),
+            Some(sent) if sent.expose() == token => Ok(token),
             _ => Err(Missing::RELAY_TOKEN_SENT),
         }
     }
