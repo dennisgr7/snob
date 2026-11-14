@@ -1,29 +1,30 @@
 //! The evaluator: which moment comes next, and whether one is owed now.
 //!
-//! The floor, the search across the calendar in both directions, the count of
-//! runs that went by unrun, and the jitter that keeps every copy of this tool
-//! off the same round minute. Nothing here reads a clock either — `now` is an
-//! argument to all of it.
+//! Nothing here reads a clock: `now` is an argument to all of it. Moments come
+//! in and go out as [`Epoch`]; in between, the search counts in minute
+//! indexes (seconds since the epoch over sixty).
+//!
+//! **Every search is bounded**: a walk of the calendar stops at
+//! [`HORIZON_MINUTES`], a skipped stretch of the wall clock at
+//! [`LONGEST_JUMP_MINUTES`], and the count of missed runs at
+//! [`MAX_MISSED_COUNTED`].
 
 use std::time::Duration;
 
-use chrono::{DateTime, MappedLocalTime, NaiveDateTime, TimeDelta, TimeZone};
+use chrono::{DateTime, MappedLocalTime, NaiveDateTime, Offset, TimeDelta, TimeZone};
 
 use crate::Epoch;
 
 use super::calendar::Calendar;
-use super::{Due, Schedule};
+use super::{Due, MIN_GAP_SECS, Schedule};
 
-/// How far ahead a calendar is searched before it is called impossible.
+/// How far a calendar is searched before it is called impossible: four years,
+/// which covers a leap day, the longest anything expressible here can wait
+/// for. Past that the expression matches nothing (`0 0 31 2 *`).
 ///
-/// Four years covers a leap day, which is the longest anything expressible here
-/// can legitimately wait for. Past that the expression matches nothing —
-/// `0 0 31 2 *` — and the search has to stop rather than spin.
-///
-/// A span of time, not a number of evaluations: the search steps over whole
-/// days the calendar does not name, so reaching the horizon costs about as many
-/// steps as there are days in it, not minutes.
-const HORIZON_MINUTES: i64 = 4 * 366 * 24 * 60; // four years, in minutes
+/// A span of time, not a number of steps: days the calendar does not name are
+/// stepped over whole.
+const HORIZON_MINUTES: i64 = 4 * 366 * 24 * 60;
 
 /// Which way a search walks the calendar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,34 +34,21 @@ enum Direction {
 }
 
 /// The minutes from `from`, in `direction`, that fall on a day the calendar
-/// names — as the minute index and the local time it reads — out to the
-/// horizon.
+/// names, each with the local time it reads, out to the horizon.
 ///
-/// A day the calendar does not name is stepped over whole. It holds no minute
-/// `allows` could accept, and asking about each one costs a timezone conversion
-/// per minute: walking every minute of the horizon for `0 0 31 2 *` is about
-/// 2.1 million conversions for the answer "never", paid again on every wake
-/// through `room_at`. A day the calendar does name is still walked minute by
-/// minute, so nothing about how a minute is judged changes here.
+/// A day the calendar does not name is stepped over whole (a timezone
+/// conversion per minute would be 2.1 million for the answer "never"); a
+/// named day is walked minute by minute.
 ///
-/// **The neighboring day is asked of the zone, not reached by adding
-/// twenty-four hours.** The day a zone springs forward through is twenty-three
-/// hours long, so twenty-four hours from its midnight is 01:00 of the day
-/// after — an hour into a day the calendar may name, past a moment the walk
-/// would then never see. Going back, the same arithmetic on a twenty-five-hour
-/// day lands an hour short, which is harmless, and on the short day an hour too
-/// far, which is not. So the jump lands on the first minute the zone says the
-/// next day has (the last one the previous day has, going back), and steps a
-/// single minute instead when the zone has no such instant — a midnight it
-/// skips — or when the landing would not move the cursor the way it is walking,
-/// which a fall-back that straddles midnight can produce.
+/// **The neighboring day is asked of the zone, never reached by adding 24
+/// hours**: the day a zone springs forward through is 23 hours long. Where
+/// the zone has no such instant (a midnight it skips), or the landing would
+/// not move the cursor the way it walks (a fall-back that straddles
+/// midnight), the cursor steps one minute.
 ///
-/// One deviation from the minute walk is accepted, and it is confined to zones
-/// whose fall-back crosses midnight: there, the instants that read "yesterday
-/// 23:xx" for the second time sit inside today's span, and a forward jump from
-/// today to tomorrow steps over them. The look back refuses those second
-/// showings whenever their first was served anyway; what is left is a first run
-/// that lands in that hour, once a year, in a handful of zones.
+/// Accepted: where a fall-back crosses midnight, a forward jump to tomorrow
+/// steps over the second showing of "yesterday 23:xx", which can lose a
+/// first run landing in that hour, once a year.
 fn minutes_on_named_days<'a, Tz: TimeZone>(
     calendar: &'a Calendar,
     zone: &'a Tz,
@@ -77,7 +65,9 @@ fn minutes_on_named_days<'a, Tz: TimeZone>(
             if (cursor - from).abs() >= HORIZON_MINUTES {
                 return None;
             }
-            let Some(at) = zone.timestamp_opt(cursor * 60, 0).single() else {
+            // Past what a count of seconds holds, there is no further moment.
+            let seconds = cursor.checked_mul(60)?;
+            let Some(at) = instant(zone, seconds) else {
                 cursor += step;
                 continue;
             };
@@ -99,16 +89,26 @@ fn minutes_on_named_days<'a, Tz: TimeZone>(
     })
 }
 
+/// The instant `seconds` names, when the zone can read its wall clock.
+///
+/// **Every conversion goes through here**: at the edge of chrono's range an
+/// instant exists whose local time does not, and `naive_local` and
+/// `date_naive` panic on it.
+fn instant<Tz: TimeZone>(zone: &Tz, seconds: i64) -> Option<DateTime<Tz>> {
+    let at = zone.timestamp_opt(seconds, 0).single()?;
+    at.naive_utc()
+        .checked_add_offset(at.offset().fix())
+        .map(|_| at)
+}
+
 /// The first whole minute at or after an instant.
 fn minute_at_or_after(seconds: i64) -> i64 {
     seconds.div_euclid(60) + i64::from(seconds.rem_euclid(60) != 0)
 }
 
-/// The first instant of the local day after the one `at` falls in.
-///
-/// `None` when the zone skips its own midnight, which some have done: there is
-/// no such instant. The `earliest` of an ambiguous midnight, because the first
-/// showing is the first instant that reads tomorrow's date.
+/// The first instant of the local day after the one `at` falls in: the
+/// earlier showing of an ambiguous midnight, and `None` when the zone skips
+/// its own midnight.
 fn first_instant_of_next_local_day<Tz: TimeZone>(
     at: &DateTime<Tz>,
     zone: &Tz,
@@ -117,10 +117,8 @@ fn first_instant_of_next_local_day<Tz: TimeZone>(
     zone.from_local_datetime(&tomorrow).earliest()
 }
 
-/// The last minute of the local day before the one `at` falls in.
-///
-/// The `latest` of an ambiguous 23:59, because the second showing is the last
-/// instant that reads yesterday's date. `None` when the zone has no such
+/// The last minute of the local day before the one `at` falls in: the later
+/// showing of an ambiguous 23:59, and `None` when the zone has no such
 /// instant.
 fn last_instant_of_previous_local_day<Tz: TimeZone>(
     at: &DateTime<Tz>,
@@ -130,19 +128,11 @@ fn last_instant_of_previous_local_day<Tz: TimeZone>(
     zone.from_local_datetime(&yesterday).latest()
 }
 
-/// The next moment this schedule is due after `now`.
+/// The next moment this schedule is due after `now`; `now` itself when a run
+/// is owed. `None` only when the calendar can never match.
 ///
-/// `None` only when the calendar can never match. Both arguments and the answer
-/// are moments; the zone is what turns them into wall-clock time, and it is
-/// passed in so a test can pick one rather than inherit the machine's.
-///
-/// The preflight and the loop both ask this one function -- deliberately, or
-/// a preflight would be checking a schedule nobody runs.
-///
-/// The minute arithmetic below works in bare seconds, and deliberately: a
-/// minute index is not a moment, and neither is the offset of one from another.
-/// The moments come in and go out as [`Epoch`], which is where a transposition
-/// would cost something.
+/// The zone is what turns moments into wall-clock time, and is passed in so
+/// a test can pick one. The preflight and the loop both ask this function.
 pub fn next_after<Tz: TimeZone>(
     schedule: &Schedule,
     last_run: Option<Epoch>,
@@ -152,11 +142,9 @@ pub fn next_after<Tz: TimeZone>(
     next_after_asked_since(schedule, last_run, None, now, zone)
 }
 
-/// [`next_after`], for a caller that has been asking since `asked_since`.
-///
-/// The one difference is the left edge of the look back when nothing has run
-/// on a calendar: the minute of `asked_since` rather than the minute of `now`.
-/// Everything else, the forward search included, is the same search.
+/// [`next_after`], for a caller that has been asking since `asked_since`: the
+/// look back of a calendar nothing has run on then starts at that minute, not
+/// at the minute of `now`.
 fn next_after_asked_since<Tz: TimeZone>(
     schedule: &Schedule,
     last_run: Option<Epoch>,
@@ -164,164 +152,124 @@ fn next_after_asked_since<Tz: TimeZone>(
     now: Epoch,
     zone: &Tz,
 ) -> Option<Epoch> {
-    // The floor. Counted from the previous run rather than from an absolute
-    // grid: `--every 6h` started at 09:13 means 15:13, which is what people
-    // mean by it.
-    //
-    // **`MIN_GAP_SECS` is part of the floor, and that is where it has to be.**
-    // A check after the search would compare against a grid that is
-    // minute-aligned while the runs happen off it, and would answer
-    // `last + MIN_GAP_SECS` raw: an instant the calendar does not allow.
-    // Folded into the search start, the answer is always both on the grid and
-    // far enough from the last run.
-    //
-    // The addition saturates, in [`Epoch`]'s own `Add`, because an absurd
-    // `--every` can arrive from a hand-edited `watch.toml`.
-    let step = Duration::from_secs(schedule.step_secs() as u64);
-
     let Some(calendar) = &schedule.calendar else {
-        // No grid. The floor counts from the run, which is exactly what an
-        // interval means: `--every 6h` started at 09:13 means 15:13.
-        //
-        // Nothing has run: there is no past to wait from, and no run to be too
-        // close to.
-        let floor = last_run.map_or(now, |last| last + step);
+        // No grid: the interval counts from the run itself (`--every 6h`
+        // started at 09:13 means 15:13), and with nothing run it is due now.
+        let floor = last_run.map_or(now, |last| last + schedule.step());
         return Some(floor.max(now));
     };
 
-    // **With a grid, the floor counts from the moment the last run served, not
-    // from the row it wrote.** They are not the same instant and the difference
-    // is not small: `watch_runs.started_at` is stamped by `tick` *after* both
-    // lists have been walked, so it trails the moment by the whole length of the
-    // walk.
-    //
-    // Measured from the row, the floor would be pushed past the next moment on
-    // the grid and that moment dropped — so `*/15`, whose gap is exactly the
-    // floor, would run at half its rate after any walk at all. Measuring from
-    // the moment served is what makes the grid the thing that decides, which
-    // is what `validated()` assumes when it refuses a grid tighter than the
-    // floor.
-    //
-    // The price, stated plainly: two runs can be closer together in wall
-    // clock than `MIN_GAP_SECS`, by however long the walk took. They still
-    // cannot overlap — the loop is sequential — and the reason the floor exists
-    // is that a second run cannot see a state the first did not, which is a
-    // statement about the moments, not about the instants the process happened
-    // to write a row at.
-    //
-    // The addition saturates here too, for the reason given at the top of this
-    // function.
-    let served_at = last_run.map(|last| served_at(calendar, last, zone));
-    let served = served_at.map(|(moment, _)| moment);
-    let floor = match (served_at, last_run) {
-        // Never earlier than the row the last run wrote, whatever the snap
-        // decided. A no-op in every ordinary case — the floor is a quarter of an
-        // hour past a moment the row already trails — and the thing that keeps
-        // this monotonic if a calendar is ever strange enough to snap somewhere
-        // unhelpful.
-        //
-        // **The interval is added on the wall clock**, as the grid is read:
-        // `--every 1w --on mon --at 09:00` served on the Monday before a
-        // spring-forward put the floor at 10:00 local the Monday after, past
-        // 09:00, and the loop slept another week (three with `--every 2w`)
-        // while a timer ran at 10:00, off the grid. The floor is never closer
-        // than `MIN_GAP_SECS` of real time, which an addition across the hour
-        // that never happens could otherwise shorten.
-        (Some((moment, reading)), Some(last)) => on_the_wall_clock(moment, reading, step, zone)
-            .max(moment + Duration::from_secs(super::MIN_GAP_SECS.unsigned_abs()))
-            .max(last),
-        _ => now,
-    };
+    let behind = Behind::of(schedule, calendar, last_run, asked_since, now, zone);
+    let floor = behind.floor.unwrap_or(now);
 
-    // The candidates come from `minutes_on_named_days`, which converts each
-    // instant to local time once. A local time that does not exist — the hour
-    // a spring-forward skips — is never produced by that direction, so it is
-    // asked about from the minute after the jump (`named_or_jumped_over`),
-    // which is where it runs. Going from an instant to a local time is never
-    // ambiguous either, chrono answers `Single` unconditionally and only fails
-    // outside the representable range. Ambiguity is a property of the other
-    // direction, and it is asked about below, in
-    // `already_run_at_this_wall_clock` — which is the reason for the order
-    // here: the calendar first, the reverse conversion only for a minute the
-    // calendar names.
-    let allowed = |(minute, at): &(i64, DateTime<Tz>)| {
-        named_or_jumped_over(calendar, *minute, at, zone)
-            && !already_run_at_this_wall_clock(zone, Epoch::new(minute * 60), at, last_run)
-    };
-
-    // **A moment that has already gone by is still owed.** The search works in
-    // whole minutes and `clock::now()` is an arbitrary second, so looking only
-    // forward would answer the *ceiling* minute of `now` and schedule every
-    // calendar run forward instead of taking it: a machine powered on at 09:05
-    // with `--at 09:00` would wait until the next day.
-    //
-    // So before looking forward, look back: if the floor allows it and any
-    // minute in the window was one this calendar names, the run is owed
-    // **now**. Folded into one and never replayed, which is what
-    // `missed_since` counts and what the rule against bursts requires.
-    //
-    // Walking backwards from `now` rather than forwards, so the first hit is
-    // the most recent one and a machine that was off for a month stops at the
-    // most recent named day rather than walking the whole month. The horizon
-    // bounds it for the same reason it bounds the forward search.
-    //
-    // **The window is bounded by the last run, not by the floor.** The floor
-    // stays as the legality guard — `floor <= now` — but a run is almost never
-    // recorded exactly on its grid minute: `commands::watch` stores the wall
-    // clock, so one second past is the ordinary case, and a window starting at
-    // the floor would drop every moment between the two. It starts strictly
-    // after the minute the last run served, from the moment served rather than
-    // from the row, for the reason the floor is: what must not be served twice
-    // is the moment, and everything after it is owed.
-    //
-    // With nothing ever run, the window is the minute `now` is in, so a first
-    // run started at 09:00:20 with `--at 09:00` is not a week late. **Or it
-    // starts at the minute a timer first asked** (`asked_since`, see
-    // [`due_asked_since`]): a timer keeps nothing between two looks, so a
-    // window of one minute would only ever be met by a look that fell inside
-    // the very minute the calendar names. Never later than `now`, so a stored
-    // ask from a clock that was ahead narrows nothing.
-    let earliest = match served {
-        Some(moment) => moment.get().div_euclid(60) + 1,
-        None => asked_since
-            .map_or(now, |asked| asked.min(now))
-            .get()
-            .div_euclid(60),
-    };
-    if floor <= now {
-        let latest = now.get().div_euclid(60);
-        if minutes_on_named_days(calendar, zone, latest, Direction::Backward)
-            .take_while(|(minute, _)| *minute >= earliest)
-            .any(|candidate| allowed(&candidate))
-        {
-            return Some(now);
-        }
+    // **A moment that has already gone by is still owed**, once, now: looking
+    // only forward would answer the next minute's ceiling, and a machine
+    // powered on at 09:05 with `--at 09:00` would wait a day.
+    if floor <= now && latest_owed(calendar, behind.earliest, last_run, now, zone).is_some() {
+        return Some(now);
     }
 
-    // Forward, from the floor. **The answer is on the grid and past the floor,
-    // both**, which is the rule AGENTS.md states and the test below sweeps: an
-    // instant the expression does not name is not an answer, and neither is one
-    // inside the minimum gap.
-    //
-    // A grid moment that falls between the last run and the floor is therefore
-    // not served at its own moment. It is still served: the look back above
-    // finds it the next time the loop is awake past the floor.
+    // Forward, from the floor: **the answer is on the grid and past the
+    // floor, both** (AGENTS.md). A moment between the last run and the floor
+    // is not served at its own time; the look back takes it once the floor
+    // has passed.
     let first = minute_at_or_after(floor.max(now).get());
-
     minutes_on_named_days(calendar, zone, first, Direction::Forward)
-        .find(|candidate| allowed(candidate))
+        .find(|candidate| runs_at(calendar, candidate, last_run, zone))
         .map(|(minute, _)| Epoch::new(minute * 60))
 }
 
+/// What the run behind leaves a calendar's search.
+struct Behind {
+    /// The earliest the next run may start. `None` when nothing has run.
+    floor: Option<Epoch>,
+    /// The first minute of the look back for a moment gone by and still owed.
+    earliest: i64,
+}
+
+impl Behind {
+    /// **The floor counts from the moment the last run served, not from the
+    /// row it wrote**, which is stamped after the walk: measured from the
+    /// row, the floor would pass the next moment of `*/15`, whose gap is
+    /// exactly the floor, and drop it. The interval is added on the wall
+    /// clock ([`on_the_wall_clock`]); the floor is never less than
+    /// `MIN_GAP_SECS` of real time past the moment, nor earlier than the row.
+    ///
+    /// **The look back starts the minute after the moment served**, not at
+    /// the floor: everything after that moment is owed. With nothing run it
+    /// is the minute `now` is in (a first run at 09:00:20 for `--at 09:00` is
+    /// not a day late), or the minute a timer first asked
+    /// ([`due_asked_since`]), never later than `now`.
+    fn of<Tz: TimeZone>(
+        schedule: &Schedule,
+        calendar: &Calendar,
+        last_run: Option<Epoch>,
+        asked_since: Option<Epoch>,
+        now: Epoch,
+        zone: &Tz,
+    ) -> Self {
+        let Some(last) = last_run else {
+            let asked = asked_since.map_or(now, |asked| asked.min(now));
+            return Self {
+                floor: None,
+                earliest: asked.get().div_euclid(60),
+            };
+        };
+        let (moment, reading) = served_at(calendar, last, zone);
+        let floor = on_the_wall_clock(moment, reading, schedule.step(), zone)
+            .max(moment + Duration::from_secs(MIN_GAP_SECS.unsigned_abs()))
+            .max(last);
+        Self {
+            floor: Some(floor),
+            earliest: moment.get().div_euclid(60) + 1,
+        }
+    }
+}
+
+/// The most recent moment from the minute `earliest` to `now` that a run is
+/// owed for. Walked back from `now`, so a machine that was off for a month
+/// stops at the latest one.
+fn latest_owed<Tz: TimeZone>(
+    calendar: &Calendar,
+    earliest: i64,
+    last_run: Option<Epoch>,
+    now: Epoch,
+    zone: &Tz,
+) -> Option<Epoch> {
+    minutes_on_named_days(
+        calendar,
+        zone,
+        now.get().div_euclid(60),
+        Direction::Backward,
+    )
+    .take_while(|(minute, _)| *minute >= earliest)
+    .find(|candidate| runs_at(calendar, candidate, last_run, zone))
+    .map(|(minute, _)| Epoch::new(minute * 60))
+}
+
+/// Whether a run happens at this minute: the calendar names it, or a time the
+/// clocks jumped over to reach it, and it is not the second showing of a time
+/// the last run already used. The calendar is asked first, so the conversion
+/// back from a local time is paid only for a minute it names.
+fn runs_at<Tz: TimeZone>(
+    calendar: &Calendar,
+    (minute, at): &(i64, DateTime<Tz>),
+    last_run: Option<Epoch>,
+    zone: &Tz,
+) -> bool {
+    reading_served(calendar, *minute, at, zone).is_some()
+        && !already_run_at_this_wall_clock(zone, Epoch::new(minute * 60), at, last_run)
+}
+
 /// `moment` and `step` later on the wall clock of `zone`: the same local time
-/// a day on for a day, whatever the zone did in between. Counted from
-/// `reading`, the time the moment served, where it has one: a run at 03:00
-/// for a 02:30 the clocks skipped counts from 02:30. Where that local
-/// time does not exist (the hour a spring-forward skips), the first minute
-/// after the jump, which is where [`named_or_jumped_over`] runs a moment the
-/// jump took: `step` of real time from 02:30 the day before is 03:30, past
-/// it, and the run would be a day late. Where the sum does not fit, `step`
-/// of real time, which is what it always was.
+/// a day on for a day, whatever the zone did in between. In real time,
+/// `--every 1w --on mon --at 09:00` served the Monday before a spring-forward
+/// has its floor at 10:00 the Monday after, past 09:00.
+///
+/// Counted from `reading`, the time the moment served, where it has one (a
+/// run at 03:00 for a skipped 02:30 counts from 02:30). Where the sum is a
+/// local time that does not exist, the first minute after the jump; where it
+/// does not fit, `step` of real time.
 fn on_the_wall_clock<Tz: TimeZone>(
     moment: Epoch,
     reading: Option<NaiveDateTime>,
@@ -329,16 +277,13 @@ fn on_the_wall_clock<Tz: TimeZone>(
     zone: &Tz,
 ) -> Epoch {
     let real = moment + step;
-    let Some(local) = reading.or_else(|| {
-        zone.timestamp_opt(moment.get(), 0)
-            .single()
-            .map(|at| at.naive_local())
-    }) else {
+    let Some(local) = reading.or_else(|| instant(zone, moment.get()).map(|at| at.naive_local()))
+    else {
         return real;
     };
     let Some(later) = i64::try_from(step.as_secs())
         .ok()
-        .and_then(chrono::TimeDelta::try_seconds)
+        .and_then(TimeDelta::try_seconds)
         .and_then(|delta| local.checked_add_signed(delta))
     else {
         return real;
@@ -346,32 +291,20 @@ fn on_the_wall_clock<Tz: TimeZone>(
     first_reading_at_or_after(later, zone).unwrap_or(real)
 }
 
-/// The moment on the grid that a run recorded at `last` was serving.
-///
-/// The most recent minute the calendar names at or before it. A run does not
-/// start on its moment and does not record itself on it either: the loop wakes
-/// at the moment plus whatever jitter it rolled, and `tick` stamps the row after
-/// both lists have been walked. Everything between the two is the process's own
-/// latency, and none of it is time the schedule asked for.
-///
-/// Falls back to `last` itself when the calendar names nothing in the whole
-/// horizon — an expression that matches no moment at all, where `last` is as
-/// good an answer as any and nothing is owed regardless.
-///
-/// Deliberately asks `Calendar::allows` and not the fuller predicate the search
-/// uses: a repeated wall-clock hour is refused for a run that has *not* happened
-/// yet, and this is looking at one that has.
-///
-/// The search asks [`served_at`], which gives the reading beside it; the
-/// moment alone is what the tests pin.
+/// The moment on the grid that a run recorded at `last` was serving: the most
+/// recent minute the calendar names at or before it. See [`served_at`].
 #[cfg(test)]
 fn moment_served<Tz: TimeZone>(calendar: &Calendar, last: Epoch, zone: &Tz) -> Epoch {
     served_at(calendar, last, zone).0
 }
 
-/// [`moment_served`], with the reading of the wall clock it served
-/// ([`reading_served`]); `None` beside `last` itself when the calendar names
-/// nothing.
+/// The moment on the grid that a run recorded at `last` was serving (a run
+/// wakes at its moment plus jitter and stamps its row after the walk), with
+/// the reading of the wall clock it served ([`reading_served`]). `last`
+/// itself, with no reading, when the calendar names nothing in the horizon.
+///
+/// The second showing of a repeated hour counts here: that refusal is for a
+/// run that has not happened, and this one has.
 fn served_at<Tz: TimeZone>(
     calendar: &Calendar,
     last: Epoch,
@@ -387,21 +320,9 @@ fn served_at<Tz: TimeZone>(
 }
 
 /// The longest stretch of the wall clock a zone has jumped over at once:
-/// Samoa skipped the whole of 2011-12-30. A transition is an hour almost
-/// everywhere; this only bounds how many skipped minutes one minute after a
-/// jump asks about.
+/// Samoa skipped the whole of 2011-12-30. It bounds how many skipped minutes
+/// one minute after a jump asks about.
 const LONGEST_JUMP_MINUTES: i64 = 24 * 60;
-
-/// Whether the calendar names this minute, or a time of the wall clock the
-/// clocks jumped over to reach it: whether [`reading_served`] has one.
-fn named_or_jumped_over<Tz: TimeZone>(
-    calendar: &Calendar,
-    minute: i64,
-    at: &DateTime<Tz>,
-    zone: &Tz,
-) -> bool {
-    reading_served(calendar, minute, at, zone).is_some()
-}
 
 /// The reading of the wall clock a run at this minute serves: the minute's
 /// own when the calendar names it, else the latest the clocks jumped over to
@@ -409,21 +330,11 @@ fn named_or_jumped_over<Tz: TimeZone>(
 ///
 /// **A time a spring-forward skips runs at the first minute after the jump**,
 /// as cron and systemd's timers run it: `--at 02:30` on the night the clocks
-/// go from 02:00 to 03:00 runs at 03:00 that night, not the next day. Read
-/// only as instants, that 02:30 is a time no instant reads, so the day would
-/// pass with no run in it. A minute is the one after a jump when the minute
-/// before it reads more than a minute earlier on the wall clock; each reading
-/// in between is asked about on the date it has. A fall-back reads earlier,
-/// not later, and asks nothing more.
+/// go from 02:00 to 03:00 runs at 03:00. A minute is the one after a jump
+/// when the minute before it reads more than a minute earlier.
 ///
-/// The reading, not the minute, is what an interval beside the calendar
-/// counts from ([`on_the_wall_clock`]): `--every 1d --at 02:30` served at
-/// 03:00 on the short night is next due at 02:30 the night after, not at
-/// 03:00, half an hour past it and a day late.
-///
-/// The minute after the jump is found on its own date by the day walk, so a
-/// jump across midnight into a day the calendar does not name (Samoa's, the
-/// one there has been) is not asked about.
+/// The reading is what an interval beside the calendar counts from
+/// ([`on_the_wall_clock`]).
 fn reading_served<Tz: TimeZone>(
     calendar: &Calendar,
     minute: i64,
@@ -434,19 +345,24 @@ fn reading_served<Tz: TimeZone>(
     if calendar.allows(at) {
         return Some(reads);
     }
+    let a_minute = TimeDelta::minutes(1);
     let before = minute
         .checked_sub(1)
         .and_then(|earlier| earlier.checked_mul(60))
-        .and_then(|seconds| zone.timestamp_opt(seconds, 0).single())?;
-    let mut skipped = before.naive_local() + TimeDelta::minutes(1);
+        .and_then(|seconds| instant(zone, seconds))?;
+    let mut skipped = before.naive_local().checked_add_signed(a_minute)?;
     let mut served = None;
-    let mut asked = 0;
-    while skipped < reads && asked < LONGEST_JUMP_MINUTES {
+    for _ in 0..LONGEST_JUMP_MINUTES {
+        if skipped >= reads {
+            break;
+        }
         if calendar.allows_local(&skipped) {
             served = Some(skipped);
         }
-        skipped += TimeDelta::minutes(1);
-        asked += 1;
+        let Some(next) = skipped.checked_add_signed(a_minute) else {
+            break;
+        };
+        skipped = next;
     }
     served
 }
@@ -465,20 +381,14 @@ fn first_reading_at_or_after<Tz: TimeZone>(local: NaiveDateTime, zone: &Tz) -> O
     None
 }
 
-/// Whether this instant is the **second** showing of a wall-clock time the last
-/// run already used.
+/// Whether this instant is the **second** showing of a wall-clock time the
+/// last run already used.
 ///
-/// The hour a fall-back repeats happens twice, so `--at 01:30` in a zone that
-/// puts its clocks back names two instants an hour apart on that date. Both
-/// satisfy the calendar, and the floor does not separate them: `MIN_GAP_SECS` is
-/// fifteen minutes and they are sixty apart. Without this, the monitor would
-/// walk both lists again and post a second webhook for a schedule that names
-/// one run a day.
-///
-/// Asked in the direction ambiguity actually exists in: from a local wall-clock
-/// time to an instant. `Ambiguous` gives both, and the later one is only refused
-/// when the earlier one is at or before the last run — so a fall-back date on a
-/// machine that was switched off through the first showing still runs.
+/// The hour a fall-back repeats happens twice, an hour apart, and the floor
+/// (fifteen minutes) does not separate the two: without this, `--at 01:30`
+/// would run twice that night. The later showing is refused only when the
+/// earlier one is at or before the last run, so a machine switched off
+/// through the first showing still runs.
 fn already_run_at_this_wall_clock<Tz: TimeZone>(
     zone: &Tz,
     at: Epoch,
@@ -498,11 +408,9 @@ fn already_run_at_this_wall_clock<Tz: TimeZone>(
 
 /// Whether a run is owed right now.
 ///
-/// Missed runs are **counted and folded into one**, never replayed. Twelve ticks
-/// fired back to back to catch up would be exactly the burst the pacing design
-/// exists to avoid — and they would all give the same answer anyway, because
-/// the diff is against the last report and there is only one present state.
-/// There is nothing to catch up on; there is one thing to report.
+/// Missed runs are **counted and folded into one**, never replayed: a burst
+/// to catch up is what the pacing exists to avoid, and every one of them
+/// would report the same present state.
 pub fn due<Tz: TimeZone>(
     schedule: &Schedule,
     last_run: Option<Epoch>,
@@ -516,20 +424,11 @@ pub fn due<Tz: TimeZone>(
 /// been looking since `asked_since`: a system timer running `snob watch once
 /// --when-due`.
 ///
-/// **Only a calendar that has never run is answered differently.** The loop
-/// waits for the moment it computed, so it is there when the moment comes; a
-/// timer asks afresh every quarter of an hour, at whatever phase it was
-/// created with, and [`due`] alone counts a first run on a calendar as owed
-/// only within the minute the calendar names. `--at 09:00` under a task that
-/// looks at :07, :22, :37 and :52 would then never run. Here every minute the
-/// calendar names from the minute of `asked_since` to now is owed, so the look
-/// after the moment takes it. A moment before the first ask is not owed: the
-/// timer did not exist yet, and a schedule written at 09:05 for 09:00 means
-/// tomorrow, as it does for the loop.
-///
-/// With a run behind it, or with no calendar, this is [`due`]: the window then
-/// starts at the moment the last run served, which a timer reads back from the
-/// store.
+/// **Only a calendar that has never run is answered differently.** [`due`]
+/// counts its first run as owed only within the minute the calendar names,
+/// which a timer looking at :07, :22, :37 and :52 never meets. Here every
+/// minute it names from the minute of `asked_since` to now is owed, and none
+/// before: a schedule written at 09:05 for 09:00 means tomorrow.
 pub fn due_asked_since<Tz: TimeZone>(
     schedule: &Schedule,
     last_run: Option<Epoch>,
@@ -543,12 +442,10 @@ pub fn due_asked_since<Tz: TimeZone>(
 /// The moment a run that is due at `now` was due for: what a run records as
 /// its `due_at`, so one that started late can be told from one on time.
 ///
-/// On a calendar, the most recent moment it names that is owed (the one the
-/// look back of [`next_after`] finds), and never before the floor, since no
-/// run could have started earlier; on an interval, the floor itself, one
-/// interval after the last run. `None` when nothing is due at `now`, and for
-/// an interval nothing has started (its first run is due whenever it is
-/// asked).
+/// On a calendar, the most recent moment it names that is owed, and never
+/// before the floor, since no run could have started earlier; on an interval,
+/// one interval after the last run. `None` when nothing is due at `now`, and
+/// for an interval nothing has started.
 pub fn due_moment<Tz: TimeZone>(
     schedule: &Schedule,
     last_run: Option<Epoch>,
@@ -560,37 +457,12 @@ pub fn due_moment<Tz: TimeZone>(
     if next_after_asked_since(schedule, last_run, asked_since, now, zone)? > now {
         return None;
     }
-    let step = Duration::from_secs(schedule.step_secs() as u64);
     let Some(calendar) = &schedule.calendar else {
-        return last_run.map(|last| last + step);
+        return last_run.map(|last| last + schedule.step());
     };
-    let served_at = last_run.map(|last| served_at(calendar, last, zone));
-    let served = served_at.map(|(moment, _)| moment);
-    let floor = match (served_at, last_run) {
-        (Some((moment, reading)), Some(last)) => on_the_wall_clock(moment, reading, step, zone)
-            .max(moment + Duration::from_secs(super::MIN_GAP_SECS.unsigned_abs()))
-            .max(last),
-        _ => Epoch::new(i64::MIN),
-    };
-    let earliest = match served {
-        Some(moment) => moment.get().div_euclid(60) + 1,
-        None => asked_since
-            .map_or(now, |asked| asked.min(now))
-            .get()
-            .div_euclid(60),
-    };
-    minutes_on_named_days(
-        calendar,
-        zone,
-        now.get().div_euclid(60),
-        Direction::Backward,
-    )
-    .take_while(|(minute, _)| *minute >= earliest)
-    .find(|(minute, at)| {
-        named_or_jumped_over(calendar, *minute, at, zone)
-            && !already_run_at_this_wall_clock(zone, Epoch::new(minute * 60), at, last_run)
-    })
-    .map(|(minute, _)| Epoch::new(minute * 60).max(floor))
+    let behind = Behind::of(schedule, calendar, last_run, asked_since, now, zone);
+    latest_owed(calendar, behind.earliest, last_run, now, zone)
+        .map(|moment| behind.floor.map_or(moment, |floor| moment.max(floor)))
 }
 
 /// The body of [`due`] and [`due_asked_since`].
@@ -601,51 +473,31 @@ fn due_from<Tz: TimeZone>(
     now: Epoch,
     zone: &Tz,
 ) -> Due {
-    // A clock that went backwards. The same reading `rate_budget` takes: trust
-    // the present over a stored future, rather than refusing to run for however
-    // long the skew was.
+    // A last run in the future is a clock that went backwards: the present
+    // is trusted over it, as the budget does.
     let last_run = last_run.map(|last| last.min(now));
 
-    // Nothing has run, and a floor with no past to measure from is now.
     let Some(next) = next_after_asked_since(schedule, last_run, asked_since, now, zone) else {
-        // An impossible calendar. Never due, and the caller says so rather than
-        // sleeping on a moment that will not come.
         return Due::Never;
     };
-
     if next > now {
         return Due::At(next);
     }
-
-    // No floor check here. `next_after` puts the floor into the start of its
-    // search, and unlike a check bolted on afterwards the answer it gives is one
-    // the calendar allows.
-    //
-    // What is asserted is that a run is never due before the previous one
-    // recorded itself. Not `now - last >= MIN_GAP_SECS`: with a grid the floor
-    // counts from the moment a run served, so two runs can be closer in wall
-    // clock than the gap by however long the walk took. `next_after` says why.
-    debug_assert!(
-        last_run.is_none_or(|last| now >= last),
-        "a run is due before the one behind it"
-    );
 
     Due::Now {
         missed: missed_since(schedule, last_run, now, zone),
     }
 }
 
+/// The largest number of skipped runs worth counting exactly: the answer is
+/// only used to say "several", and each count is a search of its own.
+const MAX_MISSED_COUNTED: u32 = 1_000;
+
 /// How many scheduled runs went by unrun, not counting the one due now.
 ///
-/// Counted against whatever actually decides the schedule. Dividing the elapsed
-/// time by the interval is only right when the interval is the whole of it: with
-/// `--every 1h --on mon --at 09:00` a week of downtime is one missed run, and
-/// the arithmetic would say 167. The number is printed at the user, so a wrong one is
-/// a sentence that is simply false.
-///
-/// Bounded by `MAX_MISSED_COUNTED`, because the answer is only ever used to say
-/// "several" out loud, and each count is a search of its own: a thousand is
-/// already more than the sentence needs.
+/// Counted against whatever decides the schedule: with
+/// `--every 1h --on mon --at 09:00` a week of downtime is one missed run,
+/// where dividing by the interval would say 167.
 fn missed_since<Tz: TimeZone>(
     schedule: &Schedule,
     last_run: Option<Epoch>,
@@ -653,36 +505,21 @@ fn missed_since<Tz: TimeZone>(
     zone: &Tz,
 ) -> u32 {
     let Some(last) = last_run else {
-        return 0; // nothing has run, so nothing was missed
+        return 0;
     };
 
-    // No calendar: the interval is the schedule, and division is exact.
     if schedule.calendar.is_none() {
         let Some(every) = schedule.every else {
             return 0;
         };
-        let interval = every.as_secs().max(1) as i64;
-        return (((now - last) / interval).max(1) - 1).min(MAX_MISSED_COUNTED as i64) as u32;
+        let interval = i64::try_from(every.as_secs()).unwrap_or(i64::MAX).max(1);
+        let elapsed = ((now - last) / interval).clamp(1, i64::from(MAX_MISSED_COUNTED) + 1);
+        return u32::try_from(elapsed - 1).unwrap_or(MAX_MISSED_COUNTED);
     }
 
-    // With one, the moments it allows have to be walked. Each step starts from
-    // the moment found, so `every` keeps acting as the floor it is.
-    //
-    // Every moment up to and including `now` is walked, and **the last one is
-    // the run happening now** rather than one that was missed, so one comes off
-    // the end.
-    //
-    // A moment that went by is taken now, so the moment being served is
-    // itself strictly before `now`; stopping before `now` and subtracting
-    // nothing would announce the run being done as a missed one. Subtracting at
-    // the end covers both ways in: on a clock that does read exactly `:00`,
-    // `now` is the last moment walked and comes off just the same.
-    //
-    // `next > at` is what makes the walk finish. The floor includes
-    // `MIN_GAP_SECS`, so the cursor always advances, but this keeps the loop's
-    // termination a property of the loop rather than of a constant somewhere
-    // else: a moment that answered with itself would run the count to
-    // `MAX_MISSED_COUNTED`.
+    // Every moment up to and including `now` is walked, each from the one
+    // found, and **the last one is the run happening now**, so one comes off
+    // the end. `next > at` keeps the walk's end a property of the loop.
     let mut counted = 0;
     let mut at = last;
     while counted <= MAX_MISSED_COUNTED {
@@ -697,60 +534,29 @@ fn missed_since<Tz: TimeZone>(
     counted.saturating_sub(1)
 }
 
-/// The largest number of skipped runs worth counting exactly.
-const MAX_MISSED_COUNTED: u32 = 1_000;
-
-/// The moment to actually wake at, once jitter is applied.
-///
-/// `roll` is a number in `[0, 1)` the caller supplies, so this stays pure and a
-/// test can pin it. **Forward only**: moving a run earlier could put it before
-/// the `--every` floor, which is the one thing the floor is there to prevent.
-///
-/// The bound is not applied here. [`wake_at`] is what the loop calls, because
-/// deciding how much room a moment has needs the zone, and this deliberately has
-/// no arithmetic in it beyond the multiplication.
+/// `due_at` pushed later by `roll`, a number in `[0, 1)` the caller supplies,
+/// of `jitter`. **Forward only**: earlier could put a run before the
+/// `--every` floor. The bound on `jitter` is [`wake_at`]'s.
 pub(super) fn jittered(due_at: Epoch, jitter: Duration, roll: f64) -> Epoch {
     let spread = jitter.as_secs() as f64 * roll.clamp(0.0, 1.0);
     due_at + Duration::from_secs(spread as u64)
 }
 
-/// The first instant of the local day after `at`.
-///
-/// `None` when the zone skips its own midnight, which some have done: there is
-/// no such instant, and the calendar's own search is then the only bound left.
+/// The first instant of the local day after `at`; `None` when the zone skips
+/// its own midnight.
 pub(super) fn next_local_midnight<Tz: TimeZone>(at: Epoch, zone: &Tz) -> Option<Epoch> {
-    let local = zone.timestamp_opt(at.get(), 0).single()?;
+    let local = instant(zone, at.get())?;
     first_instant_of_next_local_day(&local, zone).map(|midnight| Epoch::new(midnight.timestamp()))
 }
 
-/// The moment to wake at for a run due at `due_at`. What the loop calls.
+/// The moment to wake at for a run due at `due_at`: what the loop calls.
 ///
-/// `jittered` with the roll capped to what this moment really has room
-/// for — see [`Schedule::room_at`]. The two are apart because the cap needs a
-/// zone, and keeping the roll on this side is what lets the bound be tested
-/// against a zone with a transition in it rather than against a `FixedOffset`,
-/// which has none.
+/// [`jittered`], with the jitter capped to the room this moment really has
+/// in the zone ([`Schedule::room_at`]).
 ///
-/// What the cap guards against happens once a year. `room_for_jitter`
-/// measures the day in seconds-of-day, so on a day a zone springs forward
-/// through it allows an hour more than the day holds: `--at 09:00 --jitter 24h`
-/// allows 85500 against a real gap of 82800, and a roll near the top would
-/// wake the run **past** the next day's own moment — which `moment_served`
-/// would then snap back onto, so two days would run once between them and
-/// `missed` would count none. `--on sun --at 01:00 --jitter 23h` allows 82800
-/// against 79200 of real room and would land on a Monday, a day that calendar
-/// forbids. It takes an explicitly configured jitter within an hour of the
-/// ceiling; the default is 900 seconds and a breach needs
-/// `s > nominal_gap - 4500`.
-///
-/// **It does not close the whole class, and the neighbor has no jitter in it at
-/// all.** `MIN_GAP_SECS` is real seconds while the grid is local, so on the
-/// short day `--at 01:50,03:00` has 600 real seconds between its two moments
-/// where `tightest_gap` declared 4200 and `validated` accepted it: the run at
-/// 01:50 puts the floor at a local 03:05, past 03:00, and the second moment is
-/// dropped rather than run. The next answer is the following day's 01:50. That
-/// is the floor doing exactly what the floor is for, and nothing here can help
-/// with it.
+/// **Not closed by it**: `MIN_GAP_SECS` is real seconds and the grid is
+/// local, so on the day a zone springs forward `--at 01:50,03:00` has 600
+/// real seconds between its moments, and the floor after 01:50 drops 03:00.
 pub fn wake_at<Tz: TimeZone>(schedule: &Schedule, due_at: Epoch, roll: f64, zone: &Tz) -> Epoch {
     jittered(
         due_at,
@@ -1588,6 +1394,30 @@ mod tests {
             Due::Never,
             "there is no 31st of February, and that is not a moment to sleep until"
         );
+    }
+
+    /// A last run no calendar can read, as a damaged row could hold, is
+    /// answered: the minute arithmetic used to overflow on it, and at the
+    /// edge of chrono's range an instant has no local time to read.
+    #[test]
+    fn a_last_run_past_the_end_of_time_is_answered_and_not_a_panic() {
+        let schedule = Schedule::calendar(&[], &[(9, 0)]).unwrap();
+        for last in [i64::MAX, i64::MAX - 59, i64::MIN] {
+            let _ = next_after(&schedule, Some(Epoch::new(last)), at(0), &Utc);
+            let _ = next_after(&schedule, None, Epoch::new(last), &Utc);
+        }
+
+        let east = FixedOffset::east_opt(3_600).unwrap();
+        let west = FixedOffset::west_opt(3_600).unwrap();
+        let latest = chrono::DateTime::<Utc>::MAX_UTC.timestamp();
+        let earliest = chrono::DateTime::<Utc>::MIN_UTC.timestamp();
+        for (edge, zone) in [(latest, east), (earliest, west)] {
+            let edge = Epoch::new(edge);
+            let _ = next_after(&schedule, Some(edge), edge, &zone);
+            let _ = next_after(&schedule, None, edge, &zone);
+            let _ = due_moment(&schedule, Some(edge), None, edge, &zone);
+            let _ = wake_at(&schedule, edge, 0.5, &zone);
+        }
     }
 
     /// The search matches against local wall-clock time, which is what decides

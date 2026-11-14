@@ -1,29 +1,17 @@
 //! When the monitor runs.
 //!
-//! Two ways to say it and one thing that decides it. `--every` is a floor
-//! measured from the previous run; `--on`/`--at` and `--cron` both build a
-//! [`Calendar`], which is a set of minutes the run is allowed to happen in.
-//! Given both, the next run is the first moment that satisfies both — so
-//! `--every 2w --on mon --at 09:00` reads the way it sounds, and
-//! `--every 30m --on mon,thu` means every half hour but only on those days.
+//! `--every` is a floor measured from the previous run; `--on`/`--at` and
+//! `--cron` both build a `Calendar`, the set of minutes a run may happen in.
+//! Given both, the next run is the first moment that satisfies both
+//! (`--every 2w --on mon --at 09:00`).
 //!
-//! **One evaluator, two syntaxes.** A cron expression is parsed into the same
-//! `Calendar` that `--on mon --at 09:00` produces, so "Monday at nine" cannot
-//! come to mean two different things depending on how somebody wrote it. That
-//! is also why there is a parser here rather than a dependency: the hard part
-//! of cron is not reading the five fields, it is that day-of-month and
-//! day-of-week combine with OR when both are restricted and with AND when
-//! either is `*`. Getting that wrong fires on the wrong days silently.
+//! **One evaluator, two syntaxes**: a cron expression is parsed into the same
+//! `Calendar` that `--on mon --at 09:00` produces, which is why there is a
+//! parser here and not a dependency. Nothing here reads a clock.
 //!
-//! Nothing here reads a clock. Every function takes `now` as an argument, which
-//! is the shape `rate_budget::decide` established for the same reason: the
-//! whole of this is testable with literal timestamps and without waiting.
-//!
-//! **One file per question.** This one holds the [`Schedule`] itself: how one
-//! is built, what makes one legal, and the words for a run being owed.
-//! `parse` reads the two syntaxes, `calendar` is the set of minutes they are
-//! read into and everything asked of it, and `next` is the evaluator that puts
-//! a moment to the calendar and answers when the next run is.
+//! This file holds the [`Schedule`] and what makes one legal; `parse` reads
+//! the two syntaxes, `calendar` is what they are read into, and `next` is the
+//! evaluator.
 
 mod calendar;
 mod next;
@@ -44,31 +32,20 @@ pub use parse::{Weekday, parse_time};
 
 /// The shortest gap between two runs.
 ///
-/// Deliberately the same length as `SAME_MOMENT_GAP_SECS` in the CLI's cooldown
-/// module, and deliberately not that constant. Fifteen minutes of an account's
-/// life is the drift this tool already treats as a single instant; two runs
-/// closer together than that cannot see a state the caching policy would even
-/// go and walk, so the second is requests spent to be told what the first was
-/// told. Two questions, so two numbers: changing what may be crossed must not
-/// quietly change how often the monitor knocks.
+/// Fifteen minutes of an account's life is the drift this tool already treats
+/// as one instant (`SAME_MOMENT_GAP_SECS` in the CLI, the same length and
+/// deliberately another constant): a second run closer than that spends
+/// requests to be told what the first was told.
 pub const MIN_GAP_SECS: i64 = 15 * 60;
 
-/// The longest interval `--every` accepts.
-///
-/// A year, because past that a calendar says it better, and because without an
-/// upper bound the arithmetic that adds an interval to the previous run
-/// overflows on an absurd one, which is a panic in a debug build and, in
-/// release, a wrap to a negative floor that turns "every two hundred billion
-/// years" into "every fifteen minutes". Absurd values are not only typos — this
-/// one can arrive from a hand-edited `watch.toml`.
+/// The longest interval `--every` accepts: a year, past which a calendar says
+/// it better. The bound is also what keeps an absurd interval from a
+/// hand-edited `watch.toml` out of the arithmetic.
 pub const MAX_INTERVAL_SECS: i64 = 366 * 24 * 3_600;
 
-/// How far past its due moment a run may be pushed.
-///
-/// Not decoration. Every unattended copy of this tool waking on the same round
-/// minute is a small synchronized spike on somebody else's service, and
-/// spreading the runs out costs the user nothing. Fifteen minutes, or a tenth
-/// of the interval when that is smaller, with a floor of one minute.
+/// How far past its due moment a run may be pushed, so that every unattended
+/// copy of this tool does not wake on the same round minute: fifteen minutes,
+/// or a tenth of the interval when that is smaller, and at least one minute.
 fn default_jitter(every: Option<Duration>) -> Duration {
     let ceiling = Duration::from_secs(15 * 60);
     match every {
@@ -85,21 +62,6 @@ pub struct Schedule {
     /// Never sooner than this after the previous run. `None` sets no floor.
     every: Option<Duration>,
     jitter: Duration,
-}
-
-impl Schedule {
-    /// Whether the moments this fires at are named rather than measured.
-    ///
-    /// The difference matters in exactly one place: what a fresh install should
-    /// pass as `last_run`. An interval with no past to measure from is due
-    /// immediately, so a caller that does not want a walk the moment the monitor
-    /// is set up has to invent one. A calendar has its own moments and needs no
-    /// invention — and inventing one there is harmful, because it puts
-    /// `MIN_GAP_SECS` between the install and the first run and steps over any
-    /// moment inside the next quarter of an hour.
-    pub fn is_on_a_calendar(&self) -> bool {
-        self.calendar.is_some()
-    }
 }
 
 /// What is wrong with a schedule, said so somebody can fix it.
@@ -123,6 +85,14 @@ pub enum ScheduleError {
 }
 
 impl Schedule {
+    /// Whether the moments this fires at are named, not measured. A fresh
+    /// install asks: an interval with no past is due at once unless a last
+    /// run is invented, and on a calendar an invented one would step over
+    /// any moment in the next quarter of an hour.
+    pub fn is_on_a_calendar(&self) -> bool {
+        self.calendar.is_some()
+    }
+
     /// Every so often, counted from the previous run.
     pub fn every(interval: Duration) -> Result<Self, ScheduleError> {
         Self {
@@ -152,7 +122,7 @@ impl Schedule {
         let days_of_week = if days.is_empty() {
             FieldSet::all(0..=6)
         } else {
-            FieldSet(days.iter().fold(0u64, |bits, d| bits | (1 << d.number())))
+            FieldSet::weekdays(days)
         };
 
         let mut exact: Vec<(u32, u32)> = times.to_vec();
@@ -173,29 +143,13 @@ impl Schedule {
         .validated()
     }
 
-    /// On these weekdays, as often as the interval allows.
+    /// On these weekdays, as often as the interval allows: the shape
+    /// `--every 2w --on mon` asks for, which cron cannot express. Every
+    /// minute of an allowed day is allowed, and the interval keeps two runs
+    /// apart; the jitter comes out zero ([`Schedule::room_for_jitter`]).
     ///
-    /// The shape `--every 2w --on mon` asks for, and the one thing cron cannot
-    /// express. Every minute of an allowed day is allowed, and the interval is
-    /// what keeps two runs apart. **The interval is not optional here**, which
-    /// is why it is an argument rather than something [`Schedule::and_every`]
-    /// adds afterwards: on its own this grid names 1440 moments a day, and
-    /// [`Schedule::validated`] refuses that and is right to — "on Mondays", with
-    /// nothing else said, is not a schedule.
-    ///
-    /// The jitter this comes out with is zero, and that is the arithmetic
-    /// working rather than failing. [`Schedule::room_for_jitter`] takes the
-    /// interval as the step, and a grid whose tightest gap is one minute has
-    /// nothing left over. What keeps a fortnightly run off the same second is
-    /// the length of the walk in front of it, which the floor already measures
-    /// from.
-    ///
-    /// Empty days are refused rather than read as every day, which is what
-    /// [`Schedule::calendar`] does with them. There they still leave a time of
-    /// day behind; here they would leave a calendar allowing every minute of
-    /// every day — [`Schedule::every`] wearing a calendar, whereupon
-    /// `is_on_a_calendar` answers `true` and a fresh install stops inventing the
-    /// last run it needs.
+    /// **Empty days are refused**, not read as every day: that would be
+    /// [`Schedule::every`] answering `true` to `is_on_a_calendar`.
     pub fn days(days: &[Weekday], interval: Duration) -> Result<Self, ScheduleError> {
         if days.is_empty() {
             return Err(ScheduleError::Unreadable(
@@ -211,7 +165,7 @@ impl Schedule {
                 },
                 days_of_month: FieldSet::all(1..=31),
                 months: FieldSet::all(1..=12),
-                days_of_week: FieldSet(days.iter().fold(0u64, |bits, d| bits | (1 << d.number()))),
+                days_of_week: FieldSet::weekdays(days),
             }),
             every: Some(interval),
             jitter: default_jitter(Some(interval)),
@@ -231,44 +185,29 @@ impl Schedule {
         .validated()
     }
 
-    /// Brings the jitter down to what this schedule can absorb.
-    ///
-    /// The default is a flat fifteen minutes, which is `MIN_GAP_SECS` — so on
-    /// any grid tighter than half an hour the default alone is enough to eat
-    /// the next moment. Applied by the constructors, so the default is bounded
-    /// the same way an explicit `--jitter` is; [`Schedule::room_for_jitter`]
-    /// says why the bound is what it is.
+    /// Brings the jitter down to what this schedule can absorb, so the
+    /// default is bounded as an explicit `--jitter` is.
     fn fitted(self) -> Self {
         let jitter = self.jitter;
         self.with_jitter(jitter)
     }
 
-    /// Adds a floor to a calendar, or a calendar to a floor.
-    ///
-    /// The two combine as a conjunction: the next run is the first moment that
-    /// satisfies both.
+    /// Adds a floor to a calendar, or a calendar to a floor: the next run is
+    /// the first moment that satisfies both.
     pub fn and_every(mut self, interval: Duration) -> Result<Self, ScheduleError> {
         self.every = Some(interval);
         if self.calendar.is_none() {
             self.jitter = default_jitter(Some(interval));
         }
-        // Adding an interval to a calendar changes what separates two runs, and
-        // so changes the room there is between them. `--every 2w --on mon` has a
-        // weekly grid and a fortnightly floor, and no room at all.
+        // The interval changes what separates two runs, so the room between
+        // them is measured again.
         self.fitted().validated()
     }
 
-    /// Sets how far a run may be pushed past its due moment.
-    ///
-    /// Bounded to what the schedule can absorb, whether the value comes from a
-    /// typo or from the configuration file: a jitter cannot sensibly exceed the
-    /// gap it is jittering within.
-    ///
-    /// **Both halves bound it when both are set.** Bounded by the interval
-    /// alone, `--every 2w --on mon --at 09:00 --jitter 5d` would keep all five
-    /// days, so a run due Monday at nine would wake on Friday evening — a day
-    /// the calendar does not allow, on a schedule that names one. That is the
-    /// failure the bound exists to stop.
+    /// Sets how far a run may be pushed past its due moment, bounded to what
+    /// the schedule can absorb ([`Schedule::room_for_jitter`]), by both
+    /// halves when both are set: `--every 2w --on mon --at 09:00 --jitter 5d`
+    /// must not wake on a Friday.
     #[must_use]
     pub fn with_jitter(mut self, jitter: Duration) -> Self {
         self.jitter = jitter.min(self.room_for_jitter());
@@ -277,103 +216,53 @@ impl Schedule {
 
     /// The most a run may be pushed later without costing the next one.
     ///
-    /// **The gap between two moments is not the room there is inside it.** The
-    /// floor is measured from where a run really landed, not from the grid, so
-    /// every second of jitter comes straight out of the next gap: a run at
-    /// moment `m` pushed to `m + s` cannot reach `m + gap` unless
-    /// `s <= gap - step`, where `step` is the floor between two runs.
-    ///
-    /// The default for a calendar is a flat fifteen minutes — exactly
-    /// `MIN_GAP_SECS`. Without the step taken off, `--cron "*/15 * * * *"`, the
-    /// tightest expression this tool advertises as legal, would run every
-    /// thirty minutes with probability 899/900 while the banner printed `*/15`.
-    ///
-    /// The step is the interval when there is one, because that is then what
-    /// separates two runs. `--every 2w --on mon` is a Monday in every two, and
-    /// its floor is a fortnight while its grid is a week: the subtraction
-    /// answers zero, which is right — any jitter at all turns it into three
-    /// weeks.
+    /// **The gap between two moments is not the room inside it.** The floor
+    /// is measured from where a run really landed, so a run at moment `m`
+    /// pushed to `m + s` still reaches `m + gap` only if `s <= gap - step`.
+    /// Without the step taken off, `--cron "*/15 * * * *"` under the default
+    /// jitter would run every thirty minutes.
     fn room_for_jitter(&self) -> Duration {
-        // One moment a day at most. Whatever the day fields allow, the next is
-        // at least a day away — and a roll is in `[0, 1)`, so a run still lands
-        // strictly before it.
         const A_DAY: i64 = 24 * 3_600;
 
         let step = self.step_secs();
 
         match &self.calendar {
             Some(calendar) => {
+                // One moment a day has the next at least a day away.
                 let gap = calendar.tightest_gap().unwrap_or(A_DAY);
                 let mut room = gap.saturating_sub(step).max(0);
-                // **And not past midnight, when the days are restricted.** With
-                // one moment a day `tightest_gap` is `None` and the fallback is
-                // a whole day, however narrow the day fields are — so without
-                // this `--on mon --at 09:00 --jitter 20h` would keep all twenty
-                // hours and a run due Monday morning would walk on Tuesday at
-                // three, the failure `with_jitter`'s own doc says the bound
-                // exists to stop. It reaches a calendar with several
-                // moments too: the last one of the day has the same midnight in
-                // front of it whatever the gap behind it was.
-                //
-                // Unrestricted days need no cap: the next day is one the
-                // calendar names, so a run that lands there has landed
-                // somewhere legal.
+                // **And not past midnight, when the days are restricted**:
+                // `--on mon --at 09:00 --jitter 20h` must not run on Tuesday.
+                // The last moment of a day has that midnight in front of it
+                // whatever the gap behind it.
                 if calendar.days_are_restricted() {
                     room = room.min(calendar.room_before_midnight());
                 }
-                Duration::from_secs(room as u64)
+                Duration::from_secs(room.unsigned_abs())
             }
-            // No grid to miss, so the interval is the only bound. What that
-            // costs is said rather than assumed: the loop records the
-            // jittered moment as the last run and the floor is measured from
-            // it, so every roll is added for good and the mean period is the
-            // interval plus the mean jitter -- `--every 6h --jitter 6h` runs
-            // about 160 times in sixty days where 240 were implied. The
-            // default jitter is a tenth of the interval capped at fifteen
-            // minutes, so it costs a few per cent; only an explicit --jitter
-            // reaches further, and that is what the person asked for. The
-            // calendar arm above subtracts the step because a grid moment
-            // missed is a run lost; here nothing is lost, only later.
-            //
-            // `validated` refuses a schedule with neither half, so the fallback
-            // is unreachable; a day is the answer that cannot be wrong by much.
+            // No grid to miss, so the interval is the only bound. (The
+            // fallback is unreachable: `validated` refuses neither half.)
             None => self.every.unwrap_or(Duration::from_secs(A_DAY as u64)),
         }
     }
 
-    /// The room one particular moment really has, in real seconds.
+    /// The room the moment `due_at` really has, in real seconds.
     ///
-    /// [`Schedule::room_for_jitter`] asks the same question of the grid, and the
-    /// grid is seconds-of-day arithmetic: its `A_DAY` is 86400 and
-    /// `room_before_midnight` is `86400 - latest`. A day a zone springs forward
-    /// through is 82800 seconds long, so both are an hour too generous on it —
-    /// once a year, in the one direction that costs a run.
-    ///
-    /// So this asks the calendar itself, in the zone, from where the run is
-    /// actually due: the next moment the schedule names, less the floor between
-    /// two runs, and — when the days are restricted — no further than the local
-    /// midnight after `due_at`, which is the bound `room_before_midnight` draws
-    /// and this is the real version of it.
-    ///
-    /// It only ever narrows, which is what keeps the banner honest: `jitter` has
-    /// already been capped at `room_for_jitter`, so what was printed stays an
-    /// upper bound on what is used.
-    ///
-    /// **An interval has no grid to miss**, and it is measured from where the
-    /// run landed rather than from a moment — the whole schedule slides, so
-    /// there is nothing to take off. Unbounded here, and bounded by
-    /// `room_for_jitter`.
+    /// [`Schedule::room_for_jitter`] counts in seconds of a 24-hour day, an
+    /// hour too generous on the day a zone springs forward through:
+    /// `--at 09:00 --jitter 24h` could wake a run past the next day's moment.
+    /// This asks the calendar in the zone: the next moment the schedule
+    /// names, less the floor between two runs, and when the days are
+    /// restricted no further than the local midnight after `due_at`. An
+    /// interval alone has no grid to miss, and is unbounded here.
     fn room_at<Tz: TimeZone>(&self, due_at: Epoch, zone: &Tz) -> Duration {
         let Some(calendar) = &self.calendar else {
             return Duration::MAX;
         };
 
-        let step = self.step_secs();
-
-        // `None` is a calendar that names nothing after this moment, which has
-        // nothing left to lose.
+        // A calendar that names nothing after this moment has nothing to lose.
         let mut room = match next_after(self, Some(due_at), due_at, zone) {
-            Some(next) => (next - due_at).saturating_sub(step).max(0),
+            Some(next) => (next - due_at).saturating_sub(self.step_secs()).max(0),
             None => i64::MAX,
         };
 
@@ -382,7 +271,7 @@ impl Schedule {
         {
             room = room.min((midnight - due_at).max(0));
         }
-        Duration::from_secs(room as u64)
+        Duration::from_secs(room.unsigned_abs())
     }
 
     pub fn jitter(&self) -> Duration {
@@ -398,27 +287,28 @@ impl Schedule {
             .max(MIN_GAP_SECS)
     }
 
-    /// Refuses a schedule that would run more often than the floor allows.
-    ///
-    /// **Both halves are checked, not just the interval**, and every
-    /// constructor calls this: `--cron "*/5 * * * *"` and `--at 09:00,09:05` run
-    /// exactly as often as `--every 5m`, and the message says the monitor does
-    /// not run twice inside fifteen minutes.
+    /// [`Schedule::step_secs`], as a length of time.
+    fn step(&self) -> Duration {
+        Duration::from_secs(self.step_secs().unsigned_abs())
+    }
+
+    /// Refuses a schedule that would run more often than the floor allows, or
+    /// names nothing. **Both halves are checked**, and every constructor
+    /// calls this: `--cron "*/5 * * * *"` and `--at 09:00,09:05` run as often
+    /// as `--every 5m`.
     fn validated(self) -> Result<Self, ScheduleError> {
         if self.calendar.is_none() && self.every.is_none() {
             return Err(ScheduleError::Empty);
         }
         if let Some(every) = self.every {
-            // Compared as a `u64`, not cast to `i64`: the cast wraps, so
-            // `--every 18446744073709551615` would be refused as too often —
-            // the opposite of what is wrong with it.
+            // Compared as `u64`: a cast to `i64` wraps, and
+            // `--every 18446744073709551615` would be refused as too often.
             if every.as_secs() < MIN_GAP_SECS as u64 {
                 return Err(ScheduleError::TooOften {
                     interval: crate::duration::format(every),
                     minutes: MIN_GAP_SECS / 60,
                 });
             }
-            // And an upper bound, for the reason `MAX_INTERVAL_SECS` gives.
             if every.as_secs() > MAX_INTERVAL_SECS as u64 {
                 return Err(ScheduleError::TooRare {
                     interval: crate::duration::format(every),
@@ -427,16 +317,15 @@ impl Schedule {
             }
         }
 
-        // A calendar with an interval on it is bounded by the interval, which
-        // has just been checked. On its own, the calendar's own tightest gap is
-        // what decides.
+        // A calendar with an interval on it is bounded by the interval, just
+        // checked; alone, by its own tightest gap.
         if self.every.is_none()
             && let Some(calendar) = &self.calendar
             && let Some(gap) = calendar.tightest_gap()
             && gap < MIN_GAP_SECS
         {
             return Err(ScheduleError::TooOften {
-                interval: crate::duration::format(Duration::from_secs(gap as u64)),
+                interval: crate::duration::format(Duration::from_secs(gap.unsigned_abs())),
                 minutes: MIN_GAP_SECS / 60,
             });
         }
@@ -445,23 +334,15 @@ impl Schedule {
 }
 
 /// Whether a run is owed, and when the next one is.
-///
-/// **"It names no moment" is a variant, not an instant.** A sentinel such as
-/// `At(i64::MAX)` would be told apart only by an arm order and a number, and
-/// let through it is a moment to every reader downstream: `jittered` adds to
-/// it and saturates, `wake_at` hands back `i64::MAX`, and the loop naps sixty seconds
-/// at a time until the end of time. No error, no exit code, and a process that
-/// looks perfectly healthy to whatever is watching it. As a variant, the
-/// compiler asks for the arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Due {
     /// Nothing yet. Sleep until this instant.
     At(Epoch),
     /// Run now. `missed` counts the scheduled runs being folded into this one.
     Now { missed: u32 },
-    /// The schedule names no moment at all — `0 0 31 2 *`, and nothing else this
-    /// parser accepts. There is nothing to sleep until, so the caller has to say
-    /// so rather than wait. The same fact [`next_after`] answers `None` with.
+    /// The schedule names no moment at all (`0 0 31 2 *`), as [`next_after`]
+    /// answers `None`. **A variant, not a sentinel instant**, which a caller
+    /// would sleep towards for ever.
     Never,
 }
 

@@ -1,24 +1,15 @@
-//! Reading the two syntaxes.
-//!
-//! `--on`/`--at` and a five-field cron expression, and the bitmask both of
-//! them end up in. Nothing here decides when a run happens: what it produces
-//! is a `Calendar`, and asking that calendar anything is `next`'s job.
+//! Reading the two syntaxes, `--on`/`--at` and a five-field cron expression,
+//! into the bitmasks a `Calendar` is made of.
 
 use super::ScheduleError;
 use super::calendar::{Calendar, Times};
 
-/// A set of small numbers, as a bitmask.
-///
-/// Every cron field fits in 64 bits — the widest is day-of-month at 31 — so a
-/// field is one integer and testing membership is one shift.
+/// A set of small numbers, as a bitmask: every cron field fits in 64 bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FieldSet(pub(super) u64);
 
 impl FieldSet {
     /// Everything in `range`, which is what `*` means.
-    ///
-    /// A mask rather than a loop. `Calendar::allows` asks `is_all` twice per
-    /// minute it looks at, and the search looks at a lot of minutes.
     pub(super) fn all(range: std::ops::RangeInclusive<u32>) -> Self {
         if range.is_empty() {
             return Self(0);
@@ -30,16 +21,17 @@ impl FieldSet {
         Self(through_end & !below_start)
     }
 
+    /// These days of the week, Sunday as bit 0.
+    pub(super) fn weekdays(days: &[Weekday]) -> Self {
+        Self(days.iter().fold(0, |bits, day| bits | (1 << day.number())))
+    }
+
     pub(super) fn contains(self, value: u32) -> bool {
         value < 64 && self.0 & (1 << value) != 0
     }
 
-    /// Whether this field was left unrestricted over `range`.
-    ///
-    /// Only day-of-month and day-of-week need to know, and only to settle how
-    /// they combine. It is asked of the set rather than remembered from the
-    /// text so that `*` and `1-31` behave identically, which is what a reader
-    /// of the expression would expect.
+    /// Whether this field is unrestricted over `range`. Asked of the set, not
+    /// remembered from the text, so `*` and `1-31` behave alike.
     pub(super) fn is_all(self, range: std::ops::RangeInclusive<u32>) -> bool {
         self == Self::all(range)
     }
@@ -88,46 +80,41 @@ impl Weekday {
 /// Parses `HH:MM`.
 pub fn parse_time(text: &str) -> Result<(u32, u32), ScheduleError> {
     let text = text.trim();
-    let (hour, minute) = text.split_once(':').ok_or_else(|| {
-        ScheduleError::Unreadable(format!("\"{text}\" is not a time (try 09:00)"))
-    })?;
-
-    let bad = || ScheduleError::Unreadable(format!("\"{text}\" is not a time (try 09:00)"));
-    let hour: u32 = hour.trim().parse().map_err(|_| bad())?;
-    let minute: u32 = minute.trim().parse().map_err(|_| bad())?;
-    if hour > 23 || minute > 59 {
-        return Err(bad());
-    }
-    Ok((hour, minute))
+    let time = || {
+        let (hour, minute) = text.split_once(':')?;
+        let hour: u32 = hour.trim().parse().ok()?;
+        let minute: u32 = minute.trim().parse().ok()?;
+        (hour <= 23 && minute <= 59).then_some((hour, minute))
+    };
+    time().ok_or_else(|| ScheduleError::Unreadable(format!("\"{text}\" is not a time (try 09:00)")))
 }
 
 /// Parses a five-field cron expression into the same calendar `--on`/`--at`
 /// produces.
 pub(super) fn parse_cron(expression: &str) -> Result<Calendar, ScheduleError> {
     let fields: Vec<&str> = expression.split_whitespace().collect();
-    if fields.len() != 5 {
+    let &[minutes, hours, days_of_month, months, days_of_week] = fields.as_slice() else {
         return Err(ScheduleError::Unreadable(format!(
             "a cron expression has five fields (minute hour day month weekday), \
              and \"{expression}\" has {}",
             fields.len()
         )));
-    }
+    };
 
     Ok(Calendar {
-        // Crossed, not paired: for cron that is the correct reading and the one
-        // anybody writing an expression expects.
+        // Crossed, not paired: what a cron expression means.
         times: Times::Crossed {
-            minutes: cron_field(fields[0], 0..=59, "minute")?,
-            hours: cron_field(fields[1], 0..=23, "hour")?,
+            minutes: cron_field(minutes, 0..=59, "minute")?,
+            hours: cron_field(hours, 0..=23, "hour")?,
         },
-        days_of_month: cron_field(fields[2], 1..=31, "day of month")?,
-        months: cron_field(fields[3], 1..=12, "month")?,
-        // Seven and zero are both Sunday, which is what every cron accepts.
-        days_of_week: cron_field(fields[4], 0..=7, "day of week").map(fold_sunday)?,
+        days_of_month: cron_field(days_of_month, 1..=31, "day of month")?,
+        months: cron_field(months, 1..=12, "month")?,
+        days_of_week: cron_field(days_of_week, 0..=7, "day of week").map(fold_sunday)?,
     })
 }
 
-/// Seven means Sunday, and Sunday is zero everywhere else here.
+/// Seven means Sunday, as every cron accepts, and Sunday is zero everywhere
+/// else here.
 fn fold_sunday(set: FieldSet) -> FieldSet {
     if set.contains(7) {
         FieldSet((set.0 & !(1 << 7)) | 1)
@@ -145,16 +132,17 @@ fn cron_field(
 ) -> Result<FieldSet, ScheduleError> {
     let mut bits = 0u64;
     for part in text.split(',') {
-        let (spec, step, stepped) = match part.split_once('/') {
+        let (spec, step) = match part.split_once('/') {
             Some((spec, step)) => (
                 spec,
-                step.parse::<u32>()
-                    .ok()
-                    .filter(|&s| s > 0)
-                    .ok_or_else(|| unreadable_field(part, name))?,
-                true,
+                Some(
+                    step.parse::<u32>()
+                        .ok()
+                        .filter(|&s| s > 0)
+                        .ok_or_else(|| unreadable_field(part, name))?,
+                ),
             ),
-            None => (part, 1, false),
+            None => (part, None),
         };
 
         let (from, to) = if spec == "*" {
@@ -163,20 +151,19 @@ fn cron_field(
             (number(from, &range, name)?, number(to, &range, name)?)
         } else {
             let value = number(spec, &range, name)?;
-            // `5/15` means "from 5 onwards, every 15", which is what cron does
-            // with a bare number and a step, and `5/1` from 5 onwards, every
-            // one: a step written is a step, whatever its size.
-            if stepped {
-                (value, *range.end())
-            } else {
-                (value, value)
+            // `5/15` is "from 5 onwards, every 15", as cron reads a bare
+            // number with a step, whatever the step's size.
+            match step {
+                Some(_) => (value, *range.end()),
+                None => (value, value),
             }
         };
 
         if from > to {
             return Err(unreadable_field(part, name));
         }
-        for value in (from..=to).step_by(step as usize) {
+        // `number` held both ends to `range`, which ends below 64.
+        for value in (from..=to).step_by(step.unwrap_or(1) as usize) {
             bits |= 1 << value;
         }
     }
@@ -207,8 +194,7 @@ fn number(
     Ok(value)
 }
 
-/// "an hour", "a minute": the field names are few and one of them starts
-/// with a vowel sound, and "24 is not a hour" is what a person was shown.
+/// "an hour", "a minute".
 fn article(name: &str) -> &'static str {
     if name.starts_with(['a', 'e', 'i', 'o', 'u', 'h']) {
         "an"
