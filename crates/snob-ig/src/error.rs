@@ -210,8 +210,9 @@ impl IgError {
         match self {
             // A refused redirect is not a network failure (the CDN client's
             // policy refusal arrives this way): each retry would carry the
-            // session.
-            Self::Network(e) if e.is_redirect() => Reaction::Abort,
+            // session. Nor is a request that would not build (a header value
+            // `reqwest` refuses): it was never sent, and never will be.
+            Self::Network(e) if e.is_redirect() || e.is_builder() => Reaction::Abort,
             Self::Network(_) | Self::Unreachable(_) => Reaction::Retry,
             Self::Unexpected { status, .. } if *status >= 500 => Reaction::Retry,
             Self::RateLimited | Self::FeedbackRequired => Reaction::Cooldown,
@@ -929,5 +930,18 @@ mod tests {
             what: Some("someone".into()),
         };
         assert_eq!(e.to_string(), "the account \"someone\" does not exist");
+    }
+
+    /// A header value `reqwest` refuses fails the request before it is sent:
+    /// retried, the walker would pay the budget three more times for nothing.
+    #[test]
+    fn a_request_that_does_not_build_is_not_retried() {
+        let unbuilt = reqwest::Client::new()
+            .get("http://127.0.0.1:9/")
+            .header("X-FB-LSD", "a token\nwith a line break")
+            .build()
+            .expect_err("a header value with a line break does not build");
+        assert!(unbuilt.is_builder());
+        assert_eq!(IgError::Network(unbuilt).reaction(), Reaction::Abort);
     }
 }
