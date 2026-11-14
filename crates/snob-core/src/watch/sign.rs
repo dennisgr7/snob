@@ -1,13 +1,9 @@
-//! Signing a report, so the receiver can tell it came from here.
+//! Signing a report, so the receiver can tell it came from here:
+//! HMAC-SHA256 over the exact bytes of the body, as `sha256=<hex>` (the shape
+//! GitHub uses).
 //!
-//! HMAC-SHA256 over the exact bytes of the body, in the shape GitHub uses —
-//! `sha256=<hex>` — because that is the one a person wiring this into n8n or a
-//! script has already seen and already has a snippet for.
-//!
-//! What this is for and what it is not: it lets the far end reject a POST from
-//! anything that does not hold the shared secret. It is not confidentiality —
-//! the body is readable by anything on the path — which is why an `http://`
-//! address to anywhere but a private network is refused rather than signed.
+//! It is authenticity, not confidentiality: the body is readable on the path,
+//! which is why `http://` outside a private network is refused, not signed.
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
@@ -19,12 +15,8 @@ pub const HEADER: &str = "X-Snob-Signature";
 
 /// Signs `body` and returns the header value.
 ///
-/// The bytes are taken as they will be sent, not re-serialized from a
-/// structure. A queued report is stored as the string that was signed for
-/// exactly this reason: `serde_json` is free to order or space a second
-/// rendering differently, and a retry that signed a different string would be
-/// rejected after the first attempt was accepted — the worst kind of
-/// intermittent, because it looks like the network.
+/// The bytes as they will be sent, never a second rendering of a structure: a
+/// retry that signed a differently spaced string would be rejected.
 pub fn sign(body: &str, key: &Secret) -> String {
     sign_bytes(body.as_bytes(), key.expose().as_bytes())
 }
@@ -32,27 +24,20 @@ pub fn sign(body: &str, key: &Secret) -> String {
 /// Whether two secrets or signatures are equal, in a time that does not
 /// depend on where they first differ.
 ///
-/// **The one home for this comparison**: the relay's tokens, the MCP
-/// server's tickets and the key a client presents over HTTP are all checked
-/// with it. The length is not hidden, and need not be: every caller
-/// compares values whose length is fixed by their format, or two HMACs.
+/// **The one home for this comparison** (the relay's tokens, the MCP server's
+/// tickets and key, [`Secret`]'s `==`). The length is not hidden, and need
+/// not be: callers compare values whose length their format fixes, or HMACs.
 pub fn same(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
+    if a.len() != b.len() {
+        return false;
+    }
+    let differing = a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y));
+    // `black_box` keeps the optimizer from turning the fold into an early exit.
+    std::hint::black_box(differing) == 0
 }
 
-/// The same over raw bytes.
-///
-/// Split out so the tests can drive the published vectors, which are specified
-/// in bytes: RFC 4231's long-key case is 131 repetitions of `0xaa`, and writing
-/// that as a Rust string gives 262 bytes because U+00AA is two of them in
-/// UTF-8. A test that could not express the vector would have been a test that
-/// only checked this code against itself — and the long-key path, where HMAC
-/// hashes the key first, is the one an implementation is most likely to get
-/// wrong.
+/// [`sign`] over raw bytes, which is what RFC 4231's vectors are given in.
 fn sign_bytes(body: &[u8], key: &[u8]) -> String {
-    // `new_from_slice` accepts any key length: HMAC hashes one that is too long
-    // and pads one that is too short. So this cannot fail, and the caller is
-    // not handed an error it could not act on.
     let mut mac = <Hmac<Sha256>>::new_from_slice(key).expect("HMAC accepts a key of any length");
     mac.update(body);
 
@@ -61,7 +46,7 @@ fn sign_bytes(body: &[u8], key: &[u8]) -> String {
     hex.push_str("sha256=");
     for byte in digest {
         use std::fmt::Write;
-        // Cannot fail: writing into a String.
+        // Writing into a `String` cannot fail.
         let _ = write!(hex, "{byte:02x}");
     }
     hex
