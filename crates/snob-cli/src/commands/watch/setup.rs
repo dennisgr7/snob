@@ -170,13 +170,13 @@ fn entries_to_write(
             in_use.is_some() && entry.viewer.is_some_and(|viewer| Some(viewer) != in_use)
         })
         .cloned();
-    let answered = answered
-        .into_iter()
-        .map(|(target, consent)| config::AccountConfig {
+    let answered = answered.into_iter().map(|(target, consent)| {
+        config::AccountConfig::lists_of(
             target,
-            viewer: in_use,
-            consent: consent.map(|agreed_at| config::ConsentConfig { agreed_at }),
-        });
+            in_use,
+            consent.map(|agreed_at| config::ConsentConfig { agreed_at }),
+        )
+    });
     others.chain(answered).collect()
 }
 

@@ -5,9 +5,9 @@
 //! names.
 
 use snob_core::Pk;
-use snob_store::config::WatchConfig;
+use snob_store::config::{AccountConfig, VideoQuality, WatchConfig};
 
-use crate::engine::watch::Watched;
+use crate::engine::watch::{PostsWatch, Watched};
 
 /// Which account a scheduled run watches, as whom, and whether it may.
 ///
@@ -32,7 +32,7 @@ pub(super) fn watched_from(
         .flat_map(|c| c.accounts.iter())
         .map(|account| {
             let watched = if account.is_own() {
-                Watched::own()
+                Watched::own().watching(account.lists, posts_of(account))
             } else {
                 with_recorded_consent(&account.target, configured)
             };
@@ -63,18 +63,23 @@ pub(super) fn watched_from(
 /// hand-edited `target = "@friend"` would reach `engine::check` as
 /// `username=@friend` and report a working configuration as broken. README.md
 /// promises without qualification that a username may be written either way.
+///
+/// **What is watched comes from the same entry**, a name typed included: the
+/// file is where somebody said to watch an account's posts and where to save
+/// them, and an argument says neither. A name with no entry watches its
+/// lists, as it always did.
 fn with_recorded_consent(name: &str, configured: Option<&WatchConfig>) -> Watched {
     let name = crate::engine::target::clean(name);
-    let recorded = configured
+    let entry = configured
         .into_iter()
         .flat_map(|c| c.accounts.iter())
         .find(|account| {
             !account.is_own()
                 && crate::engine::target::clean(&account.target).eq_ignore_ascii_case(name)
-        })
-        .and_then(|account| account.consent);
+        });
+    let recorded = entry.and_then(|account| account.consent);
 
-    if recorded.is_some() {
+    let watched = if recorded.is_some() {
         // The table is what matters, not what is in it. `[account.consent]`
         // exists because somebody was asked; its `agreed_at` is the record of
         // when, kept in the file, and nothing downstream of here reads it or
@@ -82,7 +87,22 @@ fn with_recorded_consent(name: &str, configured: Option<&WatchConfig>) -> Watche
         Watched::consented(name.to_string(), crate::engine::watch::Consent)
     } else {
         Watched::asking(name.to_string())
+    };
+    match entry {
+        Some(account) => watched.watching(account.lists, posts_of(account)),
+        None => watched,
     }
+}
+
+/// What `[account.posts]` says, in the engine's terms.
+fn posts_of(account: &AccountConfig) -> Option<PostsWatch> {
+    account.posts.as_ref().map(|posts| PostsWatch {
+        save_to: posts.save_to.clone(),
+        quality: posts.quality.map(|quality| match quality {
+            VideoQuality::Best => crate::cli::Quality::Best,
+            VideoQuality::Compat => crate::cli::Quality::Compat,
+        }),
+    })
 }
 
 /// What the opening line names, so somebody starting the service can see that
@@ -342,5 +362,72 @@ consent = { agreed_at = 1700 }
             ],
             "the entry with no viewer joins the account in use rather than a group of its own"
         );
+    }
+
+    /// Reading somebody's posts asks for no consent, as `snob posts` does not:
+    /// an entry that leaves their lists alone may run on a timer without one.
+    /// One that also reads their lists still needs it.
+    #[test]
+    fn a_posts_only_entry_may_run_unattended_without_a_consent() {
+        let file = watch_toml(
+            r#"
+every = "6h"
+
+[[account]]
+target = "school"
+lists = false
+[account.posts]
+
+[[account]]
+target = "stranger"
+[account.posts]
+"#,
+        );
+        let watched = watched_from(None, Some(&file), None);
+        assert!(!watched[0].lists());
+        assert!(watched[0].posts().is_some());
+        assert!(watched[0].may_run_unattended());
+        assert!(watched[1].lists());
+        assert!(
+            !watched[1].may_run_unattended(),
+            "its lists are read too, and nobody agreed to that"
+        );
+    }
+
+    /// A name typed on the command line watches what its entry says, the
+    /// directory its posts are saved to included; with no entry, its lists.
+    #[test]
+    fn a_typed_name_watches_what_its_entry_says() {
+        let dir = if cfg!(windows) {
+            r"D:\school"
+        } else {
+            "/srv/school"
+        };
+        let file = watch_toml(&format!(
+            "every = \"6h\"\n\n[[account]]\ntarget = \"school\"\nlists = false\n\
+             [account.posts]\nsave_to = '{dir}'\nquality = \"compat\"\n\n\
+             [[account]]\ntarget = \"self\"\n[account.posts]\n"
+        ));
+
+        let typed = watched_from(Some("@school".to_string()), Some(&file), None);
+        assert!(!typed[0].lists());
+        assert_eq!(
+            typed[0].posts(),
+            Some(&PostsWatch {
+                save_to: Some(std::path::PathBuf::from(dir)),
+                quality: Some(crate::cli::Quality::Compat),
+            })
+        );
+
+        let own = watched_from(None, Some(&file), None);
+        assert_eq!(own[1].name(), None);
+        assert!(
+            own[1].lists() && own[1].posts().is_some(),
+            "self can watch both"
+        );
+
+        let unlisted = watched_from(Some("other".to_string()), Some(&file), None);
+        assert!(unlisted[0].lists());
+        assert_eq!(unlisted[0].posts(), None);
     }
 }

@@ -151,6 +151,20 @@ pub struct Watched {
     /// `None` is the viewer's own account: nothing to agree to.
     target: Option<String>,
     consent: Option<Consent>,
+    /// Whether its followers and following are watched.
+    lists: bool,
+    /// Whether its new posts are, and what is done with them.
+    posts: Option<PostsWatch>,
+}
+
+/// What is done with an account's new posts: `[account.posts]` in
+/// `watch.toml`, the only place it comes from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PostsWatch {
+    /// Where their photos and videos are saved; `None`, nowhere.
+    pub save_to: Option<std::path::PathBuf>,
+    /// What a saved video is; `None`, the best ffmpeg can join when found.
+    pub quality: Option<crate::cli::Quality>,
 }
 
 /// A recorded answer to "may this walk somebody else's lists?".
@@ -178,6 +192,8 @@ impl Watched {
             viewer: None,
             target: None,
             consent: None,
+            lists: true,
+            posts: None,
         }
     }
 
@@ -188,6 +204,8 @@ impl Watched {
             viewer: None,
             target: Some(username),
             consent: None,
+            lists: true,
+            posts: None,
         }
     }
 
@@ -197,6 +215,8 @@ impl Watched {
             viewer: None,
             target: Some(username),
             consent: Some(consent),
+            lists: true,
+            posts: None,
         }
     }
 
@@ -204,6 +224,27 @@ impl Watched {
     #[must_use]
     pub fn read_as(self, viewer: Option<Pk>) -> Self {
         Self { viewer, ..self }
+    }
+
+    /// The same entry, watching its lists or not, and its posts or not: what
+    /// its entry in `watch.toml` says.
+    #[must_use]
+    pub fn watching(self, lists: bool, posts: Option<PostsWatch>) -> Self {
+        Self {
+            lists,
+            posts,
+            ..self
+        }
+    }
+
+    /// Whether its followers and following are watched.
+    pub fn lists(&self) -> bool {
+        self.lists
+    }
+
+    /// What is done with its new posts, when they are watched.
+    pub fn posts(&self) -> Option<&PostsWatch> {
+        self.posts.as_ref()
     }
 
     /// The signed-in account this is read as; `None` is the account in use.
@@ -221,9 +262,12 @@ impl Watched {
     ///
     /// Your own account always may. Somebody else's may only when the answer
     /// was already given, because the alternative is a scheduled service
-    /// enumerating a stranger's lists on nobody's say-so.
+    /// enumerating a stranger's lists on nobody's say-so. **Or when its lists
+    /// are not read at all**: the consent covers walking somebody's followers
+    /// or following, and reading their posts asks for none, as `snob posts`
+    /// does not (AGENTS.md, "Consent").
     pub fn may_run_unattended(&self) -> bool {
-        self.target.is_none() || self.consent.is_some()
+        self.target.is_none() || self.consent.is_some() || !self.lists
     }
 
     /// The arguments a tick runs a list command with.

@@ -124,6 +124,30 @@ pub struct AccountConfig {
     /// without having been asked anything.
     #[serde(default)]
     pub consent: Option<ConsentConfig>,
+    /// Whether its followers and following are watched. On unless the file
+    /// says `lists = false`, so a file written before posts could be watched
+    /// reads as it always did.
+    #[serde(default = "yes")]
+    pub lists: bool,
+    /// Its new posts are reported. **The table being there is the switch**,
+    /// as with `[account.consent]`: an empty `[account.posts]` reports and
+    /// saves nothing.
+    #[serde(default)]
+    pub posts: Option<PostsConfig>,
+}
+
+impl AccountConfig {
+    /// An entry that watches the account's lists, and nothing else: what every
+    /// entry was before posts could be watched.
+    pub fn lists_of(target: String, viewer: Option<Pk>, consent: Option<ConsentConfig>) -> Self {
+        Self {
+            target,
+            viewer,
+            consent,
+            lists: true,
+            posts: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -131,6 +155,44 @@ pub struct AccountConfig {
 pub struct ConsentConfig {
     /// When it was given.
     pub agreed_at: Epoch,
+}
+
+/// What is done with an account's new posts, under `[account.posts]`.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PostsConfig {
+    /// The directory their photos and videos are saved in. Absent, nothing is
+    /// saved. Absolute, since the working directory of a service is not the
+    /// person's; only the person writes it, here or through `watch setup`.
+    #[serde(default)]
+    pub save_to: Option<PathBuf>,
+    /// What a video is saved as. Absent, the best ffmpeg can join when it is
+    /// found, else the file the app plays.
+    #[serde(default)]
+    pub quality: Option<VideoQuality>,
+}
+
+/// What a saved video is: its best tracks joined by ffmpeg, or the 720p file
+/// with sound the app plays.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoQuality {
+    Best,
+    Compat,
+}
+
+impl VideoQuality {
+    /// The word the file spells it with.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Best => "best",
+            Self::Compat => "compat",
+        }
+    }
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl AccountConfig {
@@ -272,6 +334,37 @@ pub fn parse(text: &str, path: &Path) -> Result<WatchConfig, ConfigError> {
         });
     }
 
+    for account in &config.accounts {
+        // An entry that watches nothing is a mistake somebody made, not a
+        // setting: refused where it is written rather than run for nothing.
+        if !account.lists && account.posts.is_none() {
+            return Err(ConfigError::Invalid {
+                path: path.to_path_buf(),
+                message: format!(
+                    "the entry for {} watches nothing: it says \"lists = false\" and has no \
+                     [account.posts] table. Remove the entry, or say what to watch.",
+                    quote(&account.target)
+                ),
+            });
+        }
+        // A relative directory is relative to wherever the run was started
+        // from, which for a service or a timer is not anywhere the person
+        // chose.
+        if let Some(dir) = account.posts.as_ref().and_then(|p| p.save_to.as_ref())
+            && !dir.is_absolute()
+        {
+            return Err(ConfigError::Invalid {
+                path: path.to_path_buf(),
+                message: format!(
+                    "save_to for {} is {}, which is not a whole path: a run on a timer \
+                     starts in a directory of its own. Write it from the root of a drive.",
+                    quote(&account.target),
+                    quote(&dir.to_string_lossy())
+                ),
+            });
+        }
+    }
+
     Ok(config)
 }
 
@@ -402,6 +495,13 @@ pub fn template(
             }
             out.push('\n');
         }
+        // Written only when it is not the default, so a file written before
+        // there was a choice reads the same after a rewrite. Before either
+        // table, since a key after one would belong to it.
+        if !account.lists {
+            out.push_str("# Its followers and following are not watched.\n");
+            out.push_str("lists = false\n");
+        }
         if let Some(consent) = account.consent {
             out.push_str(
                 "# You were asked whether this may read that account's lists, and you\n\
@@ -409,6 +509,21 @@ pub fn template(
             );
             out.push_str("[account.consent]\n");
             out.push_str(&format!("agreed_at = {}\n", consent.agreed_at));
+        }
+        if let Some(posts) = &account.posts {
+            out.push_str(
+                "# Its new posts are reported. \"save_to\" keeps their photos and videos\n\
+                 # in that directory (by hand, a Windows path goes in single quotes,\n\
+                 # 'D:\\media', where a backslash is only a backslash); \"quality\" is\n\
+                 # \"best\" (needs ffmpeg) or \"compat\".\n",
+            );
+            out.push_str("[account.posts]\n");
+            if let Some(dir) = &posts.save_to {
+                out.push_str(&format!("save_to = {}\n", quote(&dir.to_string_lossy())));
+            }
+            if let Some(quality) = posts.quality {
+                out.push_str(&format!("quality = \"{}\"\n", quality.as_str()));
+            }
         }
     }
     out
@@ -437,11 +552,8 @@ impl WatchConfig {
     /// which meant that account's own lists, says so.
     pub fn upgrade(&mut self, viewer: Pk) {
         if self.accounts.is_empty() {
-            self.accounts.push(AccountConfig {
-                target: "self".to_string(),
-                viewer: None,
-                consent: None,
-            });
+            self.accounts
+                .push(AccountConfig::lists_of("self".to_string(), None, None));
         }
         for account in &mut self.accounts {
             account.viewer.get_or_insert(viewer);
@@ -697,6 +809,10 @@ agreed_at = 1786925176
     /// covered by the same round trip and each has to have its own.
     #[test]
     fn what_the_template_writes_is_what_the_parser_reads() {
+        // A whole path on the system the test runs on, which is the only kind
+        // the parser takes.
+        let whole =
+            |windows: &str, unix: &str| PathBuf::from(if cfg!(windows) { windows } else { unix });
         let name_of = |pk: Pk| Some(format!("user{pk}"));
         let calendar = WatchConfig {
             schema: SCHEMA,
@@ -717,17 +833,41 @@ agreed_at = 1786925176
                 format: WebhookFormat::Discord,
             }),
             accounts: vec![
-                AccountConfig {
-                    target: "self".to_string(),
-                    viewer: Some(Pk::new(1)),
-                    consent: None,
-                },
-                AccountConfig {
-                    target: "someone".to_string(),
-                    viewer: Some(Pk::new(2)),
-                    consent: Some(ConsentConfig {
+                AccountConfig::lists_of("self".to_string(), Some(Pk::new(1)), None),
+                AccountConfig::lists_of(
+                    "someone".to_string(),
+                    Some(Pk::new(2)),
+                    Some(ConsentConfig {
                         agreed_at: Epoch::new(1_700_000_000),
                     }),
+                ),
+                // Posts alone, saved to a directory whose backslashes, on
+                // Windows, have to survive the round trip.
+                AccountConfig {
+                    posts: Some(PostsConfig {
+                        save_to: Some(whole(r"D:\media\school", "/srv/media/school")),
+                        quality: Some(VideoQuality::Compat),
+                    }),
+                    lists: false,
+                    ..AccountConfig::lists_of("school".to_string(), Some(Pk::new(1)), None)
+                },
+                // Everything at once, and the posts table left empty.
+                AccountConfig {
+                    posts: Some(PostsConfig::default()),
+                    ..AccountConfig::lists_of(
+                        "friend".to_string(),
+                        Some(Pk::new(2)),
+                        Some(ConsentConfig {
+                            agreed_at: Epoch::new(1_700_000_001),
+                        }),
+                    )
+                },
+                AccountConfig {
+                    posts: Some(PostsConfig {
+                        save_to: Some(whole(r"C:\Users\o'brien\media", "/srv/media/o'brien")),
+                        quality: Some(VideoQuality::Best),
+                    }),
+                    ..AccountConfig::lists_of("self".to_string(), Some(Pk::new(2)), None)
                 },
             ],
         };
@@ -793,13 +933,13 @@ agreed_at = 1786925176
     fn the_viewer_is_written_with_its_name_before_the_consent() {
         let config = WatchConfig {
             every: Some(Duration::from_secs(21_600)),
-            accounts: vec![AccountConfig {
-                target: "friend".to_string(),
-                viewer: Some(Pk::new(42)),
-                consent: Some(ConsentConfig {
+            accounts: vec![AccountConfig::lists_of(
+                "friend".to_string(),
+                Some(Pk::new(42)),
+                Some(ConsentConfig {
                     agreed_at: Epoch::new(1_700_000_000),
                 }),
-            }],
+            )],
             ..Default::default()
         };
         let text = template(&config, false, |pk| {
@@ -835,13 +975,70 @@ agreed_at = 1786925176
         empty.upgrade(me);
         assert_eq!(
             empty.accounts,
-            vec![AccountConfig {
-                target: "self".to_string(),
-                viewer: Some(me),
-                consent: None,
-            }]
+            vec![AccountConfig::lists_of("self".to_string(), Some(me), None)]
         );
         assert_eq!(at(&template(&empty, false, |_| None)).unwrap(), empty);
+    }
+
+    #[test]
+    fn an_entry_that_watches_nothing_is_refused() {
+        let error =
+            at("schema = 2\n[[account]]\ntarget = \"school\"\nlists = false\n").unwrap_err();
+        assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
+        assert!(error.to_string().contains("watches nothing"), "{error}");
+
+        let posts_only =
+            at("schema = 2\n[[account]]\ntarget = \"school\"\nlists = false\n[account.posts]\n")
+                .unwrap();
+        assert!(!posts_only.accounts[0].lists);
+        assert_eq!(posts_only.accounts[0].posts, Some(PostsConfig::default()));
+    }
+
+    #[test]
+    fn a_relative_save_to_is_refused() {
+        let error = at(
+            "schema = 2\n[[account]]\ntarget = \"school\"\n[account.posts]\nsave_to = \"media\"\n",
+        )
+        .unwrap_err();
+        assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
+        assert!(error.to_string().contains("save_to"), "{error}");
+
+        // A whole path on this system is taken.
+        let whole = if cfg!(windows) {
+            r"'D:\media'"
+        } else {
+            "'/srv/media'"
+        };
+        assert!(
+            at(&format!(
+                "schema = 2\n[[account]]\ntarget = \"school\"\n[account.posts]\nsave_to = {whole}\n"
+            ))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_file_written_before_posts_existed_reads_as_lists_only() {
+        let config = at("schema = 2\nevery = \"6h\"\n[[account]]\ntarget = \"self\"\n").unwrap();
+        assert!(config.accounts[0].lists);
+        assert_eq!(config.accounts[0].posts, None);
+        // And it is written back as it was: nothing about posts appears.
+        let text = template(&config, false, |_| None);
+        assert!(!text.contains("lists"), "{text}");
+        assert!(!text.contains("posts"), "{text}");
+    }
+
+    #[test]
+    fn an_unknown_key_under_posts_is_refused() {
+        let error =
+            at("schema = 2\n[[account]]\ntarget = \"school\"\n[account.posts]\nsave = \"/x\"\n")
+                .unwrap_err();
+        assert!(error.to_string().contains("save"), "{error}");
+        assert!(
+            at("schema = 2\n[[account]]\ntarget = \"school\"\n[account.posts]\nquality = \"4k\"\n")
+                .is_err(),
+            "a quality is one of two words"
+        );
     }
 
     /// A file with only a schedule is complete. Everything else is optional,

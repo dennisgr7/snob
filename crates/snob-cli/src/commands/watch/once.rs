@@ -209,18 +209,14 @@ mod tests {
             schema: 1,
             every: Some(std::time::Duration::from_secs(6 * 3600)),
             accounts: vec![
-                snob_store::config::AccountConfig {
-                    target: "self".to_string(),
-                    viewer: None,
-                    consent: None,
-                },
-                snob_store::config::AccountConfig {
-                    target: "friend".to_string(),
-                    viewer: None,
-                    consent: Some(snob_store::config::ConsentConfig {
+                snob_store::config::AccountConfig::lists_of("self".to_string(), None, None),
+                snob_store::config::AccountConfig::lists_of(
+                    "friend".to_string(),
+                    None,
+                    Some(snob_store::config::ConsentConfig {
                         agreed_at: snob_core::Epoch::new(1_700_000_000),
                     }),
-                },
+                ),
             ],
             ..Default::default()
         };
