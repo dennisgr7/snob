@@ -523,7 +523,10 @@ pub enum Command {
                       compares the two newest whole captures of each list. A walk that \
                       stopped short is never one of the two: the accounts it missed would \
                       read as departures. \"snob snapshots\" lists the captures and their \
-                      ids.\n\n\
+                      ids. A whole capture is kept thirty days, and longer only while it is \
+                      the newest of its list or the one the monitor last reported against, \
+                      so a list walked by hand once a month has no earlier capture to compare \
+                      with.\n\n\
                       Examples:\n  snob changes\n  snob changes --list followers --since 7d\n  \
                       snob changes --since 2026-11-01\n  snob changes --from 12 --to 31 \
                       --format csv -o changes.csv"
@@ -537,7 +540,9 @@ pub enum Command {
                       list, when the walk ended (or began, for one still open), where it came \
                       from (a walk, or Instagram's own export through \"snob import dyi\"), \
                       how many accounts it holds and how many Instagram said the list had, \
-                      and why it stopped."
+                      and why it stopped. A whole capture is kept thirty days, once a day \
+                      swept by any command; the newest of each list, and the one the monitor \
+                      last reported against, are kept whatever their age."
     )]
     Snapshots(SnapshotsArgs),
 
