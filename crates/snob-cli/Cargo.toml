@@ -122,6 +122,12 @@ tempfile.workspace = true
 # including the one where narrowing is refused.
 webpki-root-certs.workspace = true
 
+# What `tests/sandbox.rs` signals a child with and sums a fake release with,
+# on Unix only. Both are already in the tree through the engine.
+[target.'cfg(unix)'.dev-dependencies]
+libc.workspace = true
+sha2.workspace = true
+
 # Enough for `apt install ./snob-*.deb` to work and `apt remove snob` to undo
 # it. A signed apt repository would be the other half, and it needs a GPG key
 # that only the maintainer can hold, so the loose package is what can be built
