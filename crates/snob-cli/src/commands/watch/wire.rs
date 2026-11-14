@@ -457,8 +457,8 @@ pub(super) fn failed_tick_json(
 /// wrapping them, so two pretty-printed objects back to back would be in no
 /// documented format at all, neither one document nor NDJSON. `--json` is a
 /// stream of lines, which is what `snob watch once --json >> events.ndjson` has
-/// to mean. What the two modes differ on is whether a tick with no news is
-/// printed at all, and that is [`Printing::watching`], where it belongs.
+/// to mean. With `--json` a tick with no news is printed in both modes too;
+/// what the modes differ on is the prose, which is `run::Printing`'s.
 ///
 /// The fallback is `Value::to_string` rather than a `?` because one call site
 /// is reached from the arm already handling a failure: a serializer error on a

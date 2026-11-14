@@ -300,11 +300,13 @@ fn skip(
 
 /// How much a run says out loud about a tick.
 ///
-/// The two modes differ here and nowhere else. A scheduled service writes one
-/// line per run down a pipe and stays quiet when there is no news, which is
-/// what makes `snob watch >> events.ndjson` and "silence means nothing changed"
-/// both true. `once` is looked at while it runs, so it says so either way and
-/// lays its JSON out to be read rather than appended to.
+/// The two modes differ here and nowhere else, and **only in prose**: with
+/// `--json` both write one compact line per account and run, news or not
+/// (`tick_one`), so `snob watch --json >> events.ndjson` and `snob watch once
+/// --json >> events.ndjson` make the same file. Without it a scheduled service
+/// stays quiet when there is no news, which is what makes "silence means
+/// nothing changed" true, while `once` is looked at while it runs and says so
+/// either way.
 #[derive(Clone, Copy)]
 pub(super) struct Printing {
     json: bool,
