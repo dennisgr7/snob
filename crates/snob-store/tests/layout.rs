@@ -63,6 +63,8 @@ impl Machine {
         if made {
             let _ = std::fs::remove_file(self.me().signed_in());
         }
+        // And the lock the save took, which holds nothing.
+        let _ = std::fs::remove_file(self.me().dir().join(".session.json.tmp.lock"));
         let _ = std::fs::remove_dir(self.me().dir());
     }
 

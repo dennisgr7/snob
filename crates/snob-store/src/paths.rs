@@ -848,6 +848,27 @@ pub fn replace_private(
     std::fs::rename(temporary, path).map_err(|e| (path.to_path_buf(), e))
 }
 
+/// [`replace_private`] for a file two processes may save at once (a session,
+/// `watch.toml`): one writer at a time, under a lock on `<temporary>.lock`.
+///
+/// Unlocked, a second writer removes the first's temporary and makes its own,
+/// the first moves that one into place half written, and the second fails on
+/// a temporary that is gone. **A lock, not a temporary of each writer's
+/// own**: with its one name, what a killed writer leaves (for a session, the
+/// cookie) is removed by the next save and by a sign-out, where names of
+/// their own would pile up with nobody able to say which are dead.
+pub fn replace_private_alone(
+    path: &Path,
+    temporary: &Path,
+    contents: &[u8],
+) -> Result<(), (PathBuf, std::io::Error)> {
+    let mut lock = temporary.as_os_str().to_owned();
+    lock.push(".lock");
+    let lock = PathBuf::from(lock);
+    let _held = lock_file(&lock).map_err(|e| (lock.clone(), e))?;
+    replace_private(path, temporary, contents)
+}
+
 /// Opens `path`, creating it empty when it is not there, and takes an
 /// exclusive lock on it that lasts until the returned file is dropped.
 ///
@@ -2011,6 +2032,44 @@ mod tests {
             vec![windows_acl::current_user_sid()],
             "somebody other than this account is named in the directory's DACL"
         );
+    }
+
+    /// Two processes saving one file at once (a session the browser rotated,
+    /// written back by a command and by the monitor) each go through the one
+    /// temporary. Unlocked, one removed the other's and the other moved a
+    /// half-written file into place; a reader must only ever find a whole
+    /// one, and no writer may fail.
+    #[test]
+    fn two_writers_of_one_file_never_leave_half_of_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.json");
+        let temporary = tmp.path().join(".session.json.tmp");
+        let whole = |byte: u8| vec![byte; 64 * 1024];
+
+        std::thread::scope(|scope| {
+            let writers: Vec<_> = [b'a', b'b']
+                .into_iter()
+                .map(|byte| {
+                    let (path, temporary) = (&path, &temporary);
+                    scope.spawn(move || {
+                        for _ in 0..40 {
+                            replace_private_alone(path, temporary, &whole(byte))
+                                .unwrap_or_else(|(at, e)| panic!("{}: {e}", at.display()));
+                        }
+                    })
+                })
+                .collect();
+            while writers.iter().any(|writer| !writer.is_finished()) {
+                if let Ok(read) = std::fs::read(&path) {
+                    assert!(
+                        read == whole(b'a') || read == whole(b'b'),
+                        "half a file was in place: {} bytes",
+                        read.len()
+                    );
+                }
+            }
+        });
+        assert!(!temporary.exists(), "a temporary was left behind");
     }
 
     /// The DACL is written once a process for each directory and only read

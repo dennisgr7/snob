@@ -254,8 +254,10 @@ impl SecretStore {
 
     fn probe_file(&self) -> Result<(), SecretsError> {
         self.paths.ensure_dirs()?;
+        // Unlocked: nothing is kept at this name, and a lock's file would be.
         let probe = self.paths.data_dir().join(".write-probe");
-        write_private(&probe, b"probe")?;
+        crate::paths::replace_private(&probe, &temporary_beside(&probe), b"probe")
+            .map_err(write_failed)?;
         let _ = std::fs::remove_file(&probe);
         Ok(())
     }
@@ -638,8 +640,14 @@ fn remove(service: &str, entries: &[String], files: &[PathBuf]) -> Result<(), Se
         }
     }
 
+    // With each file, the temporary a save killed halfway left beside it:
+    // outside Windows it holds the cookie as the file does.
     let mut file_refused = None;
-    for file in files {
+    for file in files
+        .iter()
+        .flat_map(|file| [file.clone(), temporary_beside(file)])
+    {
+        let file = &file;
         if let Err(source) = std::fs::remove_file(file)
             && source.kind() != std::io::ErrorKind::NotFound
             && file_refused.is_none()
@@ -721,20 +729,28 @@ fn shape_of(e: &serde_json::Error) -> String {
     format!("{what} (line {}, column {})", e.line(), e.column())
 }
 
-/// Writes with restricted permissions and atomically, through a temporary
-/// named after the file in the same directory.
+/// Writes a session's file with restricted permissions and atomically, one
+/// writer at a time (`paths::replace_private_alone`): a command and the
+/// monitor may write back what the browser rotated at the same moment.
 fn write_private(path: &std::path::Path, contents: &[u8]) -> Result<(), SecretsError> {
+    crate::paths::replace_private_alone(path, &temporary_beside(path), contents)
+        .map_err(write_failed)
+}
+
+/// The temporary a file here is written through: one name, in its directory.
+fn temporary_beside(path: &std::path::Path) -> PathBuf {
     let dir = path.parent().unwrap_or(std::path::Path::new("."));
-    let temporary = dir.join(format!(
+    dir.join(format!(
         ".{}.tmp",
         path.file_name().unwrap_or_default().to_string_lossy()
-    ));
-    crate::paths::replace_private(path, &temporary, contents).map_err(|(path, source)| {
-        SecretsError::Write {
-            path: path.display().to_string(),
-            source,
-        }
-    })
+    ))
+}
+
+fn write_failed((path, source): (PathBuf, std::io::Error)) -> SecretsError {
+    SecretsError::Write {
+        path: path.display().to_string(),
+        source,
+    }
 }
 
 #[cfg(windows)]
@@ -1366,6 +1382,21 @@ mod tests {
             !previous.exists(),
             "the copy after the refusal was skipped, which is the failure the loop exists to avoid"
         );
+    }
+
+    /// A save killed between writing its temporary and moving it into place
+    /// leaves the cookie in that temporary. Signing out takes it too.
+    #[test]
+    fn signing_out_removes_what_a_killed_save_left_beside_the_file() {
+        let (_tmp, store, _keyring) = file_store();
+        let session = Session::from_sessionid(SID, UA, SessionOrigin::Paste).unwrap();
+        mine(&store).save(&session).unwrap();
+        let left = temporary_beside(&store.paths.account(ME).session_file());
+        std::fs::write(&left, b"what a killed save left").unwrap();
+
+        mine(&store).delete().unwrap();
+        assert!(!left.exists(), "the temporary outlived the sign-out");
+        assert!(!store.paths.account(ME).session_file().exists());
     }
 
     #[test]
