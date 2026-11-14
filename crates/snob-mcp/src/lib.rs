@@ -1122,9 +1122,13 @@ impl Server {
             Err(ServiceError::McpError(e)) if e.code == ErrorCode::METHOD_NOT_FOUND => {
                 return Ok(None);
             }
+            // The error is the client's own words, of any length.
             Err(e) => Consent::refused(
                 "not_confirmed",
-                format!("the confirmation could not be asked: {e}"),
+                format!(
+                    "the confirmation could not be asked: {}",
+                    tools::start_of(e, 200)
+                ),
             ),
         }))
     }

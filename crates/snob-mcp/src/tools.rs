@@ -2273,6 +2273,12 @@ const MOST_ECHOED: usize = 40;
 /// it**: the refusal goes into a model's context, and an argument is as long
 /// as its sender made it.
 pub(crate) fn echoed(given: impl std::fmt::Display) -> String {
+    start_of(given, MOST_ECHOED)
+}
+
+/// The first `most` characters of `given`, through `printable`, with three
+/// dots when that is not all of it.
+pub(crate) fn start_of(given: impl std::fmt::Display, most: usize) -> String {
     use std::fmt::Write as _;
 
     /// Keeps what is written while there is room, and fails past it, which
@@ -2296,7 +2302,7 @@ pub(crate) fn echoed(given: impl std::fmt::Display) -> String {
 
     let mut start = Start {
         kept: String::new(),
-        room: MOST_ECHOED,
+        room: most,
     };
     let cut = write!(start, "{given}").is_err();
     let mut said = snob_core::model::printable(&start.kept);
