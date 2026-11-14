@@ -10,6 +10,14 @@ requests from a Chrome, Edge, Brave or Chromium already on your machine, at a
 human pace. It only ever changes two things, `follow` and `unfollow`, one
 account at a time and after asking; it never marks a story as seen.
 
+- [Install](#install)
+- [Getting started](#getting-started)
+- [Commands](#commands)
+- [Scripts and automation](#scripts-and-automation)
+- [Watching accounts and webhooks](#watching-accounts-and-webhooks)
+- [AI agents: `snob mcp`](#ai-agents-snob-mcp)
+- [Staying a light client](#staying-a-light-client)
+
 ## Install
 
 **Windows** ([Scoop](https://scoop.sh)):
@@ -53,15 +61,23 @@ Builds exist for Windows 11 and Linux on x86_64 and ARM64, and macOS on Apple
 Silicon. Everything that talks to Instagram needs a Chromium-based browser
 installed; no window is ever shown.
 
-**Updating.** `snob update` updates snob the way it was installed: through
-Homebrew, Scoop, WinGet or Cargo, by replacing itself where the install script
-put it, or, for the `.deb`, with the `apt` command it runs or prints. On its
-own, snob also asks GitHub once a day whether a release is out, downloads it
-(checked against the release's `SHA256SUMS`), and applies it the next time it
-starts with no other snob running, or after a restart. `snob update --auto
-off|notify|download|apply` says how much of that it does, `snob update
---status` what it has done, and `SNOB_NO_UPDATE_CHECK=1` turns it off. None of
-it talks to Instagram.
+### Updating
+
+`snob update` updates snob the way it was installed: through Homebrew, Scoop,
+WinGet or Cargo, by replacing itself where the install script put it, or, for
+the `.deb`, with the `apt` command it runs or prints.
+
+On its own, snob also asks GitHub once a day whether a release is out,
+downloads it (checked against the release's `SHA256SUMS`), and applies it the
+next time it starts with no other snob running, or after a restart.
+
+| Command | Does |
+|---|---|
+| `snob update --auto off\|notify\|download\|apply` | how much of that it does |
+| `snob update --status` | what it has done |
+| `SNOB_NO_UPDATE_CHECK=1` | turns it off |
+
+None of it talks to Instagram.
 
 ## Getting started
 
@@ -75,9 +91,10 @@ command that opens a tunnel from your computer and a link to open there: you log
 in on that page, in snob's browser seen from afar, and the session stays on the
 machine snob runs on.
 
-snob never sees your password when you log in in a window or paste a session,
-and it never reads your own browser's cookies. With `--remote` what you type on
-that page is passed through snob to its browser, and kept nowhere.
+> [!NOTE]
+> snob never sees your password when you log in in a window or paste a session,
+> and it never reads your own browser's cookies. With `--remote` what you type
+> on that page is passed through snob to its browser, and kept nowhere.
 
 ## Commands
 
@@ -112,144 +129,81 @@ snob jobs                        # walks left running, and "snob jobs cancel <id
 On a terminal most commands open a full-screen view you move through with the
 arrow keys. `snob --help` and `snob <command> --help` list everything.
 
-## Scripts, automation and AI agents
+## Scripts and automation
 
 Every command can print instead of opening a view, in a stable form a program
-can read:
+can read.
+
+### Output
 
 - `--format json|ndjson|csv|xlsx|md|table` and `-o <file>` for anything that
   prints a list or a document; `--json` for status commands such as `whoami`
   and `status`, and for `follow` and `unfollow`, whose object says what
   happened in one word (`followed`, `requested`, `already_following`, ...).
+- `--no-interactive` always prints. Down a pipe this is the default, and the
+  default format is JSON.
+- `-o -` is standard output: a list as with no `-o`, and a single downloaded
+  file, as in `snob reel <link> -d 1 -o - | ffmpeg -i - ...`, which is the
+  app's 720-wide MP4.
+- `-y` answers the one confirmation a command may ask, in advance.
+
+### Budget and waiting
+
 - `snob status --budget` says what can still be sent today, for no request, and
   exits 5 while the account is cooling down. `--dry-run` on a list command says
   what its walks would cost against that, and sends nothing.
 - `snob status --answers` says how long Instagram's answers took in the last
   24 hours. When the latest of them are slow, snob waits longer between pages
   (at least twice their median, at most a minute); it never goes faster.
-- `-o -` is standard output: a list as with no `-o`, and a single downloaded
-  file, as in `snob reel <link> -d 1 -o - | ffmpeg -i - ...`, which is the
-  app's 720-wide MP4.
-- A post's or a reel's video is saved at its best, usually 1080 wide, when
-  [ffmpeg](https://ffmpeg.org/) is installed (`winget install Gyan.FFmpeg`,
-  `scoop install ffmpeg`, `brew install ffmpeg`, or your package manager):
-  snob joins its picture and its sound into one MP4 without re-encoding. The
-  picture is VP9, which QuickTime does not play; `--quality compat` saves the
-  app's 720-wide MP4, as snob does when ffmpeg is not there. `--ffmpeg <path>`
-  or `SNOB_FFMPEG` names another ffmpeg.
-- `--no-interactive` always prints. Down a pipe this is the default, and the
-  default format is JSON.
-- `-y` answers the one confirmation a command may ask, in advance.
 - `--max-wait <duration>` stops a command, with exit 130, rather than let it
   wait longer than that for the request budget; a list stopped this way
   continues where it left off next time.
-- Exit codes are stable: 0 worked, 1 failed, 2 bad command line, 3 log in
-  again, 4 the account needs verifying, 5 rate limited or cooling down, 130
-  stopped. When the output was going to be JSON, a failure is also one JSON
-  object on the last line of standard error.
+
+### Exit codes
+
+Exit codes are stable. When the output was going to be JSON, a failure is also
+one JSON object on the last line of standard error.
+
+| Code | Means |
+|---|---|
+| 0 | worked |
+| 1 | failed |
+| 2 | bad command line |
+| 3 | log in again |
+| 4 | the account needs verifying |
+| 5 | rate limited or cooling down |
+| 130 | stopped |
+
+### Videos at their best
+
+A post's or a reel's video is saved at its best, usually 1080 wide, when
+[ffmpeg](https://ffmpeg.org/) is installed (`winget install Gyan.FFmpeg`,
+`scoop install ffmpeg`, `brew install ffmpeg`, or your package manager): snob
+joins its picture and its sound into one MP4 without re-encoding. The picture
+is VP9, which QuickTime does not play; `--quality compat` saves the app's
+720-wide MP4, as snob does when ffmpeg is not there. `--ffmpeg <path>` or
+`SNOB_FFMPEG` names another ffmpeg.
+
+## Watching accounts and webhooks
+
 - `snob watch --webhook <url>` posts each report as JSON, with a `summary`
   sentence and ISO dates beside the epoch seconds; `format = "slack"` (or
   `discord`, `ntfy`, `text`) under `[webhook]` in `watch.toml`, or
   `--webhook-format`, sends the summary alone, in the shape that service
-  takes. `--json` writes the reports as lines instead. `snob watch deliver`
-  sends what a receiver that was down is still owed, at once, with no
-  request to Instagram.
-- An `[[account]]` in `watch.toml` can watch its new posts beside its
-  lists, or instead of them: `[account.posts]` reports each post published
-  since the last run, and `save_to = '<directory>'` under it keeps their
-  photos and videos there (`lists = false` leaves its followers alone, which
-  asks no consent). The first run on an account's posts reports none; each
-  run after costs its profile and a page of its grid, at most once an hour.
+  takes. `--json` writes the reports as lines instead.
+- `snob watch deliver` sends what a receiver that was down is still owed, at
+  once, with no request to Instagram.
+- An `[[account]]` in `watch.toml` can watch its new posts beside its lists, or
+  instead of them: `[account.posts]` reports each post published since the last
+  run, and `save_to = '<directory>'` under it keeps their photos and videos
+  there (`lists = false` leaves its followers alone, which asks no consent).
+  The first run on an account's posts reports none; each run after costs its
+  profile and a page of its grid, at most once an hour.
 - `snob watch unit` prints what to give the system's scheduler (a systemd
   timer, a crontab line, a launch agent or a Windows scheduled task, as
   PowerShell commands; installs nothing). Each runs `snob watch once
   --when-due` every 15 minutes, which runs only when the schedule in
   `watch.toml` says so and otherwise sends nothing.
-- `snob mcp` is an MCP server for AI agents, on standard input and output:
-  the status, the lists, profiles, posts (a grid or a profile's reels, tagged
-  posts and reposts), stories and highlights (without
-  their picture and video addresses; an agent that asks is handed a small
-  picture of each to look at, a video's cover for a video), the captures
-  earlier walks stored and what changed between two of them, with
-  `--allow-writes` follow and unfollow, and with
-  `--downloads-dir <dir>` saving a post's photos and videos into that
-  directory: the agent names the post, never a path, the files get the
-  names snob gives every download, and none already there is written over.
-  It acts as the active account, or the one `--account` names;
-  `--any-account` lets the agent see the accounts signed in here and say,
-  call by call, which one it acts as. It can sign one account out of snob
-  after a yes that names it, and never signs in: that stays yours.
-  A follow or an unfollow, signing out, walking another account's lists
-  and reading who liked a post run only after a yes
-  for that one call: asked in the client when it can show a form, or put to
-  you by the agent in the chat (`--confirm-in-chat none|lists|all` says what
-  that may cover; `all` by default). snob cannot tell whether that yes was
-  yours or the agent's, so keep the writes on "ask" in the client's tool
-  permissions. Each call runs one snob command, under the same budget and
-  cooldown as the terminal. Calls run a few at a time, and only one that
-  can reach Instagram: another comes back busy rather than waiting. A long
-  list comes back a page at a time (up to 200 accounts, without their
-  pictures' addresses), and the later pages are handed back from what was
-  already read, sending nothing; one given a limit still says how many
-  accounts the whole list has. A post can be read with more pages of its
-  comments and the replies under them, the first threads with more than
-  shown or comments named by their id, within one bounded answer that says
-  what it left out.
-  `snob status --agents` lists what agents were told yes to in the last 24
-  hours, and agents may make at most ten follows and unfollows a day on the
-  account (`--max-writes-per-day` to change it, up to 99); what you type in a
-  terminal is not counted.
-  A list the agent asks for that has to be walked runs as a job: answered in
-  the call when it ends within `wait_seconds` (20 by default, at most 50),
-  and otherwise handed back as a job the agent asks about with `snob_job`,
-  lists with `snob_jobs` and stops with `snob_job_cancel`. A job waits at
-  most an hour for the request budget unless the server was given
-  `--max-wait`. One runs at a time per account, listed by `snob jobs` and in
-  `snob status`, stopped like Ctrl+C by `snob jobs cancel <id>`, and stopped
-  by `snob logout` and `snob purge` before they remove anything. A client
-  that supports MCP Tasks gets the job as a task instead, which it polls
-  and can cancel on its own.
-  `snob mcp config claude-code` (or `claude-desktop`, `codex`, `cursor`,
-  `vscode`) prints what to add to that client's configuration.
-  `snob mcp key new` makes the key a client presents to reach the server
-  over the network and keeps it in the system keyring, printing it once to
-  your terminal; `show` names it by a fingerprint, `revoke` removes it, and
-  on a machine with no keyring `SNOB_MCP_KEY` in the server's environment
-  takes its place (`snob mcp key new --env` makes one for it, keeping it
-  nowhere). `snob mcp --listen 127.0.0.1:8750` serves the same over
-  HTTP on this machine's loopback, for a tunnel of your own (`ssh -L`,
-  cloudflared, a VPN) to reach from elsewhere: it refuses any address that
-  is not loopback and any request without the key (`Authorization: Bearer`),
-  and a yes given in the chat covers only reading lists unless
-  `--confirm-in-chat all`, though whoever holds the key can still confirm
-  the writes in a form it answers itself, since it is the client. A client
-  on the stateless revision of MCP has no session, so a chat yes it is
-  handed is bound to the call alone, and any client with the key may
-  redeem it once. TLS ends at the tunnel, whose
-  provider sees the key and every answer, other people's names and lists
-  included; put an access layer in front where the tunnel offers one. The
-  server does not prove itself to its clients: they send the key to
-  whatever answers on the port, so another user of the machine who listens
-  there while snob is not running is handed it. Serve it only on a machine
-  where nobody else can run code, and if the port could have been taken,
-  revoke the key and make a new one (for a key in `SNOB_MCP_KEY`, put a
-  new one there instead: revoking touches only the keyring). On Linux and
-  macOS, `snob mcp --listen socket` closes that gap: it serves on a socket
-  in snob's private data directory (`mcp.sock`, `0600`) that only you and
-  root can connect to and nobody else can take, and the tunnel reaches it
-  there (`ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:8750:<path>`
-  from the far end, which stops if that port is taken there, or cloudflared's
-  `unix:<path>` service); startup prints the path. `snob
-  mcp config codex --remote https://your-tunnel/mcp` (or any other client)
-  prints what a client needs to reach that server: no command and no key.
-  The client sends the key from `SNOB_MCP_TOKEN` in its own environment;
-  never set `SNOB_MCP_KEY` there, since it is the server's and replaces the
-  key of any snob started where it is set. Claude Desktop and claude.ai take
-  the address as a custom connector instead (Customize > Connectors), which
-  they reach from Anthropic's side, so it is the tunnel's https address,
-  with the key under the form's Request headers where your organization has
-  them. After upgrading snob, reconnect the server in the client: a server
-  whose binary changed under it refuses every call.
 
 ### What a webhook receives
 
@@ -264,6 +218,9 @@ is `snob/<version>`. With `format = "json"`, the default, the body is the
 report below plus a `summary`; the other formats send the summary alone.
 `snob watch --json >> events.ndjson` writes the same report as one line per
 account and run, without `run.id`.
+
+<details>
+<summary>A report, in full</summary>
 
 ```json
 {
@@ -347,6 +304,8 @@ account and run, without `run.id`.
 }
 ```
 
+</details>
+
 `counts.total` counts the lists' changes and the renames, not the new posts,
 which `counts.posts_new` counts beside it; `event` is `watch.changes` when
 either has news. A list or the posts that could not be read this run say why
@@ -355,6 +314,160 @@ from one that could not look. `due_at` is `null` for a run started by hand,
 and `late` says a run began more than half an hour past its moment, beyond
 the jitter it was allowed. New fields may be added; `schema` changes only
 when one is removed or changes meaning.
+
+## AI agents: `snob mcp`
+
+`snob mcp` is an MCP server for AI agents, on standard input and output. Each
+call runs one snob command, under the same budget and cooldown as the terminal.
+
+### Quick start
+
+```bash
+snob mcp config claude-code      # or claude-desktop, codex, cursor, vscode
+```
+
+It prints what to add to that client's configuration.
+
+### What an agent can do
+
+| Tool | What it does | Asks you first |
+|---|---|---|
+| `snob_status` | the status: budget, cooldown, stored lists | no |
+| `snob_list` | followers, following, unfollowers, fans, friends | for another account's lists |
+| `snob_job`, `snob_jobs`, `snob_job_cancel` | check on, list and stop a walk running as a job | no |
+| `snob_profile` | a profile | no |
+| `snob_posts` | the posts on a grid, or a profile's reels, tagged posts and reposts | no |
+| `snob_post` | one post or reel, with more pages of its comments and the replies under them | no |
+| `snob_post_likers` | who liked a post | yes |
+| `snob_stories`, `snob_highlights` | the stories an account has up, the highlights it keeps | no |
+| `snob_snapshots`, `snob_changes` | the captures earlier walks stored, and what changed between two of them | no |
+| `snob_follow`, `snob_unfollow` | follow and unfollow, with `--allow-writes` | yes |
+| `snob_post_download` | save a post's photos and videos, with `--downloads-dir` | no |
+| `snob_logout` | sign one account out of snob | yes, naming the account |
+| `snob_accounts` | the accounts signed in here, with `--any-account` | no |
+
+- Posts, stories and highlights come back without their picture and video
+  addresses; an agent that asks is handed a small picture of each to look at, a
+  video's cover for a video.
+- A post can be read with more pages of its comments and the replies under them,
+  the first threads with more than shown or comments named by their id, within
+  one bounded answer that says what it left out.
+
+> [!IMPORTANT]
+> An agent never signs in: that stays yours. It never purges, never runs the
+> monitor, and never writes a file anywhere but in `--downloads-dir`.
+
+### Writes and your yes
+
+A follow or an unfollow, signing out, walking another account's lists and
+reading who liked a post run only after a yes for that one call:
+
+- asked in the client, when it can show a form, or
+- put to you by the agent in the chat. `--confirm-in-chat none|lists|all` says
+  what that may cover; `all` by default.
+
+> [!WARNING]
+> snob cannot tell whether that yes was yours or the agent's, so keep the writes
+> on "ask" in the client's tool permissions.
+
+`--allow-writes` offers follow and unfollow. Agents may make at most ten
+follows and unfollows a day on the account (`--max-writes-per-day` to change
+it, up to 99); what you type in a terminal is not counted.
+
+### Long lists and jobs
+
+- Calls run a few at a time, and only one that can reach Instagram: another
+  comes back busy rather than waiting.
+- A long list comes back a page at a time (up to 200 accounts, without their
+  pictures' addresses), and the later pages are handed back from what was
+  already read, sending nothing; one given a limit still says how many accounts
+  the whole list has.
+- A list the agent asks for that has to be walked runs as a job: answered in the
+  call when it ends within `wait_seconds` (20 by default, at most 50), and
+  otherwise handed back as a job the agent asks about with `snob_job`, lists
+  with `snob_jobs` and stops with `snob_job_cancel`. A client that supports MCP
+  Tasks gets the job as a task instead, which it polls and can cancel on its
+  own.
+- A job waits at most an hour for the request budget unless the server was
+  given `--max-wait`. One runs at a time per account, listed by `snob jobs` and
+  in `snob status`, stopped like Ctrl+C by `snob jobs cancel <id>`, and stopped
+  by `snob logout` and `snob purge` before they remove anything.
+
+### Downloads
+
+With `--downloads-dir <dir>`, the agent can save a post's photos and videos into
+that directory: the agent names the post, never a path, the files get the names
+snob gives every download, and none already there is written over.
+
+### Several accounts
+
+The server acts as the active account, or the one `--account` names.
+`--any-account` lets the agent see the accounts signed in here and say, call by
+call, which one it acts as. It can sign one account out of snob after a yes
+that names it, and never signs in.
+
+### What agents did
+
+`snob status --agents` lists what agents were told yes to in the last 24
+hours.
+
+### Upgrading
+
+After upgrading snob, reconnect the server in the client: a server whose binary
+changed under it refuses every call.
+
+### Serving over HTTP
+
+`snob mcp --listen 127.0.0.1:8750` serves the same over HTTP on this machine's
+loopback, for a tunnel of your own (`ssh -L`, cloudflared, a VPN) to reach from
+elsewhere. It refuses any address that is not loopback and any request without
+the key (`Authorization: Bearer`).
+
+**The key.** `snob mcp key new` makes the key a client presents to reach the
+server over the network and keeps it in the system keyring, printing it once to
+your terminal; `show` names it by a fingerprint, `revoke` removes it. On a
+machine with no keyring, `SNOB_MCP_KEY` in the server's environment takes its
+place (`snob mcp key new --env` makes one for it, keeping it nowhere).
+
+**Yes over HTTP.** A yes given in the chat covers only reading lists unless
+`--confirm-in-chat all`, though whoever holds the key can still confirm the
+writes in a form it answers itself, since it is the client. A client on the
+stateless revision of MCP has no session, so a chat yes it is handed is bound to
+the call alone, and any client with the key may redeem it once.
+
+> [!WARNING]
+> TLS ends at the tunnel, whose provider sees the key and every answer, other
+> people's names and lists included; put an access layer in front where the
+> tunnel offers one.
+
+> [!CAUTION]
+> The server does not prove itself to its clients: they send the key to
+> whatever answers on the port, so another user of the machine who listens
+> there while snob is not running is handed it. Serve it only on a machine where
+> nobody else can run code, and if the port could have been taken, revoke the
+> key and make a new one (for a key in `SNOB_MCP_KEY`, put a new one there
+> instead: revoking touches only the keyring).
+
+**A socket instead of a port.** On Linux and macOS, `snob mcp --listen socket`
+closes that gap: it serves on a socket in snob's private data directory
+(`mcp.sock`, `0600`) that only you and root can connect to and nobody else can
+take, and the tunnel reaches it there (`ssh -N -o ExitOnForwardFailure=yes -L
+127.0.0.1:8750:<path>` from the far end, which stops if that port is taken
+there, or cloudflared's `unix:<path>` service); startup prints the path.
+
+**Clients of a remote server.**
+
+```bash
+snob mcp config codex --remote https://your-tunnel/mcp   # or any other client
+```
+
+It prints what a client needs to reach that server: no command and no key. The
+client sends the key from `SNOB_MCP_TOKEN` in its own environment; never set
+`SNOB_MCP_KEY` there, since it is the server's and replaces the key of any snob
+started where it is set. Claude Desktop and claude.ai take the address as a
+custom connector instead (Customize > Connectors), which they reach from
+Anthropic's side, so it is the tunnel's https address, with the key under the
+form's Request headers where your organization has them.
 
 ## Staying a light client
 
