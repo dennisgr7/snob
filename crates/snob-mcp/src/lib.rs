@@ -374,9 +374,6 @@ impl Consent {
     }
 }
 
-/// What the server's instructions say of the writes, and only when it was
-/// started with `--allow-writes`: a server that offers no write has no cap
-/// on writes to explain, and a sentence about one read as if it did.
 /// What the server's instructions say of acting as an account, and only
 /// when it was started with `--any-account`.
 const ACCOUNTS_SAID: &str = " Several accounts may be signed in here: snob_accounts lists \
@@ -395,6 +392,9 @@ const DOWNLOADS_SAID: &str = " snob_post_download saves a post's photos and vide
                               code, and one already there is not fetched again, so the \
                               directory itself says which posts you have.";
 
+/// What the server's instructions say of the writes, and only when it was
+/// started with `--allow-writes`: a server that offers no write has no cap
+/// on writes to explain.
 const WRITES_SAID: &str = " Follows and unfollows are capped at a few a day: one that came \
                            back mcp_write_cap sent nothing, and is not to be tried again \
                            before its retry_at (seconds since the epoch).";
@@ -510,10 +510,7 @@ impl ServerHandler for Server {
             // The name is the client's, and the message goes back to a model.
             Err(tools::Unplannable::NoSuchTool(name)) => {
                 return Err(McpError::invalid_params(
-                    format!(
-                        "there is no tool called {}",
-                        snob_core::model::printable(&name)
-                    ),
+                    format!("there is no tool called {}", tools::echoed(name)),
                     None,
                 ));
             }
@@ -834,15 +831,8 @@ impl Server {
         stop: bool,
         context: &RequestContext<RoleServer>,
     ) -> Result<Value, McpError> {
-        let unknown = || {
-            McpError::invalid_params(
-                format!(
-                    "unknown task: {}",
-                    snob_core::model::printable(&id.chars().take(40).collect::<String>())
-                ),
-                None,
-            )
-        };
+        let unknown =
+            || McpError::invalid_params(format!("unknown task: {}", tools::echoed(id)), None);
         // Planned as the tool is, so the id is checked as a job's id
         // (`JobId::parse`) before it reaches a command line, and read
         // without waiting for the walk: a poll answers at once.
