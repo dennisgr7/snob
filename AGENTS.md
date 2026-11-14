@@ -43,26 +43,38 @@ manifest `packaging/render.sh` renders from it, `crates/snob-ig/src/lib.rs`, and
 ## Workspace map
 
 Rust 2024, resolver 3. Dependencies point one way:
-`snob-cli -> snob-store, snob-ig -> snob-core`; `snob-ig` never depends on
-`snob-store`.
+`snob-cli -> snob-mcp -> snob-engine -> snob-store, snob-ig -> snob-core`;
+`snob-ig` never depends on `snob-store`, and `snob-engine` on no terminal crate
+(`crates/snob-core/tests/layers.rs` reads the manifests).
 
 | Crate | Holds | Must not |
 |---|---|---|
 | `snob-core` | The domain: `Pk`, the models (the JSON contract), set arithmetic, the monitor's diff and schedule, webhook signing and the one constant-time comparison (`watch::sign::same`), `Secret`, `Session`, the `RateBudget` trait and cooldown policy, `clock`. | Do I/O: no file, database, network or directory (`clock` excepted). |
 | `snob-ig` | The Instagram web client: `client/`, `web.rs`, `allowlist.rs`, `pager.rs`, `pace.rs`, `graphql.rs`, `error.rs` (classifying answers), `http.rs` (the only place `reqwest` is configured). | Touch SQLite or the keyring, or drive a browser (it only defines the page's request shapes). |
 | `snob-store` | SQLite (`store/`, migrations in `store/sql/`), paths, the secret store, `accounts.toml`, `watch.toml`, the layout's migration. | Hold domain logic. |
-| `snob-cli` | The library and the `snob` binary: `cli.rs`, `app.rs`, `commands/` (`commands/mcp/` is the MCP server), `engine/` (cache, consent, cooldown, walks, estimates, monitor), `output/`, `report.rs`, `ui/`, the browser (`headless/`, `cdp/`, `pipe.rs`, `owner/`), `jobs/`, `relay/`, `update/`, `posts.rs`, `media.rs`, `ffmpeg.rs`. | |
+| `snob-engine` | What a desktop app links in process: `app.rs` (`App`), `engine/` (cache, consent, cooldown, walks, estimates, monitor), the browser (`headless/`, `cdp/`, `pipe.rs`, `owner/`), jobs' state and supervisor (`jobs/`), `relay/`, `update/`, reading and saving posts and stories (`posts.rs`, `media.rs`, `files.rs`), `ffmpeg.rs`, `watch/webhook.rs`, `exit.rs`, and `sentences.rs` (the plain sentences of its refusals). `host.rs` is what it is handed: a `Progress` and an `Ask` per run (`host::Front`, given to `App::open`), and a sink for notices. | Depend on `clap`, `console`, `indicatif`, `ratatui`, `crossterm`, `dialoguer`, or on `snob-mcp`/`snob-cli`; ask anybody anything itself; decide how anything looks. |
+| `snob-mcp` | `snob mcp`: the server over stdio and, with its `http` feature, over HTTP (`http.rs`); its key (`key.rs`), `snob mcp config` (`config.rs`), its arguments (`args.rs`). | Build an Instagram client or open a database; depend on `snob-cli` (its tests do, to parse what it builds). |
+| `snob-cli` | The `snob` binary and its library: `cli.rs`, `main.rs`, `commands/`, `output/`, `report.rs`, `progress.rs` (the bars), `front.rs` (what it hands the engine), `ui/`, and the clap-tied half of jobs (`jobs/argv.rs`, `jobs/start.rs`). It names the engine's modules as its own (`lib.rs`) and `commands::mcp` is `snob_mcp`. | |
 
-Inside `snob-cli`:
+Inside `snob-cli` and `snob-engine`:
 
 - **A command reaches Instagram and the account's database through an `App`**
-  (`App::open`), never by building a client or opening a store itself. The
-  exceptions say so in their header: `status`, `--dry-run`, `fetch`, `update`,
-  `whoami`, `snapshots`, `changes`.
-- **`engine` returns data and where it came from, never how it looks**; wording
-  and exit codes live in `commands` and `report.rs`. Every list comes out of
-  `engine::list`, its checks in a fixed order (cooldown, `--offline`, consent,
-  cooldown again, counter poll, freshness, walk); it knows nothing of delivery.
+  (`App::open`, with the front `front::front` makes), never by building a
+  client or opening a store itself. The exceptions say so in their header:
+  `status`, `--dry-run`, `fetch`, `update`, `whoami`, `snapshots`, `changes`.
+- **`engine` returns data and where it came from, never how it looks**; the
+  sentences it returns are `sentences.rs`, plain text, and the commands'
+  wording and printing live in `commands` and `report.rs`. Every list comes
+  out of `engine::list`, its checks in a fixed order (cooldown, `--offline`,
+  consent, cooldown again, counter poll, freshness, walk); it knows nothing of
+  delivery.
+- **The engine is handed what it needs from the command line**, never reaches
+  for it: who watches a walk and who answers the consent question
+  (`host::Front`), where a notice goes (`host::tell_notices_to`), what to undo
+  before a forced exit (`interrupt::before_a_forced_exit`), how a job's stored
+  command line reads (`jobs::Check`, the command line's `jobs::argv::walk_of`),
+  and the binary to start for its own processes (`exe::start_as`, this binary
+  unless told).
 - `commands/watch/say.rs` is prose (rewording is free); `wire.rs` is protocol
   (`SENT_SCHEMA = 1`, `PRINTED_SCHEMA = 2`): an edit there is an integration
   change.
@@ -87,11 +99,13 @@ bash packaging/render.sh <version> SHA256SUMS   # then git diff --exit-code on F
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 SNOB_TEST_REQUIRE_BROWSER=1 cargo test --workspace --locked
 SNOB_TEST_REQUIRE_BROWSER=1 cargo test -p snob-cli --features testing --locked -- --test-threads=1
+SNOB_TEST_REQUIRE_BROWSER=1 cargo test -p snob-engine --features testing --locked -- --test-threads=1
 # Linux, against musl, in a session bus with gnome-keyring unlocked:
 dbus-run-session -- bash -c '
   echo "" | gnome-keyring-daemon --unlock --components=secrets
   cargo test --workspace --locked --target "$(uname -m)-unknown-linux-musl"
-  cargo test -p snob-cli --features testing --locked --target "$(uname -m)-unknown-linux-musl"'
+  cargo test -p snob-cli --features testing --locked --target "$(uname -m)-unknown-linux-musl"
+  cargo test -p snob-engine --features testing --locked --target "$(uname -m)-unknown-linux-musl"'
 ```
 
 - The render check is skipped while the version is unreleased; **never
@@ -125,7 +139,8 @@ dbus-run-session -- bash -c '
   (`crates/snob-core/tests/keyring.rs` reads the source). Binary-level tests use
   `--sandbox-root`: the file backend, a keyring namespace of its own, and every
   file the run touches under one directory.
-- **The `testing` feature** (`snob-cli/testing` -> `snob-ig/testing`) is the
+- **The `testing` feature** (`snob-cli/testing` -> `snob-engine/testing` ->
+  `snob-ig/testing`) is the
   only seam that points snob elsewhere (`--sandbox-root`, `--ig-base-url`,
   `--through-the-browser`, `point_every_client_at`, `SANDBOX_BASE`,
   `with_page`). A release binary has none of it:
@@ -139,7 +154,8 @@ dbus-run-session -- bash -c '
   `SNOB_TEST_REQUIRE_BROWSER=1`; run them with `--test-threads=1`, never as
   root.
 - **Source-reading guards** in `crates/snob-core/tests/`: `no_seen.rs`,
-  `keyring.rs`, `sandbox.rs`, and `language.rs`, which scans
+  `keyring.rs`, `sandbox.rs`, `layers.rs` (which crate may depend on which,
+  from the manifests), and `language.rs`, which scans
   `rs sql md toml yml yaml sh ps1 rb json` (this file too) for Spanish (escape
   `i18n-allow`), British spelling (`spelling-allow`), runs of spaces in a
   sentence in `.rs` (`layout-allow`), and a `snob ...` command to type back
@@ -335,7 +351,7 @@ file started after ten minutes).
 - **Credentials are `Secret`**: `Debug` prints `<hidden>`, zeroized on drop, read
   only through `expose()` (keep it greppable), `==` in constant time. Never log
   or print a token.
-- **The MCP key** (`commands/mcp/key.rs`): `snob_mcp_` and 43 base64url
+- **The MCP key** (`snob-mcp`, `key.rs`): `snob_mcp_` and 43 base64url
   characters, nothing else accepted. Keyring only, whatever `--no-keyring`
   says; where there is none, `SNOB_MCP_KEY` in the server's environment, which
   wins wherever it is set. Clients read theirs from `SNOB_MCP_TOKEN`. Printed
@@ -437,9 +453,10 @@ columns (`fallible_uint` is off on purpose).
 
 ## The MCP server
 
-`snob mcp` (`commands/mcp/`, feature `mcp`; `rmcp` pinned exactly): a stdio
+`snob mcp` (`crates/snob-mcp`, feature `mcp` of `snob-cli`; `rmcp` pinned
+exactly): a stdio
 server an agent's client starts, or with `--listen` (feature `mcp-http`) the
-same over HTTP on loopback, behind the MCP key. `snob mcp config <client>`
+same over HTTP on loopback (`snob-mcp`'s feature `http`), behind the MCP key. `snob mcp config <client>`
 prints a client's snippet and never writes it.
 
 ### Every call is a child
@@ -536,8 +553,9 @@ call answers `busy` at once.
   when it ends within `wait_seconds`, else with its `job_id`. One job per
   account. A client that declared MCP Tasks gets a task with the job's id
   (`tasks.rs`). People start the same job with `--background`.
-- **Jobs** (`jobs/mod.rs`): the supervisor runs `current_exe`, never a path from
-  disk, and checks the stored command line again (`jobs::argv`). **Stopping is
+- **Jobs** (`jobs/mod.rs`): the supervisor runs this binary (`exe::program`),
+  never a path from disk, and checks the stored command line again
+  (`jobs::argv`, handed in as `jobs::Check`). **Stopping is
   a `stop` file, never a signal.** An account sees only its own jobs.
 - **No media address reaches an agent** (`answer::without_media_addresses`).
   Pictures asked for (`pictures: true`) come back as MCP image content, never a
@@ -568,7 +586,7 @@ call answers `busy` at once.
 
 ### Over HTTP
 
-`snob mcp --listen` (`commands/mcp/http.rs`):
+`snob mcp --listen` (`snob-mcp`, `http.rs`):
 
 - **Loopback only** (else exit 2); TLS is the tunnel's job; `--public-url`
   (https) adds the tunnel's host. **On Unix, `--listen socket`** serves on
@@ -682,8 +700,9 @@ English, **US spelling**. A test enforces it (`language.rs`).
 
 ### Rust
 
-- Errors: `thiserror` enums in the libraries, `anyhow` in `snob-cli` with
-  `ExitError` for anything with an exit code (`exit::exit_code_for`).
+- Errors: `thiserror` enums in the libraries below the engine, `anyhow` in
+  `snob-engine`, `snob-mcp` and `snob-cli`, with `ExitError` for anything with
+  an exit code (`exit::exit_code_for`).
   Instagram's answers are classified in `snob_ig::error` (status codes lie; the
   body says why); everything in `snob_ig::model` but `pk` is optional.
 - Lints: `undocumented_unsafe_blocks` and `return_self_not_must_use`, added one
@@ -773,7 +792,7 @@ Platform code compiles only on that OS's CI job:
 | `owner/end_of_session.rs` | hidden window hearing the session end | |
 | `parent.rs` | ToolHelp, `OpenProcess`, `WaitForSingleObject` | `pidfd` (Linux), `kqueue` (macOS), `getppid` |
 | `headless/` | | `kill(pid, 0)`, `gethostname`, refusing root |
-| `relay/`, `commands/mcp/http/socket.rs` | | `peer_cred` against `geteuid` |
+| `relay/`, `snob-mcp`'s `http/socket.rs` | | `peer_cred` against `geteuid` |
 | `power/` | power requests, EcoQoS | logind inhibitor, `SCHED_BATCH` (Linux); `caffeinate` (macOS) |
 | `snob-store/src/paths.rs` | the data directory's DACL | scratch root opened with `O_NOFOLLOW`, `0700` |
 | `snob_ig::awake` | `QueryUnbiasedInterruptTime` | |
@@ -810,7 +829,7 @@ some fifteen minutes of pacing. Optimize for requests sent and binary size.
 | Static CRT on Windows | +126,976 bytes; imported DLLs 20 down to 11 | `.cargo/config.toml` |
 | Feature `xlsx` | about 498 KiB and six crates | `crates/snob-cli/Cargo.toml` |
 | Windows keyring without `search` | 863,744 bytes, 11.4% | `Cargo.toml` |
-| Feature `mcp-http` | 486,912 bytes, 4.8% of the Windows x86-64 binary | `crates/snob-cli/Cargo.toml` |
+| Feature `mcp-http` | 486,912 bytes, 4.8% of the Windows x86-64 binary | `crates/snob-cli/Cargo.toml`, `crates/snob-mcp/Cargo.toml` |
 | Feature `preview` | 102,400 bytes, 0.9% | `crates/snob-cli/Cargo.toml` |
 
 All four features are on by default; `--no-default-features` drops them.

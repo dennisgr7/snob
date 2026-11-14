@@ -123,7 +123,7 @@ apple-native-keyring-store = { version = "1", default-features = false, features
 # signs with RustCrypto: this project does not link a C crypto library.
 zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
 # Only on Linux, and only to ask logind for an `idle` inhibitor while a walk
-# reads (`snob_cli::power`). It costs no crate: the keyring's Secret Service
+# reads (`snob_engine::power`). It costs no crate: the keyring's Secret Service
 # backend already compiles it, with these same default features, on every
 # Linux build.
 zbus = "5"
@@ -149,11 +149,11 @@ zune-jpeg = { version = "0.5", default-features = false, features = ["std"] }
 # client, and a minor bump is a change to read before taking. No default
 # features: those add the tool macros, which this crate does without.
 rmcp = { version = "=3.10.0", default-features = false }
-# What `snob mcp --listen` serves HTTP with (`commands::mcp::http`), and
+# What `snob mcp --listen` serves HTTP with (`snob_mcp::http`), and
 # nothing else: **every one of these was already in the tree** through
 # reqwest, which builds hyper's client and `http1` on every target. What is
 # new is hyper's `server` half; the features are named where they are used,
-# in crates/snob-cli/Cargo.toml.
+# in crates/snob-mcp/Cargo.toml.
 hyper = { version = "1", default-features = false }
 hyper-util = { version = "0.1", default-features = false }
 http = "1"
@@ -249,12 +249,13 @@ url = "2"
 # Talking to a browser we launched, over the DevTools protocol on two inherited
 # pipes: they have no address for anything else on the machine to connect to,
 # and framing NUL-separated JSON needs no library.
-# `crates/snob-cli/src/pipe.rs` carries the reasoning and the cost.
+# `crates/snob-engine/src/pipe.rs` carries the reasoning and the cost.
 #
 # Only for the Unix half of that: `dup2` in a `pre_exec` hook is what puts the
 # two pipe ends in front of the browser as descriptors 3 and 4. Windows needs
 # no such crate -- it goes through `windows-sys`, which is already here.
-# `snob-cli` also takes it wherever `std` stops short on Unix, each use
+# `snob-engine` and `snob-mcp` also take it wherever `std` stops short on
+# Unix, each use
 # saying why; the list of them is kept in one place, AGENTS.md "Platforms".
 # `snob-store` takes it for `geteuid` and the `O_DIRECTORY`/`O_NOFOLLOW` flags:
 # the scratch root is opened without following a link, made `0700` through
@@ -302,18 +303,18 @@ zeroize = "1"
 # Windows, so nothing in std can be asked instead.
 #
 # `Win32_System_Power` is what keeps the machine from sleeping on its own while
-# a walk sends requests (`snob_cli::power`): a power request, the documented
+# a walk sends requests (`snob_engine::power`): a power request, the documented
 # way to say so, which closing the lid or choosing Sleep still overrides.
 #
 # `Win32_UI_WindowsAndMessaging`, with `Win32_Graphics_Gdi` for the window
 # class's one brush field and `Win32_System_LibraryLoader` for the module
 # handle it is registered under, are the owner's window that hears the end of
-# the session (`snob_cli::owner::end_of_session`): a process with no console
+# the session (`snob_engine::owner::end_of_session`): a process with no console
 # and no window is told nothing when Windows signs out or shuts down.
 #
 # `Win32_System_Diagnostics_ToolHelp` is for one question: which process
 # started this one, so that a run a program drives stops when that program
-# goes (`snob_cli::parent`). A snapshot of the processes is the documented
+# goes (`snob_engine::parent`). A snapshot of the processes is the documented
 # way to ask it; the other is `NtQueryInformationProcess`, which is `ntdll`'s
 # and says it may change.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Cryptography", "Win32_Globalization", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Power", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_WindowsAndMessaging"] }

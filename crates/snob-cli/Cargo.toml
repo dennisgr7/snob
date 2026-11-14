@@ -139,7 +139,7 @@ depends = "$auto"
 recommends = "chromium | chromium-browser | google-chrome-stable | microsoft-edge-stable | brave-browser"
 # Suggested, not recommended: apt installs Recommends by default, and ffmpeg
 # is a large tree for one thing it does here, joining a post's best video
-# and its sound (`snob_cli::ffmpeg`); without it a video is saved as the
+# and its sound (`snob_engine::ffmpeg`); without it a video is saved as the
 # app's 720-wide file, and snob says how to get it.
 suggests = "ffmpeg"
 # **This paragraph makes a claim three other places make**: `packaging/render.sh`
