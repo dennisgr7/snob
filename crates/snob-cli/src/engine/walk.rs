@@ -138,6 +138,13 @@ pub async fn fetch(
 
     snapshots::close(app.db().conn(), id, summary.reason)?;
 
+    // Best-effort: the list just read is the answer, swept or not.
+    if summary.reason.yields_complete_list()
+        && let Err(e) = snapshots::prune(app.db().conn(), now())
+    {
+        tracing::debug!(error = %e, "old captures could not be expired");
+    }
+
     // Asked of the store rather than inferred from the stop reason, and asked
     // with the same predicate the next run will use — so "it can be continued"
     // means the next run really would, cursor and resume window included.
