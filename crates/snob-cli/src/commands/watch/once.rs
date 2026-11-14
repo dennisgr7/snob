@@ -65,6 +65,23 @@ pub(super) async fn once(
     }
     super::run::power_is_back(paths);
 
+    // Said before the question about somebody's lists, which `engine::list`
+    // asks and which knows nothing about where a report goes: the answer is
+    // read as leave to send what changes in them to this address too, as the
+    // wizard's question says. Only to somebody who can be asked.
+    if let Some(delivery) = delivery.as_ref()
+        && ui::can_be_asked()
+    {
+        for entry in watched
+            .iter()
+            .filter(|entry| entry.lists() && !entry.may_run_unattended())
+        {
+            if let Some(name) = entry.name() {
+                ui::info(&report::sent_to(name, &delivery.destination));
+            }
+        }
+    }
+
     let outcome = run_viewers(
         paths,
         &secrets,

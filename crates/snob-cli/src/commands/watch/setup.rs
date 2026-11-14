@@ -866,19 +866,23 @@ fn save_to_of(answer: &str) -> std::result::Result<Option<std::path::PathBuf>, S
 /// Split from the prompting so it can be read. Everything around it is behind
 /// `ui::menu`, which answers nothing without a terminal.
 ///
-/// Not covered: an attended `snob watch once <stranger> --webhook …` asks a
-/// question that says nothing about forwarding. That one belongs in `commands::watch::once` and not
-/// in `engine::ask_consent_with`, which has no access to the delivery
-/// configuration and must not be given one — `ListArgs` carries none, and
-/// putting a `WatchConfig` inside `engine::list` is the layer AGENTS.md keeps
-/// free of how anything is delivered.
+/// An attended `snob watch once <stranger> --webhook …` is told the same
+/// before `engine::ask_consent_with` asks (`once`, through
+/// `report::sent_to`): that one has no access to the delivery configuration
+/// and must not be given one — `ListArgs` carries none, and putting a
+/// `WatchConfig` inside `engine::list` is the layer AGENTS.md keeps free of
+/// how anything is delivered.
+///
+/// The address is shown as everything else shows one
+/// (`webhook::shown_str`): the path of a Slack or Discord webhook is its
+/// secret.
 fn consent_question(name: &str, webhook: Option<&str>) -> String {
     match webhook {
         Some(url) => format!(
             "Record that you agreed to read @{}'s lists, and to have what changes in them sent \
              to {}?",
             printable(name),
-            printable(url)
+            crate::watch::webhook::shown_str(url)
         ),
         None => format!(
             "Record that you agreed to read @{}'s lists?",

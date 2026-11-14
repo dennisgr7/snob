@@ -608,6 +608,17 @@ pub const BATTERY_CRITICAL_STOP: &str = "the battery is critical; the walk stops
 pub const BATTERY_CRITICAL_SKIP: &str =
     "the battery is critical; this run reads no more lists, and the next run reads them";
 
+/// What `snob watch once <name> --webhook ...` says before it asks about
+/// `name`'s lists: that what changes in them goes to `destination`, shown as
+/// every address is (`webhook::shown_str`).
+pub fn sent_to(name: &str, destination: &str) -> String {
+    format!(
+        "What changes in @{}'s lists is sent to {}.",
+        printable(crate::engine::target::clean(name)),
+        crate::watch::webhook::shown_str(destination)
+    )
+}
+
 /// What the scheduled monitor says when the run that is due waits for power.
 pub const BATTERY_CRITICAL_HOLD: &str = "the battery is critical; the run that is due waits \
      until the machine is on power or charged again";
@@ -1203,6 +1214,17 @@ mod tests {
     use super::*;
     use crate::engine::ListOutcome;
     use snob_core::Pk;
+
+    /// What `watch once <name> --webhook` says before its question names the
+    /// account and where its changes go, the secret path of a Slack webhook
+    /// left out.
+    #[test]
+    fn the_destination_is_said_without_its_secret() {
+        let said = sent_to("@friend", "https://hooks.slack.com/services/T0/B0/secret");
+        assert!(said.contains("@friend's lists"), "{said}");
+        assert!(said.contains("hooks.slack.com"), "{said}");
+        assert!(!said.contains("secret"), "{said}");
+    }
 
     /// The time a walk has left says one figure when both ends round to the
     /// same minute, and never "0 minutes".
