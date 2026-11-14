@@ -11,7 +11,7 @@
 //!
 //! **A picture is handed back as a picture** ([`take_pictures`]): a listing
 //! asked for with its small pictures carries them in its JSON, in base64, and
-//! they leave it here, to go out as image content beside the answer (`mod.rs`,
+//! they leave it here, to go out as image content beside the answer (`lib.rs`,
 //! `saying`) rather than as text a model would read letter by letter.
 
 use serde_json::{Value, json};
@@ -219,7 +219,7 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
                 "message": last_lines(&finished.said),
             })
         };
-        // `main::wording_for` prints an object under `error`, but the line is
+        // `report::error_json_for` prints an object under `error`, but the line is
         // only known to be JSON with that key: `{"error":"x"}` is read here
         // too, and its `error` is put in an object rather than indexed into.
         let mut failure = match finished.error {
@@ -249,7 +249,10 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
         if let Some(partial) = finished.json {
             failure["partial"] = match partial {
                 Value::Array(items) => page(&compact(&items), offset, limit, false),
-                other => other,
+                mut other => {
+                    leave_out_of_accounts(&mut other);
+                    other
+                }
             };
         }
         if exit == ExitCode::NoSession {
@@ -506,7 +509,7 @@ fn past_the_end(total: usize, offset: usize, limit: Option<usize>) -> Option<Ans
     );
     Some(Answer {
         failed: true,
-        // Shaped as the server's other refusals of an argument (`mod.rs`,
+        // Shaped as the server's other refusals of an argument (`lib.rs`,
         // `refusal`): nothing ran, so there is no exit to report.
         body: cleaned(json!({
             "error": {
