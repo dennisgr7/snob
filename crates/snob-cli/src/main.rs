@@ -16,6 +16,8 @@ use snob_store::secrets::SecretStore;
 /// and that is the case that breaks something.
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> std::process::ExitCode {
+    // First, so even `snob` typed with no command (`no_command`) has it.
+    snob_cli::front::install();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) if e.kind() == clap::error::ErrorKind::MissingSubcommand => {
@@ -28,7 +30,6 @@ async fn main() -> std::process::ExitCode {
     }
     init_tracing(cli.verbose, matches!(cli.command, Command::BrowserOwner));
     restore_terminal_on_panic();
-    snob_cli::front::install();
 
     let wording = wording_for(&cli);
     // Awaited in place, the future of `run` would be part of this function's
