@@ -197,10 +197,6 @@ fn minutes(remaining_ms: &i64) -> String {
     }
 }
 
-fn expected_on_a_page(pace: &Pace) -> u32 {
-    pace.per_page
-}
-
 pub struct ListWalker<'a> {
     client: &'a IgClient,
     pace: Pace,
@@ -342,7 +338,7 @@ impl<'a> ListWalker<'a> {
             // over is not asked for until the day has room for a run of them.
             // Against a test server there is no day to spend.
             if self.sleeps && request.over_budget == OverBudget::Pause {
-                let page = expected_on_a_page(&self.pace);
+                let page = self.pace.per_page;
                 if !pacer
                     .accounts_wait(page)
                     .await
@@ -660,9 +656,9 @@ impl<'a> ListWalker<'a> {
 }
 
 struct WalkState {
+    /// The cursor the next page is asked with: the one the page before
+    /// handed out, or the one a resumed walk starts from.
     cursor: Option<String>,
-    /// The cursor of the previous page, to catch one that does not advance.
-    last_cursor: Option<String>,
     pages: u32,
     users: usize,
     empty_in_a_row: u32,
@@ -679,7 +675,6 @@ impl WalkState {
     fn new(request: &ListRequest<'_>) -> Self {
         Self {
             cursor: request.from.map(str::to_string),
-            last_cursor: None,
             pages: 0,
             users: request.already_stored,
             empty_in_a_row: 0,
@@ -717,18 +712,14 @@ impl WalkState {
             }
         }
 
-        let next = page.next_cursor().map(str::to_string);
+        let next = page.next_cursor();
 
         let Some(next) = next else {
             return Some(StopReason::Completed);
         };
 
-        // A cursor that does not advance is a loop. Compared against the one
-        // just sent too, which on the first page of a resumed walk is the
-        // only one there is.
-        if self.last_cursor.as_deref() == Some(next.as_str())
-            || self.cursor.as_deref() == Some(next.as_str())
-        {
+        // A cursor that comes back as the one just sent is a loop.
+        if self.cursor.as_deref() == Some(next) {
             observe(Event::Warning(Warning::SameCursorTwice));
             return Some(StopReason::Truncated);
         }
@@ -753,8 +744,7 @@ impl WalkState {
             self.barren_in_a_row = 0;
         }
 
-        self.last_cursor = Some(next.clone());
-        self.cursor = Some(next);
+        self.cursor = Some(next.to_string());
         None
     }
 
