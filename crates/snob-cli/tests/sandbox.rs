@@ -2479,6 +2479,98 @@ async fn replies_are_read_under_their_comments_and_by_their_ids() {
     );
 }
 
+/// An agent reads a post's comments and the replies under them through
+/// `snob_post`: pages of comments, the first threads with more than shown,
+/// and threads named by the pks an earlier answer gave, each comment and
+/// reply with its pk; what Instagram answered nothing for is said, and an
+/// argument that is not one is refused before anything is sent.
+#[tokio::test]
+async fn an_agent_reads_a_posts_comments_and_their_replies() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    with_threads(&instagram).await;
+    log_in(tmp.path(), &instagram);
+    let threads_asked = |requests: Vec<wiremock::Request>| {
+        requests
+            .iter()
+            .filter(|r| r.url.path().ends_with("/child_comments/"))
+            .count()
+    };
+
+    let mut client = McpClient::start(tmp.path(), &instagram, &[]).await;
+    let first = client
+        .call("snob_post", serde_json::json!({ "link": POST_CODE }))
+        .await;
+    assert_eq!(first["isError"], false, "{first}");
+    let comments = first["structuredContent"]["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 3, "{first}");
+    assert_eq!(comments[1]["pk"], "18000000000000002");
+    assert_eq!(comments[1]["replies"], 9);
+    assert_eq!(comments[1]["more_replies"], serde_json::Value::Null);
+    let sent = instagram.received_requests().await.unwrap_or_default();
+    assert_eq!(threads_asked(sent), 0);
+
+    let read = client
+        .call(
+            "snob_post",
+            serde_json::json!({
+                "link": POST_CODE,
+                "comments": 2,
+                "replies": 1,
+                "replies_of": ["18000000000000004", "18000000000000099"],
+            }),
+        )
+        .await;
+    assert_eq!(read["isError"], false, "{read}");
+    let told = &read["structuredContent"];
+    assert_eq!(told["comments"].as_array().map(Vec::len), Some(4), "{read}");
+    assert_eq!(
+        told["comments"][0]["shown_replies"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(told["comments"][0]["more_replies"], false);
+    assert_eq!(
+        told["comments"][3]["shown_replies"][0]["pk"],
+        "18100000000000000"
+    );
+    let named: Vec<(&str, bool)> = told["replies_of"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            (
+                t["comment_pk"].as_str().unwrap(),
+                t["found"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        named,
+        [("18000000000000004", true), ("18000000000000099", false)]
+    );
+    assert!(told.get("cut").is_none(), "{read}");
+    let sent = instagram.received_requests().await.unwrap_or_default();
+    assert_eq!(threads_asked(sent), 3, "the first, then the two named");
+
+    for wrong in [
+        serde_json::json!({ "link": POST_CODE, "replies_of": ["abc"] }),
+        serde_json::json!({ "link": POST_CODE, "replies_of": [18000000000000004u64] }),
+        serde_json::json!({ "link": POST_CODE, "replies": 8, "replies_of": ["1", "2", "3"] }),
+        serde_json::json!({ "link": POST_CODE, "comments": 21 }),
+        serde_json::json!({ "link": POST_CODE, "thread": "1" }),
+    ] {
+        let refused = client.call("snob_post", wrong.clone()).await;
+        assert_eq!(
+            refused["structuredContent"]["error"]["code"], "invalid_arguments",
+            "{wrong}: {refused}"
+        );
+    }
+    let sent = instagram.received_requests().await.unwrap_or_default();
+    assert_eq!(threads_asked(sent), 3, "nothing more was sent");
+}
+
 /// A comment's id is digits, and ten threads are the most one run reads,
 /// `--replies` and `--replies-of` counted together: each refused before
 /// anything is sent, clap's with exit 2.

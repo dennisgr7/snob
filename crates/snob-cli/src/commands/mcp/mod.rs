@@ -184,6 +184,13 @@ impl Waits {
 ///   pages draw), which `--max-wait` never cuts (AGENTS.md, "Pace"): the
 ///   wait for the budget and the longest rest. One at most: a rest paid
 ///   leaves a fresh sitting, which its ten pages cannot fill.
+/// - **A post read as far as it goes** (`snob_post` with `comments` and
+///   `replies` at their most), also inline and asking nothing: twenty pages
+///   of comments and ten threads, each but the first a comment step after
+///   the read before (at most [`snob_ig::pace::COMMENT_STEP_MS`]'s longest),
+///   all of them pages of the sitting, so one rest between sittings may fall
+///   among them as it may among a profile's, and the wait for the budget.
+///   The longest of the three.
 ///
 /// **A download is not counted** (`snob_post_download`): it waits for the
 /// budget, then starts no file after [`tools::SAVE_WITHIN`], two minutes,
@@ -195,8 +202,14 @@ impl Waits {
 pub fn longest_call(max_wait: Duration) -> Duration {
     let job = Duration::from_secs(tools::MOST_WAIT_SECONDS) + crate::jobs::start::SUPERVISOR_WITHIN;
     let asked = ANSWER_WITHIN + max_wait.max(job);
-    let profile = max_wait + Duration::from_millis(snob_ig::pace::SITTING_PAUSE_MS.1);
-    asked.max(profile) + child::GRACE + Duration::from_secs(30)
+    let rest = Duration::from_millis(snob_ig::pace::SITTING_PAUSE_MS.1);
+    let profile = max_wait + rest;
+    let steps = u64::from(crate::posts::MOST_COMMENT_PAGES - 1)
+        + u64::try_from(crate::posts::MOST_THREADS).unwrap_or(u64::MAX);
+    let post = max_wait
+        + rest
+        + Duration::from_millis(snob_ig::pace::COMMENT_STEP_MS.1.saturating_mul(steps));
+    asked.max(profile).max(post) + child::GRACE + Duration::from_secs(30)
 }
 
 /// The key the question is answered under, in `inputResponses`.
@@ -1529,21 +1542,26 @@ mod tests {
     fn a_list_call_is_bounded_by_its_wait_for_the_job_whatever_its_walk() {
         // With no wait for the budget at all, a list still waits for its
         // job and the supervisor's start, 50 s and 10 s past the question,
-        // and a profile the longest rest between sittings, which is longer.
+        // a profile the longest rest between sittings, which is longer, and
+        // a post read as far as it goes that rest and 29 comment steps of
+        // at most five seconds, longer still.
         let rest = Duration::from_secs(15 * 60);
+        let steps = Duration::from_secs(29 * 5);
         assert!(ANSWER_WITHIN + Duration::from_secs(60) < rest);
         assert_eq!(
             longest_call(Duration::ZERO),
-            rest + child::GRACE + Duration::from_secs(30)
+            rest + steps + child::GRACE + Duration::from_secs(30)
         );
-        // With the default wait for the budget, a profile that waits for it
-        // and then rests: 5 and 15 minutes, the grace and the margin.
-        assert_eq!(longest_call(MAX_WAIT), Duration::from_secs(1260));
-        // Whatever the wait for the budget, a profile is the longer: both
-        // grow with it alike, and the rest is longer than the answer.
+        // With the default wait for the budget, a post that waits for it,
+        // its steps and a rest: 5 and 15 minutes, 145 seconds, the grace
+        // and the margin.
+        assert_eq!(longest_call(MAX_WAIT), Duration::from_secs(1405));
+        // Whatever the wait for the budget, the post is the longer: it and
+        // a profile grow with it alike, and the rest is longer than the
+        // answer.
         assert_eq!(
             longest_call(Duration::from_secs(3600)),
-            Duration::from_secs(3600) + rest + child::GRACE + Duration::from_secs(30)
+            Duration::from_secs(3600) + rest + steps + child::GRACE + Duration::from_secs(30)
         );
     }
 

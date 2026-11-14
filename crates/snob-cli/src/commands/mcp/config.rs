@@ -483,16 +483,17 @@ mod tests {
         assert!(snippet.contains("\nargs = [\"mcp\"]\n"), "{snippet}");
     }
 
-    /// Five minutes for the budget by default and a profile's rest of up to
-    /// fifteen (longer than the ten for the person's answer), the child's
-    /// grace and a margin: twenty-one minutes.
+    /// Five minutes for the budget by default, a rest of up to fifteen
+    /// (longer than the ten for the person's answer) and the comment steps
+    /// of a post read as far as it goes, the child's grace and a margin:
+    /// some twenty-three minutes and a half.
     #[test]
     fn codex_is_given_a_tool_timeout_past_the_longest_call() {
         let (snippet, _) = render(McpClient::Codex, EXE, &args(), within());
-        assert!(snippet.ends_with("\ntool_timeout_sec = 1260"), "{snippet}");
+        assert!(snippet.ends_with("\ntool_timeout_sec = 1405"), "{snippet}");
         let longer = super::super::longest_call(Duration::from_secs(3600));
         let (snippet, _) = render(McpClient::Codex, EXE, &args(), longer);
-        assert!(snippet.ends_with("\ntool_timeout_sec = 4560"), "{snippet}");
+        assert!(snippet.ends_with("\ntool_timeout_sec = 4705"), "{snippet}");
         // Every other line is a table, a key or a comment.
         assert!(
             snippet
@@ -520,7 +521,7 @@ mod tests {
             snippet.contains("\nbearer_token_env_var = \"SNOB_MCP_TOKEN\"\n"),
             "{snippet}"
         );
-        assert!(snippet.ends_with("\ntool_timeout_sec = 1260"), "{snippet}");
+        assert!(snippet.ends_with("\ntool_timeout_sec = 1405"), "{snippet}");
         assert!(!snippet.contains("command"), "{snippet}");
         assert!(!snippet.contains("args"), "{snippet}");
         assert!(

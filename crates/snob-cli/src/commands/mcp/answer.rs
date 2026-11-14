@@ -157,6 +157,9 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
     if is_changes(plan) {
         finished.json = finished.json.take().map(bounded_changes);
     }
+    if is_a_post(plan) {
+        finished.json = finished.json.take().map(bounded_post);
+    }
     let exit = finished.code;
     let offset = plan.page.as_ref().map_or(0, |page| page.offset);
     let limit = plan.page.as_ref().and_then(|page| page.limit);
@@ -619,6 +622,117 @@ fn bounded_changes(mut document: Value) -> Value {
     }
     if cut && let Some(fields) = document.as_object_mut() {
         fields.insert("cut".to_string(), json!(CHANGES_CUT));
+    }
+    document
+}
+
+/// The comments under `key` of `row` kept while they fit in what is `left`
+/// of an answer, which they are taken from: how many were left out.
+fn fit(row: &mut Value, key: &str, left: &mut usize) -> usize {
+    let Some(replies) = row.get_mut(key).and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    let mut kept = 0;
+    for reply in replies.iter() {
+        let size = reply.to_string().len() + 1;
+        if size > *left {
+            break;
+        }
+        *left -= size;
+        kept += 1;
+    }
+    let out = replies.len() - kept;
+    replies.truncate(kept);
+    out
+}
+
+/// Whether `plan` is `snob_post`: a post listed with its comments, which is
+/// not a download of its files.
+fn is_a_post(plan: &Plan) -> bool {
+    plan.args.first().map(String::as_str) == Some("post")
+        && !plan.args.iter().any(|arg| arg.starts_with("--download"))
+}
+
+/// What an agent is told when [`bounded_post`] left comments or replies out.
+const POST_CUT: &str = "More comments and replies were read than fit one answer: those after \
+                        the last one here are left out, and comments_left_out and \
+                        replies_left_out say how many. Call again with fewer pages of \
+                        comments, or fewer threads (replies_of names only the ones wanted)";
+
+/// The document `post` printed, as `snob_post` hands it back: its comments,
+/// the replies under them and the threads `replies_of` named together
+/// within [`PAGE_BYTES`], the post itself and the rest of the document
+/// counted first.
+///
+/// **Twenty pages of comments and ten threads are hundreds of comments**,
+/// and nothing pages this answer. What does not fit is left out in the
+/// order the document has it, a comment before its replies, and the
+/// comments before the named threads; a comment that does not fit leaves
+/// out the rest of the comments and their replies. `comments_left_out` and
+/// `replies_left_out` say how many went, and `cut` says so in a sentence;
+/// none of the three is there when nothing was. Nothing is indexed, for the
+/// reason [`from`] gives.
+fn bounded_post(mut document: Value) -> Value {
+    let Some(fields) = document.as_object_mut() else {
+        return document;
+    };
+    let comments = fields.remove("comments");
+    let named = fields.remove("replies_of");
+    let mut left = PAGE_BYTES.saturating_sub(Value::Object(fields.clone()).to_string().len());
+    let mut comments_out = 0usize;
+    let mut replies_out = 0usize;
+    let mut comments = comments.unwrap_or(Value::Null);
+    if let Some(rows) = comments.as_array_mut() {
+        let mut kept = 0;
+        for row in rows.iter_mut() {
+            let replies = row
+                .get_mut("shown_replies")
+                .map(Value::take)
+                .unwrap_or(Value::Null);
+            let size = row.to_string().len() + 1;
+            if size > left {
+                if let Some(fields) = row.as_object_mut() {
+                    fields.insert("shown_replies".into(), replies);
+                }
+                break;
+            }
+            left -= size;
+            kept += 1;
+            if let Some(fields) = row.as_object_mut() {
+                fields.insert("shown_replies".into(), replies);
+            }
+            replies_out += fit(row, "shown_replies", &mut left);
+        }
+        for row in rows.iter().skip(kept) {
+            comments_out += 1;
+            replies_out += row
+                .get("shown_replies")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+        }
+        rows.truncate(kept);
+    }
+    let mut named = named;
+    if let Some(threads) = named.as_mut().and_then(Value::as_array_mut) {
+        for thread in threads.iter_mut() {
+            let replies = thread.get_mut("replies").map(Value::take);
+            left = left.saturating_sub(thread.to_string().len() + 1);
+            if let (Some(fields), Some(replies)) = (thread.as_object_mut(), replies) {
+                fields.insert("replies".into(), replies);
+            }
+            replies_out += fit(thread, "replies", &mut left);
+        }
+    }
+    if !comments.is_null() {
+        fields.insert("comments".into(), comments);
+    }
+    if let Some(named) = named {
+        fields.insert("replies_of".into(), named);
+    }
+    if comments_out + replies_out > 0 {
+        fields.insert("comments_left_out".into(), json!(comments_out));
+        fields.insert("replies_left_out".into(), json!(replies_out));
+        fields.insert("cut".into(), json!(POST_CUT));
     }
     document
 }
@@ -2045,6 +2159,79 @@ mod tests {
             json!({"lists": [1, {"gained": 2}]}),
         ] {
             let told = from(&changes, finished(ExitCode::Ok, Some(odd.clone()), None));
+            assert!(!told.failed, "{odd}");
+        }
+    }
+
+    /// `snob_post` hands back its comments, the replies under them and the
+    /// threads named, all within a page: what does not fit is left out in
+    /// order, and said with how many, while an answer that fits is as it
+    /// came, with no word of a cut.
+    #[test]
+    fn a_posts_comments_and_replies_are_bounded_and_say_what_was_left_out() {
+        let comment = |pk: u64, replies: usize| {
+            json!({
+                "pk": pk.to_string(),
+                "author": format!("someone{pk}"),
+                "text": "word ".repeat(40),
+                "replies": replies,
+                "shown_replies": (0..replies)
+                    .map(|r| json!({"pk": format!("{pk}{r:03}"), "text": "reply ".repeat(30), "shown_replies": []}))
+                    .collect::<Vec<_>>(),
+            })
+        };
+        let post = Plan {
+            args: vec![
+                "post".into(),
+                "https://www.instagram.com/p/DTYHCKvDNxy/".into(),
+            ],
+            ..plan(&[ExitCode::Ok])
+        };
+        let few = json!({
+            "post": {"code": "DTYHCKvDNxy"},
+            "comments": [comment(1, 2), comment(2, 0)],
+            "more_comments": false,
+            "replies_of": [{"comment_pk": "9", "found": true, "replies": [comment(9, 0)]}],
+        });
+        let told = from(&post, finished(ExitCode::Ok, Some(few.clone()), None));
+        assert!(!told.failed);
+        assert_eq!(told.body["comments"], few["comments"]);
+        assert_eq!(told.body["replies_of"], few["replies_of"]);
+        assert!(told.body.get("cut").is_none(), "{}", told.body);
+        assert!(told.body.get("comments_left_out").is_none());
+
+        let many = json!({
+            "post": {"code": "DTYHCKvDNxy"},
+            "comments": (1..=300).map(|pk| comment(pk, 3)).collect::<Vec<_>>(),
+            "more_comments": true,
+            "replies_of": [{"comment_pk": "9", "found": true,
+                            "replies": (0..50).map(|pk| comment(pk, 0)).collect::<Vec<_>>()}],
+        });
+        let told = from(&post, finished(ExitCode::Ok, Some(many), None));
+        let text = told.body.to_string();
+        assert!(text.len() < PAGE_BYTES + 1_000, "{} bytes", text.len());
+        let kept = told.body["comments"].as_array().unwrap().len();
+        assert!(kept > 0 && kept < 300, "{kept}");
+        assert_eq!(told.body["comments_left_out"], 300 - kept);
+        let replies_out = told.body["replies_left_out"].as_u64().unwrap();
+        assert!(replies_out >= 50 + 3 * (300 - kept as u64), "{replies_out}");
+        assert_eq!(told.body["cut"], POST_CUT);
+        assert_eq!(told.body["post"]["code"], "DTYHCKvDNxy");
+        assert_eq!(told.body["more_comments"], true);
+
+        // A download is not a listing, and what is no document of a post
+        // passes as it came, nothing indexed.
+        let download = Plan {
+            args: vec!["post".into(), "x".into(), "--download=1".into()],
+            ..plan(&[ExitCode::Ok])
+        };
+        assert!(!is_a_post(&download));
+        for odd in [
+            json!("text"),
+            json!({"comments": "none"}),
+            json!({"comments": [1, "a"]}),
+        ] {
+            let told = from(&post, finished(ExitCode::Ok, Some(odd.clone()), None));
             assert!(!told.failed, "{odd}");
         }
     }
