@@ -45,7 +45,7 @@ mod write;
 pub(crate) mod harness;
 
 pub use self::cdn::CdnClient;
-pub use self::posts::PostsPage;
+pub use self::posts::{PostsPage, ProfileTab};
 pub use self::read::Direction;
 
 use std::sync::atomic::AtomicBool;

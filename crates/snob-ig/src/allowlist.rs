@@ -111,12 +111,26 @@ pub enum Operation {
     /// The grid's next page, by name and the cursor the page before ended
     /// at: what the app sends as the grid is scrolled.
     ProfilePostsPage,
+    /// The first page of a profile's reels tab, by pk: what the app sends
+    /// as the tab opens, or a moment before the click that opens it.
+    ProfileReels,
+    /// The reels tab's next page, from the cursor the page before ended at.
+    ProfileReelsPage,
+    /// The first page of the posts a profile is tagged in, by pk.
+    ProfileTagged,
+    /// The tagged tab's next page, from the pk the page before ended at.
+    ProfileTaggedPage,
+    /// The first page of what a profile reposted, by pk.
+    ProfileReposts,
+    /// The reposts tab's next page, from the `max_id` the page before
+    /// handed out.
+    ProfileRepostsPage,
     Follow,
     Unfollow,
 }
 
 impl Operation {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 19] = [
         Self::ProfilePage,
         Self::HoverCard,
         Self::HighlightsTray,
@@ -128,6 +142,12 @@ impl Operation {
         Self::SchoolPartnerBadge,
         Self::ProfilePosts,
         Self::ProfilePostsPage,
+        Self::ProfileReels,
+        Self::ProfileReelsPage,
+        Self::ProfileTagged,
+        Self::ProfileTaggedPage,
+        Self::ProfileReposts,
+        Self::ProfileRepostsPage,
         Self::Follow,
         Self::Unfollow,
     ];
@@ -152,6 +172,12 @@ impl Operation {
             Self::SchoolPartnerBadge => "PolarisSchoolPartnerProfileBadgeQuery",
             Self::ProfilePosts => "PolarisProfilePostsQuery",
             Self::ProfilePostsPage => "PolarisProfilePostsTabContentQuery_connection",
+            Self::ProfileReels => "PolarisProfileReelsTabContentQuery",
+            Self::ProfileReelsPage => "PolarisProfileReelsTabContentQuery_connection",
+            Self::ProfileTagged => "PolarisProfileTaggedTabContentQuery",
+            Self::ProfileTaggedPage => "PolarisProfileTaggedTabContentQuery_connection",
+            Self::ProfileReposts => "PolarisProfileRepostsTabContentWWWQuery",
+            Self::ProfileRepostsPage => "PolarisProfileRepostsTabContentWWWRefetchQuery",
             Self::Follow => Mutation::Follow.friendly_name(),
             Self::Unfollow => Mutation::Unfollow.friendly_name(),
         }
@@ -171,6 +197,16 @@ impl Operation {
     /// next page never does**: the app sends it as its grid is scrolled, and
     /// snob's tab never scrolls, so it goes out under this number alone and is
     /// the one to refresh first when a grid stops answering.
+    ///
+    /// **The six of a profile's reels, tagged and reposts tabs are seeds**,
+    /// from the captures of 2026-11-13 and 2026-11-14, which were made on two
+    /// builds of the app and show the same six numbers. The tab never loads a
+    /// tab's document and the app never sends them from a profile's, so none
+    /// is ever vouched for by the app's own call: they go out under these
+    /// numbers alone, as the grid's next page does, and a tab stops answering
+    /// when its number moves, until it is refreshed here. Where the app keeps
+    /// them (its scripts, beside their names, as a write's) is not yet known
+    /// (AGENTS.md, "Open questions").
     pub fn doc_id(self) -> &'static str {
         match self {
             Self::ProfilePage => "40158838120366999",
@@ -184,6 +220,12 @@ impl Operation {
             Self::SchoolPartnerBadge => "28647748031575520",
             Self::ProfilePosts => "29114630661562380",
             Self::ProfilePostsPage => "29290744380560118",
+            Self::ProfileReels => "28280418711631396",
+            Self::ProfileReelsPage => "28237651492507044",
+            Self::ProfileTagged => "28196060226733657",
+            Self::ProfileTaggedPage => "29256185780680839",
+            Self::ProfileReposts => "29116356611389607",
+            Self::ProfileRepostsPage => "29259241890370275",
             Self::Follow => Mutation::Follow.seed_doc_id(),
             Self::Unfollow => Mutation::Unfollow.seed_doc_id(),
         }
@@ -228,6 +270,17 @@ impl Operation {
             Self::SchoolPartnerBadge => "xig_user_by_igid_v2",
             Self::ProfilePosts | Self::ProfilePostsPage => {
                 "xdt_api__v1__feed__user_timeline_graphql_connection"
+            }
+            // The reels under `clips_connection` and the reposts under
+            // `user_reposts_timeline` of the same account object, the
+            // tagged posts in a connection of their own (captures of
+            // 2026-11-13 and 2026-11-14, every call).
+            Self::ProfileReels
+            | Self::ProfileReelsPage
+            | Self::ProfileReposts
+            | Self::ProfileRepostsPage => "fetch__XDTUserDict",
+            Self::ProfileTagged | Self::ProfileTaggedPage => {
+                "xdt_api__v1__usertags__user_id__feed_connection"
             }
             Self::Follow => "xdt_create_friendship",
             Self::Unfollow => "xdt_destroy_friendship",
@@ -277,6 +330,12 @@ impl Operation {
             Self::ProfilePosts => &["username"],
             // `after` first: it is what tells the next page from the first.
             Self::ProfilePostsPage => &["after", "before", "first", "last", "username"],
+            Self::ProfileReels => &["data", "user_id"],
+            Self::ProfileReelsPage => &["after", "data", "first", "id"],
+            Self::ProfileTagged => &["count", "user_id"],
+            Self::ProfileTaggedPage => &["after", "before", "count", "first", "last", "user_id"],
+            Self::ProfileReposts => &["user_id"],
+            Self::ProfileRepostsPage => &["max_id", "id"],
             Self::Follow | Self::Unfollow => &["target_user_id"],
         }
     }
@@ -511,17 +570,30 @@ fn statuses_of(ids: &str) -> Option<usize> {
 }
 
 /// Whether `route` is one snob may navigate the app to: the home page, a
-/// profile ([`document`]), or a profile's mutual followers,
-/// `/<name>/followers/mutualOnly`, the one tab of a profile with an address
-/// of its own that snob reads from. Never one of the app's screens.
+/// profile ([`document`]), a profile's mutual followers,
+/// `/<name>/followers/mutualOnly`, or one of the three tabs of a profile
+/// snob reads, `/<name>/reels/`, `/<name>/tagged/` and `/<name>/reposts/`
+/// ([`PROFILE_TABS`]): the app navigates to each as its tab is clicked (6
+/// of 6 in the capture of 2026-11-14). Never one of the app's screens, and
+/// never a document the tab loads: `/reels/` alone is a screen.
 pub fn list_route(route: &str) -> bool {
     if document(route) {
         return true;
     }
-    route
-        .strip_suffix("followers/mutualOnly")
-        .is_some_and(|profile| profile != "/" && document(profile))
+    let under_a_profile = |tail: &str| {
+        route
+            .strip_suffix(tail)
+            .is_some_and(|profile| profile != "/" && document(profile))
+    };
+    under_a_profile("followers/mutualOnly")
+        || PROFILE_TABS
+            .iter()
+            .any(|tab| under_a_profile(&format!("{tab}/")))
 }
+
+/// The tabs of a profile snob reads besides its grid, by the segment of
+/// their address: `/<name>/<tab>/`.
+pub const PROFILE_TABS: [&str; 3] = ["reels", "tagged", "reposts"];
 
 /// The registry's operation `request` is, if it is one.
 fn operation_posted(request: &PageRequest, path: &str, found: &Rediscovered) -> Option<Operation> {
@@ -1035,6 +1107,42 @@ mod tests {
                     "29290744380560118",
                     "/api/graphql",
                     "xdt_api__v1__feed__user_timeline_graphql_connection"
+                ),
+                (
+                    "PolarisProfileReelsTabContentQuery",
+                    "28280418711631396",
+                    "/api/graphql",
+                    "fetch__XDTUserDict"
+                ),
+                (
+                    "PolarisProfileReelsTabContentQuery_connection",
+                    "28237651492507044",
+                    "/api/graphql",
+                    "fetch__XDTUserDict"
+                ),
+                (
+                    "PolarisProfileTaggedTabContentQuery",
+                    "28196060226733657",
+                    "/api/graphql",
+                    "xdt_api__v1__usertags__user_id__feed_connection"
+                ),
+                (
+                    "PolarisProfileTaggedTabContentQuery_connection",
+                    "29256185780680839",
+                    "/api/graphql",
+                    "xdt_api__v1__usertags__user_id__feed_connection"
+                ),
+                (
+                    "PolarisProfileRepostsTabContentWWWQuery",
+                    "29116356611389607",
+                    "/api/graphql",
+                    "fetch__XDTUserDict"
+                ),
+                (
+                    "PolarisProfileRepostsTabContentWWWRefetchQuery",
+                    "29259241890370275",
+                    "/api/graphql",
+                    "fetch__XDTUserDict"
                 ),
                 (
                     "usePolarisFollowMutation",
@@ -1993,7 +2101,14 @@ mod tests {
                 .finish();
             request(Method::Post, NAVIGATION, &[], Some(&body))
         };
-        for route in ["/", "/someone/", "/some.one_else/followers/mutualOnly"] {
+        for route in [
+            "/",
+            "/someone/",
+            "/some.one_else/followers/mutualOnly",
+            "/someone/reels/",
+            "/someone/tagged/",
+            "/someone/reposts/",
+        ] {
             assert_eq!(refused(&posted(route)), None, "{route}");
             assert!(list_route(route), "{route}");
         }
@@ -2003,7 +2118,10 @@ mod tests {
             "/explore/",
             "/direct/inbox/",
             "/reels/",
-            "/someone/reposts/",
+            "/stories/reels/",
+            "/someone/reels",
+            "/someone/reels/x/",
+            "/someone/saved/",
             "/someone/followers/",
             "/someone/followers/mutualFirst",
             "/followers/mutualOnly",
@@ -2027,6 +2145,70 @@ mod tests {
         assert!(refused(&twice).is_some());
         let none = request(Method::Post, NAVIGATION, &[], Some("routing_namespace=x"));
         assert!(refused(&none).is_some());
+    }
+
+    /// A tab's route is one the app's router is let move to, never a
+    /// document the tab loads: the tab stays on the profile, as with the
+    /// mutual followers, and `/reels/` alone is the app's reels screen.
+    #[test]
+    fn a_tab_route_is_navigated_to_only_by_the_router() {
+        for tab in PROFILE_TABS {
+            let route = format!("/someone/{tab}/");
+            assert!(list_route(&route), "{route}");
+            assert!(!document(&route), "{route}");
+            let mut sent = request(Method::Get, &route, &[], None);
+            sent.navigate = true;
+            assert!(refused(&sent).is_some(), "{route}");
+            assert_eq!(
+                refused_ask(&Ask::Document {
+                    path: route.clone()
+                })
+                .as_deref(),
+                Some(format!("a navigation to {route}").as_str())
+            );
+        }
+    }
+
+    /// The reels screen is no profile, and no tab of one.
+    #[test]
+    fn the_reels_screen_is_still_no_profile() {
+        assert!(!document("/reels/"));
+        assert!(!list_route("/reels/"));
+        assert!(!list_route("/reels/reels/"));
+    }
+
+    /// Each tab's two queries go out on `/api/graphql` under their numbers,
+    /// and under no other number and on no other endpoint.
+    #[test]
+    fn a_tab_goes_out_under_its_number_on_api_graphql() {
+        for operation in [
+            Operation::ProfileReels,
+            Operation::ProfileReelsPage,
+            Operation::ProfileTagged,
+            Operation::ProfileTaggedPage,
+            Operation::ProfileReposts,
+            Operation::ProfileRepostsPage,
+        ] {
+            assert_eq!(operation.family(), Family::Relay, "{operation:?}");
+            let sent = relay(
+                "/api/graphql",
+                operation.friendly_name(),
+                operation.doc_id(),
+            );
+            assert_eq!(refused(&sent), None, "{operation:?}");
+            let moved = relay(
+                "/api/graphql",
+                operation.friendly_name(),
+                "1000000000000777",
+            );
+            assert!(refused(&moved).is_some(), "{operation:?}");
+            let elsewhere = relay(
+                "/graphql/query",
+                operation.friendly_name(),
+                operation.doc_id(),
+            );
+            assert!(refused(&elsewhere).is_some(), "{operation:?}");
+        }
     }
 
     /// Only the method and the path: the form carries tokens.

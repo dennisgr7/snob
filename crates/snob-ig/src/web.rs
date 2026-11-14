@@ -1091,17 +1091,33 @@ impl<'a> Context<'a> {
 }
 
 /// The route the app names for a page, in `__crn`: its home page is the
-/// feed's, and a profile is the profile's posts tab. Another page has none
-/// here, as snob is made from no other.
+/// feed's, a profile is the profile's posts tab, and a profile's reels,
+/// tagged and reposts tabs are each their own (`PolarisProfileReelsTabRoute`
+/// and the other two, on every call made from one in the captures of
+/// 2026-11-13 and 2026-11-14). Another page has none here, as snob is made
+/// from no other.
 pub fn route_of(referrer: &str) -> Option<&'static str> {
     if referrer == "/" {
         Some(FEED_ROUTE)
     } else if allowlist::document(referrer) {
         Some(PROFILE_ROUTE)
     } else {
-        None
+        TAB_ROUTES.iter().find_map(|(tab, route)| {
+            referrer
+                .strip_suffix(&format!("{tab}/"))
+                .is_some_and(|profile| profile != "/" && allowlist::document(profile))
+                .then_some(*route)
+        })
     }
 }
+
+/// The route of each of a profile's tabs, by the segment of its address
+/// ([`allowlist::PROFILE_TABS`]).
+const TAB_ROUTES: [(&str, &str); 3] = [
+    ("reels", "comet.igweb.PolarisProfileReelsTabRoute"),
+    ("tagged", "comet.igweb.PolarisProfileTaggedTabRoute"),
+    ("reposts", "comet.igweb.PolarisProfileRepostsTabRoute"),
+];
 
 /// The route of the home page.
 pub const FEED_ROUTE: &str = "comet.igweb.PolarisFeedRoute";
@@ -1185,6 +1201,78 @@ pub fn posts_page_variables(username: &str, after: &str) -> String {
         POSTS_DATA,
         serde_json::Value::from(username),
         POSTS_FLAGS
+    )
+}
+
+/// The two flags of the app's own that close the tagged and reposts tabs'
+/// queries, and the first of them the reels tab's (captures of 2026-11-13
+/// and 2026-11-14, every call).
+const SHORT_DRAMA: &str = r#""__relay_internal__pv__PolarisShortDramaEnabledrelayprovider":true"#;
+const SEO_CRAWLER: &str = r#""__relay_internal__pv__PolarisSEOIsCrawlerrelayprovider":false"#;
+
+/// How many reels a next page of the reels tab asks for: **three**, as every
+/// one of the seven of the capture of 2026-11-14 asked (five in the six of
+/// 2026-11-13, on another build of the app, with the same window). The
+/// fewer of the two numbers the app has sent, so the slower read; the first
+/// page asks for twelve either way.
+const REELS_PER_NEXT_PAGE: u32 = 3;
+
+/// The `data` of both of the reels tab's queries for `pk`: the feed's videos
+/// too, twelve a page by the app's count, by the account's pk.
+fn reels_data(pk: Pk) -> String {
+    format!(r#"{{"include_feed_video":true,"page_size":12,"target_user_id":"{pk}"}}"#)
+}
+
+/// The variables of the reels tab's first page for `pk`, as the app sends
+/// them as the tab opens (L1753 and L4180 of the capture of 2026-11-14).
+pub fn reels_variables(pk: Pk) -> String {
+    format!(
+        r#"{{"data":{},"user_id":"{pk}",{SHORT_DRAMA}}}"#,
+        reels_data(pk)
+    )
+}
+
+/// The variables of the reels tab's next page, from where the page before
+/// ended (`after`), as the app sends them as the tab scrolls.
+pub fn reels_page_variables(pk: Pk, after: &str) -> String {
+    format!(
+        r#"{{"after":{},"data":{},"first":{REELS_PER_NEXT_PAGE},"id":"{pk}",{SHORT_DRAMA}}}"#,
+        serde_json::Value::from(after),
+        reels_data(pk)
+    )
+}
+
+/// The variables of the tagged tab's first page for `pk`: twelve.
+pub fn tagged_variables(pk: Pk) -> String {
+    format!(r#"{{"count":12,"user_id":"{pk}",{SHORT_DRAMA},{SEO_CRAWLER}}}"#)
+}
+
+/// The variables of the tagged tab's next page, from the post the page
+/// before ended at (`after`): twelve again.
+pub fn tagged_page_variables(pk: Pk, after: &str) -> String {
+    format!(
+        concat!(
+            r#"{{"after":{},"before":null,"count":12,"first":12,"last":null,"#,
+            r#""user_id":"{}",{},{}}}"#
+        ),
+        serde_json::Value::from(after),
+        pk,
+        SHORT_DRAMA,
+        SEO_CRAWLER
+    )
+}
+
+/// The variables of the reposts tab's first page for `pk`.
+pub fn reposts_variables(pk: Pk) -> String {
+    format!(r#"{{"user_id":"{pk}",{SHORT_DRAMA},{SEO_CRAWLER}}}"#)
+}
+
+/// The variables of the reposts tab's next page, from the `max_id` the page
+/// before handed out.
+pub fn reposts_page_variables(pk: Pk, max_id: &str) -> String {
+    format!(
+        r#"{{"max_id":{},"id":"{pk}",{SHORT_DRAMA},{SEO_CRAWLER}}}"#,
+        serde_json::Value::from(max_id)
     )
 }
 
@@ -1935,7 +2023,33 @@ mod tests {
         built.push(context.bulk_route_definitions(&["/a/"], "/").unwrap());
         built.push(context.navigation("/someone/").unwrap());
         built.push(context.navigation("/someone/followers/mutualOnly").unwrap());
+        for tab in crate::allowlist::PROFILE_TABS {
+            built.push(context.navigation(&format!("/someone/{tab}/")).unwrap());
+        }
         let pk = Pk::new(2_345_678_901);
+        for (operation, variables) in [
+            (Operation::ProfileReels, reels_variables(pk)),
+            (
+                Operation::ProfileReelsPage,
+                reels_page_variables(pk, "AQHT-x_y"),
+            ),
+            (Operation::ProfileTagged, tagged_variables(pk)),
+            (
+                Operation::ProfileTaggedPage,
+                tagged_page_variables(pk, "3807824420233075826"),
+            ),
+            (Operation::ProfileReposts, reposts_variables(pk)),
+            (
+                Operation::ProfileRepostsPage,
+                reposts_page_variables(pk, "AQHT-x_y"),
+            ),
+        ] {
+            built.push(
+                context
+                    .relay(operation, &variables, None, "/someone/reels/", None)
+                    .unwrap(),
+            );
+        }
         built.push(
             context
                 .show_many(&[pk, VIEWER], "/someone/", Some("rest:token"))
@@ -2371,6 +2485,20 @@ mod tests {
         assert_eq!(route_of("/some.one/"), Some(PROFILE_ROUTE));
         assert_eq!(route_of("/stories/"), None);
         assert_eq!(route_of("/someone/followers/"), None);
+        assert_eq!(
+            route_of("/someone/reels/"),
+            Some("comet.igweb.PolarisProfileReelsTabRoute")
+        );
+        assert_eq!(
+            route_of("/someone/tagged/"),
+            Some("comet.igweb.PolarisProfileTaggedTabRoute")
+        );
+        assert_eq!(
+            route_of("/someone/reposts/"),
+            Some("comet.igweb.PolarisProfileRepostsTabRoute")
+        );
+        assert_eq!(route_of("/reels/"), None);
+        assert_eq!(route_of("/someone/saved/"), None);
         // The field sits where the app puts it: after `__spin_t`, before
         // the caller class.
         let names: Vec<&str> = home
@@ -2978,6 +3106,91 @@ mod tests {
                 assert!(!printed.contains(token), "{printed}");
             }
         }
+    }
+
+    /// The tabs' variables are the capture's (2026-11-14, the same keys on
+    /// 2026-11-13), key for key and in their order, with only the pk and
+    /// the cursor made snob's.
+    #[test]
+    fn the_tabs_variables_are_the_apps() {
+        let pk = Pk::new(2_345_678_901);
+        let drama = r#""__relay_internal__pv__PolarisShortDramaEnabledrelayprovider":true"#;
+        let seo = r#""__relay_internal__pv__PolarisSEOIsCrawlerrelayprovider":false"#;
+        let data = r#"{"include_feed_video":true,"page_size":12,"target_user_id":"2345678901"}"#;
+        assert_eq!(
+            reels_variables(pk),
+            format!(r#"{{"data":{data},"user_id":"2345678901",{drama}}}"#)
+        );
+        assert_eq!(
+            reels_page_variables(pk, "AQHT\"x"),
+            format!(r#"{{"after":"AQHT\"x","data":{data},"first":3,"id":"2345678901",{drama}}}"#)
+        );
+        assert_eq!(
+            tagged_variables(pk),
+            format!(r#"{{"count":12,"user_id":"2345678901",{drama},{seo}}}"#)
+        );
+        assert_eq!(
+            tagged_page_variables(pk, "3807824420233075826"),
+            format!(
+                r#"{{"after":"3807824420233075826","before":null,"count":12,"first":12,"last":null,"user_id":"2345678901",{drama},{seo}}}"#
+            )
+        );
+        assert_eq!(
+            reposts_variables(pk),
+            format!(r#"{{"user_id":"2345678901",{drama},{seo}}}"#)
+        );
+        assert_eq!(
+            reposts_page_variables(pk, "AQHT-x"),
+            format!(r#"{{"max_id":"AQHT-x","id":"2345678901",{drama},{seo}}}"#)
+        );
+        // Every one names what it asks by the first of its asked keys, as
+        // a call that vouches for a moved number must.
+        for (operation, variables) in [
+            (Operation::ProfileReels, reels_variables(pk)),
+            (Operation::ProfileReelsPage, reels_page_variables(pk, "a")),
+            (Operation::ProfileTagged, tagged_variables(pk)),
+            (Operation::ProfileTaggedPage, tagged_page_variables(pk, "1")),
+            (Operation::ProfileReposts, reposts_variables(pk)),
+            (
+                Operation::ProfileRepostsPage,
+                reposts_page_variables(pk, "a"),
+            ),
+        ] {
+            let parsed: serde_json::Value = serde_json::from_str(&variables).unwrap();
+            for key in operation.asked_keys() {
+                assert!(parsed.get(key).is_some(), "{operation:?} {key}");
+            }
+        }
+    }
+
+    /// A tab's next page names the tab's route, and the navigation that
+    /// opens the tab names it too, from the tab's own address.
+    #[test]
+    fn a_tabs_next_page_names_the_tabs_route() {
+        let (page, mut app) = (page(), app());
+        let mut context = context(&page, &mut app);
+        let next = context
+            .build(
+                &query(
+                    Operation::ProfileReelsPage,
+                    &reels_page_variables(Pk::new(1), "AQHT"),
+                ),
+                "/someone/reels/",
+                &Seen::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            next.field("__crn"),
+            Some("comet.igweb.PolarisProfileReelsTabRoute")
+        );
+        assert_eq!(next.referrer, "/someone/reels/");
+        let opened = context.navigation("/someone/tagged/").unwrap();
+        assert_eq!(opened.field("route_url"), Some("/someone/tagged/"));
+        assert_eq!(
+            opened.field("__crn"),
+            Some("comet.igweb.PolarisProfileTaggedTabRoute")
+        );
+        assert_eq!(opened.referrer, "/someone/tagged/");
     }
 
     /// The grid's variables are the capture's (2026-11-13), key for key and

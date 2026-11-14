@@ -7,6 +7,15 @@
 //!   name from its page. Each page is one read of the request budget. It is
 //!   not charged to the day's accounts (`budget::accounts_per_day`): what it
 //!   returns is posts, not a list of accounts.
+//! - **A profile's reels, tagged and reposts tabs** ([`ProfileTab`]) are a
+//!   query each and their connection, asked by the account's pk: the first
+//!   page from the profile's page, as the app asks it a moment before its
+//!   tab is clicked, then the app's navigation to the tab
+//!   (`/<name>/<tab>/`), then the next pages from there, on the tab's route
+//!   (captures of 2026-11-13 and 2026-11-14). One read a page, counted in
+//!   the sitting and not charged to the day's accounts, as the grid's.
+//!   **Their numbers are seeds** (`Operation::doc_id`): the app never sends
+//!   them from a profile's document, so none is ever vouched for.
 //! - **A post** is `media/<pk>/info/`, the call the app sends the moment one
 //!   opens, from a grid, a profile's reels or a message alike, made from the
 //!   page it opens on (`/p/<code>/` or `/reel/<code>/`). The page itself is
@@ -40,8 +49,9 @@
 use crate::allowlist::{Operation, Rest};
 use crate::error::IgError;
 use crate::model::post::{
-    CommentsPage, LikersPage, Media, MediaInfo, RepliesPage, TimelinePage,
-    comments_cursor_has_its_shape,
+    CommentsPage, LikersPage, Media, MediaInfo, ReelsTabPage, RepliesPage, RepostsTabPage,
+    TaggedTabPage, TimelinePage, comments_cursor_has_its_shape, reels_cursor_has_its_shape,
+    tagged_cursor_has_its_shape,
 };
 use crate::shortcode::{CommentPk, MediaPk};
 use crate::web::{Ask, Told};
@@ -55,6 +65,47 @@ pub struct PostsPage {
     pub posts: Vec<Media>,
     /// `None` on the last page.
     pub next: Option<String>,
+}
+
+/// A tab of a profile besides its grid, as the app shows them under the
+/// profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProfileTab {
+    /// Its reels: what it posted as a reel, and the videos of its grid.
+    Reels,
+    /// The posts other accounts tagged it in, each owned by its author.
+    Tagged,
+    /// What it reposted, each post owned by its author.
+    Reposts,
+}
+
+impl ProfileTab {
+    /// The segment of the tab's address, `/<name>/<segment>/`.
+    pub fn segment(self) -> &'static str {
+        match self {
+            Self::Reels => "reels",
+            Self::Tagged => "tagged",
+            Self::Reposts => "reposts",
+        }
+    }
+
+    /// The query of its first page, and the one of its next pages.
+    pub fn operations(self) -> (Operation, Operation) {
+        match self {
+            Self::Reels => (Operation::ProfileReels, Operation::ProfileReelsPage),
+            Self::Tagged => (Operation::ProfileTagged, Operation::ProfileTaggedPage),
+            Self::Reposts => (Operation::ProfileReposts, Operation::ProfileRepostsPage),
+        }
+    }
+
+    /// Whether `cursor` has the shape of the tab's own, which is all that
+    /// goes back to Instagram.
+    fn takes(self, cursor: &str) -> bool {
+        match self {
+            Self::Reels | Self::Reposts => reels_cursor_has_its_shape(cursor),
+            Self::Tagged => tagged_cursor_has_its_shape(cursor),
+        }
+    }
 }
 
 impl IgClient {
@@ -98,6 +149,86 @@ impl IgClient {
         let (posts, next) = page.posts();
         self.count_in_the_sitting().await?;
         Ok(PostsPage { posts, next })
+    }
+
+    /// A page of tab `tab` of the account `pk`, named `username`: the first
+    /// when `after` is `None`, made from the profile's page, and otherwise
+    /// the one after the cursor the page before handed out, made from the
+    /// tab's page, which [`Self::open_tab`] navigates the app to before it.
+    /// One read, counted in the sitting.
+    ///
+    /// **From the browser only**, as the grid; and only a cursor of the
+    /// shape the tab hands out goes back, anything else refused with
+    /// nothing sent.
+    pub async fn profile_tab(
+        &self,
+        tab: ProfileTab,
+        pk: snob_core::Pk,
+        username: &str,
+        after: Option<&str>,
+    ) -> Result<PostsPage, IgError> {
+        if !self.has_page() {
+            return Err(IgError::Browser(
+                "a profile's tabs are read from the browser, and SNOB_NO_BROWSER has none".into(),
+            ));
+        }
+        if after.is_some_and(|after| !tab.takes(after)) {
+            return Err(IgError::NotAllowed(
+                "a tab's page after a cursor Instagram never handed out".into(),
+            ));
+        }
+        let (first, next) = tab.operations();
+        let (operation, variables, from) = match (tab, after) {
+            (ProfileTab::Reels, None) => (first, crate::web::reels_variables(pk), None),
+            (ProfileTab::Tagged, None) => (first, crate::web::tagged_variables(pk), None),
+            (ProfileTab::Reposts, None) => (first, crate::web::reposts_variables(pk), None),
+            (ProfileTab::Reels, Some(after)) => {
+                (next, crate::web::reels_page_variables(pk, after), Some(tab))
+            }
+            (ProfileTab::Tagged, Some(after)) => (
+                next,
+                crate::web::tagged_page_variables(pk, after),
+                Some(tab),
+            ),
+            (ProfileTab::Reposts, Some(after)) => (
+                next,
+                crate::web::reposts_page_variables(pk, after),
+                Some(tab),
+            ),
+        };
+        let referrer = match from {
+            Some(tab) => tab_path(username, tab),
+            None => profile_path(username),
+        };
+        let ask = Ask::Query {
+            operation,
+            variables,
+        };
+        let endpoint = ask.endpoint();
+        let Told::Answer(answer) = self.ask_page(ask, &referrer).await? else {
+            return Err(told_otherwise("a profile's tab"));
+        };
+        let answer = answered(&endpoint, answer);
+        let root = operation.root_field();
+        let (posts, next) = match tab {
+            ProfileTab::Reels => self.decode_query::<ReelsTabPage>(&answer, root)?.posts(),
+            ProfileTab::Tagged => self.decode_query::<TaggedTabPage>(&answer, root)?.posts(),
+            ProfileTab::Reposts => self.decode_query::<RepostsTabPage>(&answer, root)?.posts(),
+        };
+        self.count_in_the_sitting().await?;
+        Ok(PostsPage { posts, next })
+    }
+
+    /// What the app sends as tab `tab` of `username`'s profile is clicked,
+    /// before the tab's next pages: its router's navigation to the tab,
+    /// `/<name>/<tab>/` (6 of 6 in the capture of 2026-11-14). One read; a
+    /// failure is made of as a list's opening is (`IgClient::navigation`).
+    /// From the browser only, and only for a name that can be a profile's.
+    pub async fn open_tab(&self, username: &str, tab: ProfileTab) -> Result<(), IgError> {
+        if !self.has_page() || !crate::allowlist::profile_name(username) {
+            return Ok(());
+        }
+        self.navigation(&tab_path(username, tab)).await
     }
 
     /// Counts a page of a grid or of a post's comments in the account's
@@ -228,6 +359,11 @@ impl IgClient {
         }
         Ok(likers)
     }
+}
+
+/// The page of tab `tab` of the account called `name`, `/<name>/<tab>/`.
+fn tab_path(name: &str, tab: ProfileTab) -> String {
+    format!("{}{}/", profile_path(name), tab.segment())
 }
 
 /// `page` as a request sent without a browser names its referrer: with no
@@ -437,6 +573,84 @@ mod tests {
         assert!(sent[0].referrer.ends_with("/p/DbGwql4IMei/"));
         assert_eq!(budget.reserved(), (1, 0));
         assert_eq!(budget.accounts_spent(), 2);
+    }
+
+    /// A tab is its first query by pk from the profile's page, then, after
+    /// the navigation to the tab, its connection from the tab's page; each
+    /// page one read.
+    #[tokio::test]
+    async fn a_tab_is_its_query_then_the_route_then_its_connection() {
+        let reels = r#"{"data":{"fetch__XDTUserDict":{"clips_connection":{
+            "edges":[{"node":{"media":{"pk":"3807824420233075826","code":"DTYHCKvDNxy",
+              "product_type":"clips","user":{"username":"coauthor"}}}}],
+            "page_info":{"end_cursor":"AQHT-next","has_next_page":true}}}}}"#;
+        let tab = Scripted::building(move |request| {
+            Ok(if request.url.ends_with("/ajax/navigation/") {
+                page_said(200, r#"for (;;);{"payload":{}}"#)
+            } else {
+                page_said(200, reels)
+            })
+        });
+        let (client, budget) = spending_client(Arc::clone(&tab) as Arc<dyn Page>);
+        let pk = snob_core::Pk::new(2_345_678_901);
+        let first = client
+            .profile_tab(ProfileTab::Reels, pk, "someone", None)
+            .await
+            .unwrap();
+        assert_eq!(first.posts.len(), 1);
+        assert_eq!(first.posts[0].owner(), Some("coauthor"), "its own owner");
+        client.open_tab("someone", ProfileTab::Reels).await.unwrap();
+        client
+            .profile_tab(ProfileTab::Reels, pk, "someone", first.next.as_deref())
+            .await
+            .unwrap();
+
+        let sent = tab.asked();
+        let names: Vec<_> = sent
+            .iter()
+            .map(|r| {
+                field(r, "fb_api_req_friendly_name")
+                    .unwrap_or_else(|| field(r, "route_url").unwrap_or_default())
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "PolarisProfileReelsTabContentQuery",
+                "/someone/reels/",
+                "PolarisProfileReelsTabContentQuery_connection"
+            ]
+        );
+        assert!(sent[0].referrer.ends_with("/someone/"));
+        assert!(sent[2].referrer.ends_with("/someone/reels/"));
+        let first_variables = field(&sent[0], "variables").unwrap();
+        assert!(
+            first_variables.contains(r#""user_id":"2345678901""#),
+            "{first_variables}"
+        );
+        let next = field(&sent[2], "variables").unwrap();
+        assert!(next.starts_with(r#"{"after":"AQHT-next""#), "{next}");
+        assert_eq!(budget.reserved(), (3, 0));
+    }
+
+    /// A tab's cursor of a shape it never hands out is refused before it
+    /// leaves, and nothing is paid.
+    #[tokio::test]
+    async fn a_tab_cursor_of_another_shape_is_never_sent() {
+        let tab = Scripted::building(|_| Ok(page_said(200, "{}")));
+        let (client, budget) = spending_client(Arc::clone(&tab) as Arc<dyn Page>);
+        let pk = snob_core::Pk::new(1);
+        for (which, after) in [
+            (ProfileTab::Tagged, "None"),
+            (ProfileTab::Tagged, "AQHT"),
+            (ProfileTab::Reels, "a&b"),
+            (ProfileTab::Reposts, ""),
+        ] {
+            let refused = client.profile_tab(which, pk, "someone", Some(after)).await;
+            assert!(matches!(refused, Err(IgError::NotAllowed(_))), "{after}");
+        }
+        assert!(tab.asked().is_empty());
+        assert_eq!(budget.reserved(), (0, 0));
     }
 
     /// Without a browser the grid is not read, and nothing is spent finding

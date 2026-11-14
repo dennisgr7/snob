@@ -124,6 +124,25 @@ pub struct Media {
     pub original_width: Option<u32>,
     #[serde(default)]
     pub original_height: Option<u32>,
+    /// The notes written on it where it was reposted: up to three on an
+    /// item of a reposts tab in the capture of 2026-11-14, each by another
+    /// account, and `null` elsewhere.
+    #[serde(default)]
+    pub media_notes: Option<MediaNotes>,
+}
+
+/// The notes on a reposted post ([`Media::media_notes`]).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MediaNotes {
+    #[serde(default, deserialize_with = "nullable")]
+    pub items: Vec<MediaNote>,
+}
+
+/// One note: what another account wrote on the repost.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MediaNote {
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -396,6 +415,17 @@ impl Media {
             .any(|pk| self.timeline_pinned_user_ids.iter().any(|id| id == pk))
     }
 
+    /// The text of the notes written on it where it was reposted, those
+    /// with any.
+    pub fn notes(&self) -> Vec<&str> {
+        self.media_notes
+            .iter()
+            .flat_map(|notes| notes.items.iter())
+            .filter_map(|note| note.text.as_deref())
+            .filter(|text| !text.trim().is_empty())
+            .collect()
+    }
+
     /// The accounts it is posted with.
     pub fn with(&self) -> Vec<String> {
         self.coauthor_producers
@@ -503,6 +533,177 @@ impl TimelinePage {
         };
         let next = timeline.next_cursor().map(str::to_string);
         (timeline.nodes(), next)
+    }
+}
+
+/// Whether `cursor` has the shape of every next page's cursor of a reels or
+/// reposts tab the app sent in the captures of 2026-11-13 and 2026-11-14
+/// (13 `end_cursor`s of the reels and 12 `repost_next_max_id`s, each 90
+/// characters of base64url starting `AQHT`): one to
+/// [`MOST_TAB_CURSOR_BYTES`] of `A-Z a-z 0-9 - _`, and nothing else.
+pub fn reels_cursor_has_its_shape(cursor: &str) -> bool {
+    (1..=MOST_TAB_CURSOR_BYTES).contains(&cursor.len())
+        && cursor
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
+/// The longest reels or reposts cursor taken: twice and more the 90 of
+/// every one seen, so a longer token still passes and text of any length
+/// does not.
+pub const MOST_TAB_CURSOR_BYTES: usize = 200;
+
+/// Whether `cursor` has the shape of every next page's cursor of a tagged
+/// tab in the capture of 2026-11-14 (9 of 9): a post's pk, 19 digits, so
+/// one to twenty digits. **`"None"` is no cursor**: the last page names its
+/// end with the word, as text.
+pub fn tagged_cursor_has_its_shape(cursor: &str) -> bool {
+    (1..=20).contains(&cursor.len()) && cursor.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The next cursor of a tab's page, `next`, when there is one and it has the
+/// shape `shaped` holds to: a cursor of another shape ends the tab, said in
+/// the log, since it would be text nobody vouched for in a request.
+fn tab_cursor(next: Option<&str>, shaped: fn(&str) -> bool) -> Option<String> {
+    let next = next.filter(|next| !next.is_empty() && *next != "None")?;
+    if !shaped(next) {
+        tracing::warn!(
+            bytes = next.len(),
+            "a tab's page handed out a cursor of a shape never seen; reading no further"
+        );
+        return None;
+    }
+    Some(next.to_string())
+}
+
+/// The answer of the reels tab's two queries: `data.fetch__XDTUserDict`,
+/// whose `clips_connection` holds one reel per edge, under `media`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReelsTabPage {
+    #[serde(default)]
+    pub data: Option<ReelsTabData>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReelsTabData {
+    #[serde(default, rename = "fetch__XDTUserDict")]
+    pub user: Option<ReelsTabUser>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReelsTabUser {
+    #[serde(default)]
+    pub clips_connection: Option<Connection<ReelsTabNode>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReelsTabNode {
+    pub media: Media,
+}
+
+impl ReelsTabPage {
+    /// The reels, in the tab's order, and where the next page starts.
+    pub fn posts(self) -> (Vec<Media>, Option<String>) {
+        let Some(clips) = self
+            .data
+            .and_then(|d| d.user)
+            .and_then(|u| u.clips_connection)
+        else {
+            return (Vec::new(), None);
+        };
+        let next = tab_cursor(clips.next_cursor(), reels_cursor_has_its_shape);
+        (clips.nodes().into_iter().map(|n| n.media).collect(), next)
+    }
+}
+
+/// The answer of the tagged tab's two queries: a connection of posts under
+/// `data.xdt_api__v1__usertags__user_id__feed_connection`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TaggedTabPage {
+    #[serde(default)]
+    pub data: Option<TaggedTabData>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TaggedTabData {
+    #[serde(default, rename = "xdt_api__v1__usertags__user_id__feed_connection")]
+    pub feed: Option<Connection<Media>>,
+}
+
+impl TaggedTabPage {
+    /// The posts, in the tab's order, and where the next page starts.
+    pub fn posts(self) -> (Vec<Media>, Option<String>) {
+        let Some(feed) = self.data.and_then(|d| d.feed) else {
+            return (Vec::new(), None);
+        };
+        let next = tab_cursor(feed.next_cursor(), tagged_cursor_has_its_shape);
+        (feed.nodes(), next)
+    }
+}
+
+/// The answer of the reposts tab's two queries:
+/// `data.fetch__XDTUserDict.user_reposts_timeline`, its items each a post
+/// under `media`, and the `max_id` of the next page while there is more.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RepostsTabPage {
+    #[serde(default)]
+    pub data: Option<RepostsTabData>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RepostsTabData {
+    #[serde(default, rename = "fetch__XDTUserDict")]
+    pub user: Option<RepostsTabUser>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RepostsTabUser {
+    #[serde(default)]
+    pub user_reposts_timeline: Option<RepostsTimeline>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RepostsTimeline {
+    #[serde(default, deserialize_with = "nullable")]
+    pub repost_grid_items: Vec<RepostItem>,
+    #[serde(default)]
+    pub repost_more_available: Option<bool>,
+    #[serde(default)]
+    pub repost_next_max_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RepostItem {
+    pub media: Media,
+}
+
+impl RepostsTabPage {
+    /// The reposts, in the tab's order, and where the next page starts:
+    /// only while the answer says more are available (`false` and `null`
+    /// ended the tab in the capture of 2026-11-13).
+    pub fn posts(self) -> (Vec<Media>, Option<String>) {
+        let Some(timeline) = self
+            .data
+            .and_then(|d| d.user)
+            .and_then(|u| u.user_reposts_timeline)
+        else {
+            return (Vec::new(), None);
+        };
+        let next = timeline
+            .repost_more_available
+            .filter(|more| *more)
+            .and_then(|_| {
+                tab_cursor(
+                    timeline.repost_next_max_id.as_deref(),
+                    reels_cursor_has_its_shape,
+                )
+            });
+        let posts = timeline
+            .repost_grid_items
+            .into_iter()
+            .map(|item| item.media)
+            .collect();
+        (posts, next)
     }
 }
 
@@ -1141,6 +1342,112 @@ mod tests {
         );
         assert!(!comment(r#"{"pk":"1"}"#).replies_missing());
         assert!(!comment(r#"{"pk":"1","child_comment_count":0}"#).replies_missing());
+    }
+
+    /// A reels tab page as the capture of 2026-11-14 shapes it: each reel
+    /// under `media`, with no date and no video address, and the cursor; the
+    /// last page has none.
+    #[test]
+    fn a_reels_tab_reads_its_reels_and_its_cursor() {
+        let page: ReelsTabPage = serde_json::from_str(
+            r#"{"data":{"fetch__XDTUserDict":{"id":"42","clips_connection":{
+                "edges":[{"__typename":"XDTClipsEdge","node":{"__typename":"XDTClipsNode","media":
+                  {"pk":"3807824420233075826","code":"DTYHCKvDNxy","media_type":2,
+                   "product_type":"clips","play_count":12,"like_count":3,
+                   "like_and_view_counts_disabled":true,"user":{"pk":"42","username":"someone"},
+                   "video_versions":null}}}],
+                "page_info":{"end_cursor":"AQHT0vU8-x_y","has_next_page":true}}},
+              "xdt_viewer":{"user":{"id":"1"}}}}"#,
+        )
+        .unwrap();
+        let (reels, next) = page.posts();
+        assert_eq!(reels.len(), 1);
+        assert_eq!(reels[0].taken_at, Epoch::default());
+        assert_eq!(reels[0].owner(), Some("someone"));
+        assert_eq!(next.as_deref(), Some("AQHT0vU8-x_y"));
+        let last: ReelsTabPage = serde_json::from_str(
+            r#"{"data":{"fetch__XDTUserDict":{"clips_connection":{"edges":[],
+                "page_info":{"end_cursor":null,"has_next_page":false}}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(last.posts().1, None);
+    }
+
+    /// The tagged tab's cursor is a post's pk; the word `None` its last
+    /// page names its end with is no cursor, whatever `has_next_page` says.
+    #[test]
+    fn the_word_none_is_no_cursor() {
+        let page = |cursor: &str, more: bool| -> TaggedTabPage {
+            serde_json::from_value(serde_json::json!({"data": {
+                "xdt_api__v1__usertags__user_id__feed_connection": {
+                    "edges": [], "page_info": {"end_cursor": cursor, "has_next_page": more,
+                                               "has_previous_page": false, "start_cursor": null}}}}))
+            .unwrap()
+        };
+        assert_eq!(
+            page("3807824420233075826", true).posts().1.as_deref(),
+            Some("3807824420233075826")
+        );
+        assert_eq!(page("None", false).posts().1, None);
+        assert_eq!(page("None", true).posts().1, None);
+        assert_eq!(page("AQHT", true).posts().1, None, "not a pk");
+    }
+
+    /// The reposts tab goes on while it says more are available, by the
+    /// `max_id` it hands out, and ends when it says no more; a post's owner
+    /// is its own, and its notes are read.
+    #[test]
+    fn a_reposts_tab_ends_when_it_says_no_more() {
+        let page = |more: serde_json::Value, next: serde_json::Value| -> RepostsTabPage {
+            serde_json::from_value(
+                serde_json::json!({"data": {"fetch__XDTUserDict": {"id": "42",
+                "user_reposts_timeline": {
+                    "repost_grid_items": [{"media": {"pk": "1", "user": {"username": "author"},
+                        "media_notes": {"items": [{"id": "n", "text": "so good", "user_id": "7"},
+                                                  {"id": "m", "text": " "}]}}}],
+                    "repost_more_available": more, "repost_next_max_id": next}}}}),
+            )
+            .unwrap()
+        };
+        let (posts, next) = page(serde_json::json!(true), serde_json::json!("AQHT_x-y")).posts();
+        assert_eq!(next.as_deref(), Some("AQHT_x-y"));
+        assert_eq!(posts[0].owner(), Some("author"));
+        assert_eq!(posts[0].notes(), ["so good"]);
+        assert_eq!(
+            page(serde_json::json!(false), serde_json::json!(null))
+                .posts()
+                .1,
+            None
+        );
+        assert_eq!(
+            page(serde_json::json!(false), serde_json::json!("AQHT"))
+                .posts()
+                .1,
+            None
+        );
+        assert_eq!(
+            page(serde_json::json!(true), serde_json::json!("a&b"))
+                .posts()
+                .1,
+            None
+        );
+    }
+
+    /// A tab's cursor goes back only in the shape Instagram hands it out.
+    #[test]
+    fn a_tab_cursor_of_another_shape_is_refused() {
+        for good in ["AQHT0vU8QRVn5wKUsKTgqbp1zP3QVQhsRHZDYtRIy8j-_", "a"] {
+            assert!(reels_cursor_has_its_shape(good), "{good}");
+        }
+        for bad in ["", "a b", "a&b=c", "a/b", "a+b", "a=", &"A".repeat(201)] {
+            assert!(!reels_cursor_has_its_shape(bad), "{bad}");
+        }
+        for good in ["3807824420233075826", "1"] {
+            assert!(tagged_cursor_has_its_shape(good), "{good}");
+        }
+        for bad in ["", "None", "-1", "12a", &"1".repeat(21)] {
+            assert!(!tagged_cursor_has_its_shape(bad), "{bad}");
+        }
     }
 
     #[test]
