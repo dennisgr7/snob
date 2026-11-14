@@ -309,17 +309,20 @@ impl AccountPaths {
     /// not a login, and a session somebody still holds from before the
     /// purge must stay refused once it is back. A login lets its own session
     /// in after ([`Self::admit_session`]).
+    ///
+    /// **The directory is never there without that list**, not for a moment:
+    /// with none it would send as every session ([`Self::signed_in`]), so it
+    /// is made elsewhere with the list inside and moved to its name
+    /// ([`make_signed_out`]). One that is there is only restricted, never
+    /// made by `create_dir_all`, which would make one that went meanwhile
+    /// again, bare.
     pub fn ensure_dirs(&self) -> Result<(), PathError> {
         self.app.ensure_dirs()?;
-        let made = !self.dir().try_exists().unwrap_or(true);
-        create_private_dir(&self.dir())?;
-        if made {
-            start_signed_out(&self.dir()).map_err(|source| PathError::Write {
-                path: self.signed_in(),
-                source,
-            })?;
+        let dir = self.dir();
+        if !dir.try_exists().unwrap_or(true) {
+            make_signed_out(&dir)?;
         }
-        Ok(())
+        restrict_to_this_account(&dir)
     }
 
     /// Which sessions of the account may be sent as, by any process on this
@@ -568,6 +571,57 @@ pub(crate) fn start_signed_out(dir: &Path) -> std::io::Result<()> {
     match std::fs::File::create_new(dir.join(SIGNED_IN)) {
         Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => Err(e),
         _ => Ok(()),
+    }
+}
+
+/// Makes `dir`, an account's directory that is not there, **with its empty
+/// list of who is signed in already inside**: built beside it under a name of
+/// this process's own, private, and moved to its name in one step, so no
+/// process ever finds the directory without the list.
+///
+/// Another process may make it in between. Then this one's is thrown away
+/// and theirs stands, made the same way. (On Unix a move replaces a directory
+/// that is there and empty, which is one no list was given: it gets this
+/// one's.) What a run killed between the two steps leaves is a directory
+/// that is nobody's account, holding an empty file.
+fn make_signed_out(dir: &Path) -> Result<(), PathError> {
+    static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    let making = dir.with_extension(format!(
+        "making-{}-{}",
+        std::process::id(),
+        MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    create_fresh_private_dir(&making)?;
+    let mut moved = start_signed_out(&making);
+    if moved.is_ok() {
+        // A directory just made can be held for an instant by something that
+        // watches the disk; a name taken meanwhile does not wait itself away.
+        let mut tries = 0u64;
+        moved = loop {
+            match std::fs::rename(&making, dir) {
+                Ok(()) => break Ok(()),
+                Err(e) if tries == 9 || dir.is_dir() => break Err(e),
+                Err(_) => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20 * tries));
+                }
+            }
+        };
+    }
+    match moved {
+        Ok(()) => Ok(()),
+        Err(source) => {
+            let _ = std::fs::remove_dir_all(&making);
+            if dir.is_dir() {
+                Ok(())
+            } else {
+                Err(PathError::Create {
+                    path: dir.to_path_buf(),
+                    source,
+                })
+            }
+        }
     }
 }
 
@@ -846,6 +900,27 @@ pub fn replace_private(
 ) -> Result<(), (PathBuf, std::io::Error)> {
     write_new_private(temporary, contents).map_err(|e| (temporary.to_path_buf(), e))?;
     std::fs::rename(temporary, path).map_err(|e| (path.to_path_buf(), e))
+}
+
+/// [`replace_private`] for a file two processes may save at once (a session,
+/// `watch.toml`): one writer at a time, under a lock on `<temporary>.lock`.
+///
+/// Unlocked, a second writer removes the first's temporary and makes its own,
+/// the first moves that one into place half written, and the second fails on
+/// a temporary that is gone. **A lock, not a temporary of each writer's
+/// own**: with its one name, what a killed writer leaves (for a session, the
+/// cookie) is removed by the next save and by a sign-out, where names of
+/// their own would pile up with nobody able to say which are dead.
+pub fn replace_private_alone(
+    path: &Path,
+    temporary: &Path,
+    contents: &[u8],
+) -> Result<(), (PathBuf, std::io::Error)> {
+    let mut lock = temporary.as_os_str().to_owned();
+    lock.push(".lock");
+    let lock = PathBuf::from(lock);
+    let _held = lock_file(&lock).map_err(|e| (lock.clone(), e))?;
+    replace_private(path, temporary, contents)
 }
 
 /// Opens `path`, creating it empty when it is not there, and takes an
@@ -2011,6 +2086,91 @@ mod tests {
             vec![windows_acl::current_user_sid()],
             "somebody other than this account is named in the directory's DACL"
         );
+    }
+
+    /// A directory with no list sends as every session, so an account's must
+    /// not be there without one even for the instant between making it and
+    /// writing the list: after a `purge`, that instant handed a session held
+    /// from before its account back. Somebody watching the accounts while
+    /// many are made never finds one without its list.
+    #[test]
+    fn an_account_directory_is_never_there_without_its_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::rooted_at(tmp.path());
+        paths.ensure_dirs().unwrap();
+        std::fs::create_dir_all(paths.accounts_dir()).unwrap();
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let accounts = 60u64;
+
+        std::thread::scope(|scope| {
+            let watcher = scope.spawn(|| {
+                let mut bare = Vec::new();
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    for pk in paths.account_dirs() {
+                        let account = paths.account(pk);
+                        if !account.signed_in().exists() && account.dir().exists() {
+                            bare.push(pk);
+                        }
+                    }
+                }
+                bare
+            });
+            for pk in 1..=accounts {
+                paths.account(snob_core::Pk::new(pk)).ensure_dirs().unwrap();
+            }
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+            let bare = watcher.join().unwrap();
+            assert!(bare.is_empty(), "found without a list: {bare:?}");
+        });
+
+        let made: Vec<_> = std::fs::read_dir(paths.accounts_dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(made.len() as u64, accounts, "something was left: {made:?}");
+        for pk in 1..=accounts {
+            let account = paths.account(snob_core::Pk::new(pk));
+            assert_eq!(std::fs::read(account.signed_in()).unwrap(), b"");
+            assert!(account.refuses_session(snob_core::Epoch::new(1)));
+        }
+    }
+
+    /// Two processes saving one file at once (a session the browser rotated,
+    /// written back by a command and by the monitor) each go through the one
+    /// temporary. Unlocked, one removed the other's and the other moved a
+    /// half-written file into place; a reader must only ever find a whole
+    /// one, and no writer may fail.
+    #[test]
+    fn two_writers_of_one_file_never_leave_half_of_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.json");
+        let temporary = tmp.path().join(".session.json.tmp");
+        let whole = |byte: u8| vec![byte; 64 * 1024];
+
+        std::thread::scope(|scope| {
+            let writers: Vec<_> = b"ab"
+                .iter()
+                .map(|&byte| {
+                    let (path, temporary) = (&path, &temporary);
+                    scope.spawn(move || {
+                        for _ in 0..40 {
+                            replace_private_alone(path, temporary, &whole(byte))
+                                .unwrap_or_else(|(at, e)| panic!("{}: {e}", at.display()));
+                        }
+                    })
+                })
+                .collect();
+            while writers.iter().any(|writer| !writer.is_finished()) {
+                if let Ok(read) = std::fs::read(&path) {
+                    assert!(
+                        read == whole(b'a') || read == whole(b'b'),
+                        "half a file was in place: {} bytes",
+                        read.len()
+                    );
+                }
+            }
+        });
+        assert!(!temporary.exists(), "a temporary was left behind");
     }
 
     /// The DACL is written once a process for each directory and only read

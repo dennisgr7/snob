@@ -69,16 +69,16 @@ pub fn find_pk_by_username(conn: &Connection, username: &str) -> Result<Option<P
     }
 
     let pk = conn
-        .query_row(
-            "SELECT u.pk FROM users u JOIN accounts a ON a.pk = u.pk
-             WHERE u.username = ?1 COLLATE NOCASE
-             ORDER BY a.polled_at DESC, u.pk LIMIT 1",
-            params![username],
-            |row| row.get(0),
-        )
+        .query_row(PK_BY_USERNAME, params![username], |row| row.get(0))
         .optional()?;
     Ok(pk.map(super::pk_from_sql))
 }
+
+/// Sought in `users_username_nocase` (`021_lookup_indexes.sql`), as
+/// `users::pk_named` is.
+const PK_BY_USERNAME: &str = "SELECT u.pk FROM users u JOIN accounts a ON a.pk = u.pk
+             WHERE u.username = ?1 COLLATE NOCASE
+             ORDER BY a.polled_at DESC, u.pk LIMIT 1";
 
 /// The account the session belongs to, as this database recorded it; `None`
 /// before anything ran. A login as somebody else leaves the old row behind,
@@ -119,6 +119,16 @@ mod tests {
     use super::*;
     use crate::store::{Store, users};
     use snob_core::model::User;
+
+    /// Whichever table the plan starts from, `users` is never read whole: it
+    /// is sought by name in the index, or by the pk of a tracked account.
+    #[test]
+    fn a_tracked_account_is_found_by_name_without_scanning_users() {
+        let db = Store::in_memory().unwrap();
+        let plan = crate::store::plan(db.conn(), PK_BY_USERNAME);
+        assert!(plan.contains("users_username_nocase"), "{plan}");
+        assert!(!plan.contains("SCAN u"), "{plan}");
+    }
 
     fn with_account(db: &Store, pk: Pk) {
         users::upsert(

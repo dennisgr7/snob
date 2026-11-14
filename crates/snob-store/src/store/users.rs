@@ -88,16 +88,16 @@ pub fn pk_named(conn: &Connection, name: &str) -> Result<Option<Pk>, StoreError>
         return Ok(None);
     }
     let pk = conn
-        .query_row(
-            "SELECT pk FROM users
-             WHERE username = ?1 COLLATE NOCASE AND username <> ''
-             ORDER BY last_seen DESC, pk LIMIT 1",
-            params![name],
-            |row| row.get(0),
-        )
+        .query_row(PK_NAMED, params![name], |row| row.get(0))
         .optional()?;
     Ok(pk.map(pk_from_sql))
 }
+
+/// Sought in `users_username_nocase` (`021_lookup_indexes.sql`): the
+/// comparison has to stay `COLLATE NOCASE` for the index to serve it.
+const PK_NAMED: &str = "SELECT pk FROM users
+             WHERE username = ?1 COLLATE NOCASE AND username <> ''
+             ORDER BY last_seen DESC, pk LIMIT 1";
 
 /// The columns [`row_to_user`] reads, in its order: `is_private` and
 /// `is_verified` are both `Option<bool>`, so a transposed pair compiles.
@@ -129,6 +129,16 @@ pub(crate) fn row_to_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
 mod tests {
     use super::*;
     use crate::store::Store;
+
+    /// `users` holds a row for every account ever seen on any page: a name is
+    /// looked up in the index, never by reading them all.
+    #[test]
+    fn a_name_is_sought_in_the_index_not_scanned_for() {
+        let db = Store::in_memory().unwrap();
+        let plan = crate::store::plan(db.conn(), PK_NAMED);
+        assert!(plan.contains("users_username_nocase"), "{plan}");
+        assert!(!plan.contains("SCAN users"), "{plan}");
+    }
 
     /// The names filed against an account, oldest first.
     ///

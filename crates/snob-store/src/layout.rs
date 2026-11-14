@@ -258,14 +258,16 @@ pub fn unadopt(paths: &AppPaths, pk: Pk) -> Result<bool, LayoutError> {
 }
 
 /// Removes the account's directory when all it holds is its list of who is
-/// signed in and that list's lock. Moved aside first and removed there, so
+/// signed in and locks, which hold nothing (the list's, and the one a save of
+/// its session took). Moved aside first and removed there, so
 /// nothing finds the directory without its list on the way: with none it
 /// would send as every session.
 fn remove_if_only_the_list(account: &AccountPaths) {
     let dir = account.dir();
     let only_the_list = std::fs::read_dir(&dir).is_ok_and(|entries| {
         entries.flatten().all(|entry| {
-            entry.path() == account.signed_in() || entry.path() == account.signed_in_lock()
+            entry.path() == account.signed_in()
+                || entry.path().extension().is_some_and(|e| e == "lock")
         })
     });
     if !only_the_list {

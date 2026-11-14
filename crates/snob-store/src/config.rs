@@ -350,8 +350,9 @@ pub fn write(paths: &AppPaths, contents: &str) -> Result<PathBuf, ConfigError> {
         crate::paths::create_private_dir(parent)?;
     }
 
+    // One writer at a time: `watch setup` and the layout's move may both write.
     let temporary = path.with_extension("toml.new");
-    crate::paths::replace_private(&path, &temporary, contents.as_bytes())
+    crate::paths::replace_private_alone(&path, &temporary, contents.as_bytes())
         .map_err(|(path, source)| ConfigError::Write { path, source })?;
     Ok(path)
 }

@@ -454,6 +454,42 @@ pub fn delete_partials(
     Ok(deleted)
 }
 
+/// How many of a list's newest whole captures are kept whatever their age:
+/// the newest is what the cache serves, and the one before it is what `snob
+/// changes` compares it with when asked nothing else.
+const NEWEST_KEPT: i64 = 2;
+
+/// Removes the whole captures nothing needs any more, and returns how many:
+/// those taken longer ago than `watch::KEEP_FOR_SECS`, but for the capture
+/// each of the monitor's marks points at (the baseline of its next diff;
+/// deleting it is one silently missed report) and each list's newest
+/// [`NEWEST_KEPT`]. A capture not finished is never one: a resume may be under
+/// way, and [`delete_partials`] clears those.
+///
+/// **One rule for the monitor (`watch::prune`) and for a walk that has just
+/// finished**, so that somebody who never runs the monitor does not keep
+/// every capture for ever. It touches no report: the outbox is the monitor's
+/// to sweep, since only its run can say one was given up on.
+pub fn prune(conn: &Connection, now: Epoch) -> Result<usize, StoreError> {
+    let cutoff = now - Duration::from_secs(super::watch::KEEP_FOR_SECS as u64);
+    Ok(conn.execute(
+        "DELETE FROM snapshots
+         WHERE complete = 1
+           AND taken_at IS NOT NULL
+           AND taken_at < ?1
+           AND id NOT IN (SELECT snapshot_id FROM watch_marks WHERE snapshot_id IS NOT NULL)
+           AND id NOT IN (
+             SELECT id FROM (
+               SELECT id, row_number() OVER (
+                 PARTITION BY account_pk, kind ORDER BY taken_at DESC, id DESC
+               ) AS rank
+               FROM usable_snapshots
+             ) WHERE rank <= ?2
+           )",
+        params![cutoff.get(), NEWEST_KEPT],
+    )?)
+}
+
 /// A capture as `snob snapshots` lists it: every row, finished or not, with
 /// what the capture itself recorded about how it went.
 #[derive(Debug, Clone, PartialEq, Eq)]
