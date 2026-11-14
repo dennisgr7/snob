@@ -108,20 +108,29 @@ pub(crate) fn builder(
     }
 }
 
+/// The builder of the clients below: no credential, and the platform's
+/// store whatever the Instagram client was told to trust.
+fn unnarrowed(
+    user_agent: &str,
+    redirect: reqwest::redirect::Policy,
+    deadline: Deadline,
+) -> reqwest::Result<reqwest::ClientBuilder> {
+    builder(
+        user_agent,
+        redirect,
+        CONNECT_TIMEOUT,
+        deadline,
+        &Trust::Platform,
+    )
+}
+
 /// A client that carries no credential. `redirect` has no default: the CDN
 /// follows redirects within itself, a webhook POST follows none.
 pub fn plain(
     user_agent: &str,
     redirect: reqwest::redirect::Policy,
 ) -> reqwest::Result<reqwest::Client> {
-    builder(
-        user_agent,
-        redirect,
-        CONNECT_TIMEOUT,
-        Deadline::Whole(REQUEST_TIMEOUT),
-        &Trust::Platform,
-    )?
-    .build()
+    unnarrowed(user_agent, redirect, Deadline::Whole(REQUEST_TIMEOUT))?.build()
 }
 
 /// [`plain`] for a file: no limit on the whole request, only on the wait for
@@ -130,12 +139,10 @@ pub fn plain_download(
     user_agent: &str,
     redirect: reqwest::redirect::Policy,
 ) -> reqwest::Result<reqwest::Client> {
-    builder(
+    unnarrowed(
         user_agent,
         redirect,
-        CONNECT_TIMEOUT,
         Deadline::BetweenReads(REQUEST_TIMEOUT),
-        &Trust::Platform,
     )?
     .build()
 }
@@ -148,15 +155,9 @@ pub fn plain_direct(
     user_agent: &str,
     redirect: reqwest::redirect::Policy,
 ) -> reqwest::Result<reqwest::Client> {
-    builder(
-        user_agent,
-        redirect,
-        CONNECT_TIMEOUT,
-        Deadline::Whole(REQUEST_TIMEOUT),
-        &Trust::Platform,
-    )?
-    .no_proxy()
-    .build()
+    unnarrowed(user_agent, redirect, Deadline::Whole(REQUEST_TIMEOUT))?
+        .no_proxy()
+        .build()
 }
 
 /// Reads a response body, stopping at `cap`, so the far end cannot decide how

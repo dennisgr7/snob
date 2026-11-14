@@ -31,7 +31,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use snob_core::EpochMs;
-use snob_core::budget::{AnswerTime, RateBudget, Sitting, SittingRule, SlowRule};
+use snob_core::budget::{AnswerTime, RateBudget, RateBudgetError, Sitting, SittingRule, SlowRule};
+
+use crate::error::IgError;
 
 /// What the web app asks for, `count=12` on both lists, of which it gets
 /// eight to twelve back. A list endpoint serves up to fifty when asked, so
@@ -201,6 +203,10 @@ fn jitter((min, max): (u64, u64)) -> Duration {
     Duration::from_millis(fastrand::u64(min..=max))
 }
 
+fn budget_error(error: RateBudgetError) -> IgError {
+    IgError::Budget(error.to_string())
+}
+
 /// Who pays for a request, and who gets told when paying means waiting. The
 /// only way to Instagram is through [`crate::client::IgClient`], and the only
 /// way through it is past here. Its wait adds to the walker's own step.
@@ -249,11 +255,7 @@ impl Pacer {
     /// (`Sitting::after_page`); the page that fills it owes a rest drawn from
     /// `pace` ([`Self::rest_owed`]). Kept by the budget, so it outlives the
     /// process and spans lists. Answers with the sitting as this page left it.
-    pub async fn page_walked(
-        &self,
-        pace: &Pace,
-        at: EpochMs,
-    ) -> Result<Sitting, crate::error::IgError> {
+    pub async fn page_walked(&self, pace: &Pace, at: EpochMs) -> Result<Sitting, IgError> {
         let rule = pace.sitting_rule();
         if self.budget.keeps_sitting() {
             return self
@@ -273,7 +275,7 @@ impl Pacer {
         &self,
         pace: &Pace,
         now: EpochMs,
-    ) -> Result<Option<(EpochMs, Duration)>, crate::error::IgError> {
+    ) -> Result<Option<(EpochMs, Duration)>, IgError> {
         let until = if self.budget.keeps_sitting() {
             self.off_thread(move |budget| budget.rest_owed(now)).await?
         } else {
@@ -290,7 +292,7 @@ impl Pacer {
 
     /// Records that the rest ending at `until` was paid: the sitting starts
     /// again.
-    pub async fn rested(&self, until: EpochMs) -> Result<(), crate::error::IgError> {
+    pub async fn rested(&self, until: EpochMs) -> Result<(), IgError> {
         if self.budget.keeps_sitting() {
             return self.off_thread(move |budget| budget.rest_paid(until)).await;
         }
@@ -385,7 +387,7 @@ impl Pacer {
         self
     }
 
-    /// Refuses, with [`crate::error::IgError::WaitTooLong`], any wait for the
+    /// Refuses, with [`IgError::WaitTooLong`], any wait for the
     /// budget longer than `limit` instead of sleeping through it.
     ///
     /// **Only waits for the budget**: the pace's steps and a sitting's rest
@@ -404,11 +406,11 @@ impl Pacer {
     /// `Err` when `wait` is past [`Self::max_wait`]. **A refusal stops the
     /// run**, by canceling its token: every later request would meet the same
     /// budget.
-    pub(crate) fn within_the_limit(&self, wait: Duration) -> Result<(), crate::error::IgError> {
+    pub(crate) fn within_the_limit(&self, wait: Duration) -> Result<(), IgError> {
         match self.max_wait {
             Some(limit) if wait > limit => {
                 self.cancel.cancel();
-                Err(crate::error::IgError::WaitTooLong { wait, limit })
+                Err(IgError::WaitTooLong { wait, limit })
             }
             _ => Ok(()),
         }
@@ -433,61 +435,49 @@ impl Pacer {
     }
 
     /// Until when the account is in cooldown, if it is.
-    pub fn cooldown(&self) -> Result<Option<EpochMs>, crate::error::IgError> {
-        self.budget
-            .cooldown()
-            .map_err(|e| crate::error::IgError::Budget(e.to_string()))
+    pub fn cooldown(&self) -> Result<Option<EpochMs>, IgError> {
+        self.budget.cooldown().map_err(budget_error)
     }
 
     /// The brake on every account, when one stands; names the accounts behind
     /// it.
-    pub fn brake(&self) -> Result<Option<snob_core::budget::Brake>, crate::error::IgError> {
-        self.budget
-            .brake()
-            .map_err(|e| crate::error::IgError::Budget(e.to_string()))
+    pub fn brake(&self) -> Result<Option<snob_core::budget::Brake>, IgError> {
+        self.budget.brake().map_err(budget_error)
     }
 
     /// Records that Instagram pushed back.
-    pub fn start_cooldown(
-        &self,
-        reason: &str,
-        minimum: Duration,
-    ) -> Result<EpochMs, crate::error::IgError> {
+    pub fn start_cooldown(&self, reason: &str, minimum: Duration) -> Result<EpochMs, IgError> {
         self.budget
             .start_cooldown(reason, minimum)
-            .map_err(|e| crate::error::IgError::Budget(e.to_string()))
+            .map_err(budget_error)
     }
 
     /// [`Self::cooldown`] off the async worker ([`Self::off_thread`]): it runs
     /// before every request, where a worker blocked on the database's busy
     /// timeout is a Ctrl+C that does nothing.
-    pub(crate) async fn cooldown_off_thread(
-        &self,
-    ) -> Result<Option<EpochMs>, crate::error::IgError> {
+    pub(crate) async fn cooldown_off_thread(&self) -> Result<Option<EpochMs>, IgError> {
         self.off_thread(|budget| budget.cooldown()).await
     }
 
     /// How long until `accounts` more may be read today
     /// ([`RateBudget::accounts_wait`]).
-    pub async fn accounts_wait(&self, accounts: u32) -> Result<Duration, crate::error::IgError> {
+    pub async fn accounts_wait(&self, accounts: u32) -> Result<Duration, IgError> {
         self.off_thread(move |budget| budget.accounts_wait(accounts))
             .await
     }
 
     /// Records the accounts a list page carried.
-    pub async fn spend_accounts(&self, accounts: u32) -> Result<(), crate::error::IgError> {
+    pub async fn spend_accounts(&self, accounts: u32) -> Result<(), IgError> {
         self.off_thread(move |budget| budget.spend_accounts(accounts))
             .await
     }
 
     /// How many accounts may still be read today without waiting.
-    pub fn accounts_left(&self) -> Result<u32, crate::error::IgError> {
-        self.budget
-            .accounts_left()
-            .map_err(|e| crate::error::IgError::Budget(e.to_string()))
+    pub fn accounts_left(&self) -> Result<u32, IgError> {
+        self.budget.accounts_left().map_err(budget_error)
     }
 
-    async fn charge(&self, write: bool) -> Result<Duration, crate::error::IgError> {
+    async fn charge(&self, write: bool) -> Result<Duration, IgError> {
         self.off_thread(move |budget| {
             if write {
                 budget.reserve_write()
@@ -503,35 +493,33 @@ impl Pacer {
     /// `#[tokio::test]` builds.
     async fn off_thread<T: Send + 'static>(
         &self,
-        ask: impl FnOnce(&dyn RateBudget) -> Result<T, snob_core::budget::RateBudgetError>
-        + Send
-        + 'static,
-    ) -> Result<T, crate::error::IgError> {
+        ask: impl FnOnce(&dyn RateBudget) -> Result<T, RateBudgetError> + Send + 'static,
+    ) -> Result<T, IgError> {
         let budget = Arc::clone(&self.budget);
         tokio::task::spawn_blocking(move || ask(budget.as_ref()))
             .await
-            .map_err(|e| crate::error::IgError::Budget(format!("the budget task failed: {e}")))?
-            .map_err(|e| crate::error::IgError::Budget(e.to_string()))
+            .map_err(|e| IgError::Budget(format!("the budget task failed: {e}")))?
+            .map_err(budget_error)
     }
 
     /// Takes a slot and waits for it. **Every request goes through here**,
     /// which is why cancellation and the cooldown are read here, before the
     /// reservation: no request is sent after cancellation, and a refusal
     /// never charges for itself.
-    pub(crate) async fn clear_to_send(&self) -> Result<(), crate::error::IgError> {
+    pub(crate) async fn clear_to_send(&self) -> Result<(), IgError> {
         self.clear(false, true).await
     }
 
     /// Pays for a read that has **already been sent** (a redirect hop the
     /// browser followed, `IgClient::pay_for_hops`): as [`Self::clear_to_send`]
     /// but for the limit on the wait, which cannot un-send anything.
-    pub(crate) async fn pay_for_sent(&self) -> Result<(), crate::error::IgError> {
+    pub(crate) async fn pay_for_sent(&self) -> Result<(), IgError> {
         self.clear(false, false).await
     }
 
     /// The same for a write, which pays the read budgets and the write
     /// bucket. A separate method, not a flag a caller could pass wrongly.
-    pub(crate) async fn clear_to_send_write(&self) -> Result<(), crate::error::IgError> {
+    pub(crate) async fn clear_to_send_write(&self) -> Result<(), IgError> {
         self.clear(true, true).await
     }
 
@@ -539,12 +527,12 @@ impl Pacer {
     /// a write from the browser pays that wait before its profile is loaded
     /// (`IgClient::write_from_the_page`). [`Self::clear_to_send_write`] still
     /// charges it.
-    pub(crate) async fn rested_for_a_write(&self) -> Result<(), crate::error::IgError> {
+    pub(crate) async fn rested_for_a_write(&self) -> Result<(), IgError> {
         if self.cancel.is_canceled() {
-            return Err(crate::error::IgError::Canceled);
+            return Err(IgError::Canceled);
         }
         if let Some(until_ms) = self.cooldown_off_thread().await? {
-            return Err(crate::error::IgError::InCooldown { until_ms });
+            return Err(IgError::InCooldown { until_ms });
         }
         let owed = self.off_thread(|budget| budget.write_wait()).await?;
         if owed.is_zero() {
@@ -555,14 +543,14 @@ impl Pacer {
             announce(owed);
         }
         if self.cancel.sleep_or_cancel(owed).await {
-            return Err(crate::error::IgError::Canceled);
+            return Err(IgError::Canceled);
         }
         Ok(())
     }
 
-    async fn clear(&self, write: bool, limited: bool) -> Result<(), crate::error::IgError> {
+    async fn clear(&self, write: bool, limited: bool) -> Result<(), IgError> {
         if self.cancel.is_canceled() {
-            return Err(crate::error::IgError::Canceled);
+            return Err(IgError::Canceled);
         }
 
         // **Nothing is spent during a cooldown.** The budget charges its
@@ -570,7 +558,7 @@ impl Pacer {
         // under the callers' own gates: every request passes through here.
         // (`SNOB_IGNORE_COOLDOWN` is read inside `SqliteRateBudget::cooldown`.)
         if let Some(until_ms) = self.cooldown_off_thread().await? {
-            return Err(crate::error::IgError::InCooldown { until_ms });
+            return Err(IgError::InCooldown { until_ms });
         }
 
         // Asked before the charge, which is committed whether or not the
@@ -600,7 +588,7 @@ impl Pacer {
             announce(owed);
         }
         if self.cancel.sleep_or_cancel(owed).await {
-            return Err(crate::error::IgError::Canceled);
+            return Err(IgError::Canceled);
         }
         Ok(())
     }
@@ -664,42 +652,35 @@ impl KeptSitting {
 
 #[cfg(test)]
 impl RateBudget for KeptSitting {
-    fn reserve(&self) -> Result<Duration, snob_core::budget::RateBudgetError> {
+    fn reserve(&self) -> Result<Duration, RateBudgetError> {
         Ok(Duration::ZERO)
     }
-    fn reserve_write(&self) -> Result<Duration, snob_core::budget::RateBudgetError> {
+    fn reserve_write(&self) -> Result<Duration, RateBudgetError> {
         Ok(Duration::ZERO)
     }
-    fn cooldown(&self) -> Result<Option<EpochMs>, snob_core::budget::RateBudgetError> {
+    fn cooldown(&self) -> Result<Option<EpochMs>, RateBudgetError> {
         Ok(None)
     }
     fn start_cooldown(
         &self,
         _reason: &str,
         _minimum: Duration,
-    ) -> Result<EpochMs, snob_core::budget::RateBudgetError> {
+    ) -> Result<EpochMs, RateBudgetError> {
         Ok(EpochMs::new(0))
     }
     fn keeps_sitting(&self) -> bool {
         true
     }
-    fn sitting_page(
-        &self,
-        at: EpochMs,
-        rule: SittingRule,
-    ) -> Result<Sitting, snob_core::budget::RateBudgetError> {
+    fn sitting_page(&self, at: EpochMs, rule: SittingRule) -> Result<Sitting, RateBudgetError> {
         let mut sitting = self.sitting.lock().unwrap();
         let after = Sitting::after_page(*sitting, at, rule);
         *sitting = Some(after);
         Ok(after)
     }
-    fn rest_owed(
-        &self,
-        now: EpochMs,
-    ) -> Result<Option<EpochMs>, snob_core::budget::RateBudgetError> {
+    fn rest_owed(&self, now: EpochMs) -> Result<Option<EpochMs>, RateBudgetError> {
         Ok(self.sitting().and_then(|s| s.rest_owed(now)))
     }
-    fn rest_paid(&self, until: EpochMs) -> Result<(), snob_core::budget::RateBudgetError> {
+    fn rest_paid(&self, until: EpochMs) -> Result<(), RateBudgetError> {
         let mut sitting = self.sitting.lock().unwrap();
         *sitting = sitting.map(|s| s.rested(until));
         Ok(())
@@ -726,30 +707,22 @@ mod tests {
     struct KeptAnswers(Vec<Duration>);
 
     impl RateBudget for KeptAnswers {
-        fn reserve(&self) -> Result<Duration, snob_core::budget::RateBudgetError> {
+        fn reserve(&self) -> Result<Duration, RateBudgetError> {
             Ok(Duration::ZERO)
         }
-        fn reserve_write(&self) -> Result<Duration, snob_core::budget::RateBudgetError> {
+        fn reserve_write(&self) -> Result<Duration, RateBudgetError> {
             Ok(Duration::ZERO)
         }
-        fn cooldown(&self) -> Result<Option<EpochMs>, snob_core::budget::RateBudgetError> {
+        fn cooldown(&self) -> Result<Option<EpochMs>, RateBudgetError> {
             Ok(None)
         }
-        fn start_cooldown(
-            &self,
-            _: &str,
-            _: Duration,
-        ) -> Result<EpochMs, snob_core::budget::RateBudgetError> {
+        fn start_cooldown(&self, _: &str, _: Duration) -> Result<EpochMs, RateBudgetError> {
             Ok(EpochMs::new(0))
         }
         fn keeps_answers(&self) -> bool {
             true
         }
-        fn recent_waits(
-            &self,
-            _: EpochMs,
-            n: usize,
-        ) -> Result<Vec<Duration>, snob_core::budget::RateBudgetError> {
+        fn recent_waits(&self, _: EpochMs, n: usize) -> Result<Vec<Duration>, RateBudgetError> {
             Ok(self.0.iter().take(n).copied().collect())
         }
     }
@@ -828,27 +801,27 @@ mod tests {
     }
 
     impl RateBudget for Rationing {
-        fn reserve(&self) -> Result<Duration, snob_core::budget::RateBudgetError> {
+        fn reserve(&self) -> Result<Duration, RateBudgetError> {
             self.charged.fetch_add(1, Ordering::Relaxed);
             Ok(Duration::from_secs(900))
         }
-        fn reserve_write(&self) -> Result<Duration, snob_core::budget::RateBudgetError> {
+        fn reserve_write(&self) -> Result<Duration, RateBudgetError> {
             self.reserve()
         }
-        fn read_wait(&self) -> Result<Duration, snob_core::budget::RateBudgetError> {
+        fn read_wait(&self) -> Result<Duration, RateBudgetError> {
             Ok(Duration::from_secs(900))
         }
-        fn write_wait(&self) -> Result<Duration, snob_core::budget::RateBudgetError> {
+        fn write_wait(&self) -> Result<Duration, RateBudgetError> {
             Ok(Duration::from_secs(900))
         }
-        fn cooldown(&self) -> Result<Option<EpochMs>, snob_core::budget::RateBudgetError> {
+        fn cooldown(&self) -> Result<Option<EpochMs>, RateBudgetError> {
             Ok(None)
         }
         fn start_cooldown(
             &self,
             _reason: &str,
             _minimum: Duration,
-        ) -> Result<EpochMs, snob_core::budget::RateBudgetError> {
+        ) -> Result<EpochMs, RateBudgetError> {
             Ok(EpochMs::new(0))
         }
     }
@@ -867,7 +840,7 @@ mod tests {
             rested.rested_for_a_write().await,
         ] {
             assert!(
-                matches!(refused, Err(crate::error::IgError::WaitTooLong { .. })),
+                matches!(refused, Err(IgError::WaitTooLong { .. })),
                 "{refused:?}"
             );
         }
@@ -876,10 +849,7 @@ mod tests {
 
         // The refusal stops the run, as Ctrl+C does: nothing after it goes.
         assert!(read.cancel_token().is_canceled());
-        assert!(matches!(
-            read.clear_to_send().await,
-            Err(crate::error::IgError::Canceled)
-        ));
+        assert!(matches!(read.clear_to_send().await, Err(IgError::Canceled)));
 
         // What was already sent is paid for past the limit.
         let sent = Pacer::new(budget.clone()).waiting_at_most(Some(Duration::from_secs(60)));
@@ -1133,7 +1103,7 @@ mod tests {
         pacer.cancel_token().cancel();
 
         let error = pacer.clear_to_send().await.unwrap_err();
-        assert!(matches!(error, crate::error::IgError::Canceled));
+        assert!(matches!(error, IgError::Canceled));
         assert_eq!(
             pacer.spent(),
             1,
@@ -1141,7 +1111,7 @@ mod tests {
         );
     }
 
-    use snob_core::budget::RateBudgetError;
+    use RateBudgetError;
 
     /// A budget that is in cooldown and counts every reservation it is asked
     /// for, so a test can assert that it was asked for none.
@@ -1194,7 +1164,7 @@ mod tests {
 
         let error = pacer.clear_to_send().await.unwrap_err();
         assert!(
-            matches!(error, crate::error::IgError::InCooldown { until_ms: u } if u == until_ms),
+            matches!(error, IgError::InCooldown { until_ms: u } if u == until_ms),
             "a read during a cooldown answers InCooldown, carrying when it lifts: {error:?}"
         );
 
@@ -1204,7 +1174,7 @@ mod tests {
         let error = pacer.clear_to_send_write().await.unwrap_err();
         assert!(matches!(
             error,
-            crate::error::IgError::InCooldown { until_ms: u } if u == until_ms
+            IgError::InCooldown { until_ms: u } if u == until_ms
         ));
 
         assert_eq!(

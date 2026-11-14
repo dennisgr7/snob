@@ -42,18 +42,27 @@ pub(super) fn api_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::none()
 }
 
-pub(super) fn build_client(
+/// A client under the trust the run chose (`http::use_trust`).
+fn client_with(
     user_agent: &str,
     redirect: reqwest::redirect::Policy,
+    deadline: Deadline,
 ) -> Result<reqwest::Client, IgError> {
     Ok(crate::http::builder(
         user_agent,
         redirect,
         CONNECT_TIMEOUT,
-        Deadline::Whole(REQUEST_TIMEOUT),
+        deadline,
         &crate::http::chosen_trust(),
     )?
     .build()?)
+}
+
+pub(super) fn build_client(
+    user_agent: &str,
+    redirect: reqwest::redirect::Policy,
+) -> Result<reqwest::Client, IgError> {
+    client_with(user_agent, redirect, Deadline::Whole(REQUEST_TIMEOUT))
 }
 
 /// [`build_client`] for files off the CDN (see [`Deadline::BetweenReads`]).
@@ -61,14 +70,11 @@ pub(super) fn build_cdn_client(
     user_agent: &str,
     redirect: reqwest::redirect::Policy,
 ) -> Result<reqwest::Client, IgError> {
-    Ok(crate::http::builder(
+    client_with(
         user_agent,
         redirect,
-        CONNECT_TIMEOUT,
         Deadline::BetweenReads(REQUEST_TIMEOUT),
-        &crate::http::chosen_trust(),
-    )?
-    .build()?)
+    )
 }
 
 /// Reads a response body, refusing one that will not fit.

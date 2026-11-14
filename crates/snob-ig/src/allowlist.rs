@@ -390,10 +390,26 @@ fn posted(request: &PageRequest, path: &str, found: &Rediscovered) -> bool {
     }
 }
 
+/// The fields of a request's form, in its order: none without a body.
 fn form_of(request: &PageRequest) -> Vec<(String, String)> {
     url::form_urlencoded::parse(request.body.as_deref().unwrap_or_default().as_bytes())
         .into_owned()
         .collect()
+}
+
+fn field<'a>(form: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    form.iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, v)| v.as_str())
+}
+
+/// A header of `request`, by name in any case.
+fn header<'a>(request: &'a PageRequest, name: &str) -> Option<&'a str> {
+    request
+        .headers
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_str())
 }
 
 /// Whether `request` is the app's navigation to a route snob may be on: one
@@ -419,14 +435,10 @@ pub const MOST_STATUSES: usize = 50;
 fn show_many(request: &PageRequest) -> bool {
     let form = form_of(request);
     let names: Vec<&str> = form.iter().map(|(name, _)| name.as_str()).collect();
-    let field = |name: &str| {
-        form.iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.as_str())
-    };
     names == ["user_ids", "jazoest", "fb_dtsg"]
-        && field("user_ids").is_some_and(|ids| statuses_of(ids).is_some())
-        && field("jazoest").is_some_and(|j| !j.is_empty() && j.bytes().all(|b| b.is_ascii_digit()))
+        && field(&form, "user_ids").is_some_and(|ids| statuses_of(ids).is_some())
+        && field(&form, "jazoest")
+            .is_some_and(|j| !j.is_empty() && j.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn statuses_of(ids: &str) -> Option<usize> {
@@ -460,25 +472,12 @@ pub fn list_route(route: &str) -> bool {
 pub const PROFILE_TABS: [&str; 3] = ["reels", "tagged", "reposts"];
 
 fn operation_posted(request: &PageRequest, path: &str, found: &Rediscovered) -> Option<Operation> {
-    let form: Vec<(String, String)> =
-        url::form_urlencoded::parse(request.body.as_deref()?.as_bytes())
-            .into_owned()
-            .collect();
-    let field = |name: &str| {
-        form.iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.as_str())
-    };
-    let name = field("fb_api_req_friendly_name")?;
+    let form = form_of(request);
+    let name = field(&form, "fb_api_req_friendly_name")?;
     let operation = Operation::named(name)?;
-    let announced = request
-        .headers
-        .iter()
-        .find(|(n, _)| n.eq_ignore_ascii_case("x-fb-friendly-name"))
-        .map(|(_, v)| v.as_str());
-    let doc_id = field("doc_id")?;
+    let doc_id = field(&form, "doc_id")?;
     let holds = operation.path() == path
-        && announced == Some(name)
+        && header(request, "x-fb-friendly-name") == Some(name)
         && (operation.write().is_some()
             || doc_id == operation.doc_id()
             || found.get(operation) == Some(doc_id));
@@ -710,25 +709,11 @@ fn app_read(request: &PageRequest) -> bool {
     let Ok(url) = Url::parse(&request.url) else {
         return false;
     };
-    let Some(body) = request.body.as_deref() else {
-        return false;
-    };
-    let form: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
-        .into_owned()
-        .collect();
-    let field = |name: &str| {
-        form.iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.as_str())
-    };
-    let header = |name: &str| {
-        request
-            .headers
-            .iter()
-            .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.as_str())
-    };
-    let (Some(name), Some(doc_id)) = (field("fb_api_req_friendly_name"), field("doc_id")) else {
+    let form = form_of(request);
+    let (Some(name), Some(doc_id)) = (
+        field(&form, "fb_api_req_friendly_name"),
+        field(&form, "doc_id"),
+    ) else {
         return false;
     };
     let Some(read) = APP_READS.iter().find(|read| read.name == name) else {
@@ -740,13 +725,13 @@ fn app_read(request: &PageRequest) -> bool {
             root_field,
             asked_key,
         } => {
-            let asks = field("variables")
+            let asks = field(&form, "variables")
                 .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
                 .is_some_and(|v| v.get(asked_key).is_some());
-            is_doc_id(doc_id) && header("x-root-field-name") == root_field && asks
+            is_doc_id(doc_id) && header(request, "x-root-field-name") == root_field && asks
         }
     };
-    url.path() == read.path && header("x-fb-friendly-name") == Some(name) && number
+    url.path() == read.path && header(request, "x-fb-friendly-name") == Some(name) && number
 }
 
 /// Whether `path` is one of [`Rest`]'s, by pks of digits. Nothing else under
