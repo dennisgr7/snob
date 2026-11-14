@@ -67,7 +67,7 @@ use url::Url;
 
 use crate::client::page::{Method, PageRequest};
 use crate::graphql::Mutation;
-use crate::shortcode::MediaPk;
+use crate::shortcode::{CommentPk, MediaPk};
 use crate::web::{Ask, BULK_ROUTE_DEFINITIONS, NAVIGATION, SHOW_MANY};
 
 /// Which Relay endpoint an operation is sent to, which decides two of its
@@ -370,6 +370,13 @@ pub enum Rest {
     /// page is observed rather than assumed: the list scrolled to its end in
     /// the capture of 2026-11-14 asked for none.
     Likers(MediaPk),
+    /// The replies under one of a post's comments, by the post's pk and the
+    /// comment's: what the app asks when "View replies" under a comment is
+    /// clicked, from the post's page (7 of 7 over the captures of 2026-11-13
+    /// and 2026-11-14, always with the same three keys). **The first page
+    /// only**: no thread of either capture answered with more to read, so no
+    /// cursor has ever been seen to send back, and `min_id` is held empty.
+    Replies(MediaPk, CommentPk),
 }
 
 impl Rest {
@@ -381,6 +388,9 @@ impl Rest {
             Self::MediaInfo(pk) => format!("/api/v1/media/{pk}/info/"),
             Self::Comments(pk) => format!("/api/v1/media/{pk}/comments/"),
             Self::Likers(pk) => format!("/api/v1/media/{pk}/likers/"),
+            Self::Replies(pk, comment) => {
+                format!("/api/v1/media/{pk}/comments/{comment}/child_comments/")
+            }
         }
     }
 
@@ -404,7 +414,22 @@ impl Rest {
                 ("min_id", None),
                 ("sort_order", Some("popular")),
             ],
+            // Each held to the one value the app sent, the cursor empty: a
+            // value no capture shows would be a page nobody has seen asked
+            // for.
+            Self::Replies(..) => &[
+                ("min_id", Some("")),
+                ("is_chronological", Some("true")),
+                ("paging_direction", Some("view_more")),
+            ],
         }
+    }
+
+    /// Whether the read goes out with every one of its keys, in their
+    /// order, and no other: a thread's replies, which the app always asks
+    /// with the same three, so a call missing one is a call it never made.
+    fn takes_every_key(self) -> bool {
+        matches!(self, Self::Replies(..))
     }
 }
 
@@ -571,7 +596,12 @@ pub fn refused_ask(ask: &Ask) -> Option<String> {
                 keys.iter()
                     .any(|(key, only)| key == name && only.is_none_or(|only| only == value))
             });
-            (!held).then(|| format!("GET {}", read.path()))
+            let whole = !read.takes_every_key()
+                || query
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .eq(keys.iter().map(|(key, _)| *key));
+            (!(held && whole)).then(|| format!("GET {}", read.path()))
         }
     }
 }
@@ -840,9 +870,14 @@ fn app_read(request: &PageRequest) -> bool {
 }
 
 /// Whether `path` is one of [`Rest`]'s: a friendship list of an account,
-/// or a post, its comments or its likers, by a pk of digits. Nothing else
-/// under a post: not a thread's replies, and not the link the app makes for
-/// sharing it, which ties a visit to whoever shared it.
+/// or a post, its comments, its likers or the replies under one of its
+/// comments, by pks of digits. Nothing else under a post: not the link the
+/// app makes for sharing it, which ties a visit to whoever shared it.
+///
+/// **A thread's replies are read since the capture of 2026-11-14**, which
+/// showed "View replies" to be a plain GET under the comment, with the same
+/// three keys every time; a page of them names accounts, so it is charged
+/// to the day's accounts as a page of comments is.
 ///
 /// **The likers were kept out on purpose until 2026-11-13**, being a list of
 /// other people's accounts. They are read since, once that capture showed
@@ -857,10 +892,16 @@ fn rest_read(path: &str) -> bool {
             .and_then(|rest| rest.split_once('/'))
             .is_some_and(|(pk, rest)| digits(pk) && ends.contains(&rest))
     };
+    let replies = path
+        .strip_prefix("/api/v1/media/")
+        .and_then(|rest| rest.split_once("/comments/"))
+        .and_then(|(pk, rest)| Some((pk, rest.strip_suffix("/child_comments/")?)))
+        .is_some_and(|(pk, comment)| digits(pk) && digits(comment));
     under(
         "/api/v1/friendships/",
         &["followers/", "following/", "mutual_followers/"],
     ) || under("/api/v1/media/", &["info/", "comments/", "likers/"])
+        || replies
 }
 
 /// Whether `path` is the home page or a profile's: where the tab may go.
@@ -1053,6 +1094,13 @@ mod tests {
                 Rest::Likers(MediaPk::new(3_807_824_420_233_075_826)),
                 "/api/v1/media/3807824420233075826/likers/",
             ),
+            (
+                Rest::Replies(
+                    MediaPk::new(3_807_824_420_233_075_826),
+                    CommentPk::new(18_012_345_678_901_234),
+                ),
+                "/api/v1/media/3807824420233075826/comments/18012345678901234/child_comments/",
+            ),
         ];
         for (read, path) in rest {
             assert_eq!(read.path(), path);
@@ -1172,6 +1220,7 @@ mod tests {
             "/api/v1/media/3807824420233075826/info/",
             "/api/v1/media/3807824420233075826/comments/?can_support_threading=true&permalink_enabled=false",
             "/api/v1/media/3807824420233075826/likers/",
+            "/api/v1/media/3807824420233075826/comments/18000000000000000/child_comments/?min_id=&is_chronological=true&paging_direction=view_more",
         ] {
             assert_eq!(
                 refused(&request(Method::Get, path, &[], None)),
@@ -1194,7 +1243,12 @@ mod tests {
             "/api/v1/media/3807824420233075826/permalink/",
             "/api/v1/media/3807824420233075826/likers/extra/",
             "/api/v1/media/DTYHCKvDNxy/likers/",
-            "/api/v1/media/3807824420233075826/comments/18000000000000000/child_comments/",
+            "/api/v1/media/3807824420233075826/comments/abc/child_comments/",
+            "/api/v1/media/3807824420233075826/comments/18000000000000000/child_comments/extra/",
+            "/api/v1/media/3807824420233075826/comments/18000000000000000/",
+            "/api/v1/media/3807824420233075826/comments//child_comments/",
+            "/api/v1/media/DTYHCKvDNxy/comments/18000000000000000/child_comments/",
+            "/api/v1/media/3807824420233075826/comments/1/2/child_comments/",
             "/api/v1/media/DTYHCKvDNxy/info/",
             "/api/v1/media//info/",
             "/api/graphql",
@@ -1349,6 +1403,17 @@ mod tests {
                 ],
             ),
             rest(Rest::Likers(MediaPk::new(3_807_824_420_233_075_826)), &[]),
+            rest(
+                Rest::Replies(
+                    MediaPk::new(3_807_824_420_233_075_826),
+                    CommentPk::new(18_012_345_678_901_234),
+                ),
+                &[
+                    ("min_id", ""),
+                    ("is_chronological", "true"),
+                    ("paging_direction", "view_more"),
+                ],
+            ),
             Ask::Navigation { route: "/".into() },
             Ask::Navigation {
                 route: "/someone/followers/mutualOnly".into(),
@@ -1479,6 +1544,64 @@ mod tests {
         ];
         for (ask, said) in refusals {
             assert_eq!(refused_ask(&ask).as_deref(), Some(said), "{ask:?}");
+        }
+    }
+
+    /// A thread's replies go out with the app's three keys, in its order,
+    /// the cursor empty, and in no other shape: a cursor, another direction,
+    /// a key left out or one more are each a page the app never asked for.
+    #[test]
+    fn a_thread_goes_out_with_the_apps_three_keys_and_an_empty_cursor() {
+        let replies = Rest::Replies(
+            MediaPk::new(3_807_824_420_233_075_826),
+            CommentPk::new(18_012_345_678_901_234),
+        );
+        let said =
+            "GET /api/v1/media/3807824420233075826/comments/18012345678901234/child_comments/";
+        let apps = [
+            ("min_id", ""),
+            ("is_chronological", "true"),
+            ("paging_direction", "view_more"),
+        ];
+        assert_eq!(refused_ask(&rest(replies, &apps)), None);
+        for query in [
+            vec![
+                ("min_id", "18012345678901235"),
+                ("is_chronological", "true"),
+                ("paging_direction", "view_more"),
+            ],
+            vec![
+                ("min_id", ""),
+                ("is_chronological", "true"),
+                ("paging_direction", "view_less"),
+            ],
+            vec![
+                ("min_id", ""),
+                ("is_chronological", "false"),
+                ("paging_direction", "view_more"),
+            ],
+            vec![
+                ("is_chronological", "true"),
+                ("paging_direction", "view_more"),
+            ],
+            vec![
+                ("is_chronological", "true"),
+                ("min_id", ""),
+                ("paging_direction", "view_more"),
+            ],
+            vec![
+                ("min_id", ""),
+                ("is_chronological", "true"),
+                ("paging_direction", "view_more"),
+                ("max_id", "1"),
+            ],
+            vec![],
+        ] {
+            assert_eq!(
+                refused_ask(&rest(replies, &query)).as_deref(),
+                Some(said),
+                "{query:?}"
+            );
         }
     }
 

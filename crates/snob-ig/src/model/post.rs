@@ -1,6 +1,6 @@
 //! Models of a profile's posts, one post, and its comments, as the web app
-//! reads them: the grid's two queries, `media/<pk>/info/` and
-//! `media/<pk>/comments/`.
+//! reads them: the grid's two queries, `media/<pk>/info/`,
+//! `media/<pk>/comments/` and the replies under a comment.
 //!
 //! The grid and the info read describe a post with the same fields, so one
 //! type reads both. Every field but the pk is optional, as everywhere in
@@ -680,13 +680,101 @@ pub struct Comment {
     pub user: Option<Account>,
     #[serde(default)]
     pub comment_like_count: Option<u64>,
-    /// How many replies it has. Only the ones in
-    /// [`Self::preview_child_comments`] are read: the replies call was not in
-    /// any capture.
+    /// How many replies it has. **More than any answer hands out**: three
+    /// threads of 9, 7 and 8 answered with 7, 5 and 7 replies and nothing
+    /// more to read in the capture of 2026-11-14, so what is left is never
+    /// worked out from it.
     #[serde(default)]
     pub child_comment_count: Option<u64>,
+    /// The replies the page shows under it: none on most comments with
+    /// replies (19 of 19 in the capture of 2026-11-14), the one there is on
+    /// a comment with one, whose thread then is not asked for.
     #[serde(default, deserialize_with = "nullable")]
     pub preview_child_comments: Vec<Comment>,
+}
+
+impl Comment {
+    /// Whether its thread holds replies the page did not show, so that
+    /// "View replies" is what would read them (`allowlist::Rest::Replies`).
+    /// A thread whose previews are as many as its count is whole.
+    pub fn replies_missing(&self) -> bool {
+        let shown = u64::try_from(self.preview_child_comments.len()).unwrap_or(u64::MAX);
+        self.child_comment_count.unwrap_or(0) > shown
+    }
+}
+
+/// The comment a thread's replies were asked under, as the answer names it:
+/// whose post it is on, which is how a comment named by a person is told to
+/// be on the post or not.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ParentComment {
+    #[serde(default, deserialize_with = "flexible_id")]
+    pub pk: Option<String>,
+    /// The post's pk, as text in every answer of the capture of 2026-11-14.
+    #[serde(default, deserialize_with = "flexible_id")]
+    pub media_id: Option<String>,
+}
+
+/// `media/<pk>/comments/<comment_pk>/child_comments/`: the replies under one
+/// comment, in the order they were written, as the app's "View replies"
+/// reads them (three threads in the capture of 2026-11-14).
+#[derive(Debug, Clone, Deserialize)]
+pub struct RepliesPage {
+    #[serde(default, deserialize_with = "nullable")]
+    pub child_comments: Vec<Comment>,
+    /// How many replies the comment has: more than are handed out on every
+    /// thread seen ([`Comment::child_comment_count`]).
+    #[serde(default)]
+    pub child_comment_count: Option<u64>,
+    #[serde(default)]
+    pub has_more_head_child_comments: Option<bool>,
+    #[serde(default)]
+    pub has_more_tail_child_comments: Option<bool>,
+    #[serde(default)]
+    pub parent_comment: Option<ParentComment>,
+    /// The names of the answer's other keys, never their values: what is
+    /// said in the log when a thread says it has more ([`Self::more`]), so
+    /// that the cursor of a second page can be learned from a real answer
+    /// before any is sent.
+    #[serde(flatten)]
+    pub other: std::collections::BTreeMap<String, serde::de::IgnoredAny>,
+}
+
+impl RepliesPage {
+    /// Whether Instagram said the thread holds replies this answer does not.
+    /// **Never sent for**: no capture shows how a second page is asked
+    /// (both flags were false on every thread of 2026-11-14), so they are
+    /// said to be there and are not read. The first time it happens, the
+    /// names of the answer's keys are written to the log at debug.
+    pub fn more(&self) -> bool {
+        let more = self.has_more_head_child_comments == Some(true)
+            || self.has_more_tail_child_comments == Some(true);
+        if more {
+            let keys: Vec<&str> = self.other.keys().map(String::as_str).collect();
+            tracing::debug!(
+                ?keys,
+                "a thread of replies said it has more than it handed out; its other keys"
+            );
+        }
+        more
+    }
+
+    /// Whether the answer is the thread of a comment on post `pk`: it names
+    /// its parent comment and the post that comment is on. An answer that
+    /// names another post, or none, is no thread of this one.
+    pub fn is_on(&self, pk: MediaPk) -> bool {
+        let pk = pk.to_string();
+        self.parent_comment
+            .as_ref()
+            .and_then(|parent| parent.media_id.as_deref())
+            .is_some_and(|media| media == pk)
+    }
+
+    /// How many accounts the page names: each reply's author. What the page
+    /// is charged to the day's accounts with.
+    pub fn accounts(&self) -> usize {
+        self.child_comments.len()
+    }
 }
 
 #[cfg(test)]
@@ -989,6 +1077,70 @@ mod tests {
         )
         .unwrap();
         assert_eq!(last.next(), None);
+    }
+
+    /// A thread's replies as the capture of 2026-11-14 shapes them: fewer
+    /// than its count, a reply's author pk as text and as a number in the
+    /// same answer, and nothing more to read.
+    #[test]
+    fn fewer_replies_than_the_count_are_not_called_more_to_read() {
+        let page: RepliesPage = serde_json::from_str(
+            r#"{"child_comment_count":9,"child_comments":[
+                {"pk":"18000000000000001","text":"a","user":{"pk":42,"username":"one"},"created_at":1790000000},
+                {"pk":"18000000000000002","text":"b","user":{"pk":"43","username":"two"}}],
+              "has_more_head_child_comments":false,"has_more_tail_child_comments":false,
+              "is_ranked_replies":false,
+              "parent_comment":{"pk":"18000000000000000","media_id":"3807824420233075826"},
+              "status":"ok"}"#,
+        )
+        .unwrap();
+        assert_eq!(page.child_comments.len(), 2);
+        assert_eq!(page.child_comment_count, Some(9));
+        assert!(
+            !page.more(),
+            "seven short of the count is still the whole thread"
+        );
+        assert_eq!(page.accounts(), 2);
+        let authors: Vec<_> = page
+            .child_comments
+            .iter()
+            .map(|c| c.user.as_ref().and_then(|u| u.pk.clone()))
+            .collect();
+        assert_eq!(authors, [Some("42".into()), Some("43".into())]);
+        assert!(page.is_on(MediaPk::new(3_807_824_420_233_075_826)));
+        assert!(!page.is_on(MediaPk::new(3_807_824_420_233_075_827)));
+        assert!(page.other.contains_key("is_ranked_replies"));
+    }
+
+    /// A thread that says it has more is said to, and an answer that names
+    /// no parent comment is no thread of any post.
+    #[test]
+    fn a_thread_that_says_it_has_more_is_believed() {
+        let page: RepliesPage = serde_json::from_str(
+            r#"{"child_comments":[],"has_more_tail_child_comments":true,"status":"ok"}"#,
+        )
+        .unwrap();
+        assert!(page.more());
+        assert!(!page.is_on(MediaPk::new(1)));
+        let empty: RepliesPage = serde_json::from_str(r#"{"child_comments":null}"#).unwrap();
+        assert!(empty.child_comments.is_empty() && !empty.more());
+    }
+
+    /// A comment whose previews hold its whole thread is not asked for; one
+    /// with replies the page did not show is.
+    #[test]
+    fn a_thread_whose_previews_hold_it_whole_is_not_asked_for() {
+        let comment = |json: &str| serde_json::from_str::<Comment>(json).unwrap();
+        assert!(
+            !comment(r#"{"pk":"1","child_comment_count":1,"preview_child_comments":[{"pk":"2"}]}"#)
+                .replies_missing()
+        );
+        assert!(
+            comment(r#"{"pk":"1","child_comment_count":9,"preview_child_comments":[]}"#)
+                .replies_missing()
+        );
+        assert!(!comment(r#"{"pk":"1"}"#).replies_missing());
+        assert!(!comment(r#"{"pk":"1","child_comment_count":0}"#).replies_missing());
     }
 
     #[test]

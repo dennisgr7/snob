@@ -61,6 +61,47 @@ impl<'de> Deserialize<'de> for MediaPk {
     }
 }
 
+/// A comment's id: the `<comment_pk>` of a thread's replies,
+/// `media/<pk>/comments/<comment_pk>/child_comments/`. Its own type, as
+/// [`MediaPk`] is, since it is neither a post's nor an account's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CommentPk(u64);
+
+/// The most digits a comment's id is taken with: every one of the captures
+/// of 2026-11-13 and 2026-11-14 had 17, and twenty is the most a `u64`
+/// spells.
+pub const MOST_COMMENT_PK_DIGITS: usize = 20;
+
+impl CommentPk {
+    pub const fn new(pk: u64) -> Self {
+        Self(pk)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    /// `text` as a comment's id: one to [`MOST_COMMENT_PK_DIGITS`] ASCII
+    /// digits that make a number other than zero, and nothing else, no sign
+    /// and no space among them. What a person or an agent names a comment
+    /// with, so it is checked before it is ever put in an address.
+    pub fn parse(text: &str) -> Option<Self> {
+        let digits = (1..=MOST_COMMENT_PK_DIGITS).contains(&text.len())
+            && text.bytes().all(|b| b.is_ascii_digit());
+        if !digits {
+            return None;
+        }
+        text.parse::<u64>().ok().filter(|n| *n != 0).map(Self)
+    }
+}
+
+impl fmt::Display for CommentPk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Which page of the app a code opens on: a post's, or a reel's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -240,6 +281,33 @@ pub fn pk_of(code: &str) -> Option<MediaPk> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A comment is named by its digits alone, as many as a `u64` holds,
+    /// never by anything that would put more than a number in an address.
+    #[test]
+    fn a_comment_pk_is_digits_and_nothing_else() {
+        assert_eq!(
+            CommentPk::parse("18012345678901234"),
+            Some(CommentPk::new(18_012_345_678_901_234))
+        );
+        assert_eq!(CommentPk::parse("7"), Some(CommentPk::new(7)));
+        for bad in [
+            "",
+            "0",
+            "00",
+            "-1",
+            "+1",
+            " 1",
+            "1 ",
+            "12a",
+            "1/2",
+            "\u{ff11}\u{ff12}",
+            "99999999999999999999",
+            "123456789012345678901",
+        ] {
+            assert_eq!(CommentPk::parse(bad), None, "{bad}");
+        }
+    }
 
     /// Codes and pks the captures of 2026-10-01 pair: a post, a carousel's
     /// item, and a private account's long code, whose first eleven

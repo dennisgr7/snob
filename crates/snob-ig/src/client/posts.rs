@@ -24,6 +24,13 @@
 //!   with each, and that call is held to fifty accounts
 //!   (`allowlist::MOST_STATUSES`).
 //!
+//! - **The replies under a comment** are
+//!   `media/<pk>/comments/<comment_pk>/child_comments/`, what the app asks
+//!   when "View replies" is clicked, from the post's page, with the three
+//!   keys it always sends and an empty cursor: the first page alone, since
+//!   no thread of the captures had a second. Charged to the day's accounts
+//!   and counted in the sitting as a page of comments is.
+//!
 //! **None of it tells anybody what was looked at.** The app reports the
 //! posts and reels it shows through separate calls (view counts, the reels
 //! screen's watched list), which snob has no code to send; the allowlist
@@ -33,9 +40,10 @@
 use crate::allowlist::{Operation, Rest};
 use crate::error::IgError;
 use crate::model::post::{
-    CommentsPage, LikersPage, Media, MediaInfo, TimelinePage, comments_cursor_has_its_shape,
+    CommentsPage, LikersPage, Media, MediaInfo, RepliesPage, TimelinePage,
+    comments_cursor_has_its_shape,
 };
-use crate::shortcode::MediaPk;
+use crate::shortcode::{CommentPk, MediaPk};
 use crate::web::{Ask, Told};
 
 use super::IgClient;
@@ -165,6 +173,40 @@ impl IgClient {
 }
 
 impl IgClient {
+    /// The replies under comment `comment` of post `pk`, asked from `page`,
+    /// the post's own (`/p/<code>/` for a reel too: 3 of 3 in the capture
+    /// of 2026-11-14). One read, its authors charged to the day's accounts
+    /// and the page counted in the sitting, as a page of comments is.
+    ///
+    /// **The first page only, with an empty cursor**, the three keys in the
+    /// app's order (7 calls of 7 over the captures of 2026-11-13 and
+    /// 2026-11-14). Whether the thread holds more is the answer's to say
+    /// ([`RepliesPage::more`]); nothing here asks for it.
+    pub async fn comment_replies(
+        &self,
+        pk: MediaPk,
+        comment: CommentPk,
+        page: &str,
+    ) -> Result<RepliesPage, IgError> {
+        let read = Rest::Replies(pk, comment);
+        let query = [
+            ("min_id", ""),
+            ("is_chronological", "true"),
+            ("paging_direction", "view_more"),
+        ];
+        let replies: RepliesPage = if self.has_page() {
+            self.rest_read(read, &query, page).await?
+        } else {
+            self.get(&read.path(), &query, relative(page)).await?
+        };
+        let accounts = u32::try_from(replies.accounts()).unwrap_or(u32::MAX);
+        if let Err(e) = self.pacer.spend_accounts(accounts).await {
+            tracing::warn!(error = %e, "could not record the accounts a thread of replies carried");
+        }
+        self.count_in_the_sitting().await?;
+        Ok(replies)
+    }
+
     /// The accounts that liked post `pk`, as many as the app is shown, asked
     /// from `page`, the post's own (the app's referrer was `/p/<code>/` both
     /// times in the capture of 2026-11-13). One read, and the accounts it
@@ -348,6 +390,47 @@ mod tests {
             sent[0]
                 .url
                 .ends_with("/api/v1/media/3947056156557494178/likers/"),
+            "{}",
+            sent[0].url
+        );
+        assert!(sent[0].referrer.ends_with("/p/DbGwql4IMei/"));
+        assert_eq!(budget.reserved(), (1, 0));
+        assert_eq!(budget.accounts_spent(), 2);
+    }
+
+    /// A thread's replies are one GET under the comment, with the app's
+    /// three keys and an empty cursor, from the post's page; paid as one
+    /// read, its authors charged to the day's accounts, and counted in the
+    /// sitting.
+    #[tokio::test]
+    async fn replies_are_one_get_under_the_comment() {
+        let tab = Scripted::building(|_| {
+            Ok(page_said(
+                200,
+                r#"{"child_comment_count":9,"child_comments":[
+                    {"pk":"18000000000000001","text":"a","user":{"pk":42,"username":"one"}},
+                    {"pk":"18000000000000002","text":"b","user":{"pk":"43","username":"two"}}],
+                  "has_more_head_child_comments":false,"has_more_tail_child_comments":false,
+                  "parent_comment":{"pk":"18000000000000000","media_id":"3947056156557494178"},
+                  "status":"ok"}"#,
+            ))
+        });
+        let (client, budget) = spending_client(Arc::clone(&tab) as Arc<dyn Page>);
+        let pk = MediaPk::new(3_947_056_156_557_494_178);
+        let comment = CommentPk::new(18_000_000_000_000_000);
+        let replies = client
+            .comment_replies(pk, comment, "/p/DbGwql4IMei/")
+            .await
+            .unwrap();
+        assert_eq!(replies.child_comments.len(), 2);
+        assert!(replies.is_on(pk));
+        let sent = tab.asked();
+        assert_eq!(sent.len(), 1);
+        assert!(
+            sent[0].url.ends_with(
+                "/api/v1/media/3947056156557494178/comments/18000000000000000/child_comments/\
+                 ?min_id=&is_chronological=true&paging_direction=view_more"
+            ),
             "{}",
             sent[0].url
         );
