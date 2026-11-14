@@ -145,15 +145,16 @@ fn cron_field(
 ) -> Result<FieldSet, ScheduleError> {
     let mut bits = 0u64;
     for part in text.split(',') {
-        let (spec, step) = match part.split_once('/') {
+        let (spec, step, stepped) = match part.split_once('/') {
             Some((spec, step)) => (
                 spec,
                 step.parse::<u32>()
                     .ok()
                     .filter(|&s| s > 0)
                     .ok_or_else(|| unreadable_field(part, name))?,
+                true,
             ),
-            None => (part, 1),
+            None => (part, 1, false),
         };
 
         let (from, to) = if spec == "*" {
@@ -163,8 +164,9 @@ fn cron_field(
         } else {
             let value = number(spec, &range, name)?;
             // `5/15` means "from 5 onwards, every 15", which is what cron does
-            // with a bare number and a step.
-            if step > 1 {
+            // with a bare number and a step, and `5/1` from 5 onwards, every
+            // one: a step written is a step, whatever its size.
+            if stepped {
                 (value, *range.end())
             } else {
                 (value, value)
@@ -266,6 +268,35 @@ mod tests {
 
     /// Seven and zero are both Sunday. Folded, so `* * * * 7` and `* * * * 0`
     /// cannot mean different days.
+    /// A step written is a step, one included: `5/1` is from 5 on, as cron
+    /// reads it, and a bare `5` is only 5.
+    #[test]
+    fn a_step_of_one_from_a_number_runs_to_the_end_of_the_field() {
+        assert_eq!(
+            cron_field("5/1", 0..=59, "minute").unwrap(),
+            cron_field("5-59", 0..=59, "minute").unwrap()
+        );
+        assert_ne!(
+            cron_field("5", 0..=59, "minute").unwrap(),
+            cron_field("5-59", 0..=59, "minute").unwrap()
+        );
+    }
+
+    /// A calendar that names some months is kept from pushing a run past
+    /// midnight, as one that names some days is: the night of the 31st can
+    /// end in a month it does not name.
+    #[test]
+    fn a_calendar_of_some_months_keeps_the_jitter_before_midnight() {
+        let january = Schedule::cron("0 23 * 1 *")
+            .unwrap()
+            .with_jitter(std::time::Duration::from_secs(3 * 3_600));
+        assert!(
+            january.jitter() <= std::time::Duration::from_secs(3_600),
+            "{:?}",
+            january.jitter()
+        );
+    }
+
     #[test]
     fn cron_reads_seven_as_sunday() {
         assert_eq!(

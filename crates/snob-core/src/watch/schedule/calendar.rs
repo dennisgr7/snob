@@ -144,8 +144,13 @@ impl Calendar {
     ///
     /// The jitter ceiling asks, because pushing a run past midnight is only
     /// harmless when the next day is one the calendar allows too.
+    ///
+    /// The months count too: past midnight on the last day of a month the
+    /// calendar names can be the first of one it does not.
     pub(super) fn days_are_restricted(&self) -> bool {
-        !self.days_of_month.is_all(1..=31) || !self.days_of_week.is_all(0..=6)
+        !self.days_of_month.is_all(1..=31)
+            || !self.days_of_week.is_all(0..=6)
+            || !self.months.is_all(1..=12)
     }
 
     /// How much of the day is left after its last moment.
