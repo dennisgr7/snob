@@ -1,37 +1,29 @@
-//! The move from the single-account layout — one `snob.db` and one `session`
-//! in the data directory — to one directory and one session entry per
-//! account.
+//! The move from the single-account layout (one `snob.db` and one `session`
+//! in the data directory) to one directory and one session entry per account.
 //!
 //! **Automatic, and finished by whichever run comes next.** [`pending`] is a
-//! look at a few names in the data directory, cheap enough for every command;
-//! [`settle`] does the move under a lock, and every step it takes is one the
-//! next run can find half done and complete:
+//! look at a few names, cheap enough for every command; [`settle`] does the
+//! move under a lock, each step one the next run can find half done:
 //!
-//! 1. Whose data it is: the session's account, or — with no session left —
-//!    the one account directory there is, or nobody's. A session file that
-//!    does not read is no session, and is set aside as `*.unreadable`.
+//! 1. Whose data it is: the session's account, else the one account
+//!    directory there is, else nobody's. A session file that does not read
+//!    is set aside as `*.unreadable`.
 //! 2. The database's log is folded into it, which fails while an older snob
-//!    is still using it.
+//!    is using it.
 //! 3. The database goes into a staging directory beside its destination, the
-//!    database file itself last, and the staging directory then takes the
-//!    destination's name. A destination that has a database already keeps it:
-//!    what was on its way is set aside as `conflict-<ms>` instead.
-//! 4. The account's directory is made, so the account is found by it from
-//!    here on; the session is saved under it and read back, and only a copy
-//!    that reads back the same lets the old ones be deleted.
+//!    database file last, and the staging directory takes the destination's
+//!    name. A destination that has a database keeps it: the other is set
+//!    aside as `conflict-<ms>`.
+//! 4. The account's directory is made; the session is saved under it and
+//!    read back, and only then are the old copies deleted.
 //! 5. A schema-1 `watch.toml` is copied aside and rewritten to name that
 //!    account as the viewer of every entry.
 //! 6. The registry is written, which is what says the move is done.
 //!
 //! A database nobody could be named for waits in `unclaimed` until a login
-//! [`adopt`]s it.
-//!
-//! **An account's directory this lands whole starts with nobody signed in**
-//! (`AccountPaths::signed_in`, empty), as one `AccountPaths::ensure_dirs`
-//! makes does: a directory with no list sends as every session, and the
-//! login that adopts a database after a `purge` would otherwise hand the
-//! sessions held from before it back their account. The session the move
-//! carries, and the login's own, are let in after (`admit_session`).
+//! [`adopt`]s it. **An account's directory this lands whole starts with
+//! nobody signed in** (`AccountPaths::signed_in`, empty): one with no list
+//! sends as every session.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -266,12 +258,9 @@ pub fn unadopt(paths: &AppPaths, pk: Pk) -> Result<bool, LayoutError> {
 }
 
 /// Removes the account's directory when all it holds is its list of who is
-/// signed in, as [`adopt`] made it and a login that did not happen left it,
-/// with the lock its writers take (`AccountPaths::signed_in_lock`), which
-/// holds nothing of the account's.
-/// Moved aside first and removed there, so nothing finds the directory
-/// without its list on the way: with none it would send as every session.
-/// Gone, it refuses them all, as the list did.
+/// signed in and that list's lock. Moved aside first and removed there, so
+/// nothing finds the directory without its list on the way: with none it
+/// would send as every session.
 fn remove_if_only_the_list(account: &AccountPaths) {
     let dir = account.dir();
     let only_the_list = std::fs::read_dir(&dir).is_ok_and(|entries| {

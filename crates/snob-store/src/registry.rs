@@ -1,15 +1,10 @@
 //! The accounts snob is signed in as, and the one commands act as when none is
 //! named: `accounts.toml` in the data directory.
 //!
-//! **Read with serde, written from a template by hand**, for the reason
-//! `config.rs` gives: the `toml` crate here has no serializer, and a file a
-//! person may open should say what it is. A test writes the template and reads
-//! it back, so the two cannot drift.
-//!
-//! **Every change goes through [`Registry::update`]**, which holds a lock on a
-//! file beside it while it reads, changes and writes. Two `snob login`s in two
-//! terminals would otherwise each read the same file, add their own account,
-//! and the second write would drop the first one's.
+//! Read with serde, written from a template by hand (see `config.rs`); a test
+//! writes the template and reads it back. **Every change goes through
+//! [`Registry::update`]**, which holds a lock beside the file while it reads,
+//! changes and writes, so that two logins at once do not lose one account.
 
 use std::path::{Path, PathBuf};
 
@@ -39,10 +34,8 @@ pub enum RegistryError {
     Paths(#[from] PathError),
 }
 
-/// What the file says.
-///
-/// `deny_unknown_fields`, so a key this version does not know is refused
-/// rather than dropped by the next write.
+/// What the file says. `deny_unknown_fields`, so a key this version does not
+/// know is refused rather than dropped by the next write.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Registry {
@@ -87,13 +80,10 @@ impl Registry {
             source,
         })?;
 
-        // Read under the lock: what another process wrote a moment ago is
-        // what this change is applied to.
+        // Read under the lock: the change is applied to what was last written.
         let mut registry = Self::load(paths)?;
         change(&mut registry);
 
-        // Written whole and moved into place, so a reader sees the old file or
-        // the new one and never half of one.
         let temporary = path.with_extension("toml.new");
         crate::paths::replace_private(&path, &temporary, registry.template().as_bytes())
             .map_err(|(_, source)| RegistryError::Write { path, source })?;
