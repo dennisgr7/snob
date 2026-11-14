@@ -53,6 +53,47 @@ pub const READ_AT_MOST_EVERY: Duration = Duration::from_secs(60 * 60);
 /// page.
 pub const KNOWN_TO_STOP_AT: usize = 12;
 
+/// How far past this machine's clock a `taken_at` may be and still become the
+/// floor: a day.
+///
+/// The floor is Instagram's time and only rises, so one moment far ahead (a
+/// unit changed on their side, a value misread) would stand later than every
+/// post taken after it, and none would be news again. The widest honest
+/// disagreement between two clocks is a time zone (a hardware clock holding
+/// local time read as UTC: 14 h at most), which a day covers.
+const AHEAD_AT_MOST: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// [`domain::compare`], with the floor on both sides of it held to
+/// [`AHEAD_AT_MOST`] past `now`.
+///
+/// **A post dated later than that is still compared at the time it carries**,
+/// so it is news once, as any post never seen and later than the floor; only
+/// the floor does not follow it.
+fn compare(
+    known: &std::collections::HashSet<u64>,
+    mark: Option<&watch_posts::Mark>,
+    read: &domain::Read<'_>,
+    now: Epoch,
+) -> domain::Compared {
+    let latest = now + AHEAD_AT_MOST;
+    // A floor a version before this rule left past it says nothing: the
+    // posts were all read when they were last read, by this clock.
+    let before = mark.map(|mark| match mark.newest_taken_at {
+        floor if floor > latest => mark.read_at.min(now),
+        floor => floor,
+    });
+    let mut compared = domain::compare(known, before, read);
+    compared.floor = read
+        .posts
+        .iter()
+        .map(|post| post.taken_at)
+        .filter(|taken_at| *taken_at <= latest)
+        .chain(before)
+        .max()
+        .unwrap_or_default();
+    compared
+}
+
 /// Why a run drew no conclusion about an account's posts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PostsSkipped {
@@ -306,14 +347,15 @@ async fn read(
         .collect();
     let pks: Vec<u64> = seen.iter().map(|post| post.pk).collect();
     let known_posts = watch_posts::known(conn, pk, &pks)?;
-    let compared = domain::compare(
+    let compared = compare(
         &known_posts,
-        mark.map(|mark| mark.newest_taken_at),
+        mark.as_ref(),
         &domain::Read {
             posts: &seen,
             ended,
             stopped_at_known: how.reached.is_some(),
         },
+        snob_core::clock::now(),
     );
 
     let news: Vec<Post> = grid
@@ -406,6 +448,113 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    fn seen(pk: u64, taken_at: i64) -> domain::Seen {
+        domain::Seen {
+            pk,
+            taken_at: Epoch::new(taken_at),
+            pinned: false,
+        }
+    }
+
+    fn mark(floor: i64, read_at: i64) -> watch_posts::Mark {
+        watch_posts::Mark {
+            account_pk: Pk::new(7),
+            baseline_at: Epoch::new(0),
+            read_at: Epoch::new(read_at),
+            reported_at: None,
+            newest_taken_at: Epoch::new(floor),
+        }
+    }
+
+    fn read(posts: &[domain::Seen]) -> domain::Read<'_> {
+        domain::Read {
+            posts,
+            ended: false,
+            stopped_at_known: true,
+        }
+    }
+
+    /// One post dated far ahead is reported once, as any new post is, and
+    /// the floor does not follow it there: before, it became the floor, and
+    /// no post taken after it was ever news again.
+    #[test]
+    fn a_post_dated_far_ahead_is_news_once_and_never_the_floor() {
+        const NOW: i64 = 1_800_000_000;
+        const FAR: i64 = 4_000_000_000;
+        let now = Epoch::new(NOW);
+        let known = |pks: &[u64]| pks.iter().copied().collect();
+
+        let posts = [seen(9, FAR), seen(8, NOW - 50), seen(7, NOW - 100)];
+        let first = compare(
+            &known(&[7]),
+            Some(&mark(NOW - 100, NOW - 3_600)),
+            &read(&posts),
+            now,
+        );
+        assert_eq!(first.news, vec![9, 8], "the post itself is not lost");
+        assert_eq!(first.floor, Epoch::new(NOW - 50));
+
+        // The next read, an hour on: the far one is known, and a post taken
+        // since is news, which it is not under a floor that far ahead.
+        let later = Epoch::new(NOW + 3_600);
+        let posts = [seen(10, NOW + 1_800), seen(9, FAR), seen(8, NOW - 50)];
+        let second = compare(
+            &known(&[9, 8, 7]),
+            Some(&mark(first.floor.get(), NOW)),
+            &read(&posts),
+            later,
+        );
+        assert_eq!(second.news, vec![10]);
+        assert_eq!(second.floor, Epoch::new(NOW + 1_800));
+
+        // A baseline does not take it for its floor either.
+        let baseline = compare(
+            &known(&[]),
+            None,
+            &read(&[seen(9, FAR), seen(8, NOW - 50)]),
+            now,
+        );
+        assert!(baseline.news.is_empty());
+        assert_eq!(baseline.floor, Epoch::new(NOW - 50));
+        let nothing_else = compare(&known(&[]), None, &read(&[seen(9, FAR)]), now);
+        assert_eq!(nothing_else.floor, Epoch::default());
+    }
+
+    /// A clock a time zone behind Instagram's is an honest disagreement: a
+    /// post dated within a day ahead moves the floor as before.
+    #[test]
+    fn a_post_dated_within_a_day_ahead_still_moves_the_floor() {
+        const NOW: i64 = 1_800_000_000;
+        let ahead = NOW + 14 * 3_600;
+        let compared = compare(
+            &[7].into_iter().collect(),
+            Some(&mark(NOW - 100, NOW - 3_600)),
+            &read(&[seen(8, ahead), seen(7, NOW - 100)]),
+            Epoch::new(NOW),
+        );
+        assert_eq!(compared.news, vec![8]);
+        assert_eq!(compared.floor, Epoch::new(ahead));
+        assert_eq!(AHEAD_AT_MOST, Duration::from_secs(86_400));
+    }
+
+    /// A floor stored far ahead by a version before the rule silences
+    /// nothing more: the comparison starts from when the posts were last
+    /// read instead.
+    #[test]
+    fn a_floor_stored_far_ahead_is_not_compared_against() {
+        const NOW: i64 = 1_800_000_000;
+        let stored = mark(4_000_000_000, NOW - 3_600);
+        let posts = [seen(10, NOW - 60), seen(6, NOW - 7_200)];
+        let compared = compare(
+            &[5].into_iter().collect(),
+            Some(&stored),
+            &read(&posts),
+            Epoch::new(NOW),
+        );
+        assert_eq!(compared.news, vec![10], "taken since the last read");
+        assert_eq!(compared.floor, Epoch::new(NOW - 60));
     }
 
     /// The hour between two reads, and the page a read may stop at, as the
