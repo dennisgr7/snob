@@ -1,32 +1,22 @@
 //! Requests built the way instagram.com's own app builds them.
 //!
-//! The app sends each call in one of four families, and the family decides
-//! the headers and the form, not the path:
+//! The family of a call decides its headers and form, not its path:
 //!
 //! - **REST**, `GET /api/v1/…`: the app's identifiers, the CSRF token, the
-//!   `X-IG-WWW-Claim` cycle and the web session id. Of the app's REST POSTs
-//!   snob sends one, `friendships/show_many`, a read ([`SHOW_MANY`]), with
-//!   `X-Instagram-AJAX` and a form of its own.
-//! - **Relay**, `POST /api/graphql`: a form of 29 fields, the page's values
-//!   among them, with the operation's name and `lsd` in the headers. Never
-//!   the claim, `X-Requested-With` or the web session id.
-//! - **Relay on `/graphql/query`**: the same, plus the answer's root field
-//!   and the Bloks version.
-//! - **Comet**, `POST /ajax/bulk-route-definitions/` and
-//!   `POST /ajax/navigation/` here: route addresses in the app's own
-//!   envelope.
+//!   `X-IG-WWW-Claim` cycle and the web session id. One REST POST is sent,
+//!   `friendships/show_many`, a read ([`SHOW_MANY`]).
+//! - **Relay**, `POST /api/graphql`: a form of 29 fields, with the operation's
+//!   name and `lsd` in the headers; never the claim, `X-Requested-With` or the
+//!   web session id. On `/graphql/query`, plus the answer's root field and the
+//!   Bloks version.
+//! - **Comet**, `POST /ajax/bulk-route-definitions/` and `/ajax/navigation/`:
+//!   route addresses in the app's own envelope.
 //!
-//! Every value is the page's: read from the document ([`PageValues`]) or
+//! **Every value is the page's**: read from the document ([`PageValues`]) or
 //! copied from the app's own calls on it ([`AppCalls`]). A value neither has
-//! shown is [`Missing`] and the call is not built; nothing is made up.
-//!
-//! Only the calls of [`crate::allowlist`] are built, named by its values.
-//!
-//! Only the headers the app's script sets are listed. The browser adds the
-//! rest (`Cookie`, `User-Agent`, the client hints, `Origin`, `Sec-Fetch-*`).
-//! Where a call carries `X-CSRFToken` or `X-IG-WWW-Claim`, the page writes
-//! in the ones it holds as it sends; it adds neither to a call without it,
-//! so the family decides which go out.
+//! shown is [`Missing`] and the call is not built; nothing is made up. Only
+//! the calls of [`crate::allowlist`] are built, and only the headers the app's
+//! script sets are listed: the browser adds the rest.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -42,75 +32,60 @@ use crate::graphql::{Mutation, PROFILE_ROUTE, jazoest};
 use crate::model::web::RouteAnswer;
 use crate::page_values::{PageValues, Viewer};
 
-/// The Comet call that asks for the definitions of routes.
 pub const BULK_ROUTE_DEFINITIONS: &str = "/ajax/bulk-route-definitions/";
 
-/// The Comet call the app's router makes when it moves to a route.
 pub const NAVIGATION: &str = "/ajax/navigation/";
 
-/// The REST read the app sends after every list page, a POST; why it is a
-/// read is said in [`crate::allowlist`], where it is let out.
+/// The REST read the app sends after every list page, a POST
+/// ([`crate::allowlist`] says why it is a read).
 pub const SHOW_MANY: &str = "/api/v1/friendships/show_many/";
 
 const FORM: &str = "application/x-www-form-urlencoded";
 
-/// What a command may ask the tab for: every one of them a member of
-/// [`crate::allowlist`], and none of them a request. The process holding
-/// the browser builds the request, from the page's values, right before it
-/// is sent ([`build_call`]); the command never sees a token.
+/// What a command may ask the tab for: a member of [`crate::allowlist`], never
+/// a request. The process holding the browser builds the request from the
+/// page's values right before sending it ([`build_call`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ask {
     /// Who the tab's document was served to. Nothing is sent.
     Viewer,
-    /// The reels of the home document's stories tray, in the order it shows
-    /// them. Nothing is sent.
+    /// The reels of the home document's stories tray. Nothing is sent.
     Tray,
     /// The pk behind a name: the route definitions, or the profile document
     /// when the app has made no route call to copy.
     Pk { name: String },
     /// The tab loads `path`, the home page or a profile. The answer carries
-    /// the document's bundles, never its HTML: the first half of a write,
-    /// which is made from the profile it loads, and finds its `doc_id` in
-    /// those bundles when the one it has is refused. A document served to
-    /// nobody, or to another account, is logged out.
+    /// the document's bundles, never its HTML: the first half of a write.
     Document { path: String },
     /// A read of the registry's. A write here is refused.
     Query {
         operation: Operation,
         variables: String,
     },
-    /// A REST read of the registry's, with the query the app sends.
     Rest {
         read: Rest,
         query: Vec<(String, String)>,
     },
-    /// The app's router moving to `route`, a [`crate::allowlist::list_route`]:
-    /// what it sends as a profile opens, and as a profile's mutual followers
-    /// open. The tab itself does not move.
+    /// The app's router moving to `route`, a [`crate::allowlist::list_route`].
+    /// The tab itself does not move.
     Navigation { route: String },
-    /// How the viewer stands with `pks`, the accounts a list page just
-    /// listed: `friendships/show_many`, which the app sends after every list
-    /// page. A read.
+    /// `friendships/show_many` for the accounts a list page just listed. A read.
     Statuses { pks: Vec<Pk> },
-    /// One of the two writes, under the `doc_id` found for it, on the route
-    /// it is made from: what `follow` and `unfollow` ask of the page, right
-    /// after the [`Ask::Document`] of the profile.
+    /// One of the two writes, under the `doc_id` found for it, right after
+    /// the [`Ask::Document`] of the profile it is made from.
     Write {
         mutation: Mutation,
         variables: String,
         doc_id: String,
         route: String,
     },
-    /// A file from the CDN, which the tab fetches as the app's own page
-    /// would: the browser's TLS and HTTP/2, its headers and its cookie rules
-    /// for that host. The answer carries the bytes as base64 ([`Told::Asset`]).
-    /// Never a video: the tab lets none reach it.
+    /// A file from the CDN, fetched by the tab; the answer carries it as
+    /// base64 ([`Told::Asset`]). Never a video.
     Asset { url: String },
 }
 
 impl Ask {
-    /// The path the ask is answered from, where its answer is read as
-    /// having come from.
+    /// The path the ask's answer is read as having come from.
     pub fn endpoint(&self) -> String {
         match self {
             Self::Viewer | Self::Tray => "/".into(),
@@ -126,9 +101,7 @@ impl Ask {
     }
 }
 
-/// An [`Ask`], with what the request built for it takes from the client
-/// that asks: where it goes, the page it is made from, the claim, and the
-/// ceilings on the answer.
+/// An [`Ask`], with what its request takes from the client that asks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Call {
     pub ask: Ask,
@@ -138,22 +111,18 @@ pub struct Call {
     pub referrer: String,
     /// The current `X-IG-WWW-Claim`, for a REST read.
     pub claim: String,
-    /// The most bytes of body worth reading.
     pub cap: u64,
-    /// How long the page may take before giving up.
     pub timeout_ms: u64,
 }
 
-/// What the tab answered an [`Ask`] with.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Told {
-    /// The answer to a request built and sent.
     Answer(PageResponse),
     /// Who the document was served to: no token.
     Viewer(Viewer),
-    /// The tray's reels, or `None` when the document holds no tray.
+    /// `None` when the document holds no tray.
     Tray(Option<Vec<String>>),
-    /// The pk behind a name. A document's answer comes without its body.
+    /// A document's answer comes without its body.
     Pk {
         answer: PageResponse,
         pk: RouteAnswer,
@@ -163,45 +132,34 @@ pub enum Told {
         answer: PageResponse,
         bundles: Vec<String>,
     },
-    /// A file from the CDN. **The body is base64**, as the bytes cannot travel
-    /// as text; a file past the cap is `too_large`, with no body.
+    /// **The body is base64**; a file past the cap is `too_large`, with none.
     Asset(PageResponse),
 }
 
 /// Why no request was built for a [`Call`]. Nothing was sent.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Unbuilt {
-    /// A value the page has not shown.
     #[error(transparent)]
     Missing(Missing),
     /// The tab's document is signed out, or served to another account.
     #[error("the page is not logged in as this account")]
     LoggedOut,
-    /// Not one of the calls snob may send. Carries the method and the path.
+    /// Carries the method and the path.
     #[error("{0}")]
     NotAllowed(String),
 }
 
 /// The request `call` asks for, built from the tab's current document: its
 /// values (`page`), the app's calls on it (`app`), and what the app last sent
-/// with the operation asked (`seen`, from any document). `account` is the pk
-/// of the session the call is sent as.
+/// with the operation asked (`seen`). `account` is the session's pk.
 ///
-/// The one pure step between an intent and the wire, in this order, and
-/// the first that fails decides:
-///
-/// 0. the intent is checked again ([`allowlist::refused_ask`]), whoever
-///    sent it;
-/// 1. a signed-out document, and
-/// 2. one whose viewer was not read, send nothing;
-/// 3. a document served to another account is logged out as far as this
-///    session goes;
-/// 4. what the tab answers itself is never built;
-/// 5. the call is built ([`Context::build`]);
-/// 6. made a request on `call.origin`;
-/// 7. which is checked as every request from the page is
-///    ([`allowlist::refused_with`]), a `doc_id` the app sent standing in for
-///    the registry's only when [`Seen::doc_id`] names it.
+/// The one pure step between an intent and the wire. In order, the first
+/// failure deciding: the intent is checked again
+/// ([`allowlist::refused_ask`]); a document signed out, unread or served to
+/// another account sends nothing; what the tab answers itself is never built;
+/// the call is built and checked as every request from the page is
+/// ([`allowlist::refused_with`]), a `doc_id` the app sent standing in for the
+/// registry's only when [`Seen::doc_id`] names it.
 pub fn build_call(
     call: &Call,
     page: &PageValues,
@@ -238,14 +196,10 @@ pub fn build_call(
     }
 }
 
-/// `call`, for a read the app sends about an account it is not showing, made
-/// from `path`, the page the tab is on: the app prefetches a profile, a hover
-/// card and a story tray from whichever page it is on, so that page's address
-/// is the `Referer` and its route the `__crn` the call carries. A page that
-/// is neither the home page nor a profile leaves the call as it was asked,
-/// and so do the reads that belong to a profile of their own (a list, the
-/// highlights viewer) and everything that is not a read of the registry's, a
-/// write above all, which is made on the document it loaded.
+/// `call`, made from `path`, the page the tab is on, when it is a read the app
+/// prefetches from whichever page it is on (a profile, a hover card, a story
+/// tray): that page's address is then the `Referer` and its route the
+/// `__crn`. Everything else, a write above all, is left as asked.
 pub fn made_from(call: &Call, path: &str) -> Call {
     let prefetched = matches!(
         &call.ask,
@@ -268,27 +222,21 @@ pub fn made_from(call: &Call, path: &str) -> Call {
     }
 }
 
-/// What the app sent, on any document, with the operation a call asks for:
-/// copied into the call rather than invented.
+/// What the app sent, on any document, with the operation a call asks for.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Seen<'a> {
-    /// The latest `variables` the app sent with it, whose flags a call
-    /// copies: only the keys that name what is asked are made snob's
-    /// ([`Operation::asked_keys`]).
+    /// The latest `variables` the app sent with it, whose flags a call copies
+    /// ([`Operation::asked_keys`] stay the call's).
     pub variables: Option<&'a str>,
-    /// The `doc_id` the app sent it under when it is not the registry's,
-    /// which [`allowlist::Rediscovered`] vouched for.
+    /// The `doc_id` the app sent it under when it is not the registry's.
     pub doc_id: Option<&'a str>,
-    /// The token the app's own REST POSTs carry ([`AppCalls::rest_token_sent`]),
-    /// from any document: what a [`Ask::Statuses`] is sent with.
+    /// The token the app's own REST POSTs carry ([`AppCalls::rest_token_sent`]).
     pub rest_token: Option<&'a str>,
 }
 
-/// Who the tab's document was served to, when that is `account`: steps 1
-/// to 3 of [`build_call`], and what the tab checks before it answers from
-/// the document itself. A signed-out document, and one served to another
-/// account, are logged out as far as this session goes; one whose viewer
-/// was not read is not ready.
+/// Who the tab's document was served to, when that is `account`. A signed-out
+/// document, and one served to another account, are logged out as far as
+/// this session goes; one whose viewer was not read is not ready.
 pub fn viewer_of(page: &PageValues, account: Pk) -> Result<&Viewer, Unbuilt> {
     if page.signed_out {
         return Err(Unbuilt::LoggedOut);
@@ -303,10 +251,8 @@ pub fn viewer_of(page: &PageValues, account: Pk) -> Result<&Viewer, Unbuilt> {
     Ok(viewer)
 }
 
-/// Why an ask that sends nothing is not built.
 const ANSWERED_BY_THE_TAB: &str = "answered by the tab, not sent";
 
-/// A value the call needs that the page has not shown yet.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("the page has not shown {0} yet")]
 pub struct Missing(pub &'static str);
@@ -317,13 +263,11 @@ impl Missing {
     pub const WEB_SESSION: Self = Self("the web session id");
     pub const RELAY_TOKEN_SENT: Self = Self("a Relay token the app sent");
     /// Not waited for: the app sends a REST POST with a token only where a
-    /// person does something (opens the activity, scrolls a list), which on
-    /// the documents snob loads may never come.
+    /// person does something, which on the documents snob loads may never come.
     pub const REST_TOKEN_SENT: Self = Self("a REST token the app sent");
 
     /// Whether only the app's own calls on the document can fill the gap,
-    /// which they may still do a moment later. A value of the document's
-    /// own is read when the document is, and is there or never will be.
+    /// which they may still do a moment later.
     pub fn waits_on_the_app(&self) -> bool {
         [
             Self::RELAY_CALL,
@@ -335,7 +279,6 @@ impl Missing {
     }
 }
 
-/// One request, as the app would send it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Built {
     pub method: Method,
@@ -343,14 +286,12 @@ pub struct Built {
     pub query: Vec<(String, String)>,
     /// Only the ones the app's script sets, in its order.
     pub headers: Vec<(String, String)>,
-    /// The page the call is made from, as a path: `/<user>/`.
     pub referrer: String,
-    /// The form of a POST, in the app's order. Empty is an empty body.
+    /// The form of a POST, in the app's order.
     pub form: Option<Vec<(String, String)>>,
 }
 
 impl Built {
-    /// A header, by name in any case.
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -358,7 +299,6 @@ impl Built {
             .map(|(_, v)| v.as_str())
     }
 
-    /// A field of the form.
     pub fn field(&self, name: &str) -> Option<&str> {
         self.form
             .as_ref()?
@@ -367,7 +307,6 @@ impl Built {
             .map(|(_, v)| v.as_str())
     }
 
-    /// The path with its query.
     pub fn target(&self) -> String {
         if self.query.is_empty() {
             return self.path.clone();
@@ -375,13 +314,10 @@ impl Built {
         format!("{}?{}", self.path, encoded(&self.query))
     }
 
-    /// The form, encoded.
     pub fn body(&self) -> Option<String> {
         self.form.as_deref().map(encoded)
     }
 
-    /// The request the page sends for it, on `origin`: the site's address,
-    /// such as `https://www.instagram.com`.
     pub fn into_request(self, origin: &str, cap: u64, timeout_ms: u64) -> PageRequest {
         let origin = origin.trim_end_matches('/');
         PageRequest {
@@ -413,71 +349,47 @@ impl fmt::Debug for Built {
 }
 
 /// What the app's own calls on one document carried that the document does
-/// not: the module bitmaps and the rest of the Relay form, the Relay token it
-/// sent, the envelope of its route calls, its request counter, the variables
-/// and `doc_id`s of the registry's operations it sent, and the identifiers it
-/// puts in its headers.
+/// not. Made new with each document, as the app's own state is.
 ///
-/// **The counter is the app's, and the app does not see snob's.** A built
-/// call takes the number after the highest the app has sent on this
-/// document, and the app's next call sends that same number again: one
-/// document then carries a `__req` twice, which the app alone never does.
-/// Whether that draws anything is for the live check to say.
-///
-/// Made new with each document, as the app's own state is.
+/// **The counter is the app's, and the app does not see snob's**: a built
+/// call takes the number after the highest the app has sent, and the app's
+/// next call sends that number again. Whether a `__req` sent twice draws
+/// anything is not known.
 #[derive(Debug, Clone, Default)]
 pub struct AppCalls {
     relay: Option<RelayCopy>,
     /// The `fb_dtsg` of the app's latest Relay or Comet form.
     dtsg: Option<String>,
-    /// The `fb_dtsg` of the app's latest REST POST that carried one whose
-    /// `jazoest` it matches ([`Self::rest_token_sent`]).
+    /// The `fb_dtsg` of the app's latest REST POST ([`Self::rest_token_sent`]).
     rest_token: Option<String>,
     comet: Option<Vec<(String, Option<String>)>>,
-    /// The next `__req` snob takes: one past the highest the app has sent,
-    /// or snob has taken.
+    /// One past the highest `__req` the app has sent, or snob has taken.
     next_req: u32,
-    /// The first `__req` snob took on this document, to tell when the app
-    /// repeats one.
+    /// The first `__req` snob took on this document.
     first_taken: Option<u32>,
-    /// Whether the app has sent a call on this document that names the route
-    /// it was made on (`__crn`). Its queries right after a cold document
-    /// name none; every one after does.
+    /// Whether the app has sent a call that names its route (`__crn`). Its
+    /// queries right after a cold document name none.
     route_named: bool,
-    /// The latest `variables` the app sent with each of the registry's
-    /// operations: its own flags, with their names and values as it sends
-    /// them, for a call of the same operation to copy rather than invent.
+    /// The latest `variables` the app sent with each registry operation.
     variables: HashMap<Operation, String>,
-    /// The `doc_id` the app sent each of the registry's reads under, when
+    /// The `doc_id` the app sent each registry read under, when
     /// [`allowlist::vouched`] holds for the call.
     doc_ids: HashMap<Operation, String>,
-    /// `X-IG-App-ID` and `X-ASBD-ID`, as the app's own calls carry them.
     app_id: Option<String>,
     asbd_id: Option<String>,
-    /// `X-FB-Entry-Nonce`, as the app's Relay and Comet calls carry it.
-    ///
-    /// **One value per document, on every Relay and Comet call and on no
-    /// REST one**: in the capture of 2026-11-13 it was on 176 of 176
-    /// `/api/graphql` calls, 9 of 9 on `/graphql/query` and the route calls,
-    /// none under `/api/v1/`, with five values over five documents loaded,
-    /// each the nonce of that document's own `Content-Security-Policy`. It was
-    /// in no capture before, and what Instagram makes of a call without it is
-    /// not known. Copied from the app's own calls, as the identifiers above
-    /// are, rather than read from the document: a call built here goes out
-    /// only after the app has made one ([`Missing::RELAY_CALL`]), and what was
-    /// sent is the value the server expects, which no reading of the page
-    /// can promise. Absent until seen, and then sent: an absent header is
-    /// honest.
+    /// `X-FB-Entry-Nonce`: one value per document, on every Relay and Comet
+    /// call and on no REST one (176 of 176 and 9 of 9 in the capture of
+    /// 2026-11-13). Copied from the app's own calls, absent until seen; what
+    /// Instagram makes of a call without it is not known (AGENTS.md, "Open
+    /// questions").
     entry_nonce: Option<String>,
 }
 
-/// The longest `X-FB-Entry-Nonce` taken from the app: eight characters on
-/// every call of the capture of 2026-11-13, and room to spare should it grow.
+/// Eight characters on every call of the capture of 2026-11-13.
 const MOST_NONCE: usize = 64;
 
-/// The fields of the app's latest Relay form that describe the page's
-/// state rather than the call: `dpr`, `__ccg`, and the bitmaps of the
-/// modules loaded, which only the app can know.
+/// The fields of the app's latest Relay form that describe the page's state:
+/// `dpr`, `__ccg`, and the bitmaps of the modules loaded.
 #[derive(Debug, Clone)]
 struct RelayCopy {
     dpr: String,
@@ -485,21 +397,18 @@ struct RelayCopy {
     bitmaps: [(&'static str, String); 5],
 }
 
-/// The fields of a Comet envelope the page fills in for each call: the
-/// counter and the per-load tokens.
+/// The fields of a Comet envelope the page fills in for each call.
 const FILLED: [&str; 4] = ["__req", "fb_dtsg", "jazoest", "lsd"];
 
 impl AppCalls {
-    /// Takes in one of the app's calls: the form of a POST, or the query of
-    /// a GET, sent to `path`. The registry's operation whose variables it
+    /// Takes in one of the app's calls, the form of a POST or the query of a
+    /// GET sent to `path`. Returns the registry operation whose variables it
     /// kept, if it was one.
     pub fn saw(&mut self, path: &str, form: &str) -> Option<Operation> {
         self.saw_with(path, form, &[])
     }
 
-    /// [`Self::saw`], with the headers the call went out under: the
-    /// identifiers the app puts in them are kept, and so is the number a read
-    /// of the registry's went out under, when the call vouches for it.
+    /// [`Self::saw`], with the headers the call went out under.
     pub fn saw_with(
         &mut self,
         path: &str,
@@ -617,61 +526,45 @@ impl AppCalls {
         None
     }
 
-    /// The latest `variables` the app sent with `operation` on this document.
     pub fn variables_sent(&self, operation: Operation) -> Option<&str> {
         self.variables.get(&operation).map(String::as_str)
     }
 
-    /// The `doc_id` the app sent the registry's read `operation` under on
-    /// this document, when the call vouched for it ([`allowlist::vouched`]).
     pub fn doc_id_sent(&self, operation: Operation) -> Option<&str> {
         self.doc_ids.get(&operation).map(String::as_str)
     }
 
-    /// The token the app's REST POSTs on this document carried, when one
-    /// did, with the `jazoest` it makes.
+    /// The token the app's REST POSTs on this document carried.
     ///
     /// **Not the page's Relay token, and not known to be any value the
-    /// document shows.** In the capture of 2026-10-01 every REST POST of the
-    /// app (`show_many`, `news/inbox`, `discover/ayml`) carried one `jazoest`,
-    /// 22858, across three document loads, while the Relay and Comet calls'
-    /// changed with each load (26068, 26433, 26511) and matched the token the
-    /// document wrote into its `/ajax/qm/` call. The REST token is longer
-    /// lived, and its source in the document is one of the two the recorder
-    /// redacts (`DTSGInitData`'s token, or `MRequestConfig`'s `dtsg`, which
-    /// says it is valid for a day); which one cannot be told from a redacted
-    /// recording. So it is taken only from the app's own REST POSTs, never
-    /// guessed from the page, and a call that needs it is not built until the
-    /// app has sent one.
+    /// document shows**: in the capture of 2026-10-01 every REST POST carried
+    /// one `jazoest` across three document loads while the Relay calls'
+    /// changed with each. So it is taken only from the app's own REST POSTs,
+    /// and a call that needs it is not built until the app has sent one.
     pub fn rest_token_sent(&self) -> Option<&str> {
         self.rest_token.as_deref()
     }
 
-    /// `X-IG-App-ID`, as the app's calls on this document carry it.
     pub fn app_id(&self) -> Option<&str> {
         self.app_id.as_deref()
     }
 
-    /// `X-ASBD-ID`, as the app's calls on this document carry it.
     pub fn asbd_id(&self) -> Option<&str> {
         self.asbd_id.as_deref()
     }
 
-    /// `X-FB-Entry-Nonce`, as the app's Relay and Comet calls on this
-    /// document carry it.
     pub fn entry_nonce(&self) -> Option<&str> {
         self.entry_nonce.as_deref()
     }
 
-    /// Whether the app has made a route call on this document, whose
-    /// envelope a route call built here would copy.
+    /// Whether the app has made a route call on this document, whose envelope
+    /// a route call built here copies.
     pub fn made_a_route_call(&self) -> bool {
         self.comet.is_some()
     }
 
-    /// Which of `page`'s two tokens the app's Relay and Comet calls on this
-    /// document carry: what the live check reads to settle which one a call
-    /// built here takes. Never the token itself.
+    /// Which of `page`'s two tokens the app's Relay and Comet calls carry.
+    /// Never the token itself.
     pub fn sent_token(&self, page: &PageValues) -> SentToken {
         let Some(sent) = self.dtsg.as_deref() else {
             return SentToken::NotYet;
@@ -688,7 +581,6 @@ impl AppCalls {
         }
     }
 
-    /// The `__req` of a call about to be built.
     fn next_req(&mut self) -> String {
         let req = self.next_req.max(1);
         self.first_taken.get_or_insert(req);
@@ -697,8 +589,6 @@ impl AppCalls {
     }
 }
 
-/// Which of a document's two tokens the app's Relay and Comet calls carry
-/// ([`AppCalls::sent_token`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SentToken {
     /// `DTSGInitialData`'s, the one a call built here takes.
@@ -711,27 +601,19 @@ pub enum SentToken {
     NotYet,
 }
 
-/// What a call is built from, besides the call itself.
 pub struct Context<'a> {
     pub page: &'a PageValues,
     pub app: &'a mut AppCalls,
-    /// The CSRF token the browser holds, when known. REST and Relay calls
-    /// carry the header either way, empty without one: the page writes its
-    /// cookie's in as it sends.
+    /// The CSRF token the browser holds, when known. The header goes out
+    /// empty without one: the page writes its cookie's in as it sends.
     pub csrf: Option<&'a str>,
-    /// The current `X-IG-WWW-Claim`: `0` until the server hands one out.
     pub claim: &'a str,
 }
 
 impl<'a> Context<'a> {
-    /// The call `ask` names, made from `referrer`, a path.
-    ///
-    /// A [`Ask::Query`] of a write is refused here too, whatever checked the
-    /// intent before: a write goes out only as [`Ask::Write`]. A query takes
-    /// the variables the app sent with the same operation (`seen`), with only
-    /// the keys that name what is asked made snob's, so its flags are the
-    /// app's rather than invented; without them, the ask's own. It is made on
-    /// the route of the page it is made from ([`route_of`]).
+    /// The call `ask` names, made from `referrer`, a path. A [`Ask::Query`] of
+    /// a write is refused here too. A query takes the variables the app sent
+    /// with the same operation (`seen`), only the asked keys made snob's.
     pub fn build(&mut self, ask: &Ask, referrer: &str, seen: &Seen<'_>) -> Result<Built, Unbuilt> {
         let built = match ask {
             Ask::Query {
@@ -778,10 +660,9 @@ impl<'a> Context<'a> {
         built.map_err(Unbuilt::Missing)
     }
 
-    /// The route a Relay read made from `referrer` is made on, as the app
-    /// names it with `__crn`. **None for the first call built on a document
-    /// whose app has named none**: the queries the app sends as a cold
-    /// document boots go out without one, and the ones after carry the route.
+    /// The `__crn` of a Relay read made from `referrer`. **None for the first
+    /// call built on a document whose app has named none**: the queries a cold
+    /// document boots with go out without one.
     fn route_on(&self, referrer: &str) -> Option<&'static str> {
         if !self.app.route_named && self.app.first_taken.is_none() {
             return None;
@@ -789,17 +670,14 @@ impl<'a> Context<'a> {
         route_of(referrer)
     }
 
-    /// `X-IG-App-ID`, the app's own where its calls carried one.
     fn app_id(&self) -> &str {
         self.app.app_id().unwrap_or(IG_APP_ID)
     }
 
-    /// `X-ASBD-ID`, the app's own where its calls carried one.
     fn asbd_id(&self) -> &str {
         self.app.asbd_id().unwrap_or(ASBD_ID)
     }
 
-    /// A REST read.
     pub fn rest_get(&self, read: Rest, query: &[(&str, &str)], referrer: &str) -> Built {
         Built {
             method: Method::Get,
@@ -819,8 +697,7 @@ impl<'a> Context<'a> {
             ("X-IG-WWW-Claim", self.claim),
             ("X-Requested-With", "XMLHttpRequest"),
         ];
-        // The app sends it once it has made one for the page, which is not
-        // on its very first calls.
+        // The app's very first calls on a page go out without one.
         if let Some(session) = self.page.web_session.as_deref() {
             headers.push(("X-Web-Session-ID", session));
         }
@@ -832,8 +709,8 @@ impl<'a> Context<'a> {
         self.csrf.unwrap_or_default()
     }
 
-    /// The per-load token a Relay or Comet POST carries: the page's, and
-    /// only when the app itself sent it on this document, since which of the
+    /// The per-load token a Relay or Comet POST carries: the page's, and only
+    /// once the app itself sent it on this document, since which of the
     /// document's two tokens that is has not been confirmed.
     fn relay_token(&self) -> Result<&'a str, Missing> {
         let token = self
@@ -848,11 +725,9 @@ impl<'a> Context<'a> {
         }
     }
 
-    /// A Relay call of `operation`, which takes `variables` as JSON. `route`
-    /// is `__crn`, the route the call is made on; the app leaves it out of
-    /// the queries it sends right after a document loads. `doc_id` stands in
-    /// for the registry's, for a number the app was seen to send (a read) or
-    /// that was rediscovered (a write).
+    /// A Relay call of `operation`. `route` is `__crn`; `doc_id` stands in for
+    /// the registry's, for a number the app was seen to send (a read) or that
+    /// was rediscovered (a write).
     pub fn relay(
         &mut self,
         operation: Operation,
@@ -907,9 +782,8 @@ impl<'a> Context<'a> {
         if let Some(route) = route {
             form.push(("__crn".into(), route.into()));
         }
-        // The operation's five, in the order the app sends them in every
-        // Relay POST of both captures (2026-09-29 and 2026-10-01): the
-        // timestamps flag before the variables.
+        // In the order of every Relay POST of the captures of 2026-09-29 and
+        // 2026-10-01: the timestamps flag before the variables.
         form.extend(owned(&[
             ("fb_api_caller_class", "RelayModern"),
             ("fb_api_req_friendly_name", operation.friendly_name()),
@@ -947,12 +821,8 @@ impl<'a> Context<'a> {
         })
     }
 
-    /// The route definitions of `routes`, each a path on the site such as
-    /// `/<user>/`: what the app asks before it links to a page, and where
-    /// the ids the page will need are.
-    ///
-    /// The envelope is the app's latest one on this document, with the
-    /// counter and the tokens filled in from the page.
+    /// The route definitions of `routes`, each a path such as `/<user>/`, in
+    /// the app's latest envelope on this document.
     pub fn bulk_route_definitions(
         &mut self,
         routes: &[&str],
@@ -966,17 +836,9 @@ impl<'a> Context<'a> {
         self.comet(BULK_ROUTE_DEFINITIONS, leading, None, referrer)
     }
 
-    /// The app's router moving to `route`, a path such as `/<user>/` or
-    /// `/<user>/followers/mutualOnly`: what it sends as a profile opens, and
-    /// as the mutual-followers tab of one opens (the capture of 2026-10-01
-    /// holds one before every list that was read).
-    ///
-    /// The form is the route definitions' envelope after the viewer's
-    /// `fbid` (`client_previous_actor_id`) and the route, with `__crn` the
-    /// route moved to, as the app's navigations carry it: a profile's posts
-    /// tab for a profile and for its mutual followers alike, the feed's for
-    /// the home page. Made from the route itself, which is the page's address
-    /// once the app has pushed it, so the `Referer` is the route.
+    /// The app's router moving to `route` (the capture of 2026-10-01 holds one
+    /// before every list read). `__crn` is the route moved to, a profile's
+    /// posts tab for its mutual followers too, and the `Referer` is the route.
     pub fn navigation(&mut self, route: &str) -> Result<Built, Missing> {
         let viewer = self.page.viewer.as_ref().ok_or(Missing("the viewer"))?;
         let leading = owned(&[
@@ -987,9 +849,8 @@ impl<'a> Context<'a> {
         self.comet(NAVIGATION, leading, route_of(profile), route)
     }
 
-    /// A Comet call to `path`: `leading` and then the app's envelope, with
-    /// the counter and the tokens filled in from the page and `__crn` made
-    /// `crn` where one is given.
+    /// A Comet call: `leading`, then the app's envelope with the counter and
+    /// the tokens filled in and `__crn` made `crn` where one is given.
     fn comet(
         &mut self,
         path: &str,
@@ -1045,18 +906,10 @@ impl<'a> Context<'a> {
         })
     }
 
-    /// `friendships/show_many` for `pks`, the accounts of the list page just
-    /// read, made from `referrer`, the page the list was read from: what the
-    /// app sends the moment each list page answers, and before it asks for
-    /// the next (every one of the 16 list pages of the capture of
-    /// 2026-10-01, 0.2 to 0.3 seconds after).
-    ///
-    /// The REST family's headers and `X-Instagram-AJAX`, the revision the
-    /// app's REST POSTs carry (`SiteData`'s), with a form of three fields in
-    /// the app's order: the pks, comma-separated, then `jazoest` and
-    /// `fb_dtsg`. The token is `token`, the one the app's own REST POSTs were
-    /// seen to carry ([`AppCalls::rest_token_sent`]); without one the call is
-    /// not built, since no token the document shows is known to be it.
+    /// `friendships/show_many` for `pks`, as the app sends it 0.2 to 0.3 s
+    /// after each list page answers (all 16 of the capture of 2026-10-01): the
+    /// REST headers and `X-Instagram-AJAX`, and three fields in the app's
+    /// order. Not built without `token` ([`AppCalls::rest_token_sent`]).
     pub fn show_many(
         &mut self,
         pks: &[Pk],
@@ -1090,12 +943,9 @@ impl<'a> Context<'a> {
     }
 }
 
-/// The route the app names for a page, in `__crn`: its home page is the
-/// feed's, a profile is the profile's posts tab, and a profile's reels,
-/// tagged and reposts tabs are each their own (`PolarisProfileReelsTabRoute`
-/// and the other two, on every call made from one in the captures of
-/// 2026-11-13 and 2026-11-14). Another page has none here, as snob is made
-/// from no other.
+/// The route the app names for a page, in `__crn`: the feed's for the home
+/// page, the posts tab's for a profile, and each of the reels, tagged and
+/// reposts tabs its own (captures of 2026-11-13 and 2026-11-14).
 pub fn route_of(referrer: &str) -> Option<&'static str> {
     if referrer == "/" {
         Some(FEED_ROUTE)
@@ -1111,23 +961,17 @@ pub fn route_of(referrer: &str) -> Option<&'static str> {
     }
 }
 
-/// The route of each of a profile's tabs, by the segment of its address
-/// ([`allowlist::PROFILE_TABS`]).
 const TAB_ROUTES: [(&str, &str); 3] = [
     ("reels", "comet.igweb.PolarisProfileReelsTabRoute"),
     ("tagged", "comet.igweb.PolarisProfileTaggedTabRoute"),
     ("reposts", "comet.igweb.PolarisProfileRepostsTabRoute"),
 ];
 
-/// The route of the home page.
 pub const FEED_ROUTE: &str = "comet.igweb.PolarisFeedRoute";
 
-/// The variables of the app's profile query for `pk`, as the capture of
-/// 2026-11-13 shows it sending them: the integrity filter, the id, and seven
-/// flags of its own, in its order (five on 2026-10-01; the banner and the
-/// rings flags are new, and short dramas went on). What a call sends before
-/// the app has sent a query to copy them from; [`Seen::variables`] replaces
-/// the flags with the app's own.
+/// The variables of the app's profile query for `pk`, as sent in the capture
+/// of 2026-11-13 (seven flags; five on 2026-10-01). [`Seen::variables`]
+/// replaces the flags with the app's own once it has sent a query.
 pub fn profile_variables(pk: Pk) -> String {
     format!(
         concat!(
@@ -1144,9 +988,8 @@ pub fn profile_variables(pk: Pk) -> String {
     )
 }
 
-/// The variables of the app's story and highlight viewers, which open `reel`
-/// over `reel_ids` with a window of three after and two before, and a flag
-/// of their own.
+/// The variables of the app's story and highlight viewers: `reel` opened over
+/// `reel_ids`, a window of three after and two before.
 pub fn reel_variables(reel: &str, reel_ids: &[String]) -> String {
     format!(
         concat!(
@@ -1158,19 +1001,15 @@ pub fn reel_variables(reel: &str, reel_ids: &[String]) -> String {
     )
 }
 
-/// The flags the app sends with both of the grid's queries, under `data`:
-/// twelve posts a page, and what to say about the owner's stories beside
-/// them (captures of 2026-10-01, on every profile opened).
+/// The `data` of both of the grid's queries (captures of 2026-10-01).
 const POSTS_DATA: &str = concat!(
     r#"{"count":12,"include_reel_media_seen_timestamp":true,"#,
     r#""include_relationship_info":true,"latest_besties_reel_media":true,"#,
     r#""latest_reel_media":true}"#
 );
 
-/// The five flags of the app's own that close both of the grid's queries,
-/// as every grid call of the capture of 2026-11-13 sent them (three on
-/// 2026-10-01; the crawler and comment-style flags are new, and short
-/// dramas went on).
+/// The five flags that close both of the grid's queries, as every grid call
+/// of the capture of 2026-11-13 sent them (three on 2026-10-01).
 const POSTS_FLAGS: &str = concat!(
     r#""__relay_internal__pv__PolarisMultiCaptionCarouselEnabledrelayprovider":true,"#,
     r#""__relay_internal__pv__PolarisShortDramaEnabledrelayprovider":true,"#,
@@ -1179,8 +1018,6 @@ const POSTS_FLAGS: &str = concat!(
     r#""__relay_internal__pv__PolarisReelsRecoDebugOverlayEnabledrelayprovider":false"#
 );
 
-/// The variables of the grid's first page for `username`, as the app sends
-/// them as a profile opens: the page's flags, the name, and its own five.
 pub fn posts_variables(username: &str) -> String {
     format!(
         r#"{{"data":{POSTS_DATA},"username":{},{POSTS_FLAGS}}}"#,
@@ -1188,9 +1025,8 @@ pub fn posts_variables(username: &str) -> String {
     )
 }
 
-/// The variables of the grid's next page, from where the page before ended
-/// (`after`), as the app sends them as the grid is scrolled: twelve again,
-/// with the caption flag the first page does not carry.
+/// The grid's next page: twelve again, with the caption flag the first page
+/// does not carry.
 pub fn posts_page_variables(username: &str, after: &str) -> String {
     format!(
         concat!(
@@ -1204,27 +1040,21 @@ pub fn posts_page_variables(username: &str, after: &str) -> String {
     )
 }
 
-/// The two flags of the app's own that close the tagged and reposts tabs'
-/// queries, and the first of them the reels tab's (captures of 2026-11-13
-/// and 2026-11-14, every call).
+/// The flags that close the tabs' queries (captures of 2026-11-13 and
+/// 2026-11-14, every call).
 const SHORT_DRAMA: &str = r#""__relay_internal__pv__PolarisShortDramaEnabledrelayprovider":true"#;
 const SEO_CRAWLER: &str = r#""__relay_internal__pv__PolarisSEOIsCrawlerrelayprovider":false"#;
 
-/// How many reels a next page of the reels tab asks for: **three**, as every
-/// one of the seven of the capture of 2026-11-14 asked (five in the six of
-/// 2026-11-13, on another build of the app, with the same window). The
-/// fewer of the two numbers the app has sent, so the slower read; the first
-/// page asks for twelve either way.
+/// **Three**, as all seven next pages of the capture of 2026-11-14 asked
+/// (five in the six of 2026-11-13, another build): the fewer, so the slower
+/// read. The first page asks for twelve either way.
 const REELS_PER_NEXT_PAGE: u32 = 3;
 
-/// The `data` of both of the reels tab's queries for `pk`: the feed's videos
-/// too, twelve a page by the app's count, by the account's pk.
 fn reels_data(pk: Pk) -> String {
     format!(r#"{{"include_feed_video":true,"page_size":12,"target_user_id":"{pk}"}}"#)
 }
 
-/// The variables of the reels tab's first page for `pk`, as the app sends
-/// them as the tab opens (L1753 and L4180 of the capture of 2026-11-14).
+/// The reels tab's first page (L1753 and L4180 of the capture of 2026-11-14).
 pub fn reels_variables(pk: Pk) -> String {
     format!(
         r#"{{"data":{},"user_id":"{pk}",{SHORT_DRAMA}}}"#,
@@ -1232,8 +1062,6 @@ pub fn reels_variables(pk: Pk) -> String {
     )
 }
 
-/// The variables of the reels tab's next page, from where the page before
-/// ended (`after`), as the app sends them as the tab scrolls.
 pub fn reels_page_variables(pk: Pk, after: &str) -> String {
     format!(
         r#"{{"after":{},"data":{},"first":{REELS_PER_NEXT_PAGE},"id":"{pk}",{SHORT_DRAMA}}}"#,
@@ -1242,13 +1070,10 @@ pub fn reels_page_variables(pk: Pk, after: &str) -> String {
     )
 }
 
-/// The variables of the tagged tab's first page for `pk`: twelve.
 pub fn tagged_variables(pk: Pk) -> String {
     format!(r#"{{"count":12,"user_id":"{pk}",{SHORT_DRAMA},{SEO_CRAWLER}}}"#)
 }
 
-/// The variables of the tagged tab's next page, from the post the page
-/// before ended at (`after`): twelve again.
 pub fn tagged_page_variables(pk: Pk, after: &str) -> String {
     format!(
         concat!(
@@ -1262,13 +1087,10 @@ pub fn tagged_page_variables(pk: Pk, after: &str) -> String {
     )
 }
 
-/// The variables of the reposts tab's first page for `pk`.
 pub fn reposts_variables(pk: Pk) -> String {
     format!(r#"{{"user_id":"{pk}",{SHORT_DRAMA},{SEO_CRAWLER}}}"#)
 }
 
-/// The variables of the reposts tab's next page, from the `max_id` the page
-/// before handed out.
 pub fn reposts_page_variables(pk: Pk, max_id: &str) -> String {
     format!(
         r#"{{"max_id":{},"id":"{pk}",{SHORT_DRAMA},{SEO_CRAWLER}}}"#,
@@ -1276,11 +1098,9 @@ pub fn reposts_page_variables(pk: Pk, max_id: &str) -> String {
     )
 }
 
-/// `template`, a JSON object the app sent, with the values of `keys` made
-/// the ones of `variables`: the app's keys, in its order, and every other
-/// value as it sent it. `None` when either is not an object, when none of
-/// `keys` is among `variables`', or when `variables` names one that the app's
-/// object lacks.
+/// `template`, a JSON object the app sent, with the values of `keys` replaced
+/// by those of `variables`, in the app's order. `None` when either is not an
+/// object, when none of `keys` is asked, or when the app's object lacks one.
 fn with_the_keys_of(template: &str, variables: &str, keys: &[&str]) -> Option<String> {
     let Ordered::Object(mut fields) = serde_json::from_str(template).ok()? else {
         return None;
@@ -1299,10 +1119,8 @@ fn with_the_keys_of(template: &str, variables: &str, keys: &[&str]) -> Option<St
     replaced.then(|| serde_json::to_string(&Ordered::Object(fields)).ok())?
 }
 
-/// The top-level keys each of two JSON objects of variables lacks that the
-/// other has, `ours` first and then the app's (`apps`), each in its own
-/// order: names only, for a log line, since a value can name an account.
-/// `None` when either is not an object.
+/// The top-level keys each of two JSON objects lacks that the other has:
+/// names only, for a log line, since a value can name an account.
 pub fn keys_each_lacks(ours: &str, apps: &str) -> Option<(Vec<String>, Vec<String>)> {
     let keys = |json: &str| -> Option<Vec<String>> {
         let Ordered::Object(fields) = serde_json::from_str(json).ok()? else {
@@ -1321,8 +1139,7 @@ pub fn keys_each_lacks(ours: &str, apps: &str) -> Option<(Vec<String>, Vec<Strin
     Some((lacking(&ours, &apps), lacking(&apps, &ours)))
 }
 
-/// A JSON value that keeps its objects' keys in the order they came in,
-/// which `serde_json::Value` does not.
+/// A JSON value that keeps its objects' keys in the order they came in.
 enum Ordered {
     Object(Vec<(String, Ordered)>),
     Array(Vec<Ordered>),
@@ -1446,8 +1263,6 @@ fn encoded(pairs: &[(String, String)]) -> String {
         .finish()
 }
 
-/// A logged-in page and the app's calls on it, invented in the capture's
-/// shapes: what the tests here, and the client's, build calls from.
 #[cfg(test)]
 pub(crate) mod fixtures {
     use snob_core::secret::Secret;

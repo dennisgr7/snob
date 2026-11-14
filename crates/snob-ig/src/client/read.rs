@@ -1,10 +1,6 @@
-//! The endpoints this tool reads, one method per URL.
-//!
-//! Every one of them is a GET through [`IgClient::get`] -- or, for the one that
-//! wants HTML rather than JSON, through [`IgClient::get_body`] -- which is
-//! where the budget is spent and the headers are built. What is here is the
-//! address, the query, the page a browser would have called from, and how the
-//! answer is read.
+//! The endpoints this tool reads, one method per URL: the address, the query,
+//! the page a browser would have called from, and how the answer is read.
+//! The budget is spent and the headers built in [`IgClient::get`].
 
 use snob_core::Pk;
 
@@ -22,7 +18,6 @@ use super::IgClient;
 use super::ask::{answered, profile_path, told_otherwise};
 use super::headers::Surface;
 
-/// Which side of the relationship is being requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Followers,
@@ -38,24 +33,19 @@ impl Direction {
     }
 }
 
-/// The accounts a list page listed, in its order.
 fn pks_of(page: &FriendshipsPage) -> Vec<Pk> {
     page.users.iter().map(|user| user.pk).collect()
 }
 
-/// `path` as a request sent without a browser names its referrer: with no
-/// leading slash, the site's address before it.
+/// The referrer of a request sent without a browser has no leading slash.
 fn relative(path: &str) -> &str {
     path.strip_prefix('/').unwrap_or(path)
 }
 
 impl IgClient {
-    /// Checks the session works, with the cheapest request that exercises the
-    /// very endpoint the walk will depend on.
-    ///
-    /// **From the browser it costs nothing**: the tab's document says who it
-    /// was served to, and a session Instagram no longer takes is served a
-    /// logged-out one ([`Self::viewer`]).
+    /// Checks the session works, with the cheapest request on the endpoint the
+    /// walk depends on. **From the browser it costs nothing**: the tab's
+    /// document says who it was served to ([`Self::viewer`]).
     pub async fn validate(&self) -> Result<(), IgError> {
         if self.has_page() {
             self.viewer().await?;
@@ -69,19 +59,16 @@ impl IgClient {
                     Direction::Following.segment()
                 ),
                 &[("count", "1")],
-                // The account's own page: the only one we can name before the
-                // username has been resolved.
+                // The account's own page: the only one nameable before the
+                // username is resolved.
                 "",
             )
             .await?;
         Ok(())
     }
 
-    /// Identity of the authenticated account. The id comes from the cookie
-    /// itself; the username is only requested if we do not have it already.
-    ///
-    /// From the browser the name is the one the tab's document was served
-    /// under, for nothing, so a renamed account is told by its new name.
+    /// Identity of the authenticated account. From the browser the name is
+    /// the one the tab's document was served under, so a rename shows.
     pub async fn whoami(&self) -> Result<Identity, IgError> {
         if self.has_page() {
             let viewer = self.viewer().await?;
@@ -102,9 +89,8 @@ impl IgClient {
         Ok(Identity { pk, username })
     }
 
-    /// Resolves a username from an id. Returns `None` if Instagram answers but
-    /// does not carry the field: it is cosmetic information and must never make
-    /// a login fail.
+    /// `None` if Instagram answers without the field: the name is cosmetic
+    /// and must never make a login fail.
     pub async fn resolve_username(&self, pk: Pk) -> Result<Option<String>, IgError> {
         if self.has_page() {
             if pk == self.session.ds_user_id {
@@ -116,22 +102,14 @@ impl IgClient {
     }
 
     /// The profile of the account called `name`, `known` its pk when an
-    /// earlier answer said so.
+    /// earlier answer said so. Without a browser, [`Self::web_profile_info`].
+    /// From the browser: the pk (`known`, or one read), the profile query,
+    /// and once accepted the app's three reads beside it
+    /// ([`Self::profile_burst`]).
     ///
-    /// Without a browser this is [`Self::web_profile_info`]. From the
-    /// browser it is read the way the web client reads one, by pk: a name
-    /// that cannot be anybody's is not found for nothing; the pk is `known`,
-    /// or the tab finds it (one read); then the profile query (one read),
-    /// and, once the answer is accepted, the three reads the app sends with
-    /// every profile it opens ([`Self::profile_burst`]).
     /// **The answer must name `name`**, in any case: a known pk that now
-    /// belongs to another name is looked up once more, and anything else
-    /// that does not match is not found, so no answer is ever about another
-    /// account than the one asked for.
-    ///
-    /// A route that names no profile is not found; one that answers with an
-    /// error is not, since what the error means is not known and an expired
-    /// session is not a missing account.
+    /// belongs to another name is looked up once more, and anything else is
+    /// not found. A route that answers with an error is not "not found".
     pub async fn profile_named(
         &self,
         name: &str,
@@ -169,15 +147,10 @@ impl IgClient {
         }
     }
 
-    /// The two counters of account `pk`, called `username` when that is
-    /// known: the one request that tells whether a stored list still
-    /// answers.
-    ///
-    /// From the browser it is the hover card, by pk, so the name is not
-    /// needed. Without one it is [`Self::web_profile_info`], which takes a
-    /// name; with none there is nothing to ask with, and `None` costs
-    /// nothing where asking about a numeric id would spend a request on a
-    /// certain 404.
+    /// The two counters of account `pk`: the one request that tells whether a
+    /// stored list still answers. The hover card from the browser; without
+    /// one, [`Self::web_profile_info`], which needs a name, and `None` with
+    /// none rather than a request for a certain 404.
     pub async fn counters(
         &self,
         pk: Pk,
@@ -197,8 +170,7 @@ impl IgClient {
         Ok(Some(self.web_profile_info(username).await?.counters()))
     }
 
-    /// The pk the tab finds behind `name`. A name nobody owns is not found
-    /// by that name, whether the route or the profile document said so.
+    /// The pk the tab finds behind `name`.
     async fn pk_named(&self, name: &str) -> Result<Pk, IgError> {
         let missing = || IgError::NotFound {
             what: Some(name.to_string()),
@@ -214,9 +186,8 @@ impl IgClient {
         }
     }
 
-    /// Who the tab's document was served to, when that is this session's
-    /// account: nothing is sent, and nothing paid. A document served to
-    /// nobody, or to another account, is an expired session.
+    /// Who the tab's document was served to: nothing sent, nothing paid. A
+    /// document served to nobody, or to another account, is an expired session.
     async fn viewer(&self) -> Result<Viewer, IgError> {
         match self.ask_page(Ask::Viewer, "/").await? {
             Told::Viewer(viewer) => Ok(viewer),
@@ -227,10 +198,7 @@ impl IgClient {
         }
     }
 
-    /// Everything `/api/v1/users/{pk}/info/` says about an account. One request.
-    ///
-    /// Worth going to separately for the full-size profile picture, which no
-    /// other endpoint offers.
+    /// `/api/v1/users/{pk}/info/`: the only source of the full-size picture.
     pub async fn user_info(&self, pk: Pk) -> Result<Option<UserInfo>, IgError> {
         let envelope: UserInfoEnvelope = self
             .get(&format!("/api/v1/users/{pk}/info/"), &[], "")
@@ -238,37 +206,17 @@ impl IgClient {
         Ok(envelope.user)
     }
 
-    /// Public profile data, including the follower and following counters and
-    /// the high-resolution picture.
+    /// Public profile data, with the counters and the high-resolution picture.
     ///
-    /// **One request in the ordinary case, and two only when the first fails in
-    /// one particular way.** Nothing that works today costs anything extra:
-    /// [`IgClient::profile_by_name`] is tried first and its answer is returned
-    /// as it always was.
+    /// **One request, and a second only when the first fails in one way**:
+    /// the endpoint answers 400 for certain business accounts (`Asset
+    /// asset://laser.provider/ig_business_category_subvertical has been
+    /// deleted`; verified live in August 2026), and search is tried then.
+    /// [`IgError::worth_a_second_route`] keeps this from being a retry: a
+    /// push-back, a dead session, a cancel and a 404 all answer `false`.
     ///
-    /// The fallback exists because this endpoint answers **400** for certain
-    /// business accounts, with
-    /// `Asset asset://laser.provider/ig_business_category_subvertical has been
-    /// deleted. You cannot use this schema` — Instagram failing to serialize
-    /// its own reply, reproducible, and nothing to do with the request. It
-    /// takes down every command that names an account, because they all start
-    /// by turning a username into an id. Verified against the live API in
-    /// August 2026: 400 for `elrubiuswtf`, 200 for an ordinary account, which is
-    /// why the second route is reached only from the failure and never
-    /// replaces the first.
-    ///
-    /// [`IgError::worth_a_second_route`] is what keeps this from becoming a
-    /// retry loop. A 429, an action block, a challenge, an expired session, a
-    /// cancel and a 404 all answer `false` there, so the one rule that matters
-    /// — when a service says no, stop asking — is not weakened by having a
-    /// second route at all.
-    ///
-    /// What comes back from search is **less**: an identity and the two
-    /// friendship flags, and no counters. It is not padded out.
-    /// [`WebProfileInfo::counters_are_knowable`] is how a caller tells the
-    /// difference, and `engine::target` says so out loud, because a walk with
-    /// no declared size is a walk `pager::verify_completion` cannot check for
-    /// truncation.
+    /// Search gives an identity and no counters
+    /// ([`WebProfileInfo::counters_are_knowable`]); see "Known walls".
     pub async fn web_profile_info(&self, username: &str) -> Result<WebProfileInfo, IgError> {
         let failure = match self.profile_by_name(username).await {
             Ok(profile) => return Ok(profile),
@@ -291,25 +239,15 @@ impl IgClient {
                 );
                 Ok(WebProfileInfo::from_search(user))
             }
-            // Search answered and knows no such account. The original failure
-            // is still the truthful thing to report: this route not finding it
-            // is not evidence that the name is free, and a 400 reported as
-            // "no such account" sends somebody hunting for a typo that is not
-            // there.
+            // The original failure is still the truthful one: search not
+            // finding the name does not turn a 400 into "no such account".
             Ok(None) => {
                 tracing::debug!("search knows no such account either");
                 Err(failure)
             }
-            // The fallback's own failure must not replace the real one --
-            // **except** when it is one the user has to act on. A cooldown or a
-            // dead session recorded on this request is a fact about the account
-            // that would otherwise be swallowed by an error about serialization.
-            //
-            // `is_push_back`, not `cooldown_for`: that is the table of answers
-            // that *open* a cooldown, and it says `None` for `InCooldown` --
-            // the pacer's backstop reporting one that already exists, which
-            // another process can write between the two requests. That one is
-            // exactly as much a fact the user has to act on.
+            // The fallback's failure replaces the real one only when the user
+            // has to act on it. `is_push_back`, not `cooldown_for`, which says
+            // `None` for an `InCooldown` another process just wrote.
             Err(second) => {
                 if second.is_push_back() || second.invalidates_session() {
                     Err(second)
@@ -320,14 +258,11 @@ impl IgClient {
         }
     }
 
-    /// The profile endpoint on its own, with no fallback behind it.
     async fn profile_by_name(&self, username: &str) -> Result<WebProfileInfo, IgError> {
         let missing = || IgError::NotFound {
             what: Some(username.to_string()),
         };
-        // Instagram says the same thing two ways: a 404 for the page, or a 200
-        // whose envelope carries no user. Both mean the name is not taken, and
-        // the person asking should read one answer, not two.
+        // A 404, or a 200 whose envelope carries no user: one answer.
         let envelope: WebProfileInfoEnvelope = self
             .get(
                 "/api/v1/users/web_profile_info/",
@@ -342,30 +277,17 @@ impl IgClient {
         envelope.data.user.ok_or_else(missing)
     }
 
-    /// Resolves a username to an id through the web client's search box.
+    /// Resolves a username through the web client's search box. **A fallback,
+    /// never a first choice** (see [`Self::web_profile_info`]).
     ///
-    /// **A fallback, never a first choice.** It exists because
-    /// `web_profile_info` answers 400 for certain business accounts with a
-    /// serialization failure of Instagram's own -- see `resolve_id` -- and it
-    /// is used only after that has happened.
-    ///
-    /// Search matches loosely, so the answer is filtered to an exact,
-    /// case-insensitive match on the name asked for. Without that, asking about
-    /// a name that does not exist hands back whatever the search box would have
-    /// suggested instead, and the run then walks a stranger's followers under
-    /// the name that was typed. That is the failure this whole route could
-    /// introduce, and it is the only reason the comparison is here rather than
-    /// left to the caller.
-    ///
-    /// `None` means search knows no such account, which is what a caller should
-    /// report as "no such account" rather than as a failure of the fallback.
+    /// Search matches loosely, so the answer is held to an exact,
+    /// case-insensitive match: otherwise a name that does not exist would walk
+    /// a stranger's followers. `None` means search knows no such account.
     pub async fn search_user_id(&self, username: &str) -> Result<Option<SearchUser>, IgError> {
         let found: TopSearch = self
             .get(
                 "/web/search/topsearch/",
                 &[("context", "blended"), ("query", username), ("count", "1")],
-                // In a browser this is called from whatever page the search box
-                // is open on. The site's own address is the truthful one.
                 "",
             )
             .await?;
@@ -377,20 +299,11 @@ impl IgClient {
             .find(|user| user.username.eq_ignore_ascii_case(username)))
     }
 
-    /// One page of followers or following. Pagination is the caller's job.
-    ///
-    /// Asked the way the web app asks it, on both paths: `count` (the app's
-    /// twelve, [`crate::pace::ACCOUNTS_PER_PAGE`]), then the cursor, then
-    /// `search_surface` on the followers list alone (the order of the
-    /// capture's 36 later pages), from the account's own page.
-    /// From the browser the tab builds it with the app's headers, and the
-    /// page is followed, before anything else is asked, by the app's
-    /// `show_many` about its accounts ([`Self::statuses`]); without one it is
-    /// [`Self::get`] alone.
-    ///
-    /// `username` is only used to name the page a browser would have made this
-    /// call from. It is allowed to be empty — the walk still works — but the
-    /// caller knows it, so it may as well say it.
+    /// One page of followers or following, asked as the web app asks it:
+    /// `count` ([`crate::pace::ACCOUNTS_PER_PAGE`]), then the cursor, then
+    /// `search_surface` on followers alone (the order of the capture's 36
+    /// later pages). From the browser it is followed by the app's `show_many`
+    /// ([`Self::statuses`]). `username` only names the referring page.
     pub async fn friendships_page(
         &self,
         pk: Pk,
@@ -407,8 +320,6 @@ impl IgClient {
         if direction == Direction::Followers {
             query.push(("search_surface", "follow_list_page"));
         }
-        // In a browser the list opens over the account's own page, and the
-        // app asks for it from there.
         let referer = profile_path(username);
         let page: FriendshipsPage = if self.has_page() {
             let read = match direction {
@@ -431,25 +342,15 @@ impl IgClient {
         Ok(page)
     }
 
-    /// What the app sends as one of `username`'s lists opens, before its
-    /// first page: its router's navigation to the profile, `/<name>/`, or,
-    /// for the mutual followers (`mutual`), to the tab that lists them,
-    /// `/<name>/followers/mutualOnly`, which has an address of its own.
+    /// The app's navigation as one of `username`'s lists opens, before its
+    /// first page: to `/<name>/`, or for the mutual followers to
+    /// `/<name>/followers/mutualOnly` (every list read of the capture of
+    /// 2026-10-01 was preceded by one). From the browser only, and only for a
+    /// name that can be a profile's.
     ///
-    /// In the capture of 2026-10-01 every list read was preceded by one: a
-    /// profile's followers and following open over the profile, whose
-    /// navigation went out as it opened, and the mutual tab pushes its own
-    /// address and navigates to it. From the browser only, and only for a
-    /// name that can be a profile's: nothing is sent for a name never
-    /// learned. One read; see [`Self::navigation`] for what is made of a
-    /// failure.
-    ///
-    /// The tab itself stays where it is. The app pushes the route onto the
-    /// page's history before it navigates; snob does not, since the app's
-    /// router never learns of a push it did not make, and the page's address
-    /// would then disagree with the document and the route the app holds,
-    /// which is what every read made from the page is built after
-    /// (`web::made_from`).
+    /// The tab stays where it is: a history push the app's router did not make
+    /// would leave the address disagreeing with the route every read is built
+    /// after (`web::made_from`).
     pub async fn open_list(&self, username: &str, mutual: bool) -> Result<(), IgError> {
         if !self.has_page() || !crate::allowlist::profile_name(username) {
             return Ok(());
@@ -462,15 +363,9 @@ impl IgClient {
         self.navigation(&route).await
     }
 
-    /// What the app does when the machine wakes under it: the tab loads the
-    /// profile whose list is being read again, so the page the next requests
-    /// are built from is not the one from before the sleep.
-    ///
-    /// One paid read, the same document a write is made from
-    /// (`write_from_the_page`), answered with its status and bundles and never
-    /// its HTML. From the browser only; without one there is no page to
-    /// refresh. A name that cannot be a profile's loads the home page, which
-    /// the app also starts from.
+    /// Loads the profile whose list is being read again, as the app does when
+    /// the machine wakes: one paid read (`web::Ask::Document`), from the
+    /// browser only. A name that cannot be a profile's loads the home page.
     pub async fn reload(&self, username: &str) -> Result<(), IgError> {
         if !self.has_page() {
             return Ok(());
@@ -492,13 +387,8 @@ impl IgClient {
         Ok(())
     }
 
-    /// Charges the day's accounts for what a list page carried.
-    ///
-    /// Here, beside the two endpoints that return lists, so that every caller
-    /// pays and none has to remember to — the same shape as the request budget
-    /// inside `get`. A failure to record it is logged rather than raised: the
-    /// page was already paid for and already read, and losing it over a
-    /// bookkeeping write would only mean asking for it again.
+    /// Charges the day's accounts for what a list page carried. A failure to
+    /// record it is logged, not raised: the page was already paid for.
     async fn count_accounts(&self, page: &FriendshipsPage) {
         let accounts = u32::try_from(page.users.len()).unwrap_or(u32::MAX);
         if let Err(e) = self.pacer.spend_accounts(accounts).await {
@@ -506,24 +396,14 @@ impl IgClient {
         }
     }
 
-    /// A page, as HTML, exactly as a browser navigating to it would get it.
+    /// A page as HTML, as a browser navigating to it would get it: where
+    /// `fb_dtsg` and `lsd` are handed out ([`crate::graphql`]). A large
+    /// request (about 600 KB for a profile), so callers cache what they find.
     ///
-    /// The one reader here that does not want JSON. It exists because the two
-    /// tokens a mutation needs — `fb_dtsg` and `lsd` — are only ever handed out
-    /// inside a rendered page; see [`crate::graphql`].
-    ///
-    /// It costs a request like everything else, and it is a **large** one: a
-    /// profile page is around six hundred kilobytes of bootstrapped Relay
-    /// state. That is why the caller caches what it finds rather than reading
-    /// the page per write.
-    ///
-    /// **Only without a browser.** The tab hands no document's HTML out: a
-    /// navigation from the page is asked as a [`crate::web::Ask::Document`],
-    /// whose answer carries the bundles and not the page, and the browser
-    /// refuses one sent as a plain request.
+    /// **Only without a browser**: the tab hands no document's HTML out.
     pub async fn page(&self, path: &str) -> Result<String, IgError> {
         let answer = self.get_body(path, &[], "", Surface::Document).await?;
-        // No `declares_failure` here, deliberately: this is HTML, not JSON.
+        // No `declares_failure`: this is HTML, not JSON.
         if !answer.is_success() {
             return Err(self.refuse(&answer));
         }
@@ -532,22 +412,9 @@ impl IgClient {
 
     /// The accounts the viewer follows that follow this one, a page at a time.
     ///
-    /// What the profile page opens with — "Followed by a, b and 31 others" —
-    /// and what its "mutual" tab lists in full. The page carries the count and
-    /// three names on its own (`WebProfileInfo::mutual`); this is the rest,
-    /// and it is the cheap way to the answer `engine::people::in_common` works
-    /// out from storage: that one needs the account's whole followers list
-    /// walked, this needs `count / 12` requests and nothing stored.
-    ///
-    /// **Twelve per page because that is what the web client asks for**, seen
-    /// in a capture of August 2026, as it asks for twelve of the other two
-    /// lists ([`crate::pace::ACCOUNTS_PER_PAGE`]). A larger page has not been
-    /// tried here, and a number nobody has sent is not one to ship — the cost
-    /// of being wrong is the request being refused on an endpoint that has
-    /// never refused anything.
-    ///
-    /// The cursor is the offset, spelled as a string, and the reply is the
-    /// same shape as a followers page.
+    /// **Twelve per page because that is what the web client asks for**
+    /// (capture of August 2026); no other size has been sent. The cursor is
+    /// the offset as a string; the reply has a followers page's shape.
     pub async fn mutual_followers_page(
         &self,
         pk: Pk,
@@ -559,8 +426,7 @@ impl IgClient {
         if let Some(c) = cursor {
             query.push(("max_id", c));
         }
-        // In a browser this is the "mutual" tab of the followers dialog,
-        // which has an address of its own.
+        // The "mutual" tab of the followers dialog has an address of its own.
         let referer = if username.is_empty() {
             profile_path(username)
         } else {
@@ -584,24 +450,11 @@ impl IgClient {
         Ok(page)
     }
 
-    /// The highlights under an account's bio. One request.
-    ///
-    /// The tray only: title, size, dates and a cover per highlight. The items
-    /// are fetched the way a story is, through [`Self::stories`]'s endpoint
-    /// with the highlight's id in place of the account's — see
-    /// [`Self::highlight`].
-    ///
-    /// Verified live in August 2026 against `www.instagram.com` with a web
-    /// session. From the browser it is the web client's own tray query
-    /// instead, by pk, which carries a title and a cover and **no size and no
-    /// dates**: those are unknown there.
-    ///
-    /// An account with no highlights answers with an empty tray, and a
-    /// private account the viewer does not follow is expected to as well — a
-    /// reel is not served to somebody who may not see it.
+    /// The highlights under an account's bio, without their items. One request
+    /// (verified live in August 2026). From the browser it is the web client's
+    /// tray query, which carries **no size and no dates**.
     pub async fn highlights_tray(&self, pk: Pk, username: &str) -> Result<Vec<Highlight>, IgError> {
         if self.has_page() {
-            // The profile opened in this action read it already.
             if let Some(tray) = self.take_held_tray(pk) {
                 return Ok(tray);
             }
@@ -617,24 +470,13 @@ impl IgClient {
         Ok(tray.tray)
     }
 
-    /// The items of one highlight. One request.
+    /// The items of one highlight: [`Self::stories`]'s endpoint asked with
+    /// `highlight:<id>` (the tray's spelling, prefix included). From the
+    /// browser, [`Self::highlight_window`], which needs `tray`. `None` for an
+    /// id that no longer exists.
     ///
-    /// The same endpoint as [`Self::stories`], asked with `highlight:<id>` in
-    /// place of an account id; `reels_media` tells the two apart by the prefix,
-    /// the way it serves an archive day as `archiveDay:<id>`. Like a story,
-    /// **reading it does not tell anybody you looked**: the browser registers a
-    /// view of a highlight item through the very same Relay mutation it uses
-    /// for a story, with the highlight as the reel — seen forty-two times in
-    /// the August 2026 capture — and this project has no code that could send
-    /// it. `crates/snob-core/tests/no_seen.rs` names it and reads the source.
-    ///
-    /// `id` is the tray's spelling, prefix included. `None` means the highlight
-    /// answered with nothing, which is what an id that no longer exists does.
-    ///
-    /// From the browser it is the web client's highlights query, which is
-    /// asked with every id of `tray`, the tray `id` was listed in, in its
-    /// order, from the page of `username` ([`Self::highlight_window`]).
-    /// Without one the tray is not needed.
+    /// **Reading it does not tell anybody you looked**: a view is registered
+    /// by a separate mutation this project has no code to send (`no_seen.rs`).
     pub async fn highlight(
         &self,
         id: &str,
@@ -648,8 +490,7 @@ impl IgClient {
             .get(
                 "/api/v1/feed/reels_media/",
                 &[("reel_ids", id)],
-                // In a browser a highlight opens at an address of its own,
-                // under `stories/highlights/`, carrying the bare id.
+                // A highlight opens at an address of its own, with the bare id.
                 &format!(
                     "stories/highlights/{}/",
                     id.strip_prefix("highlight:").unwrap_or(id)
@@ -659,22 +500,14 @@ impl IgClient {
         Ok(envelope.reel())
     }
 
-    /// The stories an account has up right now. One request.
+    /// The stories an account has up right now. One request. `None` means
+    /// nothing is up: the endpoint answers 200 with an empty envelope.
     ///
-    /// **This does not tell anybody you looked.** Instagram registers a view
-    /// through a separate call, which this project does not implement and which
-    /// `crates/snob-core/tests/no_seen.rs` checks has not appeared. Fetching the
-    /// reel is a read like any other.
+    /// **This does not tell anybody you looked**, as for [`Self::highlight`].
     ///
-    /// An account with nothing up answers 200 with an empty envelope rather
-    /// than 404, so `None` means there are no stories and not that the account
-    /// is missing — the caller resolved it before getting here.
-    ///
-    /// From the browser it is the web client's story gallery
-    /// ([`Self::reel_gallery`]), opened over the stories tray the home page
-    /// shows, which is read for nothing: the tray's reels in its order when
-    /// it holds `pk`, and `pk` alone when it does not, or the tab is on a
-    /// document with no tray.
+    /// From the browser it is the story gallery ([`Self::reel_gallery`]),
+    /// opened over the home page's tray when it holds `pk`, and over `pk`
+    /// alone otherwise.
     pub async fn stories(&self, pk: Pk, username: &str) -> Result<Option<Reel>, IgError> {
         if self.has_page() {
             let id = pk.to_string();
@@ -689,8 +522,6 @@ impl IgClient {
             .get(
                 "/api/v1/feed/reels_media/",
                 &[("reel_ids", ids.as_str())],
-                // In a browser this call comes from the story viewer, which
-                // opens over the account's own page.
                 &if username.is_empty() {
                     String::new()
                 } else {

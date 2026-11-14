@@ -1,15 +1,6 @@
-//! How a request goes out to Instagram's API, and how the answer comes back.
-//!
-//! The origin rule, the redirect loop that pays for every hop it follows, the
-//! ceilings on what will be read, and the two races against the cancel token.
-//! [`IgClient::get`] is what the endpoints in [`super::read`] go through, and
-//! [`Answer`] is what it hands back for [`IgClient::decode`] to read.
-//!
-//! What a request *says* about itself is in [`super::headers`]. The CDN's own
-//! rules are in [`super::cdn`] rather than here, because they are the
-//! opposite rules: an asset request has to be allowed to move between hosts
-//! and an API call must not. Keeping the two apart is what stops the looser of
-//! them governing the requests that carry the credentials.
+//! How a request goes out to Instagram's API and how the answer comes back:
+//! the origin rule, the redirect loop that pays for every hop, the ceilings on
+//! what is read, and the races against the cancel token.
 
 use serde::de::DeserializeOwned;
 use url::Url;
@@ -22,59 +13,39 @@ use crate::http::Deadline;
 use super::IgClient;
 use super::headers::Surface;
 
-/// Ceiling on an API response.
-///
-/// A page of twelve accounts is a few kilobytes; this is orders of magnitude
-/// above anything real. It exists because the body is read into memory whole,
-/// so without a limit a hostile or broken answer decides how much memory this
-/// process uses.
+/// A page of twelve accounts is a few kilobytes; the body is read into memory
+/// whole, so the ceiling keeps a hostile answer from deciding how much.
 pub(super) const MAX_BODY_BYTES: u64 = 16 * 1024 * 1024;
 
-/// How long a single request may take end to end (for a file off the CDN, how
-/// long it may go without a byte), and how long the connection itself may take
-/// to come up. Generous: the walk's own pacing is what keeps requests apart,
-/// and these are only here so that nothing waits forever.
+/// Generous: the pacing keeps requests apart, these only keep anything from
+/// waiting forever. For a file off the CDN, the longest wait without a byte.
 pub(super) const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// How far a redirect chain may go before it is a loop by another name.
 pub(super) const MAX_HOPS: usize = 3;
 
-/// Same scheme, same host, same port. Not "the same host": a different port
-/// or scheme on the same name is a different server.
+/// Same scheme, host and port: a different port or scheme on the same name is
+/// a different server.
 pub(super) fn same_origin(a: &Url, b: &Url) -> bool {
     a.scheme() == b.scheme()
         && a.host_str() == b.host_str()
         && a.port_or_known_default() == b.port_or_known_default()
 }
 
-/// Redirects for the API: none, because following one is a request and a
-/// request has to be paid for.
-///
-/// `IgClient::get_body` follows them itself, charging `Pacer::clear_to_send`
-/// per hop and holding every hop to the same origin; the reasoning is on
-/// `get_body`, next to the loop that does it.
+/// None: following a redirect is a request, and `IgClient::get_body` follows
+/// them itself to pay for and check every hop.
 ///
 /// **The write goes out on this client too, and depends on this staying
-/// `none()`.** Following a redirect on a POST means asking Instagram to do the
-/// thing again, and "again" is a follow or an unfollow that nobody confirmed:
-/// reqwest turns a 307 or 308 into a repeat of the same method and body.
+/// `none()`**: reqwest repeats a POST on a 307 or 308, which would be a follow
+/// or an unfollow nobody confirmed.
 pub(super) fn api_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::none()
 }
 
-/// One HTTP client under a given redirect policy.
-///
-/// The timeouts are not optional. Without them, a server that accepts the
-/// connection and then says nothing hangs the process for good: neither the
-/// cancel token nor any deadline above reaches a socket that is simply waiting.
 pub(super) fn build_client(
     user_agent: &str,
     redirect: reqwest::redirect::Policy,
 ) -> Result<reqwest::Client, IgError> {
-    // The trust store is read here rather than passed in, for the reason
-    // `http::TRUST` gives: `login::validate` builds a client inside this crate
-    // and never sees the binary's arguments.
     Ok(crate::http::builder(
         user_agent,
         redirect,
@@ -85,9 +56,7 @@ pub(super) fn build_client(
     .build()?)
 }
 
-/// [`build_client`] for files off the CDN: the same trust and connection
-/// rules, and a limit on the wait for the next bytes rather than on the whole
-/// download (see [`Deadline::BetweenReads`]).
+/// [`build_client`] for files off the CDN (see [`Deadline::BetweenReads`]).
 pub(super) fn build_cdn_client(
     user_agent: &str,
     redirect: reqwest::redirect::Policy,
@@ -103,36 +72,18 @@ pub(super) fn build_cdn_client(
 }
 
 /// Reads a response body, refusing one that will not fit.
-///
-/// `text()` would buffer whatever arrives, which lets the far end decide how
-/// much memory this process uses. Read in chunks so that a response with no
-/// `Content-Length` — which is most of them — is bounded too.
 pub(super) async fn read_capped(response: reqwest::Response, cap: u64) -> Result<String, IgError> {
-    // Lossy rather than strict: a body that is not valid UTF-8 is not JSON
-    // either, and saying "could not parse" is more use than "invalid encoding".
     Ok(utf8_or_lossy(read_capped_bytes(response, cap).await?))
 }
 
-/// The ceiling itself: refuse a declared length over it, and read in chunks so
-/// that a response without a `Content-Length` — which is most of them — is
-/// bounded too.
-///
-/// One copy for the API body and the CDN download, and the CDN is the one
-/// that must not be left behind at the next tightening: its URL comes out of
-/// Instagram's own answer, so it is the one place a response chooses where the
-/// next request goes.
-///
-/// `http::read_capped` is a different rule for a different reader: its doc
-/// names why it truncates rather than refusing.
+/// One ceiling for the API body and the CDN download. `http::read_capped` is
+/// a different rule: it truncates rather than refusing.
 pub(super) async fn read_capped_bytes(
     response: reqwest::Response,
     cap: u64,
 ) -> Result<Vec<u8>, IgError> {
-    // Sized from the declaration when there is one, which in practice means
-    // the CDN: tower-http drops `Content-Length` when it decompresses, and
-    // every API answer is compressed, so an API body grows by doubling and a
-    // picture arrives into a buffer of the right size. Capped by the ceiling
-    // so a lying header cannot reserve more than this would ever accept.
+    // Sized from the declaration when there is one (in practice the CDN),
+    // capped so a lying header cannot reserve more than would be accepted.
     let mut bytes: Vec<u8> = Vec::with_capacity(
         response
             .content_length()
@@ -142,18 +93,9 @@ pub(super) async fn read_capped_bytes(
     Ok(bytes)
 }
 
-/// The body, chunk by chunk, into whatever the caller hands over -- a `Vec`
-/// for the API and a file for a story -- refusing past `cap`.
-///
-/// **The one copy of the chunked read.** The in-memory reader above is this
-/// over a `Vec`, and the story download is this over a file on disk, so the
-/// ceiling is counted in one loop whichever way the bytes are going. The
-/// declared-length check in front of it only ever fires on an uncompressed
-/// answer (see `read_capped_bytes` for why that means the CDN); the running
-/// count is the barrier every answer meets.
-///
-/// Returns how many bytes were written. On `TooLarge` the sink holds what
-/// arrived before the ceiling; a caller writing to disk removes the file.
+/// **The one copy of the chunked read**, into a `Vec` or a file, refusing past
+/// `cap`. Returns the bytes written; on `TooLarge` the sink holds what arrived
+/// before the ceiling.
 pub(super) async fn stream_capped(
     mut response: reqwest::Response,
     cap: u64,
@@ -181,56 +123,36 @@ pub(super) async fn stream_capped(
     Ok(written)
 }
 
-/// A body as text, copied only when it has to be.
-///
-/// `String::from_utf8_lossy(..).into_owned()` copies the whole body even when
-/// it is valid UTF-8 -- which every answer here is -- because the borrowed
-/// `Cow` has to be owned. `from_utf8` moves the buffer instead, and the lossy
-/// path is kept for the byte sequence that is not text, with the same
-/// replacement characters it always produced.
+/// Moves the buffer when it is valid UTF-8 rather than copying it.
 fn utf8_or_lossy(bytes: Vec<u8>) -> String {
     String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
-/// The load headers, if Instagram volunteered any, as one string to log.
-///
-/// Absent from a CDN answer and from anything that is not the API, so `None` is
-/// ordinary rather than notable.
 pub(super) fn load_of(response: &reqwest::Response) -> Option<String> {
-    // Read on every answer whether or not anything will log it, on purpose:
-    // the value travels on `Answer` and the test that holds the recording
-    // promise reads it from there, with no subscriber installed. Gating it on
-    // the log level would make the field lie exactly where it is checked.
+    // Read on every answer, whatever the log level: a test reads it from
+    // `Answer` with no subscriber installed.
     let headers = response.headers();
     load_from(|name| headers.get(name).and_then(|value| value.to_str().ok()))
 }
 
-/// The headers in which Instagram describes its own load.
 const LOAD_HEADERS: [&str; 2] = ["x-ig-capacity-level", "x-ig-peak-time"];
 
-/// Which backend answered, and in what form. Only one of the two backends
-/// sends the load headers, so these say whether an absent load is that
-/// backend's ordinary answer or something else.
+/// Which backend answered: only one of the two sends the load headers.
 const SERVED_HEADERS: [&str; 2] = ["x-stack", "content-type"];
 
-/// [`LOAD_HEADERS`] joined into one string, from whichever answer `lookup`
-/// reads: the one copy for the wire and for the page.
 pub(super) fn load_from<'a>(lookup: impl Fn(&str) -> Option<&'a str>) -> Option<String> {
     joined(&LOAD_HEADERS, lookup)
 }
 
-/// [`SERVED_HEADERS`], joined as [`load_from`] joins the load.
 pub(super) fn served_from<'a>(lookup: impl Fn(&str) -> Option<&'a str>) -> Option<String> {
     joined(&SERVED_HEADERS, lookup)
 }
 
-/// The served headers of a `reqwest` answer, for the log.
 pub(super) fn served_of(response: &reqwest::Response) -> Option<String> {
     let headers = response.headers();
     served_from(|name| headers.get(name).and_then(|value| value.to_str().ok()))
 }
 
-/// The headers in `names` that were sent, as `name=value` pairs.
 fn joined<'a>(names: &[&str], lookup: impl Fn(&str) -> Option<&'a str>) -> Option<String> {
     let found: Vec<String> = names
         .iter()
@@ -239,12 +161,8 @@ fn joined<'a>(names: &[&str], lookup: impl Fn(&str) -> Option<&'a str>) -> Optio
     (!found.is_empty()).then(|| found.join(" "))
 }
 
-/// `Retry-After`, if the answer carried one.
-///
-/// A string rather than a parsed duration on purpose: the header has two legal
-/// forms, seconds and an HTTP date, and until it is known which of them these
-/// endpoints send — if either — turning it into a number would be deciding the
-/// answer to the question the logging exists to ask.
+/// Kept as a string: the header has two legal forms, and which one these
+/// endpoints send, if either, is what the logging exists to find out.
 pub(super) fn retry_after(response: &reqwest::Response) -> Option<String> {
     response
         .headers()
@@ -253,43 +171,23 @@ pub(super) fn retry_after(response: &reqwest::Response) -> Option<String> {
         .map(str::to_string)
 }
 
-/// One answer from Instagram: what it said, and the one header worth keeping
-/// hold of.
-///
-/// `classify` is a pure function of a status and a body and does not receive
-/// headers, which is why `Retry-After` and the load below travel separately
-/// rather than being read where the decision is made. **Nothing decides
-/// anything from either of them**, deliberately — see
-/// [`IgClient::note_push_back`].
+/// One answer from Instagram. **Nothing decides anything from `retry_after`,
+/// `load` or `served`**: see [`IgClient::note_push_back`].
 pub(super) struct Answer {
-    /// The path the request went to, and only the path: the query can carry
-    /// a name. Said on the line a push-back leaves, since which endpoint
-    /// Instagram refused is the first thing anybody asks.
+    /// Only the path: the query can carry a name.
     pub(super) endpoint: String,
     pub(super) status: u16,
     pub(super) body: String,
     pub(super) retry_after: Option<String>,
-    /// What Instagram said about its own load while answering.
-    ///
-    /// `x-ig-capacity-level` and `x-ig-peak-time`, joined. Not decided on, and
-    /// the reason is with the rest of the pacing reasoning in [`crate::pace`]:
-    /// they describe a datacenter's headroom, which is the same for everyone in
-    /// that region, and what the pace is managing is a checkpoint on one
-    /// account. Carried so that the run which is finally refused can say what
-    /// the load was at that moment, which is the observation nobody has.
+    /// `x-ig-capacity-level` and `x-ig-peak-time`, joined.
     pub(super) load: Option<String>,
-    /// `x-stack` and `content-type`, joined: which backend answered, logged
-    /// beside the load and decided on no more than it.
+    /// `x-stack` and `content-type`, joined.
     pub(super) served: Option<String>,
 }
 
-/// The name an answer's time is written down under (`Pacer::answered`):
-/// the call's, never its path, which carries the account it was about.
-/// `None` for a document, which is a page and not an answer of the API.
-///
-/// A REST read is named by what it reads, a Relay read by its operation,
-/// and anything this does not know by `other`: a name it cannot vouch for
-/// is not copied out of a path.
+/// The name an answer's time is written down under (`Pacer::answered`): the
+/// call's, never its path, which carries the account. `None` for a document;
+/// `other` for anything unknown.
 pub(super) fn named(path: &str, style: &Surface<'_>) -> Option<String> {
     match style {
         Surface::Document => return None,
@@ -321,22 +219,16 @@ pub(super) fn named(path: &str, style: &Surface<'_>) -> Option<String> {
 }
 
 impl Answer {
-    /// Whether the status is a 2xx. Half the question: a 200 can still
-    /// declare failure in the body, and [`crate::error::refused`] asks both
-    /// halves.
+    /// Half the question: a 200 can still declare failure in the body
+    /// ([`crate::error::refused`]).
     pub(super) fn is_success(&self) -> bool {
         (200..300).contains(&self.status)
     }
 }
 
 impl IgClient {
-    /// One request to Instagram's API, with the headers a browser would send.
-    ///
-    /// `referer` is the path of the page the call would have come from, without
-    /// the leading slash. It is not decoration: the tool asks for a followers
-    /// list from a URL that, in a browser, only that account's followers page
-    /// ever calls, and a generic referer next to a specific endpoint is an
-    /// incoherence that costs nothing to avoid.
+    /// `referer` is the path of the page the call would have come from in a
+    /// browser, without the leading slash.
     pub(super) async fn get<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -348,31 +240,13 @@ impl IgClient {
     }
 
     /// Sends the request and follows any redirect itself, **paying for every
-    /// hop**.
+    /// hop** (`Pacer::clear_to_send` sits inside the loop).
     ///
-    /// The loop is this function's rather than reqwest's because
-    /// `Pacer::clear_to_send` sits inside it: a hop the HTTP client followed on
-    /// its own would go out without being charged and without waiting, and
-    /// invisibly, because the budget's own count is what the user is shown. A
-    /// chain of three would report one request and send four.
-    ///
-    /// The origin rule is applied to every hop rather than to the first:
-    /// Instagram's JSON endpoints do not redirect off their own host, so
-    /// refusing costs nothing — and two of the headers on these requests are
-    /// credentials. reqwest drops `Cookie` when a redirect crosses hosts, but
-    /// `X-CSRFToken` is not on the list it knows about and would travel to
-    /// wherever the response pointed. A boundary that depends on somebody
-    /// else's list of header names is not one.
-    ///
-    /// **A refusal here has to reach [`Reaction::Abort`]**, which is why the
-    /// two ways out are variants of their own rather than an `Unexpected` or a
-    /// `Network`: `Network`'s reaction is `Retry`, and the pager would send the
-    /// same impossible request three more times with the session on it, each
-    /// one on the wire and not all of them charged.
-    ///
-    /// The query is attached to the first request only. A `Location` carries
-    /// whatever query it means to carry, and appending ours to it would send a
-    /// parameter the server did not ask to see twice.
+    /// Every hop is held to the origin: `X-CSRFToken` is not on the list of
+    /// headers reqwest drops across hosts. **A refusal has to reach
+    /// [`Reaction::Abort`]**, hence `OffOrigin` and `TooManyRedirects` rather
+    /// than `Network`, which is retried. The query goes on the first request
+    /// only.
     pub(super) async fn get_body(
         &self,
         path: &str,
@@ -393,12 +267,8 @@ impl IgClient {
         loop {
             tracing::debug!(%url, "GET");
 
-            // Paid for before it is sent, and there is no way in that skips
-            // this — the hops included, which is the whole point of the loop.
             self.pacer.clear_to_send().await?;
 
-            // From the moment it leaves, paid for, to its headers, which is
-            // when `send` hands the answer back.
             let sent = std::time::Instant::now();
             let response = self
                 .send_or_cancel(self.api_request(&url, query, referer, style))
@@ -410,8 +280,7 @@ impl IgClient {
             if status.is_redirection() {
                 let next = self.next_hop(&url, &response)?;
                 // A hop to the challenge or the login form is already the
-                // answer, the same one the page path reads off a navigation;
-                // it is not sent, so there is nothing more to pay.
+                // answer; it is not sent.
                 if let Some(refused) = crate::error::landed_on(
                     &next[url::Position::BeforePath..url::Position::AfterQuery],
                 ) {
@@ -426,13 +295,9 @@ impl IgClient {
                 continue;
             }
 
-            // The status is already in hand, and a body that will not read must
-            // not take it away. With `?` here, a 429 whose body dies mid-stream
-            // would become `IgError::Network` — whose reaction is `Retry` — so
-            // the walker would fire three more requests into an endpoint that
-            // has just said no, and `classify_and_record` would never run:
-            // no cooldown written, and the next run knocks again. What
-            // Instagram said is the status; the body only refines it.
+            // The status is in hand, and a body that will not read must not
+            // turn a 429 into `Network`, which is retried and records no
+            // cooldown.
             let retry_after = retry_after(&response);
             let load = load_of(&response);
             let served = served_of(&response);
@@ -449,8 +314,7 @@ impl IgClient {
 
             let body = match self.read_or_cancel(response, MAX_BODY_BYTES).await {
                 Ok(body) => body,
-                // A canceled read is the user, not the server, and must not be
-                // turned into a push-back that gets written down as one.
+                // A canceled read is the user, never a push-back to record.
                 Err(IgError::Canceled) => return Err(IgError::Canceled),
                 Err(_) if !status.is_success() => {
                     let answer = Answer {
@@ -476,21 +340,10 @@ impl IgClient {
         }
     }
 
-    /// [`Self::get_body`], sent from the browser tab.
-    ///
-    /// The same three promises as the `reqwest` loop above, kept differently.
-    /// **Paid for first**, through the same `clear_to_send`. **No hop goes out
-    /// unpaid**: the page follows no redirect on an API call (see `FETCH` in
-    /// `headless/tab.rs`), so a redirect comes back as status 0 and is refused
-    /// here, with nothing sent after it. **The origin rule holds** for the one
-    /// request a browser does follow redirects on, a document navigation:
-    /// [`Self::answer_from_page`] refuses an answer that ended up anywhere but
-    /// where it started, and charges the hop. From the page that navigation
-    /// is an `Ask::Document`, read through the same function
-    /// (`IgClient::ask_page`); one built here is refused by the process
-    /// holding the browser. A navigation that lands on a push-back is refused
-    /// by the page once the owner has recorded it, so its hops go uncounted,
-    /// as when the listener hears it first.
+    /// [`Self::get_body`], sent from the browser tab. Paid for first; the
+    /// page follows no redirect on an API call, so one comes back as status 0
+    /// and is refused; a document navigation's hops are charged and held to
+    /// the origin in [`Self::answer_from_page`].
     async fn get_body_in_page(
         &self,
         page: &dyn super::page::Page,
@@ -505,8 +358,8 @@ impl IgClient {
         }
         tracing::debug!(%url, "GET from the page");
 
-        // Before paying: a push-back the browser heard on the app's own calls
-        // stops this with its cause, and is not written down again.
+        // Before paying: a push-back the browser already heard stops this
+        // with its cause, and is not written down again.
         if let Some(cause) = page.heard() {
             return Err(cause.into());
         }
@@ -517,10 +370,7 @@ impl IgClient {
             () = self.pacer.cancel_token().canceled() => return Err(IgError::Canceled),
             sent = page.send(request) => sent.map_err(IgError::from)?,
         };
-        // An opaque redirect: Instagram pointed somewhere and the page did
-        // not go. `Unexpected` with no status is an `Abort` everywhere it is
-        // read — no retry, no second route, no rediscovery — which is the
-        // reqwest path's answer to a hop it will not follow as well.
+        // An opaque redirect the page did not follow: an `Abort` everywhere.
         if response.status == 0 && !response.redirected {
             return Err(IgError::Unexpected {
                 status: 0,
@@ -542,19 +392,10 @@ impl IgClient {
 
     /// What the page said, read the way an answer off the wire is read.
     ///
-    /// A redirect here is a document navigation's, the only request the
-    /// browser follows one on. Its hops went out before this process could
-    /// pay for them, so they are paid for now, each of them — and **what
-    /// Instagram answered is kept even when paying is refused**: a cooldown
-    /// already running, or a Ctrl+C, must not leave a 429 in hand
-    /// unclassified. A chain longer than [`MAX_HOPS`] is refused after it is
-    /// paid for, as the `reqwest` loop refuses it. A landing on a push-back
-    /// never reaches here: the page refuses it after the owner records it, and
-    /// its hops go uncounted.
-    ///
-    /// The same holds for a body over the ceiling. The status is already in
-    /// hand, so a refusal is classified from it, as `get_body` does, and only
-    /// a success too large to read is [`IgError::TooLarge`].
+    /// A redirect here is a document navigation's. Its hops went out before
+    /// they could be paid for, so they are paid for now, and **what Instagram
+    /// answered is kept even when paying is refused**: a 429 in hand is never
+    /// left unclassified. The same holds for a body over the ceiling.
     pub(super) async fn answer_from_page(
         &self,
         asked: &Url,
@@ -584,8 +425,6 @@ impl IgClient {
             0
         };
         if let Some(refused) = landing {
-            // The hops went out whatever is decided now; they are paid for,
-            // and then the landing is the answer.
             let _ = self.pay_for_hops(hops).await;
             return Err(self.record(refused));
         }
@@ -614,8 +453,7 @@ impl IgClient {
         });
         if let Err(refused) = paid {
             if !answer.is_success() {
-                // Recorded for what it says; the refusal is still what the
-                // caller hears, because it is why nothing else is sent.
+                // Recorded for what it says; the caller still hears the refusal.
                 let _ = self.refuse(&answer);
             }
             return Err(refused);
@@ -632,7 +470,7 @@ impl IgClient {
     }
 
     /// Pays for hops a navigation already followed, stopping at the first
-    /// charge refused. Past the limit on the wait too: they were sent.
+    /// charge refused.
     async fn pay_for_hops(&self, hops: u32) -> Result<(), IgError> {
         for _ in 0..hops {
             self.pacer.pay_for_sent().await?;
@@ -640,26 +478,11 @@ impl IgClient {
         Ok(())
     }
 
-    /// Sends the request, or gives up the moment the user asks it to.
+    /// Sends the request, or gives up the moment the user asks.
     ///
-    /// **Ctrl+C does not wait for the server.** Cancellation is read in
-    /// `Pacer::clear_to_send` and in every deliberate wait, which is where about
-    /// nine interrupts in ten land — a stop during a budget wait takes about a
-    /// second. The tenth lands here, and without this the exit would track
-    /// however long the far end chose to hold the connection, up to
-    /// `REQUEST_TIMEOUT`, or 254 seconds on a black-holed connection because
-    /// `Network` is retried. That matters most under a service manager, where a
-    /// stalled request outlasts the stop grace period and the process is killed
-    /// before it can close its snapshot.
-    ///
-    /// **The cancel branch must answer [`IgError::Canceled`]**, and that is the
-    /// part worth guarding. Dropping the future and letting the resulting
-    /// `reqwest::Error` fall through would classify as `Network`, whose reaction
-    /// is `Retry`, so the pager would answer a Ctrl+C by sending the request
-    /// three more times.
-    ///
-    /// `biased`, so a token that is already set wins against a response that
-    /// happens to be ready in the same poll.
+    /// **The cancel branch must answer [`IgError::Canceled`]**: a dropped
+    /// future's `reqwest::Error` would classify as `Network` and be retried.
+    /// `biased`, so a token already set wins against a ready response.
     pub(super) async fn send_or_cancel(
         &self,
         request: reqwest::RequestBuilder,
@@ -671,12 +494,8 @@ impl IgClient {
         }
     }
 
-    /// Reads the body, or gives up the moment the user asks it to.
-    ///
-    /// The other half of [`IgClient::send_or_cancel`], and not an afterthought:
-    /// a server that answers with headers and then stalls mid-body holds the
-    /// connection exactly as long, and the read is where those seconds are
-    /// spent.
+    /// The other half of [`IgClient::send_or_cancel`]: a server can stall
+    /// mid-body too.
     async fn read_or_cancel(
         &self,
         response: reqwest::Response,
@@ -689,13 +508,8 @@ impl IgClient {
         }
     }
 
-    /// Where a redirect points, if it points somewhere this client may go.
-    ///
-    /// A `Location` is allowed to be relative, so it is resolved against the
-    /// URL that produced it rather than parsed on its own — and the result is
-    /// held to the same origin rule as the first request. Both refusals are
-    /// excerpted like every other error that prints something a server chose:
-    /// this string is printed to a terminal and Instagram wrote it.
+    /// Where a redirect points, resolved against the URL that produced it and
+    /// held to the origin. Both refusals are excerpted: Instagram wrote them.
     fn next_hop(&self, from: &Url, response: &reqwest::Response) -> Result<Url, IgError> {
         let location = response
             .headers()

@@ -1,17 +1,10 @@
 //! Intents sent to the browser tab, and what they are paid with.
 //!
-//! A command names what it wants of the tab with a [`web::Ask`], and the
-//! process holding the browser builds the request from the page's values
-//! right before it sends it; the client never sees a token. What it keeps
-//! is everything around the hop, as `IgClient::get` keeps it for a
-//! request it builds itself: the push-back heard first, the payment, the
-//! cancel, and the answer read the way an answer off the wire is.
-//!
-//! **The ask decides what is paid, never the caller.** What the tab answers
-//! from its document sends nothing and costs nothing, though a cooldown or a
-//! Ctrl+C still stops it; a write pays the write bucket and is not abandoned
-//! once it is in flight, as `IgClient::post`'s is not; everything else is
-//! one read, given up the moment the user asks.
+//! A command names what it wants with a [`web::Ask`]; the process holding the
+//! browser builds the request from the page's values, and the client never
+//! sees a token. **The ask decides what is paid, never the caller**: what the
+//! tab answers from its document costs nothing, a write pays the write bucket
+//! and is not abandoned in flight, everything else is one read.
 
 use snob_core::Pk;
 
@@ -29,21 +22,16 @@ use super::transport::{Answer, MAX_BODY_BYTES, REQUEST_TIMEOUT};
 
 impl IgClient {
     /// Asks the tab for `ask`, made from `referrer`, a path such as
-    /// `/<user>/`. Needs a page: the `reqwest` path has none to ask.
-    ///
-    /// An answer that is a request's, an [`Told::Answer`], [`Told::Pk`] or
-    /// [`Told::Document`], has been read by `IgClient::answer_from_page`:
-    /// its hops paid for, its claim kept, and an answer too large refused.
-    /// What it says is the caller's to decode.
+    /// `/<user>/`. Needs a page. A request's answer comes back already read
+    /// by `IgClient::answer_from_page`; what it says is the caller's to decode.
     pub(crate) async fn ask_page(&self, ask: Ask, referrer: &str) -> Result<Told, IgError> {
         let Some(page) = self.page.as_deref() else {
             return Err(IgError::Browser(
                 "this client sends without a browser, which has no page to ask".into(),
             ));
         };
-        // Before paying: an intent snob may not send costs nothing, and a
-        // push-back the browser heard stops this with its cause, and is not
-        // written down again.
+        // Before paying: a refused intent costs nothing, and a push-back the
+        // browser heard stops this with its cause, not written down again.
         if let Some(what) = crate::allowlist::refused_ask(&ask) {
             tracing::error!(request = %what, "refused a call snob may not send");
             return Err(IgError::NotAllowed(what));
@@ -61,17 +49,14 @@ impl IgClient {
                     return Err(IgError::InCooldown { until_ms });
                 }
             }
-            // Nothing is paid: the CDN is not paced and not Instagram's API,
-            // and a cooldown on the account is about the API. A push-back the
-            // browser heard has stopped it above, and Ctrl+C stops it here.
+            // Nothing is paid: the CDN is not Instagram's API.
             Ask::Asset { .. } => {
                 if self.pacer.cancel_token().is_canceled() {
                     return Err(IgError::Canceled);
                 }
             }
             Ask::Write { .. } => {
-                // Before the budget is charged, as `post` refuses: a session
-                // that cannot write does not spend a slot finding out.
+                // Before the budget is charged, as `post` refuses.
                 if !self.can_write() {
                     return Err(IgError::NoCsrfToken);
                 }
@@ -82,8 +67,7 @@ impl IgClient {
 
         let asked = self.base.join(&ask.endpoint())?;
         let name = ask_name(&ask);
-        // What is timed is an answer of the API: not the page's own state,
-        // a document, the CDN or a write.
+        // What is timed is an answer of the API.
         let timed = !write && !matches!(ask, Ask::Document { .. } | Ask::Asset { .. });
         tracing::debug!(url = %asked, ask = name, "asked of the page");
         let cap = match ask {
@@ -133,19 +117,14 @@ impl IgClient {
         })
     }
 
-    /// A request's answer, read the way `IgClient::get` reads one from the
-    /// page: an opaque redirect is refused with nothing more sent, and the
-    /// rest goes through `IgClient::answer_from_page`. Handed back whole,
-    /// its body the one that was read.
+    /// A request's answer, read as `IgClient::get` reads one from the page.
     async fn read_told(
         &self,
         asked: &url::Url,
         mut response: PageResponse,
         write: bool,
     ) -> Result<PageResponse, IgError> {
-        // An opaque redirect: Instagram pointed somewhere and the page did
-        // not go. `Unexpected` with no status is an `Abort` everywhere it is
-        // read, as for a GET or a write sent from the page.
+        // An opaque redirect the page did not follow: an `Abort` everywhere.
         if response.status == 0 && !response.redirected {
             let what = if write {
                 "Instagram redirected a write, which is never followed"
@@ -167,10 +146,8 @@ impl IgClient {
 
 impl IgClient {
     /// The pk behind `name`, as the tab finds it: the route definitions, or
-    /// the profile document when the app has made no route call to copy.
-    /// One read either way. An answer that is not a success is refused as
-    /// any other is, a push-back recorded; what the route says is the
-    /// caller's to read.
+    /// the profile document when the app has made no route call to copy. One
+    /// read either way.
     pub(crate) async fn pk_of(&self, name: &str) -> Result<RouteAnswer, IgError> {
         let ask = Ask::Pk { name: name.into() };
         let endpoint = ask.endpoint();
@@ -186,18 +163,10 @@ impl IgClient {
         }
     }
 
-    /// The profile of `pk`, as the web client reads it: its profile query,
-    /// made from the page of `name` (the home page when the name is not
-    /// known). The query carries the app's seven variables, the capture's
-    /// ([`crate::web::profile_variables`]); the tab replaces the flags with
-    /// the ones the app sent with its own query, where it has seen one, with
-    /// only the id made this one.
-    ///
-    /// An answer that names nobody is not found.
-    ///
-    /// The query alone: a profile accepted as the one asked for is opened
-    /// with the reads the app sends beside it ([`Self::profile_burst`]), by
-    /// the caller that accepts it.
+    /// The profile of `pk`: the web client's profile query, made from the
+    /// page of `name` (the home page when the name is not known). The query
+    /// alone; the caller that accepts the profile sends
+    /// [`Self::profile_burst`]. An answer that names nobody is not found.
     pub(crate) async fn profile_by_pk(
         &self,
         pk: Pk,
@@ -222,25 +191,15 @@ impl IgClient {
         })
     }
 
-    /// The reads the app sends with every profile it opens, beside its
-    /// profile query: the highlights tray, the note over the picture and the
-    /// school badge, each by pk, made from the same page. In the capture of
-    /// 2026-10-01 all three went out within about a second of the profile
-    /// query on every one of the ten profiles opened (with the posts and the
-    /// suggested accounts, which the app sends on a profile's own document and
-    /// snob does not); a profile asked alone, ten times over, is a client that
-    /// is not the app. Sent one after the other, a moment apart, as the tab
-    /// answers each.
+    /// The reads the app sends beside its profile query: the highlights tray,
+    /// the note over the picture and the school badge, each by pk. In the
+    /// capture of 2026-10-01 all three went out within about a second of the
+    /// query on each of the ten profiles opened.
     ///
-    /// **Each is paid as the read it is**: opening a profile costs four reads
-    /// of the request budget, not one. The tray's answer is kept for the
-    /// command that shows it ([`Self::take_held_tray`]), so `profile` and
-    /// `highlights` do not ask for it a second time; the note's and the
-    /// badge's are read for a push-back and nothing else.
-    ///
-    /// None of them is the answer asked for, so one that fails is said in the
-    /// log and passed over, unless the failure has to stop everything
-    /// ([`must_stop`]): a push-back, a dead session, a Ctrl+C.
+    /// **Each is paid as the read it is**: opening a profile costs four reads.
+    /// The tray is kept for [`Self::take_held_tray`]; the other two are read
+    /// for a push-back only. One that fails is passed over unless it
+    /// [`must_stop`].
     pub(crate) async fn profile_burst(&self, pk: Pk, name: &str) -> Result<(), IgError> {
         match self.highlights_tray_by_pk(pk, name).await {
             Ok(tray) => {
@@ -279,9 +238,8 @@ impl IgClient {
         Ok(())
     }
 
-    /// The highlights tray of `pk` the profile opened in this action was
-    /// read with, taken: once, and only within the action it was read in,
-    /// as anything read is trusted for (`Pacer::begin_action`).
+    /// The tray [`Self::profile_burst`] read for `pk`, taken once and only
+    /// within the action it was read in (`Pacer::begin_action`).
     pub(crate) fn take_held_tray(&self, pk: Pk) -> Option<Vec<Highlight>> {
         let mut held = self.held_tray.lock().unwrap_or_else(|e| e.into_inner());
         match held.take() {
@@ -290,16 +248,10 @@ impl IgClient {
         }
     }
 
-    /// The app's router moving to `route` ([`Ask::Navigation`]), as it does
-    /// when a profile opens and when its mutual followers open: paid as one
-    /// read, and its answer, the route's definition, read for a push-back
-    /// and nothing else. Its body is the app's `for (;;);` envelope, not
-    /// JSON, so only its status is read.
-    ///
-    /// A navigation the tab cannot build yet (the app has made no route call
-    /// on the document whose envelope it copies) or that fails without a
-    /// push-back is said in the log and passed over: the list is read either
-    /// way.
+    /// The app's router moving to `route` ([`Ask::Navigation`]): paid as one
+    /// read, and read for a push-back only (its body is the app's `for (;;);`
+    /// envelope, so only the status is read). One the tab cannot build yet,
+    /// or that fails without a push-back, is passed over.
     pub(crate) async fn navigation(&self, route: &str) -> Result<(), IgError> {
         let ask = Ask::Navigation {
             route: route.to_string(),
@@ -320,21 +272,12 @@ impl IgClient {
         sent.or_else(|e| passed_over(e, "a navigation"))
     }
 
-    /// How the viewer stands with `users`, the accounts of a list page just
-    /// read from `referrer` ([`Ask::Statuses`], the app's
-    /// `friendships/show_many`): one read, sent the moment the page answers
-    /// and before the next is asked, as the app sends it. Its answer is read
-    /// for a push-back and otherwise discarded: the lists carry what snob
-    /// needs, and the one flag of its own (`following`, on the viewer's own
-    /// followers) is already known from the viewer's following.
+    /// The app's `friendships/show_many` for the accounts of a list page just
+    /// read ([`Ask::Statuses`]): one read, kept for a push-back only.
     ///
-    /// **Sent only with the token the app's REST POSTs carry**, which the
-    /// page is not known to show (`web::AppCalls::rest_token_sent`). When the
-    /// tab says it has not seen one, it is said once in the log and no other
-    /// is asked for by this client, so the reservation paid for the one not
-    /// sent is the only one. A page with no accounts asks nothing. Anything
-    /// else that fails without a push-back is passed over: the list page has
-    /// been read.
+    /// **Sent only with the token the app's REST POSTs carry**
+    /// (`web::AppCalls::rest_token_sent`). When the tab has seen none, this
+    /// client asks for no other, so one reservation is the only one lost.
     pub(crate) async fn statuses(&self, users: &[Pk], referrer: &str) -> Result<(), IgError> {
         use std::sync::atomic::Ordering;
 
@@ -367,8 +310,6 @@ impl IgClient {
     }
 }
 
-/// The highlights tray a profile was opened with, kept for the command
-/// that shows it ([`IgClient::take_held_tray`]).
 #[derive(Debug)]
 pub(super) struct HeldTray {
     pk: Pk,
@@ -377,12 +318,8 @@ pub(super) struct HeldTray {
     tray: Vec<Highlight>,
 }
 
-/// Whether `error`, on a call sent beside the one asked for (the reads that
-/// open a profile, a navigation, a `show_many`), has to end what is going
-/// on: Instagram objected to the account, the session is dead, the person
-/// asked to stop (or the caller's limit on a wait was reached, which stops
-/// the run the same way), or snob tried to send what it may not. Anything
-/// else is that call's alone.
+/// Whether an error on a call sent beside the one asked for has to end the
+/// run: a push-back, a dead session, a stop, or a call snob may not send.
 fn must_stop(error: &IgError) -> bool {
     error.is_push_back()
         || error.invalidates_session()
@@ -395,9 +332,6 @@ fn must_stop(error: &IgError) -> bool {
         )
 }
 
-/// `error`, on the call sent beside the one asked for that `what` names,
-/// handed on when it [`must_stop`] and otherwise said in the log and passed
-/// over.
 fn passed_over(error: IgError, what: &str) -> Result<(), IgError> {
     if must_stop(&error) {
         return Err(error);
@@ -407,12 +341,9 @@ fn passed_over(error: IgError, what: &str) -> Result<(), IgError> {
 }
 
 impl IgClient {
-    /// The two counters of `pk`, from the card the web client shows over an
-    /// account's name: its hover-card query, by pk, made from the home page.
-    /// One read, and a small answer, which carries the counters of a private
-    /// account too.
-    ///
-    /// `None` when the answer names nobody.
+    /// The two counters of `pk`, from the web client's hover-card query: one
+    /// read, which answers for a private account too. `None` when the answer
+    /// names nobody.
     pub(crate) async fn hover_card(&self, pk: Pk) -> Result<Option<Counters>, IgError> {
         let ask = Ask::Query {
             operation: Operation::HoverCard,
@@ -431,10 +362,8 @@ impl IgClient {
 }
 
 impl IgClient {
-    /// The highlights of `pk` without their items, as the web client reads
-    /// them on every profile it opens: its tray query, by pk, made from the
-    /// page of `name`. One read. The tray carries no item count and no
-    /// dates, so those stay unknown.
+    /// The highlights of `pk` without their items: the tray query, one read.
+    /// It carries no item count and no dates.
     pub(crate) async fn highlights_tray_by_pk(
         &self,
         pk: Pk,
@@ -455,19 +384,11 @@ impl IgClient {
         Ok(page.tray().tray)
     }
 
-    /// The items of highlight `id`, as the web client's highlights viewer
-    /// reads them: its page query, opened at `id`, with every highlight of
-    /// `tray` in the tray's order and a window of three
-    /// after and two before, and the flag the viewer adds, made from the page
-    /// of `name`. One read. Only the reel whose id is `id` is kept.
+    /// The items of highlight `id`, as the highlights viewer reads them: every
+    /// highlight of `tray` in its order. One read; only the reel `id` is kept.
     ///
-    /// **Nothing is marked as seen**: the viewer marks what it shows with a
-    /// mutation of its own, and the tab never opens it; this is the read
-    /// alone.
-    ///
-    /// Its `X-Root-Field-Name` is the capture's own
-    /// (`Operation::root_field`). An answer under another field fails as one
-    /// that does not decode, rather than read as an empty highlight.
+    /// **Nothing is marked as seen**: the viewer does that with a mutation of
+    /// its own, and the tab never opens it.
     pub(crate) async fn highlight_window(
         &self,
         id: &str,
@@ -494,10 +415,8 @@ impl IgClient {
 }
 
 impl IgClient {
-    /// The ids of the reels in the stories tray the tab's document shows,
-    /// in its order: what the home page preloads, read off the document for
-    /// nothing. `None` when the document holds no tray, as a profile's does
-    /// not.
+    /// The reel ids of the stories tray the tab's document shows, read off the
+    /// document for nothing. `None` when it holds no tray.
     pub(crate) async fn tray(&self) -> Result<Option<Vec<String>>, IgError> {
         match self.ask_page(Ask::Tray, "/").await? {
             Told::Tray(ids) => Ok(ids),
@@ -505,16 +424,11 @@ impl IgClient {
         }
     }
 
-    /// The stories of `pk`, as the web client's story viewer reads them:
-    /// its gallery query, opened at `pk`, with `reel_ids` the reels of the
-    /// tray it was opened from, in its order, and a window of three after
-    /// and two before, and the flag the viewer adds, made from the home
-    /// page. One read. Only the reel whose id is `pk` is kept, and it comes
-    /// whole in the first answer, so the gallery's next page is never asked.
+    /// The stories of `pk`, as the story viewer reads them: its gallery query
+    /// with `reel_ids` the reels of the tray. One read; the reel comes whole
+    /// in the first answer, so the next page is never asked.
     ///
-    /// **Nothing is marked as seen**: the viewer marks what it shows with a
-    /// mutation of its own, and the tab never opens it; this is the read
-    /// alone.
+    /// **Nothing is marked as seen**, as for [`Self::highlight_window`].
     pub(crate) async fn reel_gallery(
         &self,
         pk: Pk,
@@ -541,8 +455,7 @@ impl IgClient {
 }
 
 impl IgClient {
-    /// A REST read of the registry's, `query` in the order the app sends
-    /// it, built by the tab with the app's headers and made from `referrer`.
+    /// A REST read of the registry's, `query` in the order the app sends it.
     pub(crate) async fn rest_read<T: serde::de::DeserializeOwned>(
         &self,
         read: Rest,
@@ -564,9 +477,8 @@ impl IgClient {
     }
 }
 
-/// The page of the account called `name`, `/<name>/`, which is where the
-/// web client asks about it from; the home page when the name is not
-/// known.
+/// `/<name>/`, where the web client asks about an account from; the home
+/// page when the name is not known.
 pub(super) fn profile_path(name: &str) -> String {
     if name.is_empty() {
         "/".to_string()
@@ -575,8 +487,6 @@ pub(super) fn profile_path(name: &str) -> String {
     }
 }
 
-/// A page's answer, as the client reads one off the wire: for
-/// `IgClient::decode` and `IgClient::refuse`.
 pub(super) fn answered(endpoint: &str, response: PageResponse) -> Answer {
     Answer {
         endpoint: endpoint.to_string(),
@@ -588,7 +498,6 @@ pub(super) fn answered(endpoint: &str, response: PageResponse) -> Answer {
     }
 }
 
-/// The tab answered an ask with another kind of answer.
 pub(super) fn told_otherwise(what: &str) -> IgError {
     IgError::Unexpected {
         status: 0,
@@ -596,7 +505,7 @@ pub(super) fn told_otherwise(what: &str) -> IgError {
     }
 }
 
-/// The kind of ask, for a log line: never what it carries.
+/// For a log line: never what the ask carries.
 fn ask_name(ask: &Ask) -> &'static str {
     match ask {
         Ask::Viewer => "viewer",
