@@ -86,6 +86,24 @@ pub(super) fn new_web_session() -> String {
     format!("{}:{}:{}", segment(), segment(), segment())
 }
 
+/// `request` with a header whose value is a credential, **marked sensitive**:
+/// a `Debug` of the request or of its header map prints `Sensitive` in its
+/// place, and HTTP/2 sends it as a literal that is never indexed.
+fn credential(
+    request: reqwest::RequestBuilder,
+    name: &'static str,
+    value: &str,
+) -> reqwest::RequestBuilder {
+    match reqwest::header::HeaderValue::try_from(value) {
+        Ok(mut value) => {
+            value.set_sensitive(true);
+            request.header(name, value)
+        }
+        // Left to `reqwest`, which carries the refusal to `send()`.
+        Err(_) => request.header(name, value),
+    }
+}
+
 impl IgClient {
     /// The current `X-IG-WWW-Claim`: the server hands one back in
     /// `x-ig-set-www-claim` and expects it echoed; `0` is what a client sends
@@ -189,9 +207,11 @@ impl IgClient {
         }
         // Every `/api/graphql` call of the August 2026 capture carried both.
         if let Surface::Relay { friendly_name, lsd } = style {
-            request = request
-                .header("X-FB-Friendly-Name", friendly_name)
-                .header("X-FB-LSD", lsd);
+            request = credential(
+                request.header("X-FB-Friendly-Name", friendly_name),
+                "X-FB-LSD",
+                lsd,
+            );
         }
         let mut request = request
             // Whether Instagram varies on `Sec-Fetch-*` is unverified (the
@@ -212,8 +232,8 @@ impl IgClient {
                 "Referer",
                 reqwest::header::HeaderValue::try_from(format!("{BASE_URL}/{referer}"))
                     .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static(BASE_URL)),
-            )
-            .header("Cookie", self.session.cookie_header().as_str());
+            );
+        request = credential(request, "Cookie", self.session.cookie_header().as_str());
 
         // No `Origin` here: the Fetch standard omits it on same-origin GETs.
         // It requires one on a POST, so `post` adds it, and only `post`.
@@ -223,7 +243,7 @@ impl IgClient {
         if let Some(csrf) = &self.session.csrftoken
             && style.announces_the_app()
         {
-            request = request.header("X-CSRFToken", csrf.expose());
+            request = credential(request, "X-CSRFToken", csrf.expose());
         }
 
         // Only for browsers that send client hints at all.
@@ -511,5 +531,38 @@ mod tests {
             write.headers.get("priority").unwrap(),
             client_hints::FETCH_PRIORITY
         );
+    }
+
+    #[tokio::test]
+    async fn a_debug_of_the_built_headers_holds_no_credential() {
+        let server = MockServer::start().await;
+        let client = writer(&server).await;
+        let request = client
+            .dressed(
+                client.api.post(Url::parse(&server.uri()).unwrap()),
+                "someone/",
+                Surface::Relay {
+                    friendly_name: "usePolarisFollowMutation",
+                    lsd: "LSD-VALUE",
+                },
+            )
+            .build()
+            .unwrap();
+
+        let printed = format!("{request:?} {:?}", request.headers());
+        for secret in ["AbCdEfGh", "TOKEN", "LSD-VALUE"] {
+            assert!(!printed.contains(secret), "{secret} in {printed}");
+        }
+        for name in ["cookie", "x-csrftoken", "x-fb-lsd"] {
+            assert!(request.headers()[name].is_sensitive(), "{name}");
+        }
+        // Marked, and sent as they were.
+        let sent = |name: &str| request.headers()[name].to_str().unwrap().to_string();
+        assert!(sent("cookie").starts_with("sessionid=42%3AAbCdEfGh%3A20; ds_user_id=42"));
+        assert_eq!(sent("x-csrftoken"), "TOKEN");
+        assert_eq!(sent("x-fb-lsd"), "LSD-VALUE");
+        // What is no credential still prints, so the check above reads a
+        // header map that says its values.
+        assert!(printed.contains("usePolarisFollowMutation"), "{printed}");
     }
 }
