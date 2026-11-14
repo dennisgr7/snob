@@ -455,13 +455,18 @@ impl IgClient {
 }
 
 impl IgClient {
-    /// A REST read of the registry's, `query` in the order the app sends it.
+    /// A REST read of the registry's, `query` in the order the app sends it,
+    /// made from `referrer`: built by the tab when there is one, and sent
+    /// with `reqwest` otherwise, to the same path with the same query.
     pub(crate) async fn rest_read<T: serde::de::DeserializeOwned>(
         &self,
         read: Rest,
         query: &[(&str, &str)],
         referrer: &str,
     ) -> Result<T, IgError> {
+        if !self.has_page() {
+            return self.get(&read.path(), query, relative(referrer)).await;
+        }
         let ask = Ask::Rest {
             read,
             query: query
@@ -475,6 +480,11 @@ impl IgClient {
         };
         self.decode(&answered(&endpoint, answer))
     }
+}
+
+/// The referrer of a request sent without a browser has no leading slash.
+pub(super) fn relative(path: &str) -> &str {
+    path.strip_prefix('/').unwrap_or(path)
 }
 
 /// `/<name>/`, where the web client asks about an account from; the home

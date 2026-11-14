@@ -205,12 +205,7 @@ impl IgClient {
     /// `None` when the answer holds no post: deleted, or not shown to this
     /// account.
     pub async fn media_info(&self, pk: MediaPk, page: &str) -> Result<Option<Media>, IgError> {
-        let read = Rest::MediaInfo(pk);
-        let info: MediaInfo = if self.has_page() {
-            self.rest_read(read, &[], page).await?
-        } else {
-            self.get(&read.path(), &[], relative(page)).await?
-        };
+        let info: MediaInfo = self.rest_read(Rest::MediaInfo(pk), &[], page).await?;
         Ok(info.items.into_iter().next())
     }
 
@@ -241,15 +236,8 @@ impl IgClient {
                 ("sort_order", "popular"),
             ],
         };
-        let comments: CommentsPage = if self.has_page() {
-            self.rest_read(read, &query, page).await?
-        } else {
-            self.get(&read.path(), &query, relative(page)).await?
-        };
-        let accounts = u32::try_from(comments.accounts()).unwrap_or(u32::MAX);
-        if let Err(e) = self.pacer.spend_accounts(accounts).await {
-            tracing::warn!(error = %e, "could not record the accounts a page of comments carried");
-        }
+        let comments: CommentsPage = self.rest_read(read, &query, page).await?;
+        self.charge_accounts(comments.accounts()).await;
         self.count_in_the_sitting().await?;
         Ok(comments)
     }
@@ -275,15 +263,8 @@ impl IgClient {
             ("is_chronological", "true"),
             ("paging_direction", "view_more"),
         ];
-        let replies: RepliesPage = if self.has_page() {
-            self.rest_read(read, &query, page).await?
-        } else {
-            self.get(&read.path(), &query, relative(page)).await?
-        };
-        let accounts = u32::try_from(replies.accounts()).unwrap_or(u32::MAX);
-        if let Err(e) = self.pacer.spend_accounts(accounts).await {
-            tracing::warn!(error = %e, "could not record the accounts a thread of replies carried");
-        }
+        let replies: RepliesPage = self.rest_read(read, &query, page).await?;
+        self.charge_accounts(replies.accounts()).await;
         self.count_in_the_sitting().await?;
         Ok(replies)
     }
@@ -292,27 +273,14 @@ impl IgClient {
     /// from the post's page (`/p/<code>/` both times in the capture of
     /// 2026-11-13). **Only after the caller asked for consent.**
     pub async fn media_likers(&self, pk: MediaPk, page: &str) -> Result<LikersPage, IgError> {
-        let read = Rest::Likers(pk);
-        let likers: LikersPage = if self.has_page() {
-            self.rest_read(read, &[], page).await?
-        } else {
-            self.get(&read.path(), &[], relative(page)).await?
-        };
-        let accounts = u32::try_from(likers.users.len()).unwrap_or(u32::MAX);
-        if let Err(e) = self.pacer.spend_accounts(accounts).await {
-            tracing::warn!(error = %e, "could not record the accounts a post's likers carried");
-        }
+        let likers: LikersPage = self.rest_read(Rest::Likers(pk), &[], page).await?;
+        self.charge_accounts(likers.users.len()).await;
         Ok(likers)
     }
 }
 
 fn tab_path(name: &str, tab: ProfileTab) -> String {
     format!("{}{}/", profile_path(name), tab.segment())
-}
-
-/// The referrer of a request sent without a browser has no leading slash.
-fn relative(page: &str) -> &str {
-    page.strip_prefix('/').unwrap_or(page)
 }
 
 #[cfg(test)]

@@ -265,6 +265,15 @@ impl IgClient {
             .await;
     }
 
+    /// Charges the day's accounts for the `accounts` a read named. A failure
+    /// to record it is logged, not raised: the read was already paid for.
+    pub(in crate::client) async fn charge_accounts(&self, accounts: usize) {
+        let accounts = u32::try_from(accounts).unwrap_or(u32::MAX);
+        if let Err(e) = self.pacer.spend_accounts(accounts).await {
+            tracing::warn!(error = %e, "could not record the accounts a read carried");
+        }
+    }
+
     /// Pays the rest a sitting owes, if any (`Pacer::rest_owed`), before a
     /// page read by hand; `Ok(true)` when canceled. `tell` hears how long the
     /// rest is before it begins. Against a test server it is counted paid at

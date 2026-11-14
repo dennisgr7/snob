@@ -15,7 +15,7 @@ use crate::page_values::Viewer;
 use crate::web::{Ask, Told};
 
 use super::IgClient;
-use super::ask::{answered, profile_path, told_otherwise};
+use super::ask::{answered, profile_path, relative, told_otherwise};
 use super::headers::Surface;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,11 +35,6 @@ impl Direction {
 
 fn pks_of(page: &FriendshipsPage) -> Vec<Pk> {
     page.users.iter().map(|user| user.pk).collect()
-}
-
-/// The referrer of a request sent without a browser has no leading slash.
-fn relative(path: &str) -> &str {
-    path.strip_prefix('/').unwrap_or(path)
 }
 
 impl IgClient {
@@ -321,24 +316,15 @@ impl IgClient {
             query.push(("search_surface", "follow_list_page"));
         }
         let referer = profile_path(username);
-        let page: FriendshipsPage = if self.has_page() {
-            let read = match direction {
-                Direction::Followers => Rest::Followers(pk),
-                Direction::Following => Rest::Following(pk),
-            };
-            let page: FriendshipsPage = self.rest_read(read, &query, &referer).await?;
-            self.statuses(&pks_of(&page), &referer).await?;
-            page
-        } else {
-            let segment = direction.segment();
-            self.get(
-                &format!("/api/v1/friendships/{pk}/{segment}/"),
-                &query,
-                relative(&referer),
-            )
-            .await?
+        let read = match direction {
+            Direction::Followers => Rest::Followers(pk),
+            Direction::Following => Rest::Following(pk),
         };
-        self.count_accounts(&page).await;
+        let page: FriendshipsPage = self.rest_read(read, &query, &referer).await?;
+        if self.has_page() {
+            self.statuses(&pks_of(&page), &referer).await?;
+        }
+        self.charge_accounts(page.users.len()).await;
         Ok(page)
     }
 
@@ -387,15 +373,6 @@ impl IgClient {
         Ok(())
     }
 
-    /// Charges the day's accounts for what a list page carried. A failure to
-    /// record it is logged, not raised: the page was already paid for.
-    async fn count_accounts(&self, page: &FriendshipsPage) {
-        let accounts = u32::try_from(page.users.len()).unwrap_or(u32::MAX);
-        if let Err(e) = self.pacer.spend_accounts(accounts).await {
-            tracing::warn!(error = %e, "could not record the accounts a page carried");
-        }
-    }
-
     /// A page as HTML, as a browser navigating to it would get it: where
     /// `fb_dtsg` and `lsd` are handed out ([`crate::graphql`]). A large
     /// request (about 600 KB for a profile), so callers cache what they find.
@@ -432,21 +409,13 @@ impl IgClient {
         } else {
             format!("{}followers/mutualOnly", profile_path(username))
         };
-        let page: FriendshipsPage = if self.has_page() {
-            let page: FriendshipsPage = self
-                .rest_read(Rest::MutualFollowers(pk), &query, &referer)
-                .await?;
+        let page: FriendshipsPage = self
+            .rest_read(Rest::MutualFollowers(pk), &query, &referer)
+            .await?;
+        if self.has_page() {
             self.statuses(&pks_of(&page), &referer).await?;
-            page
-        } else {
-            self.get(
-                &format!("/api/v1/friendships/{pk}/mutual_followers/"),
-                &query,
-                relative(&referer),
-            )
-            .await?
-        };
-        self.count_accounts(&page).await;
+        }
+        self.charge_accounts(page.users.len()).await;
         Ok(page)
     }
 
