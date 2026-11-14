@@ -61,7 +61,7 @@ pub struct Spec {
     pub open_world: bool,
 }
 
-/// The argument a yes given in the chat comes back in (`mod.rs`, `consent`).
+/// The argument a yes given in the chat comes back in (`lib.rs`, `consent`).
 /// **Not part of the command**: taken out of the arguments before the call
 /// is planned, so it is never in `Plan.args`, nor in what a yes is bound to.
 pub const CONFIRMATION: &str = "confirmation";
@@ -1219,8 +1219,8 @@ pub struct Confirmed<'a> {
     pub writes_a_day: u32,
 }
 
-/// How a client is named (`commands::common::client_label`, its one home: a
-/// job records its client the same way, and jobs build without this module).
+/// How a client is named, from its one home: a job records its client the
+/// same way, and jobs build without this crate.
 pub use snob_engine::app::client_label;
 
 /// What a command may send to Instagram.
@@ -1688,8 +1688,7 @@ fn list(tool: &str, args: &Map<String, Value>) -> Result<Plan, String> {
         command.extend(["--max-pages".into(), pages.to_string()]);
     }
     // Another account's lists need consent, and a stored answer does not: it
-    // enumerates nothing new (`engine/mod.rs`, `decide`: "`--offline` is not
-    // asked about, because there is nothing to agree to").
+    // enumerates nothing new, so `--offline` is not asked about.
     let ask = match (&whose, mode) {
         (Some(who), "auto" | "refresh") => {
             command.push("-y".into());
@@ -2503,6 +2502,20 @@ mod tests {
 
     fn call(name: &str, args: Value) -> Result<Plan, Unplannable> {
         plan(name, args.as_object().unwrap(), EVERYTHING)
+    }
+
+    /// Every way the server says a yes was given is a value the command
+    /// line's `--confirmed-via` takes, and records under the same word, and
+    /// the command line takes no other.
+    #[test]
+    fn every_way_a_yes_was_given_is_one_the_command_line_takes() {
+        use clap::ValueEnum as _;
+        use snob_cli::cli::ConfirmedVia as Taken;
+        for via in ConfirmedVia::ALL {
+            let taken = Taken::from_str(via.as_str(), false).unwrap();
+            assert_eq!(taken.as_str(), via.as_str());
+        }
+        assert_eq!(Taken::value_variants().len(), ConfirmedVia::ALL.len());
     }
 
     /// A refusal says back the start of what the client sent, filtered, and
