@@ -32,9 +32,10 @@ pub async fn run(
     // The jobs of the accounts leaving first: a walk still running would go on
     // with the session being deleted, and start a browser again on the profile
     // about to go.
-    let _stopping =
-        crate::jobs::stop_before_leaving(leaving.iter().map(|pk| paths.account(*pk)).collect())
-            .await?;
+    let _stopping = crate::jobs::dispatch::stop_before_leaving(
+        leaving.iter().map(|pk| paths.account(*pk)).collect(),
+    )
+    .await?;
     // Then every other process still holding one of these sessions: a walk
     // typed in another terminal, the monitor's run, an agent's call.
     crate::owner::sign_out(paths, &leaving);

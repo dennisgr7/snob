@@ -4,9 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-/// How long a scratch directory has to be untouched before a later run treats
-/// it as abandoned.
-pub const ABANDONED_AFTER: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+pub use crate::files::ABANDONED_AFTER;
 
 /// The scratch directory, removed when the browsing session ends.
 ///

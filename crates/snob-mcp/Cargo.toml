@@ -1,0 +1,100 @@
+[package]
+name = "snob-mcp"
+description = "snob as an MCP server: every tool call a child snob, over stdio or, behind a key, over HTTP on loopback"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# `snob mcp --listen`: the same server over HTTP on loopback, behind the
+# key `snob mcp key` keeps, for a tunnel the person runs (`http`). A feature
+# of its own so that a build that wants the server only as a program its
+# client starts can leave out the HTTP half, hyper's server and what rmcp
+# needs to speak Streamable HTTP; the command line's `mcp-http` turns it on.
+# Its cost is measured in AGENTS.md, under "Costs worth knowing".
+http = [
+    "rmcp/transport-streamable-http-server",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http",
+    "dep:http-body-util",
+    "dep:bytes",
+]
+
+[dependencies]
+snob-core.workspace = true
+snob-store.workspace = true
+snob-ig.workspace = true
+# What the server reads of snob without running it: the exit codes, the jobs'
+# names and limits, the posts' bounds, and where its own binary is.
+snob-engine.workspace = true
+# The server's own arguments (`args`), which the command line embeds.
+clap.workspace = true
+# `process` is how each tool call runs its child `snob` and is told when it
+# ends, without a thread per call; `net` and `io-util` serve the HTTP half;
+# `sync` for the permits and the answers a call waits on.
+tokio = { workspace = true, features = ["process", "net", "io-util", "sync"] }
+anyhow.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+# The address `--public-url` and `config --remote` take.
+url.workspace = true
+# The key, its fingerprint and the tickets are base64url text.
+base64.workspace = true
+# So the key's random bytes do not sit in freed memory once it is text
+# (`key`).
+zeroize.workspace = true
+# `server` is the protocol's server half; `transport-io` serves it over this
+# process's standard input and output, the transport every client can start;
+# `elicitation` is the question a write is confirmed with. Not
+# `request-state`: its sealer brings a second copy of the RustCrypto crates,
+# and `seal` signs with the webhook's HMAC instead.
+rmcp = { workspace = true, features = ["server", "transport-io", "elicitation"] }
+# `snob mcp --listen` (feature `http`). `server` and `http1` and nothing
+# more: a connection over loopback from a tunnel the person runs is plain
+# HTTP/1.1, which every tunnel speaks to its origin, and `http2` would be a
+# second protocol to bound for no client that needs it. `http1` is already
+# compiled by reqwest; `server` is the part this adds.
+hyper = { workspace = true, optional = true, features = ["server", "http1"] }
+# For `TokioIo`, which hands hyper a tokio socket, and `TokioTimer`, without
+# which hyper's header timeout panics instead of timing out. Nothing else:
+# not its `server` module, whose graceful shutdown is a few lines here.
+hyper-util = { workspace = true, optional = true, features = ["tokio"] }
+# The request's parts, read for the session a yes in the chat is bound to,
+# and the types the HTTP half is written in. Both already in the tree
+# through reqwest and hyper.
+http = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+
+# A child in a process group of its own (`child`).
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+# The socket `--listen socket` serves on admits this user alone
+# (`http::socket`).
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+# Every command line the server builds is one the command line parses, which
+# only its own grammar can say. A test's cycle, never a build's: the
+# command line depends on this crate, and this crate's tests on it.
+snob-cli.workspace = true
+tempfile.workspace = true
+# The client the HTTP half's tests send with. Already in the tree through
+# snob-ig.
+reqwest.workspace = true
+
+# Only for the test of `http::twin` against a wildcard held with exclusive
+# use (`SO_EXCLUSIVEADDRUSE`), which neither `std` nor tokio can set before a
+# bind. A dev-dependency's features reach test builds only, so the release
+# binary keeps the feature list of the workspace entry.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { workspace = true, features = ["Win32_Networking_WinSock"] }
+
+[lints]
+workspace = true

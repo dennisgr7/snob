@@ -12,19 +12,19 @@ use snob_core::model::ListKind;
 use crate::cli::{Cli, Command, ListArgs};
 
 /// A list command a job may run, checked.
-pub(crate) struct Checked {
+pub struct Checked {
     /// The command line, as it will be run: what was given, less
     /// `--no-progress`, which would otherwise silence the progress the job is
     /// read by (`--progress-json` wins over it in `progress.rs` as well).
-    pub(crate) args: Vec<String>,
+    pub args: Vec<String>,
     /// The command, by the name the help gives it.
-    pub(crate) command: &'static str,
+    pub command: &'static str,
     /// The lists it walks, in order.
-    pub(crate) kinds: &'static [ListKind],
+    pub kinds: &'static [ListKind],
     /// Whose lists, as typed less a leading `@`; `None` is the viewer's own.
-    pub(crate) target: Option<String>,
+    pub target: Option<String>,
     /// What clap made of it, for the estimate.
-    pub(crate) list: ListArgs,
+    pub list: ListArgs,
 }
 
 /// The flags a job's command may carry, beside the account it names.
@@ -52,7 +52,7 @@ const TAKES_A_VALUE: &[&str] = &[
 ];
 
 /// Checks `args`, a command line with no program name, as one a job may run.
-pub(crate) fn check(args: &[String]) -> Result<Checked, String> {
+pub fn check(args: &[String]) -> Result<Checked, String> {
     let Some(first) = args.first() else {
         return Err("a job needs a command to run".into());
     };
@@ -152,6 +152,18 @@ pub(crate) fn check(args: &[String]) -> Result<Checked, String> {
         kinds,
         target,
         list,
+    })
+}
+
+/// [`check`], as the jobs read a stored command line (`jobs::Check`).
+pub fn walk_of(args: &[String]) -> Result<super::Walk, String> {
+    let checked = check(args)?;
+    Ok(super::Walk {
+        max_pages: checked.list.walk.max_pages,
+        args: checked.args,
+        command: checked.command,
+        kinds: checked.kinds,
+        target: checked.target,
     })
 }
 
@@ -389,5 +401,67 @@ mod tests {
 
     fn walk_of(cli: &Cli) -> Vec<OsString> {
         walk(cli, Pk::new(42), &line("followers")).unwrap()
+    }
+
+    /// A running job of a crossing whose estimate names `lists`.
+    fn crossing(lists: serde_json::Value) -> crate::jobs::Seen {
+        let now = snob_core::clock::now_ms().get();
+        crate::jobs::Seen {
+            id: snob_store::paths::JobId::parse("j01M661CR224ZNFPRANE9AWWZDM").unwrap(),
+            dir: std::path::PathBuf::from("nowhere"),
+            job: Some(crate::jobs::Job {
+                schema: crate::jobs::SCHEMA,
+                id: "j01M661CR224ZNFPRANE9AWWZDM".into(),
+                created_at: now,
+                viewer_pk: snob_core::Pk::new(42),
+                tool: None,
+                arguments: serde_json::Value::Null,
+                argv: vec![],
+                globals: vec![],
+                estimate: Some(serde_json::json!({ "lists": lists })),
+                detached: None,
+                started_by: None,
+                max_wait_seconds: None,
+            }),
+            state: None,
+            held: true,
+            stop_asked: false,
+            status: crate::jobs::Status::Running,
+        }
+    }
+
+    /// The time a walk takes, by the pace alone, from a fresh sitting.
+    fn walking(pages: &[(u64, u64)], into_sitting: u64) -> (u64, u64) {
+        crate::engine::estimate::walks_seconds(pages, into_sitting, 0)
+    }
+
+    /// A walk given `--max-pages` stops there whatever the list's size, so
+    /// the time left counts no page past it.
+    #[test]
+    fn the_time_left_counts_no_page_past_the_walks_cap() {
+        let now = snob_core::clock::now_ms().get();
+        let mut seen = crossing(serde_json::json!([
+            {"list": "followers", "fate": "walked", "pages": {"least": 40, "most": 40}},
+        ]));
+        seen.job.as_mut().unwrap().argv = ["followers", "--format", "json", "--max-pages", "40"]
+            .map(String::from)
+            .to_vec();
+        let line = serde_json::json!({
+            "event": "page", "at": now, "page": 5, "accounts": 60, "of": 5000,
+            "list": "followers", "sitting": 5, "rest_until": null,
+        });
+        assert_eq!(
+            crate::jobs::show::eta(&seen, Some(&line), &[], now, super::walk_of).unwrap(),
+            walking(&[(35, 35)], 5)
+        );
+        seen.job.as_mut().unwrap().argv = ["followers", "--max-pages=1"].map(String::from).to_vec();
+        let first = serde_json::json!({
+            "event": "page", "at": now, "page": 1, "accounts": 12, "of": 5000,
+            "list": "followers", "sitting": 1, "rest_until": null,
+        });
+        assert_eq!(
+            crate::jobs::show::eta(&seen, Some(&first), &[], now, super::walk_of).unwrap(),
+            walking(&[(0, 0)], 1)
+        );
     }
 }

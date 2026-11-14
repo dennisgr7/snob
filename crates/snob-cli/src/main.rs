@@ -16,6 +16,8 @@ use snob_store::secrets::SecretStore;
 /// and that is the case that breaks something.
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> std::process::ExitCode {
+    // First, so even `snob` typed with no command (`no_command`) has it.
+    snob_cli::front::install();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) if e.kind() == clap::error::ErrorKind::MissingSubcommand => {
@@ -323,7 +325,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         snob_cli::app::spend_alone();
     }
     if cli.progress_json {
-        snob_cli::app::progress_json();
+        snob_cli::progress::progress_json();
     }
     // Before the layout, the owner and the session: the server spends nothing
     // and stores nothing itself.
@@ -351,7 +353,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 // `--max-wait` is the server's to hand each child, which
                 // waits as long as what it runs allows (`mcp::Waits`).
                 let launch = commands::mcp::child::Launch::new(
-                    std::env::current_exe()?,
+                    snob_cli::exe::program()?,
                     mcp_globals(&cli, None)?,
                 );
                 // The account the server is held to, by a flag or by the
@@ -441,7 +443,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     // The jobs send nothing themselves and use no browser: a walk a job runs
     // is a process of its own, which comes through here again.
     if matches!(cli.command, Command::Job(_) | Command::Jobs(_)) {
-        return boxed(|| snob_cli::jobs::dispatch(&cli, &store, &paths)).await;
+        return boxed(|| snob_cli::jobs::dispatch::dispatch(&cli, &store, &paths)).await;
     }
 
     // Every request to Instagram goes out from a browser from here on, unless
@@ -785,12 +787,13 @@ fn log_filter(
             .with_target("snob_ig", Level::DEBUG)
             .with_target("snob_core", Level::DEBUG)
             .with_target("snob_store", Level::DEBUG)
-            .with_target("snob_cli", Level::DEBUG);
+            .with_target("snob_cli", Level::DEBUG)
+            .with_target("snob_engine", Level::DEBUG);
     }
     let quiet = || {
         let quiet = Targets::new().with_default(Level::WARN);
         if owner {
-            quiet.with_target("snob_cli::owner::server", Level::INFO)
+            quiet.with_target("snob_engine::owner::server", Level::INFO)
         } else {
             quiet
         }
@@ -839,13 +842,13 @@ mod filter_tests {
         let quiet = log_filter(false, None, false);
         assert!(quiet.would_enable("snob_ig::client", &Level::WARN));
         assert!(!quiet.would_enable("snob_ig::client", &Level::INFO));
-        assert!(!quiet.would_enable("snob_cli::owner::server", &Level::INFO));
+        assert!(!quiet.would_enable("snob_engine::owner::server", &Level::INFO));
 
         // The owner says when it starts, and otherwise no more than a command.
         let owner = log_filter(false, None, true);
-        assert!(owner.would_enable("snob_cli::owner::server", &Level::INFO));
-        assert!(!owner.would_enable("snob_cli::owner::server", &Level::DEBUG));
-        assert!(!owner.would_enable("snob_cli::headless", &Level::INFO));
+        assert!(owner.would_enable("snob_engine::owner::server", &Level::INFO));
+        assert!(!owner.would_enable("snob_engine::owner::server", &Level::DEBUG));
+        assert!(!owner.would_enable("snob_engine::headless", &Level::INFO));
 
         let chosen = log_filter(false, Some("snob_store=debug,warn"), false);
         assert!(chosen.would_enable("snob_store::secrets", &Level::DEBUG));

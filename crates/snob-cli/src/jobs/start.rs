@@ -34,12 +34,7 @@ use crate::cli::{Cli, JobStartArgs};
 use crate::exit::{ExitCode, ExitError};
 use crate::report;
 
-/// The hidden command a supervisor is started as.
-pub const COMMAND: &str = "__job";
-
-/// How long the start waits for the supervisor to take the job, before it
-/// waits `--wait` for the walk (`commands::mcp::longest_call` counts both).
-pub const SUPERVISOR_WITHIN: Duration = Duration::from_secs(10);
+pub use super::{COMMAND, SUPERVISOR_WITHIN};
 
 /// How long the start waits for the job it asks to stop to have stopped,
 /// before it exits anyway; the job stops on its own either way.
@@ -203,7 +198,7 @@ pub async fn start(
         }
     }
 
-    let mut out = show::whole(&seen, snob_core::clock::now_ms().get());
+    let mut out = show::whole(&seen, snob_core::clock::now_ms().get(), argv::walk_of);
     out["reused"] = Value::Bool(!ours);
     Ok(Some(out))
 }
@@ -223,7 +218,7 @@ fn vet(jobs: &[super::Seen], checked: &argv::Checked, now: i64) -> Result<Found>
                     "{} ({}) was asked to stop and is stopping, and one job runs at a time; \
                      nothing was started",
                     running.id,
-                    show::walks(running)
+                    show::walks(running, argv::walk_of)
                 ),
             )
             .with_reason("job_stopping")
@@ -246,7 +241,7 @@ fn vet(jobs: &[super::Seen], checked: &argv::Checked, now: i64) -> Result<Found>
                 "a job is already running for this account ({}, {}), and one runs at a time; \
                  nothing was started",
                 running.id,
-                show::walks(running)
+                show::walks(running, argv::walk_of)
             ),
         )
         .with_reason("too_many_jobs")
@@ -271,7 +266,7 @@ fn vet(jobs: &[super::Seen], checked: &argv::Checked, now: i64) -> Result<Found>
                 "{} stopped without letting go of {}, which another walk may not read until \
                  {}; nothing was started",
                 lost.id,
-                show::walks(lost),
+                show::walks(lost, argv::walk_of),
                 report::stored_on(frees)
             ),
         )
@@ -374,7 +369,7 @@ fn make(
     args.extend([COMMAND.into(), "run".into(), id.as_str().into()]);
     // The program is this one, never a path read from anywhere (AGENTS.md,
     // "The MCP server": a supervisor runs itself).
-    let exe = std::env::current_exe()?;
+    let exe = crate::exe::program()?;
     let started = crate::detach::spawn(&exe, &args, None, &super::file(&dir, "supervisor.log"));
     let started = match started {
         Ok(started) => started,

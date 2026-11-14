@@ -117,7 +117,7 @@ async fn save_telling(
     videos: &crate::posts::Videos,
     bounds: posts::Bounds,
 ) -> Result<ExitCode> {
-    let numbers = media::numbers_of(selection, post.items.len(), |n| {
+    let numbers = crate::output::media::numbers_of(selection, post.items.len(), |n| {
         crate::commands::posts::no_such_item(post, n)
     })?;
     let files = videos.prepare(numbers.iter().map(|n| post.file(n - 1)).collect());
@@ -153,7 +153,7 @@ fn list_post(
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
-            let listed = media::rows_or_envelope(rows, format, |_| {
+            let listed = crate::output::media::rows_or_envelope(rows, format, |_| {
                 let mut document = serde_json::json!({ "post": post_json(post, None) });
                 if let Some(comments) = comments {
                     document["comments"] = serde_json::json!(
@@ -182,7 +182,7 @@ fn list_post(
             text
         }
     };
-    media::print_listing(
+    crate::output::media::print_listing(
         text,
         destination,
         "--download <number> to save one, --download all for every one, or --interactive to see it with its comments",

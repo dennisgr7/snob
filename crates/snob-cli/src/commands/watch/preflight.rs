@@ -81,7 +81,9 @@ pub(super) async fn preflight(
     // `App::open` gives with the no-session code.
     let mut problem = check::Problem::NoSession;
     let opened = match account {
-        Some(account) => match App::open(&secrets.session_of(account), account, false) {
+        Some(account) => match App::open(&secrets.session_of(account), account, || {
+            crate::front::front(false)
+        }) {
             Err(e) if crate::exit::from_chain(&e) == Some(crate::exit::ExitCode::NoSession) => {
                 problem = check::Problem::SignedOutHere;
                 None

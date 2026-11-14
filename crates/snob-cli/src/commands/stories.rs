@@ -18,8 +18,9 @@ use crate::app::{App, Viewer};
 use crate::cli::{Format, StoriesArgs, StoryFormat};
 use crate::commands::common;
 use crate::exit::ExitCode;
-use crate::media::{self, Kind, Stories, Story, empty_document, left_of, posted_of};
+use crate::media::{self, Kind, Stories, Story, left_of, posted_of};
 use crate::output::Presentation;
+use crate::output::media::empty_document;
 use crate::ui;
 
 pub async fn run(args: StoriesArgs, store: SecretStore, paths: &AccountPaths) -> Result<ExitCode> {
@@ -57,7 +58,7 @@ pub async fn run(args: StoriesArgs, store: SecretStore, paths: &AccountPaths) ->
     }
 
     if let Some(selection) = args.action.selection() {
-        return media::download_selected(
+        return crate::output::media::download_selected(
             app.client_shared(),
             printable(&stories.username),
             &stories.items,
@@ -204,7 +205,7 @@ fn list(
         Format::Json | Format::Ndjson => media::with_pictures(as_json(stories, format)?, pictures)?,
         _ => as_table(stories, Presentation::detect(destination)),
     };
-    media::print_listing(
+    crate::output::media::print_listing(
         text,
         destination,
         "--download <number> to download one, or --interactive to move through them",
@@ -212,7 +213,7 @@ fn list(
 }
 
 fn as_table(stories: &Stories, presentation: Presentation) -> String {
-    let mut table = media::listing_table(
+    let mut table = crate::output::media::listing_table(
         &["#", "Kind", "Posted", "Gone in", "Mentions"],
         presentation,
     );
@@ -249,7 +250,7 @@ fn as_json(stories: &Stories, format: Format) -> Result<String> {
         })
         .collect();
 
-    media::rows_or_envelope(rows, format, |rows| {
+    crate::output::media::rows_or_envelope(rows, format, |rows| {
         serde_json::json!({
             "username": stories.username,
             "stories": rows,

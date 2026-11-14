@@ -1,0 +1,763 @@
+//! What every command hangs off.
+
+use std::sync::{Arc, OnceLock};
+
+use anyhow::Result;
+use snob_core::{EpochMs, Pk};
+use snob_ig::client::IgClient;
+use snob_ig::pace::{CancelToken, Pacer};
+use snob_store::paths::{AccountPaths, AppPaths};
+use snob_store::registry::Registry;
+use snob_store::secrets::SessionStore;
+use snob_store::store::Store;
+use snob_store::store::rate_budget::SqliteRateBudget;
+
+use crate::engine::target;
+use crate::host::{Front, Progress, Wait};
+use crate::interrupt;
+
+/// The account the run is acting as, when there is one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Viewer {
+    pub pk: Pk,
+    /// Absent until the first run resolves it. Cosmetic: nothing blocks on it.
+    pub username: Option<String>,
+}
+
+impl Viewer {
+    /// The name, filtered for anything that is going to draw it.
+    pub fn safe_username(&self) -> Option<String> {
+        self.username.as_deref().map(snob_core::model::printable)
+    }
+
+    /// How to name this account to a person: `@someone`, or the id when the
+    /// name has not been learned yet.
+    pub fn label(&self) -> String {
+        label(self.pk, self.username.as_deref())
+    }
+
+    /// The `viewer` object a JSON answer names the account with.
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({ "pk": self.pk, "username": self.safe_username() })
+    }
+}
+
+/// How to name any account to a person: `@someone`, or the id when the name has
+/// not been learned yet.
+pub fn label(pk: Pk, username: Option<&str>) -> String {
+    match username {
+        Some(name) => format!("@{}", snob_core::model::printable(name)),
+        None => format!("account {pk}"),
+    }
+}
+
+/// The same rule where the absent case means the viewer rather than an account
+/// whose name is not known yet.
+pub fn target_label(target: Option<&str>) -> String {
+    match target {
+        Some(name) => format!("@{}", snob_core::model::printable(name)),
+        None => "your account".to_string(),
+    }
+}
+
+/// The one place a [`Pacer`] is assembled.
+fn pacer(
+    paths: &AccountPaths,
+    announce: Arc<dyn Fn(std::time::Duration) + Send + Sync>,
+) -> Result<Pacer> {
+    // The store goes first: it is what creates the schema, and the budget opens
+    // its own connection to a file that has to have tables already.
+    Store::open(paths)?;
+    Ok(Pacer::new(Arc::new(SqliteRateBudget::open(paths)?))
+        .with_cancel(interrupt::install())
+        .waiting_at_most(MAX_WAIT.get().copied().flatten())
+        .announcing(announce))
+}
+
+/// `--max-wait`, set once by `main` before any command runs.
+static MAX_WAIT: OnceLock<Option<std::time::Duration>> = OnceLock::new();
+
+/// Sets `--max-wait` for every pacer this run builds.
+pub fn wait_at_most(limit: Option<std::time::Duration>) {
+    let _ = MAX_WAIT.set(limit);
+}
+
+/// `--max-wait`, for a check that compares a wait with it without building a
+/// pacer (`follow --check-ahead`). `None` when it was not given.
+pub fn max_wait() -> Option<std::time::Duration> {
+    MAX_WAIT.get().copied().flatten()
+}
+
+/// `--stop-when-stdin-closes`, beside `--max-wait`: the other run-wide
+/// setting `main` hands every pacer, through the cancellation token.
+pub use crate::interrupt::stop_when_stdin_closes;
+
+/// And stopping when the parent goes, which `main` asks of every command and
+/// which watches only where a program drives the run (`parent`).
+pub use crate::interrupt::stop_when_parent_exits;
+
+/// `--spend-alone`, set once by `main` before any command runs.
+static SPEND_ALONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Makes every account this run opens one it sends requests for only while no
+/// other run given `--spend-alone` does ([`App::open`]).
+///
+/// **For runs an agent started** (`snob mcp` gives it to every child that may
+/// reach Instagram): an agent makes its calls in parallel by habit, and two
+/// processes walking one account interleave their requests. A command a person
+/// types does not take it (AGENTS.md, "The MCP server").
+pub fn spend_alone() {
+    SPEND_ALONE.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The refusal of a run given `--spend-alone` while another holds the
+/// account: exit 1, with `busy` as the reason a program reads.
+pub fn held_elsewhere() -> anyhow::Error {
+    crate::exit::ExitError::new(
+        crate::exit::ExitCode::Error,
+        "another snob started by an agent is using this account on Instagram, and only one \
+         may at a time; nothing was sent",
+    )
+    .with_reason("busy")
+    .with_hint("wait for it to finish, then ask again")
+    .into()
+}
+
+/// `pacer` with the announcement the single-request commands, `login` and
+/// `whoami`, want: one line on standard error, because there is nothing for a
+/// bar to count.
+pub fn pacer_saying_a_line(paths: &AccountPaths) -> Result<Pacer> {
+    pacer(
+        paths,
+        Arc::new(|waited: std::time::Duration| {
+            crate::host::info(&format!(
+                "The request budget is rationing; waiting {}.",
+                snob_core::duration::format(waited)
+            ));
+        }),
+    )
+}
+
+/// Until when this account may send nothing, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Held {
+    pub until_ms: EpochMs,
+    /// The accounts whose push-backs stopped every account, named.
+    pub braked: Vec<String>,
+}
+
+/// [`Pacer::cooldown`], and whether it is the brake on every account.
+pub fn held(pacer: &Pacer, paths: Option<&AppPaths>) -> Result<Option<Held>> {
+    let Some(until_ms) = pacer.cooldown()? else {
+        return Ok(None);
+    };
+    Ok(Some(held_by(until_ms, pacer.brake()?.as_ref(), paths)))
+}
+
+/// A cooldown until `until_ms`, named as [`held`] names it: by the accounts
+/// whose push-backs braked every account when `brake` is what lasts longest.
+pub fn held_by(
+    until_ms: EpochMs,
+    brake: Option<&snob_core::budget::Brake>,
+    paths: Option<&AppPaths>,
+) -> Held {
+    let braked = match brake {
+        Some(brake) if brake.until >= until_ms => {
+            let registry = paths
+                .and_then(|paths| Registry::load(paths).ok())
+                .unwrap_or_default();
+            brake
+                .accounts
+                .iter()
+                .map(|&pk| label(pk, registry.get(pk).map(|r| r.username.as_str())))
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    Held { until_ms, braked }
+}
+
+/// How a run could have been given consent before it started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConsentInAdvance {
+    /// `-y` on the command line.
+    #[default]
+    Flag,
+    /// An `[[account]]` in `watch.toml` carrying the answer somebody gave once,
+    /// which is what `snob watch setup` writes.
+    WatchConfig,
+}
+
+pub struct App {
+    /// Shared, for the one place that fans work out across tasks: the story
+    /// downloads. Everywhere else reads it through [`App::client`].
+    client: Arc<IgClient>,
+    db: Store,
+    progress: Arc<dyn Progress>,
+    ask: Arc<dyn crate::host::Ask>,
+    consent_in_advance: ConsentInAdvance,
+    viewer: Viewer,
+    /// Where the other accounts are named, for [`App::held`].
+    app_paths: Option<AppPaths>,
+    consented: Option<String>,
+    /// What was asked for, what it resolved to, and the action it was resolved
+    /// in.
+    ///
+    /// **The question is part of the key, not just the answer**, because `snob
+    /// watch` walks several configured accounts through a single `App`: keyed on
+    /// the target alone, the second account would be handed the first one's
+    /// target, and its changes committed under the first account's marks.
+    resolved: Option<Memo>,
+    /// Asked between every two pages of a walk: `true` stops it there, kept for
+    /// the next run.
+    stop_between_pages: Option<fn() -> bool>,
+    /// The account's `spend.lock`, held for as long as the run, under
+    /// `--spend-alone` ([`spend_alone`]). Never read: holding it is the point.
+    _alone: Option<std::fs::File>,
+}
+
+/// One resolution, and the question it answers.
+struct Memo {
+    /// The `--target` this was resolved for, exactly as it was given.
+    asked: Option<String>,
+    target: target::Target,
+    /// `Pacer::actions()` when it was resolved, or its counters were read.
+    action: u32,
+}
+
+impl App {
+    /// Opens everything for a run that acts as the account `paths` is.
+    ///
+    /// **A session this computer no longer sends as is refused here**, with the
+    /// no-session exit and a sentence that says so
+    /// (`sentences::signed_out_here`): its account was signed out of here
+    /// since it was stored, which `owner::signed_out` asks again before every
+    /// request, the backstop for one signed out of while the run goes on.
+    /// The run reports to and asks through what `front` makes, once the
+    /// session is known to be one it may send as.
+    pub fn open(
+        secrets: &SessionStore,
+        paths: &AccountPaths,
+        front: impl FnOnce() -> Front,
+    ) -> Result<Option<Self>> {
+        let Some(mut session) = secrets.load()? else {
+            return Ok(None);
+        };
+        if session.ds_user_id != paths.pk() {
+            anyhow::bail!(
+                "the session stored for account {} is account {}'s; log in again with \
+                 \"snob login\"",
+                paths.pk(),
+                session.ds_user_id
+            );
+        }
+        if crate::owner::signed_out(paths, &session) {
+            return Err(crate::sentences::signed_out_here());
+        }
+
+        // Before anything that could send a request: a run refused here has
+        // spent nothing.
+        let alone = if SPEND_ALONE.load(std::sync::atomic::Ordering::SeqCst) {
+            paths.ensure_dirs()?;
+            Some(
+                snob_store::paths::try_lock_file(&paths.spend_lock())?
+                    .ok_or_else(held_elsewhere)?,
+            )
+        } else {
+            None
+        };
+
+        // Done here rather than at login because a browser updates long after
+        // the session was created, and this is the only moment every command
+        // passes through.
+        if crate::browser::refresh_user_agent(&mut session)
+            && let Err(e) = secrets.save(&session)
+        {
+            tracing::debug!(error = %e, "could not store the refreshed User-Agent");
+        }
+
+        let viewer = Viewer {
+            pk: session.ds_user_id,
+            username: session.username.clone(),
+        };
+        crate::sentences::act_as(viewer.clone());
+
+        let db = Store::open(paths)?;
+        // Retention, for the commands that are not the monitor.
+        crate::engine::watch::settle_daily(&db);
+        let Front { progress, ask } = front();
+        // Armed before the pacer opens the store and the budget, so a Ctrl+C
+        // during those opens stops the run in order rather than killing it.
+        interrupt::install();
+
+        let pacer = pacer(paths, {
+            let progress = Arc::clone(&progress);
+            // `waiting` rather than `note`: the number counts down on the bar
+            // instead of being frozen into the message at the moment the wait
+            // began.
+            Arc::new(move |waited: std::time::Duration| {
+                progress.waiting(Wait::Budget, waited);
+            })
+        })?;
+
+        Ok(Some(Self {
+            client: Arc::new(IgClient::new(session, pacer)?),
+            db,
+            progress,
+            ask,
+            viewer,
+            app_paths: Some(AppPaths::clone(paths)),
+            consented: None,
+            consent_in_advance: ConsentInAdvance::default(),
+            resolved: None,
+            stop_between_pages: None,
+            _alone: alone,
+        }))
+    }
+
+    /// An app wired by hand, so the engine can be driven against a mock server.
+    #[doc(hidden)]
+    pub fn for_test(client: IgClient, db: Store, viewer: Viewer) -> Self {
+        let Front { progress, ask } = Front::quiet();
+        Self {
+            client: Arc::new(client),
+            db,
+            progress,
+            ask,
+            viewer,
+            app_paths: None,
+            consented: None,
+            consent_in_advance: ConsentInAdvance::default(),
+            resolved: None,
+            stop_between_pages: None,
+            _alone: None,
+        }
+    }
+
+    pub fn client(&self) -> &IgClient {
+        &self.client
+    }
+
+    /// The client, to be held by a task.
+    pub fn client_shared(&self) -> Arc<IgClient> {
+        Arc::clone(&self.client)
+    }
+
+    /// The three pieces a walk needs at once: it reads through the client and
+    /// writes through the store while both are borrowed.
+    pub fn parts(&mut self) -> (&IgClient, &mut Store, &dyn Progress) {
+        (&self.client, &mut self.db, &*self.progress)
+    }
+
+    pub fn db(&self) -> &Store {
+        &self.db
+    }
+
+    /// The store, for a write that takes a transaction of its own (an act
+    /// an agent was told yes to, `commands::common::record_agent_act`).
+    pub fn db_mut(&mut self) -> &mut Store {
+        &mut self.db
+    }
+
+    pub fn progress(&self) -> &Arc<dyn Progress> {
+        &self.progress
+    }
+
+    /// Whether somebody is there to answer the run's questions.
+    pub fn can_ask(&self) -> bool {
+        self.ask.can_ask()
+    }
+
+    /// A yes-or-no question whose answer, unless one is given, is no, asked
+    /// without holding an async worker while the person thinks about it.
+    pub async fn confirm(&self, question: String) -> Result<bool> {
+        use anyhow::Context as _;
+        let ask = Arc::clone(&self.ask);
+        tokio::task::spawn_blocking(move || ask.confirm(&question))
+            .await
+            .context("the question could not be asked")?
+    }
+
+    /// The token the client's pacer watches, so canceling it reaches a request.
+    pub fn cancel(&self) -> &CancelToken {
+        self.client.pacer().cancel_token()
+    }
+
+    /// Until when this account may send nothing, and why. See [`held`].
+    pub fn held(&self) -> Result<Option<Held>> {
+        held(self.client.pacer(), self.app_paths.as_ref())
+    }
+
+    /// The account this run acts as.
+    pub fn viewer(&self) -> &Viewer {
+        &self.viewer
+    }
+
+    /// Whether the user has already agreed, in this run, to enumerate somebody
+    /// else's account.
+    ///
+    /// **The account is part of the key, not just the answer**, as in the
+    /// `resolved` memo: `run_accounts` walks every account one viewer reads
+    /// through one `App`, on purpose, and a yes about @alice must not let @bob's
+    /// lists be enumerated with no question printed.
+    pub fn has_consent(&self, asked: &str) -> bool {
+        self.consented
+            .as_deref()
+            .is_some_and(|given| given.eq_ignore_ascii_case(asked))
+    }
+
+    pub fn record_consent(&mut self, asked: &str) {
+        self.consented = Some(asked.to_string());
+    }
+
+    /// How this run could have been given consent before it started.
+    pub fn consent_in_advance(&self) -> ConsentInAdvance {
+        self.consent_in_advance
+    }
+
+    /// Said by the monitor's two walking entry points, and nothing else.
+    pub fn consent_comes_from_the_config(&mut self) {
+        self.consent_in_advance = ConsentInAdvance::WatchConfig;
+    }
+
+    /// Said by the monitor: a walk stops between two pages once `critical` says
+    /// the battery is, rather than being cut off by the system hibernating
+    /// under it, and the next run picks it up.
+    pub fn stops_on_a_critical_battery(&mut self, critical: fn() -> bool) {
+        self.stop_between_pages = Some(critical);
+    }
+
+    /// What a walk asks between two pages, if anything: see
+    /// [`App::stops_on_a_critical_battery`].
+    pub fn stop_between_pages(&self) -> Option<fn() -> bool> {
+        self.stop_between_pages
+    }
+
+    /// What `asked` resolved to earlier in this run, if it was the same
+    /// question.
+    ///
+    /// **The counters do go stale**, and they are handed back only while no new
+    /// action has begun — which is to say, only while no time has passed that
+    /// the account could have moved in.
+    pub fn resolved_target(&self, asked: Option<&str>) -> Option<target::Target> {
+        let memo = self.resolved.as_ref()?;
+        if memo.asked.as_deref() != asked {
+            return None;
+        }
+        let mut target = memo.target.clone();
+        if memo.action != self.client.pacer().actions() {
+            target.counters = None;
+        }
+        Some(target)
+    }
+
+    /// Remembers what a question resolved to, stamped with the action it was
+    /// resolved in.
+    pub fn remember_target(&mut self, asked: Option<&str>, target: target::Target) {
+        self.resolved = Some(Memo {
+            asked: asked.map(str::to_string),
+            target,
+            action: self.client.pacer().actions(),
+        });
+    }
+
+    /// Adds the counters a poll just obtained, and re-stamps.
+    ///
+    /// What must invalidate them is an action begun **after** they were read —
+    /// a walk, a sitting, a monitor tick — because that is time in which the
+    /// account can have moved.
+    pub fn remember_counters(&mut self, counters: target::Counters) {
+        let action = self.client.pacer().actions();
+        if let Some(memo) = &mut self.resolved {
+            memo.target.counters = Some(counters);
+            memo.action = action;
+        }
+    }
+
+    /// A warning, through the progress bar when there is one so it does not
+    /// land in the middle of a drawn line.
+    pub fn warn(&self, text: &str) {
+        self.progress.warn(text);
+    }
+}
+
+/// How a client is named in the record of what it was told yes to: its name and
+/// version as it declared them, **through `printable`, then cut to letters,
+/// digits, spaces and `._/-`, and to 64 characters**.
+pub fn client_label(name: &str, version: &str) -> Option<String> {
+    let said = snob_core::model::printable(&format!("{name} {version}"));
+    let kept: String = said
+        .chars()
+        .filter(|&c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '_' | '/' | '-'))
+        .collect();
+    let kept: String = kept
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(64)
+        .collect();
+    let kept = kept.trim_end();
+    (!kept.is_empty()).then(|| kept.to_string())
+}
+
+/// The account's database and its request budget as they stand at `now`, read
+/// **writing nothing**: an account that has never sent anything is read over an
+/// empty database rather than having its file made, and a `shared.db` that
+/// cannot be read counts no brake.
+pub fn standing(
+    paths: &AccountPaths,
+    now: snob_core::EpochMs,
+) -> Result<(
+    snob_store::store::Store,
+    snob_store::store::rate_budget::BudgetState,
+)> {
+    use snob_store::store::Store;
+    use snob_store::store::shared::Shared;
+    let store = match Store::read_existing(paths)? {
+        Some(store) => store,
+        None => Store::in_memory()?,
+    };
+    let shared = Shared::read_existing(paths).unwrap_or_else(|e| {
+        tracing::debug!(error = %e, "shared.db could not be read; no brake is counted");
+        None
+    });
+    let budget = snob_store::store::rate_budget::state(store.conn(), shared.as_ref(), now)?;
+    Ok((store, budget))
+}
+
+/// The cooldown the account is in at `now`, if it is in one, out of its
+/// budget's state ([`standing`]), named as a run would name it
+/// (`App::held`).
+pub fn held_in(
+    budget: &snob_store::store::rate_budget::BudgetState,
+    paths: &AccountPaths,
+    now: snob_core::EpochMs,
+) -> Option<crate::app::Held> {
+    let until = budget.held_until(now)?;
+    Some(crate::app::held_by(
+        until,
+        budget.brake.as_ref(),
+        Some(&**paths),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{App, Viewer, target_label};
+    use snob_core::Pk;
+
+    /// An account's paths with another account's session in them is refused
+    /// before anything is opened: its requests would be paid for, and its
+    /// cooldowns recorded, in the wrong account's database.
+    #[test]
+    fn a_session_that_is_another_accounts_is_refused() {
+        use snob_core::session::{Session, SessionOrigin};
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = snob_store::paths::AppPaths::rooted_at(tmp.path());
+        let secrets = snob_store::secrets::SecretStore::new(paths.clone(), true)
+            .with_service(&format!("snob-ig-test-app-open-{}", std::process::id()));
+        let other = paths.account(Pk::new(43));
+        let store = secrets.session_of(&other);
+        store
+            .save(
+                &Session::from_sessionid("42%3Aabc%3A1", "Mozilla/5.0", SessionOrigin::Paste)
+                    .unwrap(),
+            )
+            .unwrap();
+
+        let refused = App::open(&store, &other, crate::host::Front::quiet)
+            .err()
+            .expect("another account's session is refused");
+        assert!(refused.to_string().contains("account 42"), "{refused}");
+        assert!(!other.db_file().exists(), "nothing was opened");
+        store.delete().unwrap();
+    }
+
+    /// A session stored here whose account was signed out of since, as a
+    /// `logout` that could not remove it leaves it, is refused at the start
+    /// with the no-session exit and a sentence that says so, and nothing is
+    /// opened for it.
+    #[test]
+    fn a_session_signed_out_of_here_is_refused_before_anything_is_opened() {
+        use snob_core::session::{Session, SessionOrigin};
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = snob_store::paths::AppPaths::rooted_at(tmp.path());
+        let secrets = snob_store::secrets::SecretStore::new(paths.clone(), true).with_service(
+            &format!("snob-ig-test-app-signed-out-{}", std::process::id()),
+        );
+        let account = paths.account(Pk::new(42));
+        let store = secrets.session_of(&account);
+        store
+            .save(
+                &Session::from_sessionid("42%3Aabc%3A1", "Mozilla/5.0", SessionOrigin::Paste)
+                    .unwrap(),
+            )
+            .unwrap();
+
+        let refused = App::open(&store, &account, crate::host::Front::quiet)
+            .err()
+            .expect("a session signed out of is refused");
+        assert_eq!(
+            crate::exit::from_chain(&refused),
+            Some(crate::exit::ExitCode::NoSession)
+        );
+        assert!(
+            refused.to_string().contains("signed out on this computer"),
+            "{refused}"
+        );
+        assert!(!account.db_file().exists(), "nothing was opened");
+        store.delete().unwrap();
+    }
+
+    /// Two of the targets this names come from `watch.toml`, which validates a
+    /// username not at all, and one of those is the banner a scheduled service
+    /// opens with — the first thing a monitor ever prints.
+    #[test]
+    fn naming_a_target_takes_out_what_a_terminal_would_obey() {
+        let shown = target_label(Some("friend\u{1b}[2K"));
+        assert!(!shown.contains('\x1b'), "{shown:?}");
+        assert_eq!(shown, "@friend[2K");
+
+        assert_eq!(target_label(None), "your account");
+    }
+
+    /// The name here came from Instagram — `whoami` writes it out of
+    /// `resolve_username` — not from the command line, and it ends up as the
+    /// progress bar's prefix, redrawn several times a second.
+    ///
+    /// What is left is the brackets as text, which is `printable`'s contract:
+    /// it removes what a terminal obeys, not what it prints. Without the escape
+    /// in front of them they are three characters in a name.
+    #[test]
+    fn a_viewer_label_does_not_carry_what_a_terminal_would_obey() {
+        let viewer = Viewer {
+            pk: Pk::new(42),
+            username: Some(format!("me{esc}[2K{esc}[A", esc = '\x1b')),
+        };
+
+        let label = viewer.label();
+        assert!(!label.contains('\x1b'), "{label:?}");
+        assert_eq!(label, "@me[2K[A");
+    }
+
+    /// Without a name there is nothing to filter and the id stands in.
+    #[test]
+    fn an_unnamed_viewer_is_still_nameable() {
+        let viewer = Viewer {
+            pk: Pk::new(42),
+            username: None,
+        };
+
+        assert_eq!(viewer.label(), "account 42");
+    }
+
+    /// An app over a fake that answers every request, so a test can spend
+    /// requests without beginning an action.
+    async fn app_spending_on(server: &wiremock::MockServer) -> App {
+        use wiremock::{Mock, ResponseTemplate, matchers::any};
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(server)
+            .await;
+        let session = snob_core::session::Session::from_sessionid(
+            "42%3Aabc%3A1",
+            "Mozilla/5.0",
+            snob_core::session::SessionOrigin::Paste,
+        )
+        .unwrap();
+        let client = snob_ig::client::IgClient::new(session, snob_ig::pace::Pacer::unlimited())
+            .unwrap()
+            .with_base_url(url::Url::parse(&server.uri()).unwrap());
+        App::for_test(
+            client,
+            snob_store::store::Store::in_memory().unwrap(),
+            Viewer {
+                pk: Pk::new(42),
+                username: Some("me".into()),
+            },
+        )
+    }
+
+    /// Spends one request or more, whatever the fake answers: the requests
+    /// that open a profile, or a poll, as far as the memo can tell.
+    async fn spend(app: &App) {
+        let before = app.client().pacer().spent();
+        let _ = app.client().counters(Pk::new(7), Some("someone")).await;
+        assert!(app.client().pacer().spent() > before, "a request was spent");
+    }
+
+    fn someone() -> crate::engine::target::Target {
+        crate::engine::target::Target {
+            pk: Pk::new(7),
+            username: Some("someone".into()),
+            is_self: false,
+            counters: None,
+        }
+    }
+
+    const COUNTERS: crate::engine::target::Counters = crate::engine::target::Counters {
+        followers: Some(25),
+        following: Some(11),
+    };
+
+    /// The counters a poll read survive the requests of the same action: the
+    /// hover card that read them, and whatever else opening the profile asks.
+    #[tokio::test]
+    async fn the_counters_survive_the_requests_of_one_action() {
+        let server = wiremock::MockServer::start().await;
+        let mut app = app_spending_on(&server).await;
+
+        spend(&app).await;
+        app.remember_target(Some("someone"), someone());
+        spend(&app).await;
+        app.remember_counters(COUNTERS);
+        spend(&app).await;
+
+        let target = app
+            .resolved_target(Some("someone"))
+            .expect("the same question");
+        assert_eq!(target.counters, Some(COUNTERS));
+    }
+
+    /// Once a walk has begun, the counters read before it are dropped; who
+    /// the account is is not.
+    #[tokio::test]
+    async fn the_counters_drop_once_a_walk_has_begun() {
+        let server = wiremock::MockServer::start().await;
+        let mut app = app_spending_on(&server).await;
+
+        app.remember_target(Some("someone"), someone());
+        app.remember_counters(COUNTERS);
+        app.client().pacer().begin_action();
+
+        let target = app
+            .resolved_target(Some("someone"))
+            .expect("the identity outlives the action");
+        assert_eq!(target.pk, Pk::new(7));
+        assert_eq!(target.counters, None);
+
+        // A poll in the new action is good for the rest of it.
+        app.remember_counters(COUNTERS);
+        spend(&app).await;
+        assert_eq!(
+            app.resolved_target(Some("someone")).unwrap().counters,
+            Some(COUNTERS)
+        );
+    }
+
+    /// The memo answers only the question it was resolved for, whatever the
+    /// action.
+    #[tokio::test]
+    async fn a_different_question_never_reuses_the_memo() {
+        let server = wiremock::MockServer::start().await;
+        let mut app = app_spending_on(&server).await;
+
+        app.remember_target(Some("someone"), someone());
+        app.remember_counters(COUNTERS);
+
+        assert!(app.resolved_target(None).is_none(), "your own account");
+        assert!(app.resolved_target(Some("Someone")).is_none());
+        assert!(app.resolved_target(Some("another")).is_none());
+    }
+}

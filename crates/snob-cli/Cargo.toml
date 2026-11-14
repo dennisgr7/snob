@@ -26,26 +26,17 @@ default = ["xlsx", "mcp", "mcp-http", "preview"]
 # export zip through the same feature, being the only other reader of `zip`;
 # without it the import still reads the folder the zip was extracted into.
 xlsx = ["dep:rust_xlsxwriter", "dep:zip"]
-# `snob mcp`, the stdio server an agent's client starts (`commands::mcp`).
-# On by default, so the released binary has it; `--no-default-features`
-# leaves out `rmcp` and what it brings. `tokio/process` is how each tool call
-# runs its child `snob` and is told when it ends, without a thread per call.
-mcp = ["dep:rmcp", "tokio/process"]
+# `snob mcp`, the stdio server an agent's client starts (`snob_mcp`, named
+# `commands::mcp`). On by default, so the released binary has it;
+# `--no-default-features` leaves out the server, `rmcp` and what it brings.
+mcp = ["dep:snob-mcp"]
 # `snob mcp --listen`: the same server over HTTP on loopback, behind the
-# key `snob mcp key` keeps, for a tunnel the person runs (`commands::mcp::
-# http`). On by default; a feature of its own so that a build that wants the
-# server only as a program its client starts can leave out the HTTP half,
-# hyper's server and what rmcp needs to speak Streamable HTTP. Its cost is
-# measured in AGENTS.md, under "Costs worth knowing".
-mcp-http = [
-    "mcp",
-    "rmcp/transport-streamable-http-server",
-    "dep:hyper",
-    "dep:hyper-util",
-    "dep:http",
-    "dep:http-body-util",
-    "dep:bytes",
-]
+# key `snob mcp key` keeps, for a tunnel the person runs (`snob-mcp`'s
+# `http` feature). On by default; a feature of its own so that a build that
+# wants the server only as a program its client starts can leave out the
+# HTTP half, hyper's server and what rmcp needs to speak Streamable HTTP. Its
+# cost is measured in AGENTS.md, under "Costs worth knowing".
+mcp-http = ["mcp", "snob-mcp/http"]
 # Pictures drawn in the terminal, in half blocks (`ui::preview`, and the
 # exception it is to "Stories are handed to the system viewer" in
 # AGENTS.md): the one under the cursor on `p`, and a small one beside the
@@ -55,25 +46,24 @@ mcp-http = [
 # a build that wants neither leaves both out with `--no-default-features`.
 # Its cost is measured in AGENTS.md, under "Costs worth knowing".
 preview = ["dep:zune-jpeg"]
-testing = ["snob-ig/testing"]
+testing = ["snob-engine/testing", "snob-ig/testing"]
 
 [dependencies]
 snob-core.workspace = true
 snob-store.workspace = true
 snob-ig.workspace = true
+# Everything the commands do that is not the command line: the walks, the
+# browser, the owner, jobs, downloads, updates (`snob_engine`).
+snob-engine.workspace = true
+snob-mcp = { workspace = true, optional = true }
 clap.workspace = true
-# `net` and `io-util` for the loopback page `headless::identity` serves for
-# one question and for the owner's socket and named pipe (`owner::socket`);
-# both were already compiled in through reqwest. `sync` for the
-# channels `cdp::connection`'s dispatcher answers callers on -- also already
-# compiled in, through hyper, and named here because this crate uses it
-# directly.
-tokio = { workspace = true, features = ["net", "io-util", "sync"] }
+# `sync` for the channels the commands and views answer on; already compiled
+# in through the engine.
+tokio = { workspace = true, features = ["sync"] }
 anyhow.workspace = true
 serde_json.workspace = true
 # Already in the tree through snob-core, so this costs no extra compilation.
-# Used for one derive: the envelope `cdp::reply_to` reads the message id off
-# without building the whole document.
+# Used for one derive in `cli`.
 serde.workspace = true
 console.workspace = true
 # Keys for the interactive views, and the terminal modes around them (raw mode,
@@ -95,28 +85,6 @@ csv.workspace = true
 rust_xlsxwriter = { workspace = true, optional = true }
 zip = { workspace = true, optional = true }
 zune-jpeg = { workspace = true, optional = true }
-# `server` is the protocol's server half; `transport-io` serves it over this
-# process's standard input and output, the transport every client can start;
-# `elicitation` is the question a write is confirmed with. Not
-# `request-state`: its sealer brings a second copy of the RustCrypto crates,
-# and `commands::mcp::seal` signs with the webhook's HMAC instead.
-rmcp = { workspace = true, optional = true, features = ["server", "transport-io", "elicitation"] }
-# `snob mcp --listen` (feature `mcp-http`). `server` and `http1` and nothing
-# more: a connection over loopback from a tunnel the person runs is plain
-# HTTP/1.1, which every tunnel speaks to its origin, and `http2` would be a
-# second protocol to bound for no client that needs it. `http1` is already
-# compiled by reqwest; `server` is the part this adds.
-hyper = { workspace = true, optional = true, features = ["server", "http1"] }
-# For `TokioIo`, which hands hyper a tokio socket, and `TokioTimer`, without
-# which hyper's header timeout panics instead of timing out. Nothing else:
-# not its `server` module, whose graceful shutdown is a few lines here.
-hyper-util = { workspace = true, optional = true, features = ["tokio"] }
-# The request's parts, read for the session a yes in the chat is bound to
-# (`commands::mcp`), and the types the HTTP half is written in. Both already
-# in the tree through reqwest and hyper.
-http = { workspace = true, optional = true }
-http-body-util = { workspace = true, optional = true }
-bytes = { workspace = true, optional = true }
 chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -130,39 +98,19 @@ zeroize.workspace = true
 # one — but the roll is made here and handed to `schedule::wake_at`, which
 # reads no randomness of its own and can therefore be tested.
 fastrand.workspace = true
-# The monitor's webhook address is parsed and inspected before anything is
-# posted to it, and `Url::host()` is what tells an IPv6 loopback from a domain
-# -- the string form keeps the brackets the syntax requires, so `[::1]` does
-# not parse as an address. The tests also point the client at a mock server
-# with it.
+# The monitor's webhook address as `watch setup` takes it, and the mock
+# servers the tests point clients at, are parsed as URLs, which is what tells
+# an IPv6 loopback from a domain.
 url.workspace = true
-# Already in the tree through snob-core, where it signs the monitor's
-# webhook. Here it checks a downloaded release against its `SHA256SUMS`
-# (`update::github`), as the install scripts do.
-sha2.workspace = true
-# Already in the tree through snob-store. The tab's guard reads a paused
-# request's form, which the browser may hand over in base64 pieces
-# (`headless::guard`).
+# Already in the tree through snob-store. A picture drawn in the terminal's
+# own pixels goes out in base64 (`ui::graphics`).
 base64.workspace = true
 
-# Launching the browser with the debugging protocol on a pipe. Windows needs the
-# handle-inheritance blob and the job object; Unix needs `dup2`. Neither is
-# reachable through `std::process::Command`, and the reasoning is in
-# `src/pipe.rs`.
-[target.'cfg(windows)'.dependencies]
-windows-sys.workspace = true
-
-[target.'cfg(unix)'.dependencies]
-libc.workspace = true
-
-# Asking logind to hold off idle sleep while a walk reads (`src/power/`).
-[target.'cfg(target_os = "linux")'.dependencies]
-zbus.workspace = true
-
 [dev-dependencies]
-# The clock stopped and moved by hand, for the relay's timeouts; already a
-# dependency, as in snob-ig's tests.
-tokio = { workspace = true, features = ["test-util"] }
+# The sockets the tests stand in for an owner and a page with
+# (`tests/headless.rs`, `tests/sandbox.rs`); already compiled in through the
+# engine.
+tokio = { workspace = true, features = ["net", "io-util"] }
 wiremock.workspace = true
 # What `tests/common/tab.rs` sends with: a tab with no browser behind it, on
 # the fake Instagram. Already in the tree through snob-ig.
@@ -173,13 +121,6 @@ tempfile.workspace = true
 # passes a test made only of rejections. Pure data, so it builds on every target
 # including the one where narrowing is refused.
 webpki-root-certs.workspace = true
-
-# Only for the test of `commands::mcp::http::twin` against a wildcard held
-# with exclusive use (`SO_EXCLUSIVEADDRUSE`), which neither `std` nor tokio
-# can set before a bind. A dev-dependency's features reach test builds only,
-# so the release binary keeps the feature list of the workspace entry.
-[target.'cfg(windows)'.dev-dependencies]
-windows-sys = { workspace = true, features = ["Win32_Networking_WinSock"] }
 
 # Enough for `apt install ./snob-*.deb` to work and `apt remove snob` to undo
 # it. A signed apt repository would be the other half, and it needs a GPG key
@@ -198,7 +139,7 @@ depends = "$auto"
 recommends = "chromium | chromium-browser | google-chrome-stable | microsoft-edge-stable | brave-browser"
 # Suggested, not recommended: apt installs Recommends by default, and ffmpeg
 # is a large tree for one thing it does here, joining a post's best video
-# and its sound (`snob_cli::ffmpeg`); without it a video is saved as the
+# and its sound (`snob_engine::ffmpeg`); without it a video is saved as the
 # app's 720-wide file, and snob says how to get it.
 suggests = "ffmpeg"
 # **This paragraph makes a claim three other places make**: `packaging/render.sh`

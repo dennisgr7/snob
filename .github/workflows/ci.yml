@@ -144,6 +144,13 @@ jobs:
         env:
           SNOB_TEST_REQUIRE_BROWSER: 1
         run: cargo test -p snob-cli --features testing --locked -- --test-threads=1
+      # The engine's own tests with the seam built in, as the command line's
+      # `testing` builds it (`headless`, `update`).
+      - name: Test the engine as the sandbox builds it
+        if: runner.os != 'Linux'
+        env:
+          SNOB_TEST_REQUIRE_BROWSER: 1
+        run: cargo test -p snob-engine --features testing --locked -- --test-threads=1
       # Against musl, which is what Linux users get. The same reasoning as the
       # keyring daemon above: a suite that passes on a build nobody receives
       # has not tested the thing that ships. This is where a musl-only problem
@@ -163,6 +170,7 @@ jobs:
             echo "" | gnome-keyring-daemon --unlock --components=secrets
             cargo test --workspace --locked --target '"$target"'
             cargo test -p snob-cli --features testing --locked --target '"$target"'
+            cargo test -p snob-engine --features testing --locked --target '"$target"'
           '
 
   build:

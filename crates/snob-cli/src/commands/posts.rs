@@ -29,9 +29,10 @@ use crate::cli::{
 };
 use crate::commands::common;
 use crate::exit::ExitCode;
-use crate::media::{self, empty_document};
+use crate::media;
 use crate::output;
 use crate::output::Presentation;
+use crate::output::media::empty_document;
 use crate::posts::{
     self, Fetched, Grid, GridRead, Post, Videos, files_of, post_json, read_grid, read_tab,
 };
@@ -149,15 +150,16 @@ pub async fn run(args: PostsArgs, store: SecretStore, paths: &AccountPaths) -> R
     let destination = args.action.output.as_deref();
     match (args.post, args.action.selection()) {
         (None, Some(selection)) => {
-            let numbers =
-                media::numbers_of(selection, grid.posts.len(), |n| no_such_post(&grid, n))?;
+            let numbers = crate::output::media::numbers_of(selection, grid.posts.len(), |n| {
+                no_such_post(&grid, n)
+            })?;
             let chosen: Vec<Post> = numbers.iter().map(|n| grid.posts[n - 1].clone()).collect();
             let Some(chosen) = filled_for_a_tab(&app, &grid, chosen).await? else {
                 return Ok(ExitCode::Interrupted);
             };
             let chosen: Vec<&Post> = chosen.iter().collect();
             let files = videos.prepare(files_of(&chosen));
-            posts::download(app.client_shared(), files, destination).await
+            crate::output::posts::download(app.client_shared(), files, destination).await
         }
         (None, None) => {
             // A post's picture is its first item's: what its square on the
@@ -225,9 +227,10 @@ pub(crate) async fn download_items(
     destination: Option<&Path>,
     videos: &Videos,
 ) -> Result<ExitCode> {
-    let numbers = media::numbers_of(selection, post.items.len(), |n| no_such_item(post, n))?;
+    let numbers =
+        crate::output::media::numbers_of(selection, post.items.len(), |n| no_such_item(post, n))?;
     let files = videos.prepare(numbers.iter().map(|n| post.file(n - 1)).collect());
-    posts::download(app.client_shared(), files, destination).await
+    crate::output::posts::download(app.client_shared(), files, destination).await
 }
 
 /// What `-d` saves a video as, decided before anything is asked of Instagram,
@@ -338,7 +341,7 @@ fn list_grid(
         "snob posts {}{tab} <number> to look inside one, -d <number> to save one whole, or -i to browse",
         printable(&grid.username)
     );
-    media::print_listing(text, destination, &hint)
+    crate::output::media::print_listing(text, destination, &hint)
 }
 
 /// Prints what one post holds, after what it says.
@@ -356,7 +359,7 @@ pub(crate) fn list_items(
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
-            media::rows_or_envelope(rows, format, |_| {
+            crate::output::media::rows_or_envelope(rows, format, |_| {
                 serde_json::json!({
                     "username": username,
                     "post": post_json(post, Some(number)),
@@ -365,7 +368,7 @@ pub(crate) fn list_items(
         }
         _ => post_text(post, Presentation::detect(destination)),
     };
-    media::print_listing(
+    crate::output::media::print_listing(
         text,
         destination,
         "--download <number> to save one, or --interactive to see it with its comments",
@@ -380,7 +383,7 @@ pub(crate) fn post_text(post: &Post, presentation: Presentation) -> String {
         text.push_str(&line);
         text.push('\n');
     }
-    let mut table = media::listing_table(&["#", "Kind", "Size"], presentation);
+    let mut table = crate::output::media::listing_table(&["#", "Kind", "Size"], presentation);
     for (index, item) in post.items.iter().enumerate() {
         table.add_row([
             Cell::new(index + 1),
@@ -507,7 +510,7 @@ pub(crate) fn size_of(width: Option<u32>, height: Option<u32>) -> String {
 }
 
 fn grid_table(grid: &Grid, presentation: Presentation) -> String {
-    let mut table = media::listing_table(
+    let mut table = crate::output::media::listing_table(
         &["#", "Kind", "Posted", "Likes", "Comments", "Caption"],
         presentation,
     );
@@ -576,7 +579,7 @@ fn grid_json(grid: &Grid, asked: &Asked, format: Format) -> Result<String> {
             "code": asked.read.reached.map(snob_ig::shortcode::code_of),
         })
     });
-    media::rows_or_envelope(rows, format, |rows| {
+    crate::output::media::rows_or_envelope(rows, format, |rows| {
         serde_json::json!({
             "username": grid.username,
             "tab": grid.tab.map_or("posts", |tab| tab.segment()),

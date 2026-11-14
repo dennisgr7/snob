@@ -3026,7 +3026,6 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
- "bytes",
  "chrono",
  "clap",
  "comfy-table",
@@ -3034,22 +3033,17 @@ dependencies = [
  "crossterm",
  "csv",
  "fastrand",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
  "indicatif",
- "libc",
  "opener",
  "ratatui",
  "reqwest",
- "rmcp",
  "rust_xlsxwriter",
  "serde",
  "serde_json",
- "sha2",
  "snob-core",
+ "snob-engine",
  "snob-ig",
+ "snob-mcp",
  "snob-store",
  "supports-hyperlinks",
  "tempfile",
@@ -3058,9 +3052,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "webpki-root-certs",
- "windows-sys 0.61.2",
  "wiremock",
- "zbus",
  "zeroize",
  "zip",
  "zune-jpeg",
@@ -3077,6 +3069,32 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror",
+ "zeroize",
+]
+
+[[package]]
+name = "snob-engine"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "chrono",
+ "fastrand",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "snob-core",
+ "snob-ig",
+ "snob-store",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "windows-sys 0.61.2",
+ "wiremock",
+ "zbus",
  "zeroize",
 ]
 
@@ -3098,6 +3116,36 @@ dependencies = [
  "webpki-root-certs",
  "windows-sys 0.61.2",
  "wiremock",
+]
+
+[[package]]
+name = "snob-mcp"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "bytes",
+ "chrono",
+ "clap",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "reqwest",
+ "rmcp",
+ "serde_json",
+ "snob-cli",
+ "snob-core",
+ "snob-engine",
+ "snob-ig",
+ "snob-store",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
