@@ -248,9 +248,23 @@ fn configure(conn: &Connection) -> Result<(), StoreError> {
 }
 
 /// The database at `path`, opened to be read and never changed; `None` when
-/// there is no file. `query_only` refuses writes and nothing is checkpointed
-/// on close. A schema from an older snob is copied into memory and migrated
-/// there; one from a newer snob is refused.
+/// there is no file. `query_only` refuses writes. A schema from an older snob
+/// is copied into memory and migrated there; one from a newer snob is
+/// refused.
+///
+/// **The directory is left as it was found too.** A connection to a database
+/// in WAL mode makes its `-wal` and `-shm` files when they are not there:
+///
+/// - Not there, nobody has the database open and its log is empty. This
+///   connection closes as the last one does, which removes the two files it
+///   made and has nothing to fold into the database.
+/// - There, somebody else has it open, or left them. The connection is told
+///   not to checkpoint on close, so the log is not folded into the file by a
+///   command that says it writes nothing, and the two files stay.
+///
+/// One case folds a log in: another process that opened the database, wrote
+/// and exited while this connection was the only other one. What goes in is
+/// what that process committed, which its own close would have put there.
 pub(crate) fn read_only(
     path: &Path,
     migrations: &Migrations<'_>,
@@ -263,6 +277,8 @@ pub(crate) fn read_only(
     // set up the WAL index when the log files are absent. `query_only` is
     // what keeps it from writing.
     let flags = rusqlite::OpenFlags::default().difference(rusqlite::OpenFlags::SQLITE_OPEN_CREATE);
+    // Asked before the open, which makes them.
+    let in_use = sidecar(path, "-wal").exists() || sidecar(path, "-shm").exists();
     let conn = match Connection::open_with_flags(path, flags) {
         Ok(conn) => conn,
         Err(rusqlite::Error::SqliteFailure(e, _))
@@ -275,7 +291,7 @@ pub(crate) fn read_only(
     conn.busy_timeout(Duration::from_millis(5_000))?;
     conn.set_db_config(
         rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
-        true,
+        in_use,
     )?;
     conn.pragma_update(None, "trusted_schema", "OFF")?;
     conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
@@ -297,6 +313,13 @@ pub(crate) fn read_only(
     migrate(&mut copy, migrations)?;
     copy.pragma_update(None, "query_only", "ON")?;
     Ok(Some(copy))
+}
+
+/// The file SQLite keeps beside the database at `path` under `suffix`.
+fn sidecar(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    name.into()
 }
 
 /// Refuses a database written by a newer build. `known` is the length of the
@@ -512,6 +535,60 @@ mod tests {
             read.remember("key", "value").is_err(),
             "a write went through a report's connection"
         );
+    }
+
+    /// The names in a directory, sorted.
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A connection to a database in WAL mode makes a `-wal` and a `-shm`
+    /// beside it. A report that left them would have written into the
+    /// account's directory, which `snob status` says it does not.
+    #[test]
+    fn a_report_leaves_the_directory_as_it_found_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let account = crate::paths::AppPaths::rooted_at(tmp.path()).account(Pk::new(42));
+        drop(Store::open(&account).unwrap());
+        let before = names_in(&account.dir());
+        assert!(
+            !before.iter().any(|name| name.ends_with("-wal")),
+            "a database closed by its last connection keeps no log: {before:?}"
+        );
+
+        let read = Store::read_existing(&account).unwrap().unwrap();
+        crate::store::accounts::own(read.conn()).unwrap();
+        drop(read);
+        assert_eq!(names_in(&account.dir()), before);
+    }
+
+    /// With somebody else writing, the report folds nothing of theirs into
+    /// the file and takes none of their files away.
+    #[test]
+    fn a_report_beside_a_writer_folds_nothing_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let account = crate::paths::AppPaths::rooted_at(tmp.path()).account(Pk::new(42));
+        let writer = Store::open(&account).unwrap();
+        writer.remember("key", "value").unwrap();
+        let before = std::fs::read(account.db_file()).unwrap();
+        let names = names_in(&account.dir());
+
+        let read = Store::read_existing(&account).unwrap().unwrap();
+        assert_eq!(
+            read.remembered("key").unwrap().as_deref(),
+            Some("value"),
+            "the report reads what the writer committed, log included"
+        );
+        drop(read);
+
+        assert_eq!(std::fs::read(account.db_file()).unwrap(), before);
+        assert_eq!(names_in(&account.dir()), names);
+        drop(writer);
     }
 
     /// A database from a newer snob says so, rather than letting the migration
