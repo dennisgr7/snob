@@ -12,14 +12,17 @@
 //! **A post is opened with the two reads the app opens it with** (its info
 //! and its first page of comments, [`crate::posts::open`]), once a session:
 //! walking out and back in costs nothing. More comments are one read a page,
-//! on `n`, never on their own.
+//! on `n`, never on their own; the replies under a comment are one read, on
+//! `r`, for the topmost comment on screen whose thread holds more than the
+//! page showed ([`replies_target`]).
 //!
 //! The keys are the other browsers' where they mean the same thing; inside a
 //! post the arrows across, and `h` and `l` with them, move between its items,
 //! as the app's arrows do, and Esc or Backspace walk back out. `?` shows the
 //! keys of the level, `w` hands the post's page to the system's browser, and
 //! `p` draws the item on screen in a build that draws pictures
-//! (`ui::preview`). Not bound, and kept for what comes next: `r` and `L`.
+//! (`ui::preview`). Not bound, and kept for what comes next: `L`, a post's
+//! likers, which asks first as `snob likers` does.
 //!
 //! **Every wait is under a box that says what it is** (`ui::browser::busy`):
 //! opening a post, an item, a page of the grid or of the comments, saving.
@@ -50,7 +53,7 @@ use snob_ig::client::IgClient;
 use snob_store::paths::AppPaths;
 
 use crate::app::Viewer;
-use crate::commands::post::comment_line;
+use crate::commands::post::{MORE_NOT_SHOWN, comment_line};
 use crate::commands::posts::{about, headline_cell, size_of};
 use crate::exit::ExitCode;
 use crate::media::Kind;
@@ -83,6 +86,8 @@ enum Key {
     Comments,
     /// `n`: the next page of comments.
     MoreComments,
+    /// `r`: the replies under the topmost comment on screen that has more.
+    Replies,
     /// Space, at the grid: all the selected post says, in a box.
     About,
     /// Esc and Backspace: walk back out, or leave where there is no out.
@@ -106,6 +111,7 @@ fn key_of(key: KeyEvent) -> Key {
         KeyCode::Char('D') => Key::SaveAll,
         KeyCode::Char('c') => Key::Comments,
         KeyCode::Char('n') => Key::MoreComments,
+        KeyCode::Char('r') => Key::Replies,
         KeyCode::Char(' ') => Key::About,
         KeyCode::Esc | KeyCode::Backspace => Key::Back,
         _ => Key::Shared(input::action_of(key)),
@@ -149,6 +155,11 @@ const POST_KEYS: &[help::Key] = &[
     help::key("D", "save every item of the post here", KeyCode::Char('D')),
     help::key("c", "show or hide the comments", KeyCode::Char('c')),
     help::key("n", "read more comments", KeyCode::Char('n')),
+    help::key(
+        "r",
+        "read the replies of the topmost comment on screen with more",
+        KeyCode::Char('r'),
+    ),
     help::key("w", "open the post on the web", KeyCode::Char('w')),
     help::key("esc backspace", "back to the grid, or leave", KeyCode::Esc),
     help::REDRAW,
@@ -752,6 +763,54 @@ impl<'a> Session<'a> {
                     self.note = format!("Could not read more comments: {e}");
                 }
             }
+            Key::Replies => {
+                let Some(any_missing) = detail
+                    .comments
+                    .as_ref()
+                    .map(|c| c.lines.iter().any(posts::CommentLine::replies_missing))
+                else {
+                    self.note = "The comments could not be read when it opened".into();
+                    return Ok(None);
+                };
+                if !detail.showing_comments {
+                    self.note = "c shows the comments, and r then reads a thread".into();
+                    return Ok(None);
+                }
+                let scroll = detail.scroll.min(furthest);
+                let Some(at) = replies_target(detail, seen.text_width, scroll) else {
+                    self.note = if any_missing {
+                        "No comment from here down has replies to read; scroll up".into()
+                    } else {
+                        "No comment has replies to read".into()
+                    };
+                    return Ok(None);
+                };
+                let busy = Busy::begin(tui, "Reading the replies...", |frame| {
+                    self.frame(frame, list, viewer, colors, seen);
+                })?;
+                let Some(detail) = self.detail_mut(index) else {
+                    return Ok(None);
+                };
+                let post = detail.post.clone();
+                let Some(line) = detail.comments.as_mut().and_then(|c| c.lines.get_mut(at)) else {
+                    return Ok(None);
+                };
+                let (read, stopped) = busy
+                    .run(
+                        tui,
+                        client.pacer().cancel_token(),
+                        posts::replies_under(client, &post, line),
+                    )
+                    .await;
+                if let Some(code) = stopped.leave() {
+                    return leave(code);
+                }
+                match read {
+                    Ok(true) => {}
+                    Ok(false) => self.note = "Instagram answered no replies to it".into(),
+                    Err(e) => self.note = format!("Could not read the replies: {e}"),
+                }
+            }
             Key::Back | Key::Shared(Action::Back) => {
                 if self.grid.is_none() {
                     return leave(ExitCode::Ok);
@@ -1341,7 +1400,7 @@ fn draw_post(
     );
     block = block.title_bottom(tui::footer(
         note,
-        &format!("←→ item · o open · d save · c comments · n more · ? keys · {out}"),
+        &format!("←→ item · o open · d save · c comments · n more · r replies · ? keys · {out}"),
         colors,
     ));
     frame.render_widget(block, area);
@@ -1363,6 +1422,34 @@ fn draw_post(
 
 /// The lines of one post as [`draw_post`] shows it.
 fn post_lines(detail: &Detail, colors: bool) -> Vec<Line<'static>> {
+    marked_lines(detail, colors).0
+}
+
+/// Which comment `r` reads the replies of: of the comments shown, the
+/// topmost one at or under row `scroll` of the post's text wrapped to
+/// `width` (what the screen starts at) whose thread holds more than the
+/// page showed. An index into the comments; `None` when there is none.
+fn replies_target(detail: &Detail, width: usize, scroll: usize) -> Option<usize> {
+    let comments = detail.comments.as_ref()?;
+    let (lines, marks) = marked_lines(detail, false);
+    let mut row = 0;
+    let mut starts = Vec::with_capacity(lines.len());
+    for line in lines {
+        starts.push(row);
+        row += visual(vec![line], width).len();
+    }
+    marks
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| comments.lines.get(*at).is_some_and(|c| c.replies_missing()))
+        .find(|(_, line)| starts.get(**line).is_some_and(|start| *start >= scroll))
+        .map(|(at, _)| at)
+}
+
+/// [`post_lines`], and the index among them of the line each comment
+/// starts on, in the comments' order.
+fn marked_lines(detail: &Detail, colors: bool) -> (Vec<Line<'static>>, Vec<usize>) {
+    let mut marks = Vec::new();
     let post = &detail.post;
     let dim = tui::paint(colors, tui::DIM);
     let bold = tui::paint(colors, tui::BOLD);
@@ -1397,10 +1484,21 @@ fn post_lines(detail: &Detail, colors: bool) -> Vec<Line<'static>> {
                     lines.push(Line::from("none").style(dim));
                 }
                 for comment in &comments.lines {
+                    marks.push(lines.len());
                     lines.push(Line::from(comment_line(comment)));
                     for reply in &comment.replies {
                         lines.push(Line::from(format!("    ↳ {}", comment_line(reply))).style(dim));
                     }
+                    if comment.more_replies == Some(true) {
+                        lines.push(Line::from(format!("    {MORE_NOT_SHOWN}")).style(dim));
+                    }
+                }
+                if comments
+                    .lines
+                    .iter()
+                    .any(posts::CommentLine::replies_missing)
+                {
+                    lines.push(Line::from("r reads the replies of a comment").style(dim));
                 }
                 if comments.next.is_some() {
                     lines.push(Line::from("n reads more").style(dim));
@@ -1415,7 +1513,7 @@ fn post_lines(detail: &Detail, colors: bool) -> Vec<Line<'static>> {
         lines.push(Line::default());
         lines.push(Line::from("c shows the comments").style(dim));
     }
-    lines
+    (lines, marks)
 }
 
 #[cfg(test)]
@@ -1458,6 +1556,7 @@ mod tests {
             replies: Vec::new(),
             pk: None,
             author_pk: None,
+            more_replies: None,
         }
     }
 
@@ -1828,6 +1927,7 @@ mod tests {
         );
         assert_eq!(key(KeyCode::Char('c')), Key::Comments);
         assert_eq!(key(KeyCode::Char('n')), Key::MoreComments);
+        assert_eq!(key(KeyCode::Char('r')), Key::Replies);
         assert_eq!(key(KeyCode::Char(' ')), Key::About);
         assert_eq!(key(KeyCode::Esc), Key::Back);
         assert_eq!(key(KeyCode::Char('q')), Key::Shared(Action::Quit));
@@ -1848,9 +1948,45 @@ mod tests {
             "a modified arrow belongs to somebody else"
         );
         // Kept for what comes next, and bound to nothing meanwhile.
-        for free in ['r', 'L'] {
-            assert_eq!(key(KeyCode::Char(free)), Key::Shared(Action::None));
+        assert_eq!(
+            key_of(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT)),
+            Key::Shared(Action::None)
+        );
+    }
+
+    /// `r` reads the thread of the topmost comment on screen that has more
+    /// than the page showed: one scrolled past is not it, one shown whole is
+    /// never it, and with none from the top of the screen down it is none.
+    #[test]
+    fn r_reads_the_topmost_comment_on_screen_with_replies_to_read() {
+        let mut whole = comment("whole", "one reply, shown");
+        whole.replies_count = 1;
+        whole.replies = vec![comment("owner", "yes")];
+        let mut first = comment("first", "nine replies");
+        first.replies_count = 9;
+        let mut second = comment("second", "two replies");
+        second.replies_count = 2;
+        let mut detail = Detail::new(
+            post(),
+            Some(comments(vec![
+                whole,
+                first,
+                second,
+                comment("quiet", "none"),
+            ])),
+        );
+        detail.showing_comments = true;
+        assert_eq!(replies_target(&detail, 200, 0), Some(1));
+        let (lines, marks) = marked_lines(&detail, false);
+        assert_eq!(lines.len(), post_lines(&detail, false).len());
+        // Scrolled to the second's row, the first is above the screen.
+        assert_eq!(replies_target(&detail, 200, marks[2]), Some(2));
+        assert_eq!(replies_target(&detail, 200, marks[3]), None);
+        // Once its thread is read, a comment is not read again.
+        if let Some(comments) = detail.comments.as_mut() {
+            comments.lines[1].more_replies = Some(false);
         }
+        assert_eq!(replies_target(&detail, 200, 0), Some(2));
     }
 
     /// Every key the two boxes name is bound to something here.

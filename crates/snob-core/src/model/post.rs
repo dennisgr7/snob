@@ -164,12 +164,38 @@ pub struct PostComment {
     pub created_at: i64,
     pub likes: u64,
     /// How many replies it has; only `shown_replies` are in the answer.
+    /// **More than any thread hands out**, as a rule: what is left is not
+    /// this less those shown.
     pub replies: u64,
+    /// The replies the page of comments showed under it, or, once its
+    /// thread was read (`more_replies` not `null`), every reply the thread
+    /// handed out.
     pub shown_replies: Vec<PostComment>,
-    /// The comment's id.
+    /// The comment's id: what `--replies-of` names it by.
     pub pk: Option<String>,
     /// The author's pk; the name is `author`.
     pub author_pk: Option<String>,
+    /// `null` when its thread was not read, and `shown_replies` are the
+    /// page's previews; otherwise whether Instagram said the thread holds
+    /// replies it did not hand out, which are not read.
+    pub more_replies: Option<bool>,
+}
+
+/// The replies under a comment named by its id (`snob post --replies-of`),
+/// which need not be among the comments read.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RepliesOf {
+    /// The comment's id, as it was named.
+    pub comment_pk: String,
+    /// Whether Instagram answered with a thread of a comment on this post.
+    /// `false` when it answered with nothing, or with a comment on another
+    /// post: `replies` is then empty.
+    pub found: bool,
+    /// How many replies the comment has, as Instagram counts them.
+    pub count: Option<u64>,
+    /// Whether Instagram said the thread holds replies it did not hand out.
+    pub more: bool,
+    pub replies: Vec<PostComment>,
 }
 
 /// One account that liked a post, as `snob likers` hands it out: a list's

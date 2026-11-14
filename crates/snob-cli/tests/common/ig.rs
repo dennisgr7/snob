@@ -613,7 +613,9 @@ impl World {
             .mount(&server)
             .await;
         Mock::given(method("GET"))
-            .and(path_regex(r"^/api/v1/media/\d+/(info|comments|likers)/$"))
+            .and(path_regex(
+                r"^/api/v1/media/\d+/((info|comments|likers)|comments/\d+/child_comments)/$",
+            ))
             .respond_with(Posts(self.clone()))
             .mount(&server)
             .await;
@@ -2094,6 +2096,19 @@ const COMMENTS: u64 = 20;
 /// How many comments a page of them holds.
 const COMMENTS_PER_PAGE: u64 = 15;
 
+/// How many replies comment `n` of a post has, as its page counts them: the
+/// first three, one shown under it; the third nine, none shown, as most
+/// comments with replies are in the capture of 2026-11-14. Its thread hands
+/// out two fewer than that, as every thread of that capture handed out
+/// fewer than it counted.
+pub fn replies_of(n: u64) -> u64 {
+    match n {
+        0 => 3,
+        2 => 9,
+        _ => 0,
+    }
+}
+
 /// The pk of account `owner`'s post `n`.
 pub fn post_pk(owner: u64, n: u64) -> u64 {
     FIRST_POST + owner * POST_STRIDE + n
@@ -2149,6 +2164,65 @@ impl Respond for Posts {
                 "application/json",
             );
         };
+        // A thread's replies, as the capture of 2026-11-14 shapes them:
+        // asked with the app's three keys and an empty cursor, fewer
+        // replies than the comment counts, nothing more to read, and the
+        // comment it is under named with its post. A comment the post does
+        // not hold is a refusal.
+        if let Some(&"child_comments") = segments.get(7) {
+            let keys: Vec<(&str, &str)> = query
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            if keys
+                != [
+                    ("min_id", ""),
+                    ("is_chronological", "true"),
+                    ("paging_direction", "view_more"),
+                ]
+            {
+                return wrong(format!("not the app's replies query: {keys:?}"));
+            }
+            let comment = segments.get(6).copied().unwrap_or_default();
+            let Some(n) = comment
+                .strip_prefix("1800000000000")
+                .and_then(|n| n.parse::<u64>().ok())
+                .filter(|n| *n < COMMENTS && replies_of(*n) > 0)
+            else {
+                return ResponseTemplate::new(400).set_body_raw(
+                    r#"{"message":"Comment not found","status":"fail"}"#,
+                    "application/json",
+                );
+            };
+            let handed = replies_of(n) - 2;
+            let replies: Vec<Value> = (0..handed)
+                .map(|r| {
+                    json!({
+                        "pk": format!("1810000000000{n:02}{r:02}"),
+                        "text": format!("reply {r} to comment {n}"),
+                        "created_at": 1_790_000_200 + r as i64,
+                        // As text and as a number in one answer, as captured.
+                        "user": if r % 2 == 0 {
+                            json!({ "pk": FIRST_USER + r % USERS, "username": format!("user{}", r % USERS) })
+                        } else {
+                            json!({ "pk": (FIRST_USER + r % USERS).to_string(), "username": format!("user{}", r % USERS) })
+                        },
+                        "comment_like_count": 0,
+                        "child_comment_index": r,
+                        "parent_comment_id": comment,
+                    })
+                })
+                .collect();
+            return json_answer(json!({
+                "child_comment_count": replies_of(n),
+                "child_comments": replies,
+                "has_more_head_child_comments": false,
+                "has_more_tail_child_comments": false,
+                "is_ranked_replies": false,
+                "parent_comment": { "pk": comment, "media_id": media.to_string() },
+                "status": "ok",
+            }));
+        }
         if *kind == "info" {
             if !query.is_empty() {
                 return wrong("the info read takes no query");
@@ -2212,7 +2286,7 @@ impl Respond for Posts {
                     "created_at": 1_790_000_100 + n as i64,
                     "user": { "pk": (FIRST_USER + n % USERS).to_string(), "username": format!("user{}", n % USERS) },
                     "comment_like_count": n,
-                    "child_comment_count": if n == 0 { 3 } else { 0 },
+                    "child_comment_count": replies_of(n),
                     "preview_child_comments": if n == 0 {
                         json!([{ "pk": "1", "text": "a reply", "user": { "username": "user4" } }])
                     } else {

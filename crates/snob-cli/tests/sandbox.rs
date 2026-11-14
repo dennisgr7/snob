@@ -2274,6 +2274,249 @@ async fn with_comment_pages(server: &MockServer) {
     }
 }
 
+/// The post of [`with_a_post`] with two pages of comments whose threads are
+/// served as the capture of 2026-11-14 shapes them: a comment of three
+/// replies showing one, one of nine showing none, one of one showing it
+/// (whole, so never asked for), and on the second page one of two showing
+/// none. Each thread hands out fewer than it counts and says no more. A
+/// thread is answered only when asked with the app's three keys and an
+/// empty cursor; a comment on another post is answered as that post's, and
+/// one the post never held is refused.
+async fn with_threads(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(url_path(format!("/api/v1/media/{POST_PK}/info/")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"items":[{{"pk":"{POST_PK}","code":"{POST_CODE}","media_type":1,
+                "user":{{"username":"me"}},"comment_count":4}}],"status":"ok"}}"#
+        )))
+        .mount(server)
+        .await;
+    let comment = |pk: &str, count: u64, previews: usize| {
+        serde_json::json!({
+            "pk": pk, "text": format!("comment {pk}"), "created_at": 1_790_000_100,
+            "user": {"username": "friend"}, "child_comment_count": count,
+            "preview_child_comments": (0..previews)
+                .map(|n| serde_json::json!({"pk": format!("1{n}"), "text": "a preview", "user": {"username": "owner"}}))
+                .collect::<Vec<_>>(),
+        })
+    };
+    let comments = format!("/api/v1/media/{POST_PK}/comments/");
+    Mock::given(method("GET"))
+        .and(url_path(comments.clone()))
+        .and(query_param("permalink_enabled", "false"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "comments": [
+                comment("18000000000000001", 3, 1),
+                comment("18000000000000002", 9, 0),
+                comment("18000000000000003", 1, 1),
+            ],
+            "comment_count": 4, "has_more_comments": false,
+            "has_more_headload_comments": true, "next_min_id": SECOND_PAGE, "status": "ok",
+        })))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(url_path(comments))
+        .and(query_param("min_id", SECOND_PAGE))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "comments": [comment("18000000000000004", 2, 0)],
+            "comment_count": 4, "has_more_comments": false,
+            "has_more_headload_comments": false, "status": "ok",
+        })))
+        .mount(server)
+        .await;
+    for (comment, on, handed) in [
+        ("18000000000000001", POST_PK, 2),
+        ("18000000000000002", POST_PK, 7),
+        ("18000000000000004", POST_PK, 1),
+        ("18000000000000099", "3807824420233075999", 1),
+    ] {
+        let replies: Vec<_> = (0..handed)
+            .map(|n| {
+                serde_json::json!({
+                    "pk": format!("181{n:014}"), "text": format!("reply {n} to {comment}"),
+                    "created_at": 1_790_000_200, "user": {"pk": 42 + n, "username": format!("replier{n}")},
+                })
+            })
+            .collect();
+        Mock::given(method("GET"))
+            .and(url_path(format!(
+                "/api/v1/media/{POST_PK}/comments/{comment}/child_comments/"
+            )))
+            .and(query_param("min_id", ""))
+            .and(query_param("is_chronological", "true"))
+            .and(query_param("paging_direction", "view_more"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "child_comment_count": handed + 2, "child_comments": replies,
+                "has_more_head_child_comments": false, "has_more_tail_child_comments": false,
+                "parent_comment": {"pk": comment, "media_id": on}, "status": "ok",
+            })))
+            .mount(server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path_regex(r"/comments/18000000000000077/child_comments/$"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_string(r#"{"message":"Comment not found","status":"fail"}"#),
+        )
+        .mount(server)
+        .await;
+}
+
+/// `--comments` and `--replies` together: both pages of comments, then the
+/// threads of the first three comments with replies the pages did not show,
+/// a comment step apart, under their comments; a comment shown whole is not
+/// asked for. `--replies-of` reads a comment named by its id beside them,
+/// and one Instagram answers nothing of this post's for is said under
+/// `replies_of` as not found, the run going on.
+#[tokio::test]
+async fn replies_are_read_under_their_comments_and_by_their_ids() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    with_threads(&instagram).await;
+    log_in(tmp.path(), &instagram);
+
+    let out = snob(
+        tmp.path(),
+        Some(&instagram),
+        &[
+            "post",
+            POST_CODE,
+            "--comments",
+            "2",
+            "--replies",
+            "3",
+            "--replies-of",
+            "18000000000000099",
+            "--replies-of",
+            "18000000000000077",
+            "--replies-of",
+            "18000000000000002",
+            "--format",
+            "json",
+        ],
+    );
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    let listed = json(&out);
+    let comments = listed["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 4, "{listed}");
+    let shown = |c: &serde_json::Value| c["shown_replies"].as_array().map(Vec::len);
+    assert_eq!(shown(&comments[0]), Some(2));
+    assert_eq!(comments[0]["more_replies"], false);
+    assert_eq!(comments[0]["replies"], 3, "the count stays Instagram's");
+    assert_eq!(shown(&comments[1]), Some(7));
+    assert_eq!(comments[1]["pk"], "18000000000000002");
+    assert_eq!(
+        comments[1]["shown_replies"][0]["pk"], "18100000000000000",
+        "a reply carries its id"
+    );
+    assert_eq!(comments[1]["shown_replies"][0]["author_pk"], "42");
+    assert_eq!(shown(&comments[2]), Some(1), "its preview, not asked for");
+    assert_eq!(comments[2]["more_replies"], serde_json::Value::Null);
+    assert_eq!(shown(&comments[3]), Some(1));
+
+    let named = listed["replies_of"].as_array().unwrap();
+    let found: Vec<_> = named
+        .iter()
+        .map(|t| {
+            (
+                t["comment_pk"].as_str().unwrap(),
+                t["found"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("18000000000000099", false),
+            ("18000000000000077", false),
+            ("18000000000000002", true),
+        ]
+    );
+    assert!(named[0]["replies"].as_array().unwrap().is_empty());
+    assert_eq!(named[2]["replies"].as_array().map(Vec::len), Some(7));
+    assert_eq!(named[2]["count"], 9);
+
+    let asked = asked_about_the_post(&instagram).await;
+    let threads: Vec<&str> = asked
+        .iter()
+        .filter(|(path, _, _)| path.ends_with("/child_comments/"))
+        .map(|(path, query, _)| {
+            assert_eq!(
+                query, "min_id=&is_chronological=true&paging_direction=view_more",
+                "{path}"
+            );
+            path.split('/').nth(6).unwrap()
+        })
+        .collect();
+    assert_eq!(
+        threads,
+        [
+            "18000000000000001",
+            "18000000000000002",
+            "18000000000000004",
+            "18000000000000099",
+            "18000000000000077",
+        ],
+        "each thread once, the named ones after"
+    );
+    assert_eq!(asked.len(), 3 + 5, "the info, two pages and five threads");
+    let page = format!("/p/{POST_CODE}/");
+    assert!(asked.iter().all(|(_, _, referer)| referer.ends_with(&page)));
+
+    // `--replies` alone reads the first page's first thread with it.
+    let out = snob(
+        tmp.path(),
+        Some(&instagram),
+        &["post", POST_CODE, "--replies", "1"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("reply 1 to 18000000000000001"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+/// A comment's id is digits, and ten threads are the most one run reads,
+/// `--replies` and `--replies-of` counted together: each refused before
+/// anything is sent, clap's with exit 2.
+#[tokio::test]
+async fn replies_are_asked_for_by_digits_and_ten_at_most() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    with_threads(&instagram).await;
+    log_in(tmp.path(), &instagram);
+
+    for refused in [
+        &["--replies-of", "abc"][..],
+        &["--replies-of", "0"],
+        &["--replies-of", "-1"],
+        &["--replies-of", "123456789012345678901"],
+        &["--replies", "11"],
+        &["--replies", "0"],
+        &["--replies", "1", "-d", "1"],
+        &["--replies-of", "1", "-i"],
+    ] {
+        let mut args = vec!["post", POST_CODE];
+        args.extend_from_slice(refused);
+        let out = snob(tmp.path(), Some(&instagram), &args);
+        assert_eq!(out.status.code(), Some(2), "{refused:?}: {}", stderr(&out));
+    }
+    let mut args = vec!["post", POST_CODE, "--replies", "9"];
+    args.extend([
+        "--replies-of",
+        "18000000000000001",
+        "--replies-of",
+        "18000000000000002",
+    ]);
+    let out = snob(tmp.path(), Some(&instagram), &args);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("11 threads"), "{}", stderr(&out));
+    assert!(asked_about_the_post(&instagram).await.is_empty());
+}
+
 /// `--comments` reads that many pages of comments, each after the first by
 /// the cursor the page before handed out, and says whether more are left;
 /// asked for more pages than there are, it stops at the last.

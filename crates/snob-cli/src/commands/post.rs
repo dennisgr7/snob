@@ -10,7 +10,12 @@
 //! always asks the two together when a post opens: two reads, printed,
 //! saved or browsed alike. `--comments N` reads on to N pages of comments
 //! in the printed form, each a comment step after the page before
-//! ([`posts::comment_pages`]).
+//! ([`posts::comment_pages`]). `--replies N` then reads the replies under
+//! the first N of those comments that have more than the page showed, and
+//! `--replies-of <id>` those under a comment named by its id, one read a
+//! thread and ten threads at most ([`posts::read_threads`]). What a thread
+//! handed out is said as it is: Instagram counts more replies than it hands
+//! out on every thread seen, so nothing is said to be left by a subtraction.
 //!
 //! `-d --json` saves and then says what it saved, as one JSON document on
 //! standard output ([`posts::save_telling`]), for a caller that reads an
@@ -32,7 +37,9 @@ use crate::commands::posts::{download_items, post_text, videos_of};
 use crate::exit::{ExitCode, ExitError};
 use crate::media;
 use crate::output::{self, Presentation};
-use crate::posts::{self, CommentLine, Comments, Post, comment_json, post_json};
+use crate::posts::{
+    self, CommentLine, Comments, Post, Thread, comment_json, post_json, thread_document,
+};
 use crate::report;
 use crate::ui;
 
@@ -52,6 +59,19 @@ pub async fn run(args: PostArgs, store: SecretStore, paths: &AccountPaths) -> Re
             ExitCode::Error,
             "--json prints what was saved on standard output, so the files cannot go there \
              too: give -o a directory",
+        )
+        .into());
+    }
+    let threads =
+        usize::try_from(args.replies.unwrap_or(0)).unwrap_or(usize::MAX) + args.replies_of.len();
+    if threads > posts::MOST_THREADS {
+        return Err(ExitError::new(
+            ExitCode::Error,
+            format!(
+                "--replies and --replies-of ask for {threads} threads, and one run reads {} at \
+                 most; nothing was sent",
+                posts::MOST_THREADS
+            ),
         )
         .into());
     }
@@ -84,11 +104,18 @@ pub async fn run(args: PostArgs, store: SecretStore, paths: &AccountPaths) -> Re
         }
         return download_items(&app, &post, selection, destination, &videos).await;
     }
-    let Some(comments) =
+    let Some(mut comments) =
         posts::comment_pages(app.client(), &post, args.comments.unwrap_or(1)).await?
     else {
         return Ok(ExitCode::Interrupted);
     };
+    let first = usize::try_from(args.replies.unwrap_or(0)).unwrap_or(usize::MAX);
+    let Some(threads) =
+        posts::read_threads(app.client(), &post, &mut comments, first, &args.replies_of).await?
+    else {
+        return Ok(ExitCode::Interrupted);
+    };
+    let named = (!args.replies_of.is_empty()).then_some(threads.as_slice());
     let pictures = match args.list.small_pictures {
         true => Some(media::small_pictures(app.client(), post.thumbs()).await?),
         false => None,
@@ -96,6 +123,7 @@ pub async fn run(args: PostArgs, store: SecretStore, paths: &AccountPaths) -> Re
     list_post(
         &post,
         Some(&comments),
+        named,
         pictures,
         args.list.format,
         destination,
@@ -132,11 +160,13 @@ async fn save_telling(
     Ok(ExitCode::Ok)
 }
 
-/// Prints the post, its items numbered, and its comments when they were
-/// read. The numbers are what `-d` takes.
+/// Prints the post, its items numbered, its comments when they were read,
+/// and the threads of the comments `--replies-of` named (`named`), under
+/// `replies_of` in the JSON. The numbers are what `-d` takes.
 fn list_post(
     post: &Post,
     comments: Option<&Comments>,
+    named: Option<&[Thread]>,
     pictures: Option<Vec<serde_json::Value>>,
     format: Option<StoryFormat>,
     destination: Option<&Path>,
@@ -156,6 +186,10 @@ fn list_post(
                     );
                     document["more_comments"] = serde_json::json!(comments.next.is_some());
                 }
+                if let Some(named) = named {
+                    document["replies_of"] =
+                        serde_json::json!(named.iter().map(thread_document).collect::<Vec<_>>());
+                }
                 document
             })?;
             media::with_pictures(listed, pictures)?
@@ -165,6 +199,10 @@ fn list_post(
             if let Some(comments) = comments {
                 text.push('\n');
                 text.push_str(&comments_text(comments));
+            }
+            for thread in named.unwrap_or_default() {
+                text.push_str("\n\n");
+                text.push_str(&thread_text(thread));
             }
             text
         }
@@ -190,9 +228,35 @@ fn comments_text(comments: &Comments) -> String {
         for reply in &comment.replies {
             text.push_str(&format!("      ↳ {}\n", comment_line(reply)));
         }
+        if comment.more_replies == Some(true) {
+            text.push_str(&format!("      {MORE_NOT_SHOWN}\n"));
+        }
     }
     if comments.next.is_some() {
         text.push_str("  … more with --comments <pages>, or in the view (-i)\n");
+    }
+    text.pop();
+    text
+}
+
+/// What a thread that says it holds more than it handed out is followed
+/// by: they are there, and not read, since no capture shows how they are
+/// asked for.
+pub const MORE_NOT_SHOWN: &str = "… more replies, not shown";
+
+/// The replies under a comment `--replies-of` named, or why there are none.
+fn thread_text(thread: &Thread) -> String {
+    let mut text = format!("Replies to comment {}:\n", thread.comment);
+    if !thread.found {
+        text.push_str("  none found: the comment is gone, or not on this post\n");
+    } else if thread.replies.is_empty() {
+        text.push_str("  none\n");
+    }
+    for reply in &thread.replies {
+        text.push_str(&format!("  ↳ {}\n", comment_line(reply)));
+    }
+    if thread.more {
+        text.push_str(&format!("  {MORE_NOT_SHOWN}\n"));
     }
     text.pop();
     text
@@ -241,6 +305,7 @@ mod tests {
             replies: Vec::new(),
             pk: None,
             author_pk: None,
+            more_replies: None,
         }
     }
 
@@ -252,6 +317,38 @@ mod tests {
         let quiet = comment_line(&comment("b", "", 0, 0));
         assert!(quiet.starts_with("@b: (a sticker or a GIF) · "), "{quiet}");
         assert!(!quiet.contains("like"), "{quiet}");
+    }
+
+    /// A thread read says what it handed out, and that more are there only
+    /// when Instagram said so, never by its count less what came.
+    #[test]
+    fn fewer_replies_than_the_count_are_said_as_they_came() {
+        let mut read = comment("a", "nice", 0, 9);
+        read.replies = vec![comment("b", "yes", 0, 0)];
+        read.more_replies = Some(false);
+        let mut more = comment("c", "hm", 0, 4);
+        more.more_replies = Some(true);
+        let text = comments_text(&Comments {
+            lines: vec![read, more],
+            next: None,
+            total: Some(2),
+        });
+        assert!(!text.contains("8 more"), "{text}");
+        assert_eq!(text.matches(MORE_NOT_SHOWN).count(), 1, "{text}");
+
+        let thread = Thread {
+            comment: snob_ig::shortcode::CommentPk::new(18_000_000_000_000_001),
+            found: false,
+            count: None,
+            more: false,
+            replies: Vec::new(),
+        };
+        let said = thread_text(&thread);
+        assert!(
+            said.starts_with("Replies to comment 18000000000000001:"),
+            "{said}"
+        );
+        assert!(said.contains("none found"), "{said}");
     }
 
     #[test]

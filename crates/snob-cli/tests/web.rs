@@ -1789,6 +1789,82 @@ async fn a_post_opens_with_its_info_and_comments_from_its_own_page() {
     assert!(found.is_empty(), "{found:?}");
 }
 
+/// A thread's replies are one GET under its comment, from the post's page,
+/// with the app's three keys and an empty cursor; only the threads the page
+/// did not show whole are asked for, and a comment named that the post
+/// does not hold is a thread not found, the run going on.
+#[tokio::test]
+async fn replies_are_read_under_their_comment_from_the_posts_page() {
+    use snob_cli::posts::{Fetched, fetch_grid, open, read_threads};
+    use snob_ig::shortcode::CommentPk;
+
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let app = app_on(&server, &world, tmp.path());
+    let Fetched::Grid(grid) = fetch_grid(app.client(), "someone", common::ME, None, 1, 0)
+        .await
+        .unwrap()
+    else {
+        panic!("someone's grid is shown");
+    };
+    let (post, mut comments) = open(app.client(), &grid.posts[0]).await.unwrap();
+    let since = common::requests(&server).await;
+    let gone = CommentPk::new(18_000_000_000_009_999);
+    let named = read_threads(app.client(), &post, &mut comments, 10, &[gone])
+        .await
+        .unwrap()
+        .expect("nothing stopped the reads");
+    assert_eq!(named.len(), 1);
+    assert!(!named[0].found && named[0].replies.is_empty());
+    // The first comment's one preview of three, and the third's none of
+    // nine: each thread hands out two fewer than it counts, and says no more.
+    assert_eq!(comments.lines[0].replies.len(), 1);
+    assert_eq!(comments.lines[0].more_replies, Some(false));
+    assert_eq!(comments.lines[2].replies.len(), 7);
+    assert_eq!(comments.lines[2].replies_count, 9);
+    assert_eq!(
+        comments.lines[1].more_replies, None,
+        "no replies, not asked"
+    );
+
+    let media = ig::post_pk(ig::SOMEONE, 0);
+    let page = format!("/p/{}/", ig::code_of(media));
+    let asked: Vec<(String, String)> = server.received_requests().await.unwrap_or_default()
+        [since..]
+        .iter()
+        .filter(|r| !ig::is_the_apps(r))
+        .map(|r| {
+            (
+                format!("{}?{}", r.url.path(), r.url.query().unwrap_or_default()),
+                ig::header(r, "referer").unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    let thread = |comment: &str| {
+        format!(
+            "/api/v1/media/{media}/comments/{comment}/child_comments/\
+             ?min_id=&is_chronological=true&paging_direction=view_more"
+        )
+    };
+    let paths: Vec<&str> = asked.iter().map(|(path, _)| path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            thread("18000000000000000"),
+            thread("18000000000000002"),
+            thread("18000000000009999"),
+        ],
+        "{asked:?}"
+    );
+    assert!(
+        asked.iter().all(|(_, referer)| referer.ends_with(&page)),
+        "{asked:?}"
+    );
+    let found = world.audit(&server, &[]).await;
+    assert!(found.is_empty(), "{found:?}");
+}
+
 /// A post's likers are its info and then one GET with no query from its
 /// page, and nothing after them: not the `show_many` the app sends, whose
 /// answer the likers already hold.

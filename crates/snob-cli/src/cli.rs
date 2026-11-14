@@ -609,7 +609,11 @@ pub enum Command {
                       it, or the code in it; only the code is read, and nothing else in the \
                       address is sent. Two requests read the post and its first page of \
                       comments, as the app opens one, from the page it opens on, which is never \
-                      loaded; each further page of comments is one more. A video is saved at \
+                      loaded; each further page of comments is one more. --replies N reads the \
+                      replies under the first N comments that have more than the page shows, \
+                      and --replies-of <id> those under a comment named by its id, one request \
+                      a thread, ten threads at most; Instagram often counts more replies than \
+                      it hands out, and snob says what it handed out. A video is saved at \
                       its best, usually 1080 wide, when ffmpeg is installed, which joins its \
                       picture and its sound into one MP4 without re-encoding (VP9, which \
                       QuickTime does not play); without it, or with --quality compat, as the \
@@ -2307,6 +2311,17 @@ fn post_link(value: &str) -> Result<snob_ig::shortcode::Shortcode, String> {
         .map_err(|e| format!("{e}: give a post's or a reel's link, or the code in one"))
 }
 
+/// A comment named by its id, refused by clap (exit 2) when it is not one
+/// to twenty digits, before anything is asked of Instagram.
+fn comment_pk(value: &str) -> Result<snob_ig::shortcode::CommentPk, String> {
+    snob_ig::shortcode::CommentPk::parse(value).ok_or_else(|| {
+        format!(
+            "a comment's id is its digits, one to {}: the pk of a comment in the JSON",
+            snob_ig::shortcode::MOST_COMMENT_PK_DIGITS
+        )
+    })
+}
+
 #[derive(Args, Debug)]
 pub struct PostArgs {
     /// A post's or a reel's link, or the code in it
@@ -2328,6 +2343,31 @@ pub struct PostArgs {
         conflicts_with_all = ["interactive", "download"]
     )]
     pub comments: Option<u32>,
+
+    /// Read the replies under the first N comments read that have replies
+    /// the page did not show, up to 10, one request each
+    // The first page of each thread alone (`posts::read_threads`): no
+    // capture shows a second. Ten threads, `--replies-of` counted in
+    // (`posts::MOST_THREADS`), each a comment step after the read before
+    // (`pace::COMMENT_STEP_MS`).
+    #[arg(
+        long,
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..=10),
+        conflicts_with_all = ["interactive", "download"]
+    )]
+    pub replies: Option<u32>,
+
+    /// Read the replies under this comment, by its id (the `pk` of a
+    /// comment in the JSON), whether or not it is among the comments read.
+    /// Repeatable; with --replies, ten threads in all
+    #[arg(
+        long,
+        value_name = "COMMENT_PK",
+        value_parser = comment_pk,
+        conflicts_with_all = ["interactive", "download"]
+    )]
+    pub replies_of: Vec<snob_ig::shortcode::CommentPk>,
 
     /// With -d, print what was saved as one JSON document on standard
     /// output: each file's name and size, what failed, and where they are.
