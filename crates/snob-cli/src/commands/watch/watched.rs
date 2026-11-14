@@ -24,7 +24,12 @@ pub(super) fn watched_from(
     in_use: Option<Pk>,
 ) -> Vec<Watched> {
     if let Some(name) = target {
-        return vec![with_recorded_consent(&name, configured).read_as(in_use)];
+        // As the viewer its entry names, when the file has one: read as the
+        // account in use instead, the baseline would start again in another
+        // account's database. With no entry, the account in use.
+        let entry = entry_named(&name, configured);
+        let viewer = entry.and_then(|entry| entry.viewer).or(in_use);
+        return vec![from_entry(&name, entry).read_as(viewer)];
     }
 
     let listed: Vec<Watched> = configured
@@ -34,7 +39,9 @@ pub(super) fn watched_from(
             let watched = if account.is_own() {
                 Watched::own().watching(account.lists, posts_of(account))
             } else {
-                with_recorded_consent(&account.target, configured)
+                // Its own entry, not the first of that name: two viewers can
+                // watch one account, and one's consent is not the other's.
+                from_entry(&account.target, Some(account))
             };
             watched.read_as(account.viewer.or(in_use))
         })
@@ -50,7 +57,7 @@ pub(super) fn watched_from(
     }
 }
 
-/// One account, with whatever answer is on record for it.
+/// One account, with whatever answer its entry records.
 ///
 /// The file is the only place a consent can have come from, which is what makes
 /// an unattended run safe: an argument cannot grant one.
@@ -68,15 +75,8 @@ pub(super) fn watched_from(
 /// file is where somebody said to watch an account's posts and where to save
 /// them, and an argument says neither. A name with no entry watches its
 /// lists, as it always did.
-fn with_recorded_consent(name: &str, configured: Option<&WatchConfig>) -> Watched {
+fn from_entry(name: &str, entry: Option<&AccountConfig>) -> Watched {
     let name = crate::engine::target::clean(name);
-    let entry = configured
-        .into_iter()
-        .flat_map(|c| c.accounts.iter())
-        .find(|account| {
-            !account.is_own()
-                && crate::engine::target::clean(&account.target).eq_ignore_ascii_case(name)
-        });
     let recorded = entry.and_then(|account| account.consent);
 
     let watched = if recorded.is_some() {
@@ -92,6 +92,19 @@ fn with_recorded_consent(name: &str, configured: Option<&WatchConfig>) -> Watche
         Some(account) => watched.watching(account.lists, posts_of(account)),
         None => watched,
     }
+}
+
+/// The first entry for somebody else's account named `name`, the at sign off
+/// both sides.
+fn entry_named<'a>(name: &str, configured: Option<&'a WatchConfig>) -> Option<&'a AccountConfig> {
+    let name = crate::engine::target::clean(name);
+    configured
+        .into_iter()
+        .flat_map(|c| c.accounts.iter())
+        .find(|account| {
+            !account.is_own()
+                && crate::engine::target::clean(&account.target).eq_ignore_ascii_case(name)
+        })
 }
 
 /// What `[account.posts]` says, in the engine's terms.
@@ -392,6 +405,36 @@ target = "stranger"
             !watched[1].may_run_unattended(),
             "its lists are read too, and nobody agreed to that"
         );
+    }
+
+    /// A name typed is read as the viewer its entry names, and two viewers'
+    /// entries for one account each keep their own consent.
+    #[test]
+    fn a_typed_name_is_read_as_its_entrys_viewer_with_its_own_consent() {
+        let file = watch_toml(
+            r#"
+schema = 2
+every = "6h"
+
+[[account]]
+target = "friend"
+viewer = 7
+
+[[account]]
+target = "friend"
+viewer = 8
+consent = { agreed_at = 1700 }
+"#,
+        );
+        let typed = watched_from(Some("friend".to_string()), Some(&file), Some(Pk::new(3)));
+        assert_eq!(typed[0].viewer(), Some(Pk::new(7)), "its entry's viewer");
+
+        let listed = watched_from(None, Some(&file), Some(Pk::new(3)));
+        assert!(
+            !listed[0].may_run_unattended(),
+            "viewer 7 never recorded an answer"
+        );
+        assert!(listed[1].may_run_unattended(), "viewer 8 did");
     }
 
     /// A name typed on the command line watches what its entry says, the
