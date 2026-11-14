@@ -500,14 +500,34 @@ async fn a_change_reaches_the_receiver_signed_and_only_once() {
         "the first run lays a baseline and has nothing to report"
     );
 
-    // Somebody left, a day later.
+    // Somebody left, a day later, and the run signs what it sends.
     a_day_passes(tmp.path());
     let second = fake_instagram(2, 2).await;
-    let out = snob(tmp.path(), Some(&second), &["watch", "once"]);
+    let key = "a-shared-secret-of-at-least-32-characters";
+    let out = snob(
+        tmp.path(),
+        Some(&second),
+        &["watch", "once", "--sign-with", key],
+    );
     assert!(out.status.success(), "{}", stderr(&out));
 
     let sent = posted(&n8n).await;
     assert_eq!(sent.len(), 1, "a change is reported once");
+    let signature = sent[0]
+        .headers
+        .get("x-snob-signature")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(
+        signature,
+        snob_core::watch::sign::sign(
+            std::str::from_utf8(&sent[0].body).expect("the body is text"),
+            &snob_core::secret::Secret::new(key)
+        ),
+        "the signature is the HMAC of the bytes sent"
+    );
+    assert!(signature.starts_with("sha256="), "{signature}");
     let body: serde_json::Value = serde_json::from_slice(&sent[0].body).expect("the body is JSON");
     assert_eq!(body["event"], "watch.changes", "{body}");
     assert_eq!(body["counts"]["followers_lost"], 1, "{body}");
@@ -627,7 +647,7 @@ async fn changes_between_two_captures_name_who_left_and_who_was_renamed() {
 /// deliver, exit, and a second process deliver the same bytes under the same
 /// id.
 #[tokio::test]
-async fn a_report_a_receiver_refused_is_owed_and_then_delivered() {
+async fn a_report_a_receiver_refused_is_owed_to_its_own_address_alone() {
     let tmp = tempfile::tempdir().unwrap();
     let down = receiver(500).await;
     let first = fake_instagram(3, 2).await;
@@ -1075,6 +1095,31 @@ async fn watch_status_says_when_an_accounts_posts_were_last_read() {
             .iter()
             .any(|check| check["what"] == "baseline"),
         "the lists are not watched, so their baseline is not asked about: {checked}"
+    );
+}
+
+/// `watch unit schtasks` prints the PowerShell that registers the task,
+/// with this binary's path, and warns that a file with no webhook leaves the
+/// reports where nobody reads them.
+#[tokio::test]
+async fn watch_unit_prints_the_windows_task_and_warns_without_a_webhook() {
+    let tmp = tempfile::tempdir().unwrap();
+    configure(tmp.path(), "schema = 2\nevery = \"6h\"\n");
+    let out = snob(tmp.path(), None, &["watch", "unit", "schtasks"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let printed = stdout(&out);
+    assert!(
+        printed.contains("Register-ScheduledTask -TaskName 'snob watch'"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("-Argument 'watch once --when-due'"),
+        "{printed}"
+    );
+    assert!(
+        stderr(&out).contains("names no [webhook]"),
+        "{}",
+        stderr(&out)
     );
 }
 
