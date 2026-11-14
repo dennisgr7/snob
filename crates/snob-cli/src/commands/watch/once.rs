@@ -141,6 +141,14 @@ pub(super) async fn once(
 fn is_due(paths: &AppPaths, configured: Option<&config::WatchConfig>) -> Result<bool> {
     use snob_core::watch::schedule::{self, Due};
 
+    // Not the flags' sentence: `once` has none of them, and `--when-due` reads
+    // the file alone.
+    if configured.is_none_or(super::schedule::names_no_schedule) {
+        return Err(anyhow::anyhow!(
+            "how often should this run? --when-due takes the schedule from watch.toml, and it \
+             names none.\nRun \"snob watch setup\", or write one in it, such as every = \"6h\"."
+        ));
+    }
     let schedule =
         super::schedule::schedule_from(&crate::cli::WatchRunArgs::default(), configured)?;
     let now = snob_core::clock::now();

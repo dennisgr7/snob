@@ -95,6 +95,9 @@ pub(super) fn problem_line(problem: &Problem) -> String {
         Problem::NothingConfigured => report::NOTHING_CONFIGURED.to_string(),
         Problem::NeverFires => "this schedule never fires: no moment it names exists".to_string(),
         Problem::Unbuildable(why) => format!("this schedule cannot be built: {why}"),
+        Problem::NoSchedule => "the file names no schedule: \"snob watch\" runs only with one \
+             on its command line, as --every 6h, and \"watch once --when-due\" refuses"
+            .to_string(),
         Problem::InCooldown { held } => format!("not checked: {}", report::held_until(held)),
         // One condition, one wording, and a clause for the account a cooldown
         // stopped anything else being checked about.
@@ -562,6 +565,7 @@ mod tests {
             Problem::NothingConfigured,
             Problem::NeverFires,
             Problem::Unbuildable("5m is too often".to_string()),
+            Problem::NoSchedule,
             Problem::InCooldown {
                 held: crate::app::Held {
                     until_ms: EpochMs::new(1_722_700_000_000),

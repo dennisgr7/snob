@@ -117,6 +117,15 @@ fn days_named<S: AsRef<str>>(days: &[S]) -> Result<Vec<Weekday>> {
         .collect()
 }
 
+/// Whether `config` names no schedule at all: no `every`, `at`, `on` or
+/// `cron`. Not a broken file: the schedule can come from the flags, as
+/// `snob watch --every 6h` run as a service does, so `status` and `check`
+/// call it a warning, and `watch once --when-due`, which reads the file
+/// alone, says where to put one.
+pub(super) fn names_no_schedule(config: &WatchConfig) -> bool {
+    config.every.is_none() && config.at.is_empty() && config.on.is_empty() && config.cron.is_none()
+}
+
 /// Builds the schedule from the flags, or the file, or explains what is
 /// missing.
 ///

@@ -47,10 +47,24 @@ pub(super) async fn preflight(
     // line of `watch.toml` says is fine: `every = "5m"`, `cron = "0 9 * *"`,
     // `at = ["25:00"]`. All pass `config::parse`, which reads TOML, the schema
     // number and one key clash, and nothing else.
+    //
+    // A file that names no schedule at all is its own line, a warning: the
+    // schedule can come from the command line (`super::schedule::names_no_schedule`).
+    let no_schedule = configured
+        .as_ref()
+        .is_some_and(super::schedule::names_no_schedule);
     let schedule = configured
         .as_ref()
+        .filter(|_| !no_schedule)
         .map(|c| schedule_from(&WatchRunArgs::default(), Some(c)).map_err(|e| e.to_string()));
     let mut report = check::without_a_session(configured.as_ref(), schedule.as_ref(), now);
+    if no_schedule {
+        report.checked.push(check::Checked {
+            what: check::What::Schedule { next: Vec::new() },
+            verdict: check::Verdict::Warned,
+            problem: Some(check::Problem::NoSchedule),
+        });
+    }
 
     // Before the session, like `once` does, so an address that could never work
     // is reported even on a machine that cannot log in.

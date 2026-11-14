@@ -554,7 +554,20 @@ fn health(
     // A schedule the scheduler refuses is a monitor that cannot start.
     // `describe_config` prints the clauses without evaluating anything, so this
     // is where the schedule is built.
+    //
+    // **A file that names no schedule is not one of those**: the schedule can
+    // come from the command line, as `snob watch --every 6h` run as a service
+    // takes it, and calling that broken made a working monitor exit 1.
     if let Some(config) = config
+        && super::schedule::names_no_schedule(config)
+    {
+        at_least(Verdict::Warned);
+        notes.push(
+            "the file names no schedule, so it runs only where one is given on the command \
+             line, as \"snob watch --every 6h\""
+                .to_string(),
+        );
+    } else if let Some(config) = config
         && let Err(e) = schedule_from(&Default::default(), Some(config))
     {
         at_least(Verdict::Failed);
@@ -1992,6 +2005,27 @@ every = \"6h\"
             viewers,
             [(1.into(), 1.into()), (2.into(), 2.into())],
             "{document}"
+        );
+    }
+
+    /// A file with no schedule is a warning, not a monitor that cannot start:
+    /// the schedule can come from the command line.
+    #[test]
+    fn a_file_with_no_schedule_is_a_warning() {
+        let bare = watch_toml("schema = 2\n");
+        let found = health(
+            Some(&bare),
+            &[of(&ran(ExitCode::Ok))],
+            &[],
+            Default::default(),
+            NOW,
+            None,
+        );
+        assert_eq!(found.verdict, Verdict::Warned, "{:?}", found.notes);
+        assert!(
+            found.notes.iter().any(|n| n.contains("names no schedule")),
+            "{:?}",
+            found.notes
         );
     }
 

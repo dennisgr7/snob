@@ -111,6 +111,9 @@ pub enum Problem {
     /// The scheduler refused the file, and said why. The text is the
     /// scheduler's.
     Unbuildable(String),
+    /// The file names no schedule: a run takes one from the command line, or
+    /// does not start.
+    NoSchedule,
     /// Nothing was asked about this, because the account is in cooldown, its
     /// own or the brake on every account. Turning that into words is
     /// `report`'s job, like every other date the tool prints.
