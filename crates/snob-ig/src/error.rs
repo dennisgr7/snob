@@ -3,6 +3,7 @@
 //! (`report::advice_for`); the messages here are the diagnosis only.
 
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 use snob_core::EpochMs;
 use thiserror::Error;
 
@@ -354,11 +355,13 @@ pub fn declares_failure(body: &str) -> bool {
         /// A GraphQL refusal: a 200 with `data: null` and the reason in here.
         /// Without it an action block read as a successful unfollow.
         #[serde(default)]
-        errors: Option<Vec<serde_json::Value>>,
+        errors: Option<Vec<IgnoredAny>>,
         /// Only to qualify `errors`: an answer with both is a write that was
-        /// performed, and must be neither failed nor replayed.
+        /// performed, and must be neither failed nor replayed. `None` for a
+        /// `null`. Skipped, not kept: it is the whole of a GraphQL answer,
+        /// and this runs on every one.
         #[serde(default)]
-        data: Option<serde_json::Value>,
+        data: Option<IgnoredAny>,
     }
 
     let Ok(envelope) = serde_json::from_str::<Envelope>(body) else {
@@ -367,11 +370,7 @@ pub fn declares_failure(body: &str) -> bool {
     envelope.status.as_deref() == Some("fail")
         || envelope.spam == Some(true)
         || envelope.require_login == Some(true)
-        || (envelope.errors.is_some_and(|errors| !errors.is_empty())
-            && envelope
-                .data
-                .as_ref()
-                .is_none_or(serde_json::Value::is_null))
+        || (envelope.errors.is_some_and(|errors| !errors.is_empty()) && envelope.data.is_none())
 }
 
 /// What a navigation redirected to `target` (path and query) means: the
