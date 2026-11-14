@@ -7,7 +7,7 @@
 //! write Instagram took that changed the relationship: a follow that became
 //! a request, or one already so, changed no list.
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{StoreError, pk_from_sql, pk_to_sql, users};
 use snob_core::model::User;
@@ -80,6 +80,80 @@ fn since(conn: &Connection, after: Epoch) -> Result<Vec<(Pk, Verb)>, StoreError>
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
+/// What the account's stored following says of one account ([`followed`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Followed {
+    /// No whole capture of the account's own following is recent enough to
+    /// say.
+    NoCapture,
+    /// The capture taken at `taken_at`, with the writes made since, does not
+    /// hold it.
+    No { taken_at: Epoch },
+    /// It holds it.
+    Yes { user: User, taken_at: Epoch },
+}
+
+/// Whether `viewer`'s own following holds `target`: by its newest whole
+/// capture, when that was taken at or after `not_before`, with the writes
+/// made since applied as [`apply`] applies them.
+///
+/// **A seek for the capture and one for the member.** Reading the list to
+/// look for one account read a row for every account followed.
+pub fn followed(
+    conn: &Connection,
+    viewer: Pk,
+    target: Pk,
+    not_before: Epoch,
+) -> Result<Followed, StoreError> {
+    let newest: Option<(i64, bool)> = conn
+        .query_row(
+            HELD_IN_NEWEST,
+            params![pk_to_sql(viewer), pk_to_sql(target)],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((taken_at, in_the_capture)) =
+        newest.filter(|(taken_at, _)| *taken_at >= not_before.get())
+    else {
+        return Ok(Followed::NoCapture);
+    };
+    let taken_at = Epoch::new(taken_at);
+
+    let written: Option<String> = conn
+        .query_row(
+            LAST_WRITE_TO,
+            params![pk_to_sql(target), taken_at.get()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let held = match written.as_deref() {
+        Some("follow") => true,
+        Some(_) => false,
+        None => in_the_capture,
+    };
+    // A followed account the store has no row for is left out, as `apply`
+    // leaves it out.
+    if held && let Some(user) = users::find(conn, target)? {
+        return Ok(Followed::Yes { user, taken_at });
+    }
+    Ok(Followed::No { taken_at })
+}
+
+/// `?1` the account whose following it is, `?2` the account asked about.
+/// The newest whole capture is sought in `snapshots_lookup` and the member in
+/// the primary key of `snapshot_members`.
+const HELD_IN_NEWEST: &str = "SELECT s.taken_at, EXISTS (
+           SELECT 1 FROM snapshot_members m
+           WHERE m.snapshot_id = s.id AND m.user_pk = ?2)
+         FROM usable_snapshots s
+         WHERE s.account_pk = ?1 AND s.kind = 'following'
+         ORDER BY s.taken_at DESC, s.id DESC LIMIT 1";
+
+/// The last write to `?1` made after `?2`, as [`since`] picks it. Over a
+/// table of a month of the account's own writes, a few hundred rows at most.
+const LAST_WRITE_TO: &str = "SELECT verb FROM own_writes
+         WHERE target_pk = ?1 AND at > ?2 ORDER BY id DESC LIMIT 1";
+
 /// Applies to `members`, the account's own following as a walk that ended
 /// at `taken_at` read it, the writes made since, and says which changed it:
 /// an unfollowed account taken out, a followed one put first, where
@@ -126,6 +200,72 @@ mod tests {
 
     fn user(pk: u64, name: &str) -> User {
         User::named(Pk::new(pk), name)
+    }
+
+    const ME: Pk = Pk::new(7);
+
+    /// A whole capture of `ME`'s following holding `members`, taken now.
+    fn following_of_mine(db: &mut Store, members: &[User]) -> Epoch {
+        use crate::store::{accounts, snapshots};
+        use snob_core::model::{ListKind, StopReason};
+
+        users::ensure(db.conn(), ME).unwrap();
+        accounts::upsert(db.conn(), ME, true).unwrap();
+        let opened = snapshots::begin(db.conn(), ME, ListKind::Following, None).unwrap();
+        snapshots::save_page(db, opened.id, members, None).unwrap();
+        snapshots::close(db.conn(), opened.id, StopReason::Completed).unwrap();
+        snapshots::find_usable(db.conn(), opened.id)
+            .unwrap()
+            .unwrap()
+            .taken_at
+            .unwrap()
+    }
+
+    #[test]
+    fn one_account_is_asked_about_without_reading_the_list() {
+        let mut db = Store::in_memory().unwrap();
+        let hour = std::time::Duration::from_secs(3_600);
+        assert_eq!(
+            followed(db.conn(), ME, Pk::new(1), Epoch::new(0)).unwrap(),
+            Followed::NoCapture
+        );
+
+        users::upsert(db.conn(), &user(3, "cy")).unwrap();
+        let taken_at = following_of_mine(&mut db, &[user(1, "ana"), user(2, "bo")]);
+        let asked = |db: &Store, pk: u64, not_before: Epoch| {
+            followed(db.conn(), ME, Pk::new(pk), not_before).unwrap()
+        };
+        let recent = taken_at - hour;
+
+        assert_eq!(
+            asked(&db, 1, recent),
+            Followed::Yes {
+                user: user(1, "ana"),
+                taken_at
+            }
+        );
+        assert_eq!(asked(&db, 3, recent), Followed::No { taken_at });
+        assert_eq!(asked(&db, 1, taken_at + hour), Followed::NoCapture);
+
+        // The account's own writes since the walk, as `apply` applies them.
+        record(db.conn(), Pk::new(1), Verb::Unfollow, taken_at + hour).unwrap();
+        record(db.conn(), Pk::new(3), Verb::Follow, taken_at + hour).unwrap();
+        assert_eq!(asked(&db, 1, recent), Followed::No { taken_at });
+        assert!(matches!(asked(&db, 3, recent), Followed::Yes { .. }));
+        assert_eq!(asked(&db, 2, recent).clone(), {
+            let mut members = vec![user(1, "ana"), user(2, "bo")];
+            apply(db.conn(), &mut members, taken_at).unwrap();
+            let bo = members.into_iter().find(|u| u.pk == Pk::new(2)).unwrap();
+            Followed::Yes { user: bo, taken_at }
+        });
+    }
+
+    #[test]
+    fn the_capture_and_the_member_are_sought_not_scanned_for() {
+        let db = Store::in_memory().unwrap();
+        let plan = crate::store::plan(db.conn(), HELD_IN_NEWEST);
+        assert!(plan.contains("snapshots_lookup"), "{plan}");
+        assert!(!plan.contains("SCAN"), "{plan}");
     }
 
     #[test]

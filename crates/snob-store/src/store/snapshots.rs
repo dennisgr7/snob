@@ -89,7 +89,7 @@ pub fn begin(
             pk_to_sql(account_pk),
             kind.as_str(),
             started_at.get(),
-            declared_count.map(|v| v as i64),
+            declared_count.map(super::count_to_sql),
             this_process(),
         ],
     )?;
@@ -209,7 +209,7 @@ pub fn resumable_progress(
             |row| row.get(0),
         )
         .optional()?;
-    Ok(found.map(|members| members.max(0) as u64))
+    Ok(found.map(|members| super::count_from_sql(members).unwrap_or(0)))
 }
 
 /// Whether another process is walking this list right now: a capture not yet
@@ -569,8 +569,12 @@ fn row_to_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snapshot> {
         kind,
         started_at: Epoch::new(row.get(3)?),
         taken_at: row.get::<_, Option<i64>>(4)?.map(Epoch::new),
-        member_count: row.get::<_, i64>(5)? as u64,
-        declared_count: row.get::<_, Option<i64>>(6)?.map(|v| v as u64),
+        // Nothing stored where the count cannot be read; `members` is what
+        // says who is in the capture.
+        member_count: super::count_from_sql(row.get(5)?).unwrap_or(0),
+        declared_count: row
+            .get::<_, Option<i64>>(6)?
+            .and_then(super::count_from_sql),
         next_cursor: row.get(7)?,
     })
 }

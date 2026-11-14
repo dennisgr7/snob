@@ -52,8 +52,8 @@ pub fn record_poll(
         params![
             pk_to_sql(pk),
             now().get(),
-            followers.map(|v| v as i64),
-            following.map(|v| v as i64),
+            followers.map(super::count_to_sql),
+            following.map(super::count_to_sql),
         ],
     )?;
     Ok(())
@@ -105,8 +105,12 @@ pub fn find(conn: &Connection, pk: Pk) -> Result<Option<Account>, StoreError> {
                     pk: super::pk_from_sql(row.get(0)?),
                     is_self: row.get(1)?,
                     polled_at: row.get::<_, Option<i64>>(2)?.map(Epoch::new),
-                    follower_count: row.get::<_, Option<i64>>(3)?.map(|v| v as u64),
-                    following_count: row.get::<_, Option<i64>>(4)?.map(|v| v as u64),
+                    follower_count: row
+                        .get::<_, Option<i64>>(3)?
+                        .and_then(super::count_from_sql),
+                    following_count: row
+                        .get::<_, Option<i64>>(4)?
+                        .and_then(super::count_from_sql),
                 })
             },
         )
@@ -119,6 +123,25 @@ mod tests {
     use super::*;
     use crate::store::{Store, users};
     use snob_core::model::User;
+
+    /// A cast turned a negative count, which only a damaged file holds, into
+    /// eighteen quintillion followers. It reads as a counter never polled.
+    #[test]
+    fn a_negative_counter_reads_as_not_known() {
+        let db = Store::in_memory().unwrap();
+        with_account(&db, Pk::new(7));
+        upsert(db.conn(), Pk::new(7), true).unwrap();
+        db.conn()
+            .execute(
+                "UPDATE accounts SET follower_count = -1, following_count = 12",
+                [],
+            )
+            .unwrap();
+
+        let account = find(db.conn(), Pk::new(7)).unwrap().unwrap();
+        assert_eq!(account.follower_count, None);
+        assert_eq!(account.following_count, Some(12));
+    }
 
     /// Whichever table the plan starts from, `users` is never read whole: it
     /// is sought by name in the index, or by the pk of a tracked account.
