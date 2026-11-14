@@ -51,7 +51,7 @@ use snob_store::paths::AppPaths;
 
 use crate::app::Viewer;
 use crate::commands::post::comment_line;
-use crate::commands::posts::{about, clipped, size_of};
+use crate::commands::posts::{about, headline_cell, size_of};
 use crate::exit::ExitCode;
 use crate::media::Kind;
 use crate::posts::{self, Comments, Grid, Opened, Post};
@@ -1071,7 +1071,7 @@ fn draw_grid(
                 Line::from(post.comments.map_or("-".into(), posts::grouped)).right_aligned(),
             ));
         }
-        cells.push(Cell::from(clipped(post.headline(), 80)));
+        cells.push(Cell::from(headline_cell(post, 80)));
         Row::new(cells)
     });
     let mut widths = vec![Constraint::Length(4), Constraint::Length(9)];

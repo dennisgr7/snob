@@ -475,10 +475,26 @@ fn grid_table(grid: &Grid, presentation: Presentation) -> String {
             Cell::new(report::dated(post.taken_at)),
             Cell::new(likes),
             Cell::new(post.comments.map_or("-".into(), posts::grouped)),
-            Cell::new(clipped(post.headline(), 60)),
+            Cell::new(headline_cell(post, 60)),
         ]);
     }
     table.to_string()
+}
+
+/// The pin the app draws on a post pinned to the top of the grid, in front
+/// of its caption in a row: pinned posts come first whatever their date, and
+/// without it a listing reads as if the account had posted them last.
+pub(crate) const PIN: &str = "\u{1f4cc}";
+
+/// A row's caption: its first line cut to `width` characters, behind
+/// [`PIN`] when the post is pinned.
+pub(crate) fn headline_cell(post: &Post, width: usize) -> String {
+    let headline = clipped(post.headline(), width);
+    if post.pinned {
+        format!("{PIN} {headline}")
+    } else {
+        headline
+    }
 }
 
 /// The first `width` characters of `text`, and an ellipsis when it went on.
@@ -592,5 +608,30 @@ mod tests {
     fn a_long_caption_is_clipped_in_a_row() {
         assert_eq!(clipped("abcdef", 3), "abc…");
         assert_eq!(clipped("abc", 3), "abc");
+    }
+
+    #[test]
+    fn a_pinned_post_wears_a_pin_in_its_row() {
+        let pinned = post(
+            r#"{"pk":"1","user":{"pk":"42","username":"someone"},
+                "timeline_pinned_user_ids":["42"],"caption":{"text":"hello"}}"#,
+        );
+        let other = post(r#"{"pk":"2","user":{"pk":"42"},"caption":{"text":"hello"}}"#);
+        assert_eq!(headline_cell(&pinned, 60), format!("{PIN} hello"));
+        assert_eq!(headline_cell(&other, 60), "hello");
+        let grid = Grid {
+            username: "someone".into(),
+            posts: vec![pinned, other],
+            next: None,
+            declared: Some(2),
+        };
+        let plain = Presentation {
+            interactive: false,
+            hyperlinks: false,
+            color: false,
+            width: None,
+        };
+        let table = grid_table(&grid, plain);
+        assert_eq!(table.matches(PIN).count(), 1, "{table}");
     }
 }
