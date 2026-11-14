@@ -354,6 +354,7 @@ pub fn commit(
         at,
         tick.rename_cursor,
         &tick.renames_sent,
+        None,
         // The store's own type, not a copy mapped across: the compiler would
         // say nothing about a field added here that a mapper drops.
         delivery,
@@ -779,6 +780,7 @@ pub fn record_from_store(app: &mut App, typed: Option<&str>) -> Result<WatchRepo
         snob_core::clock::now(),
         compared.rename_cursor,
         &compared.renames_sent,
+        None,
         None,
     )?;
 

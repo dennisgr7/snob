@@ -17,6 +17,7 @@ pub mod shared;
 pub mod snapshots;
 pub mod users;
 pub mod watch;
+pub mod watch_posts;
 
 use std::path::Path;
 use std::time::Duration;

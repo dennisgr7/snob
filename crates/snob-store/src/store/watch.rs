@@ -53,7 +53,10 @@ pub fn mark(conn: &Connection, account_pk: Pk, kind: ListKind) -> Result<Option<
 /// of rows a year, for a history nobody reads: the diff only ever compares
 /// against the last reported capture, and everything older is there in case
 /// somebody wants to look back. Thirty days is enough to look back over.
-const KEEP_FOR_SECS: i64 = 30 * 24 * 3_600;
+///
+/// The posts the monitor has seen are kept as long, so what it remembers has
+/// one rule (`watch_posts::prune`).
+pub(super) const KEEP_FOR_SECS: i64 = 30 * 24 * 3_600;
 
 /// What one sweep of the retention rules settled.
 ///
@@ -63,7 +66,8 @@ const KEEP_FOR_SECS: i64 = 30 * 24 * 3_600;
 /// run it happens inside is the last moment anybody can be told.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Swept {
-    /// Captures deleted because nothing needs them any more.
+    /// Captures deleted because nothing needs them any more, and posts the
+    /// monitor no longer needs to remember.
     pub captures: usize,
     /// Reports abandoned because they grew too old to be news.
     pub given_up: usize,
@@ -140,8 +144,10 @@ pub fn prune(conn: &Connection, now: Epoch) -> Result<Swept, StoreError> {
         params![(now - Duration::from_secs(KEEP_RUNS_FOR_SECS as u64)).get()],
     )?;
 
+    let posts = super::watch_posts::prune(conn, now)?;
+
     Ok(Swept {
-        captures: removed,
+        captures: removed + posts,
         given_up,
     })
 }
@@ -522,6 +528,12 @@ pub struct Queued<'a> {
 ///
 /// `marks` names only the lists this report actually spoke about. A list that
 /// was refused is left out by the caller and its mark stays where it was.
+///
+/// `posts` is what the report concluded about the account's posts, `None`
+/// when it concluded nothing about them. Written here and nowhere else, for
+/// the same reason as the marks: a post reported and not recorded is reported
+/// again, one recorded and not reported is never reported at all.
+#[allow(clippy::too_many_arguments)]
 pub fn commit_report(
     store: &mut super::Store,
     account_pk: Pk,
@@ -529,6 +541,7 @@ pub fn commit_report(
     at: Epoch,
     rename_cursor: Option<i64>,
     renames_sent: &[i64],
+    posts: Option<&super::watch_posts::Commit>,
     delivery: Option<Queued<'_>>,
 ) -> Result<Option<i64>, StoreError> {
     let tx = store.conn_mut().transaction()?;
@@ -548,6 +561,10 @@ pub fn commit_report(
 
     for &(kind, snapshot_id) in marks {
         set_mark(&tx, account_pk, kind, snapshot_id, at)?;
+    }
+
+    if let Some(posts) = posts {
+        super::watch_posts::write(&tx, account_pk, posts, at)?;
     }
 
     // `None` when this report read no rename window — every list was refused, or
@@ -931,6 +948,7 @@ mod tests {
             Epoch::new(1_700),
             None,
             &[],
+            None,
             Some(Queued {
                 run_id: "run-1",
                 body: "{}",
@@ -952,6 +970,86 @@ mod tests {
                 .len(),
             1,
             "and it is still owed where it was addressed"
+        );
+    }
+
+    /// The posts a report names are written with it or not at all: a report
+    /// that cannot be queued (here, a run id already used) leaves no post
+    /// recorded as reported, so the next run names it again.
+    #[test]
+    fn a_report_and_the_posts_it_names_land_together_or_not_at_all() {
+        use crate::store::watch_posts;
+
+        let mut db = Store::in_memory().unwrap();
+        account_with_capture(&mut db, Pk::new(7), &[user(1, "one")]);
+        let queued = |run_id| Queued {
+            run_id,
+            body: "{}",
+            destination: "https://n8n.local/webhook/snob",
+            form: None,
+        };
+        commit_report(
+            &mut db,
+            Pk::new(7),
+            &[],
+            Epoch::new(1_700),
+            None,
+            &[],
+            None,
+            Some(queued("run-1")),
+        )
+        .unwrap();
+
+        let posts = watch_posts::Commit {
+            seen: vec![watch_posts::Seen {
+                media_pk: 9,
+                code: "C9".to_string(),
+                taken_at: Epoch::new(1_600),
+                pinned: false,
+            }],
+            news: vec![9],
+            floor: Epoch::new(1_600),
+            ..watch_posts::Commit::default()
+        };
+        let refused = commit_report(
+            &mut db,
+            Pk::new(7),
+            &[],
+            Epoch::new(1_800),
+            None,
+            &[],
+            Some(&posts),
+            Some(queued("run-1")),
+        );
+        assert!(refused.is_err(), "the run id was used already");
+        assert_eq!(watch_posts::mark(db.conn(), Pk::new(7)).unwrap(), None);
+        assert!(
+            watch_posts::newest(db.conn(), Pk::new(7), 12)
+                .unwrap()
+                .is_empty()
+        );
+
+        commit_report(
+            &mut db,
+            Pk::new(7),
+            &[],
+            Epoch::new(1_800),
+            None,
+            &[],
+            Some(&posts),
+            Some(queued("run-2")),
+        )
+        .unwrap();
+        assert_eq!(
+            watch_posts::mark(db.conn(), Pk::new(7))
+                .unwrap()
+                .unwrap()
+                .reported_at,
+            Some(Epoch::new(1_800))
+        );
+        assert_eq!(
+            watch_posts::newest(db.conn(), Pk::new(7), 12).unwrap(),
+            vec![9]
         );
     }
 
