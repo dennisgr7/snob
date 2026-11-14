@@ -221,17 +221,14 @@ pub(super) fn judge(params: &Value, found: &Rediscovered, armed: &Armed) -> Paus
     if params["resourceType"] == "CSPViolationReport" {
         return Paused::Fail(CSP_REPORT.to_string());
     }
-    let parsed = Url::parse(url).ok();
-    if parsed
-        .as_ref()
-        .and_then(Url::host_str)
-        .is_some_and(is_facebook)
-    {
+    // Nothing can be said of where it goes, so it goes nowhere, a GET too.
+    let Ok(parsed) = Url::parse(url) else {
+        return Paused::Fail("a request to an address that does not parse".to_string());
+    };
+    if parsed.host_str().is_some_and(is_facebook) {
         return Paused::Fail(FACEBOOK.to_string());
     }
-    let path = parsed
-        .as_ref()
-        .map_or("an address that does not parse", Url::path);
+    let path = parsed.path();
     let method = request["method"].as_str();
     if is_an_event(path) && !(method == Some("GET") && a_profile_loaded(params, path)) {
         let method = method.unwrap_or("a request with no method to");
@@ -864,6 +861,28 @@ mod tests {
                 "{method} {url}"
             );
         }
+    }
+
+    /// A paused request whose address cannot be read is judged on nothing,
+    /// so it fails whatever its method: a GET of it went on before.
+    #[test]
+    fn an_address_that_does_not_parse_fails_whatever_the_method() {
+        for url in ["", "/api/v1/x/", "https://", "https://[::1/api/v1/x/"] {
+            for method in ["GET", "POST", "PUT"] {
+                let mut request = paused(method, url, json!({}));
+                for kind in ["Fetch", "Document", "XHR", "Other"] {
+                    request["resourceType"] = json!(kind);
+                    assert_eq!(
+                        judge(&request),
+                        Paused::Fail("a request to an address that does not parse".to_string()),
+                        "{method} {url:?} as {kind}"
+                    );
+                }
+            }
+        }
+        let mut no_address = paused("GET", "", json!({}));
+        no_address["request"].as_object_mut().unwrap().remove("url");
+        assert!(fails(&judge(&no_address)));
     }
 
     #[test]
