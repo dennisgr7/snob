@@ -261,8 +261,10 @@ fn recorded(
             pk: account.pk(),
             username: crate::account::username(&registry, account.pk()).map(str::to_string),
         };
-        // Gone since it was listed: `purge` removed it meanwhile.
-        let Some(db) = Store::open_existing(&account)? else {
+        // Gone since it was listed: `purge` removed it meanwhile. Read and
+        // never written: `open_existing` migrates, compacts and checkpoints,
+        // and `status` says it writes nothing.
+        let Some(db) = Store::read_existing(&account)? else {
             continue;
         };
         recorded.read(&db, viewer, watched.as_deref(), destination.as_deref())?;
@@ -434,6 +436,11 @@ impl Recorded {
 /// One missed run is a machine that was asleep, a laptop that was shut, a
 /// cooldown that ran long. Three is nobody coming back.
 const MISSED_BEFORE_FAILED: i64 = 3;
+
+/// How often the timer `watch unit` prints asks whether a run is due: a
+/// quarter of an hour (`unit::ASK_EVERY_MINUTES`), so a run under it starts
+/// up to that late, on time.
+const TIMER_ASKS_EVERY_SECS: i64 = 15 * 60;
 
 /// How long this configuration means the monitor may be silent for.
 ///
@@ -621,7 +628,16 @@ fn health(
     } else if let Some(gap) = gap
         && let Some(newest) = runs.iter().map(|r| r.run.started_at).max()
     {
-        let silent = now - newest;
+        // A run on time may still start this much after its moment: the
+        // jitter only ever delays it, and the timer `watch unit` prints asks
+        // once a quarter of an hour. Counted without it, a healthy monitor
+        // read as "one was due by now" for part of every cycle, and a probe on
+        // `--json` flickered.
+        let slack = config
+            .and_then(|c| schedule_from(&Default::default(), Some(c)).ok())
+            .map_or(0, |schedule| schedule.jitter().as_secs() as i64)
+            + TIMER_ASKS_EVERY_SECS;
+        let silent = (now - newest - slack).max(0);
         let missed = silent / gap.max(1);
         if missed >= MISSED_BEFORE_FAILED {
             at_least(Verdict::Failed);
@@ -2006,6 +2022,40 @@ every = \"6h\"
             [(1.into(), 1.into()), (2.into(), 2.into())],
             "{document}"
         );
+    }
+
+    /// A run a little past its gap, by no more than the jitter and the
+    /// timer's quarter of an hour, is on time.
+    #[test]
+    fn a_run_late_by_the_jitter_and_the_timer_is_not_called_late() {
+        let configured = watch_toml("schema = 1\nevery = \"6h\"\njitter = \"15m\"\n");
+        let just_late = watch_store::Run {
+            started_at: NOW - Duration::from_secs(6 * 3_600 + 25 * 60),
+            ..ran(ExitCode::Ok)
+        };
+        let found = health(
+            Some(&configured),
+            &[of(&just_late)],
+            &[],
+            Default::default(),
+            NOW,
+            None,
+        );
+        assert_eq!(found.verdict, Verdict::Ok, "{:?}", found.notes);
+
+        let late = watch_store::Run {
+            started_at: NOW - Duration::from_secs(6 * 3_600 + 31 * 60),
+            ..ran(ExitCode::Ok)
+        };
+        let found = health(
+            Some(&configured),
+            &[of(&late)],
+            &[],
+            Default::default(),
+            NOW,
+            None,
+        );
+        assert_eq!(found.verdict, Verdict::Warned, "{:?}", found.notes);
     }
 
     /// A file with no schedule is a warning, not a monitor that cannot start:

@@ -345,8 +345,10 @@ pub(super) fn last_started(paths: &AppPaths) -> Result<Option<Epoch>> {
         .map(|shared| shared.monitor_last_started())
         .transpose()?
         .flatten();
+    // Read, never written (`Store::read_existing`): `watch status` asks this
+    // too, and says it writes nothing.
     for account in account_databases(paths) {
-        let Some(store) = snob_store::store::Store::open_existing(&account)? else {
+        let Some(store) = snob_store::store::Store::read_existing(&account)? else {
             continue;
         };
         latest = latest.max(snob_store::store::watch::last_started(store.conn())?);
@@ -414,7 +416,7 @@ pub(super) fn seed_as_stored(paths: &AppPaths, schedule: &Schedule) -> Result<Op
     }
     let mut kept_before = None;
     for account in account_databases(paths) {
-        let Some(store) = snob_store::store::Store::open_existing(&account)? else {
+        let Some(store) = snob_store::store::Store::read_existing(&account)? else {
             continue;
         };
         if let Some(at) = snob_store::store::watch::interval_seeded_at(store.conn())? {
