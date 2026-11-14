@@ -387,7 +387,9 @@ impl Found<'_> {
                 .map(|(run, name)| {
                     json!({
                         "pk": run.account_pk,
-                        "username": name,
+                        // Through `printable`, as every name somebody else
+                        // chose is before it reaches a JSON reader.
+                        "username": name.as_deref().map(printable),
                         "at": run.started_at,
                         "outcome": run.outcome.as_ref().map(|o| o.as_str()),
                         "requests": run.requests,

@@ -49,7 +49,9 @@ pub(super) fn check_json(
                 What::Account { target, pk, followers, following, may_run_unattended, lists } => (
                     "account",
                     serde_json::json!({
-                        "target": target,
+                        // As the file spells it, through `printable` as every
+                        // name is before it reaches a JSON reader.
+                        "target": target.as_deref().map(printable),
                         "pk": pk,
                         "followers": followers,
                         "following": following,
@@ -91,7 +93,9 @@ pub(super) fn check_json(
                 // The sentence a person reads, so it comes from where the
                 // sentences are, and this and the terminal report agree by
                 // construction.
-                "problem": checked.problem.as_ref().map(super::say::problem_line),
+                // Through `printable` too: a problem can quote what
+                // Instagram or somebody's own server answered.
+                "problem": checked.problem.as_ref().map(|p| printable(&super::say::problem_line(p))),
             })
         }).collect::<Vec<_>>(),
     })
