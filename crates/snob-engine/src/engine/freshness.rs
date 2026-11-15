@@ -117,6 +117,9 @@ async fn poll(app: &mut App, target: &Target, kind: ListKind) -> Result<Option<u
             // One answer carries both counters, so the other list of a crossing
             // does not have to ask again.
             app.remember_counters(counters);
+            if let Some(keeper) = app.cache() {
+                keeper.counters(target.pk, counters);
+            }
             counters
         }
     };

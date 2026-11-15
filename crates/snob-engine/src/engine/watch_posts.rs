@@ -288,7 +288,7 @@ async fn read(
                         .ok_or_else(|| anyhow::anyhow!("your account's name is not known"))?,
                 },
             };
-            let info = app.client().profile_named(&typed, known).await?;
+            let info = app.profile_named(&typed, known).await?;
             let is_self = info.id == app.viewer().pk;
             // The account's row, which the report's and the run's rows hang
             // off, written as every read of an account writes it.

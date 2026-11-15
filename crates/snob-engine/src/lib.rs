@@ -9,6 +9,7 @@
 pub mod account;
 pub mod app;
 pub mod browser;
+pub mod cache;
 pub mod cdp;
 pub mod detach;
 pub mod engine;
@@ -36,6 +37,7 @@ pub mod relay;
 pub mod sandbox;
 pub mod seat;
 pub mod sentences;
+pub mod storage;
 pub mod update;
 pub mod viewer;
 pub mod watch;
