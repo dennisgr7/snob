@@ -122,10 +122,26 @@ fn merge_value(value: &Value, shape: &mut Shape) {
     match value {
         Value::Object(map) => {
             for (key, child) in map {
-                collect_value(key, child, shape);
+                collect_value(&named(key), child, shape);
             }
         }
         other => collect_value("$", other, shape),
+    }
+}
+
+/// A key as it may be printed: a name, or `<key>` for anything else. An
+/// answer can key a map by a pk, a media id or a username, and the captures
+/// are a real account's.
+fn named(key: &str) -> String {
+    let mut chars = key.chars();
+    let is_name = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if is_name {
+        key.to_string()
+    } else {
+        "<key>".to_string()
     }
 }
 
@@ -141,7 +157,7 @@ fn collect_value(path: &str, value: &Value, shape: &mut Shape) {
         }
         Value::Object(map) => {
             for (key, child) in map {
-                let child_path = format!("{path}.{key}");
+                let child_path = format!("{path}.{}", named(key));
                 collect_value(&child_path, child, shape);
             }
         }
@@ -918,6 +934,22 @@ mod tests {
         );
         assert_eq!(shape["data.empty"], BTreeSet::from([Kind::Array]));
         assert!(!shape.contains_key("data.empty[]"));
+    }
+
+    #[test]
+    fn a_key_that_is_not_a_name_is_never_printed() {
+        let mut shape = Shape::new();
+        merge_value(
+            &serde_json::json!({ "reels": { "123456789": { "pk": 1 }, "some.one": 2, "ok_key": 3 } }),
+            &mut shape,
+        );
+        assert!(shape.contains_key("reels.<key>.pk"));
+        assert!(shape.contains_key("reels.ok_key"));
+        assert!(
+            shape
+                .keys()
+                .all(|path| !path.contains("123456789") && !path.contains("some.one"))
+        );
     }
 
     #[test]
