@@ -297,6 +297,14 @@ fn filter_for(paths: &[&str], packages: &BTreeMap<String, String>) -> Option<Str
         {
             return Some("all()".to_string());
         }
+        // A test in snob-cli reads the README (the monitor's payload it
+        // publishes).
+        if path == "README.md"
+            && let Some(cli) = packages.get("snob-cli")
+        {
+            affected.insert(cli.as_str());
+            continue;
+        }
         if let Some(rest) = path.strip_prefix("crates/") {
             let Some((dir, _)) = rest.split_once('/') else {
                 // Top-level files inside crates/ do not belong to a known crate.
@@ -411,6 +419,15 @@ mod tests {
             )
             .as_deref(),
             Some("rdeps(snob-cli) | rdeps(snob-ig) | (package(snob-core) & kind(test))")
+        );
+    }
+
+    #[test]
+    fn the_readme_reaches_the_test_that_reads_it() {
+        let pkgs = sample_packages();
+        assert_eq!(
+            filter_for(&["README.md"], &pkgs).as_deref(),
+            Some("rdeps(snob-cli) | (package(snob-core) & kind(test))")
         );
     }
 
