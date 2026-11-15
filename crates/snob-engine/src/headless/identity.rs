@@ -185,15 +185,21 @@ async fn probe_platform(cdp: &Cdp, tab: &str) -> Result<Value> {
     let _server = Serving(tokio::spawn(async move {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         while let Ok((mut stream, _)) = listener.accept().await {
-            let mut buffer = [0u8; 2048];
-            let _ = stream.read(&mut buffer).await;
-            let body = "<!doctype html><title>snob</title>";
-            let reply = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\
-                 Connection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(reply.as_bytes()).await;
+            // Each on its own, and not for long: the port is open to every
+            // local process, and one that connects and says nothing would
+            // otherwise keep the browser's own request waiting behind it.
+            tokio::spawn(async move {
+                let mut buffer = [0u8; 2048];
+                let asked = stream.read(&mut buffer);
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), asked).await;
+                let body = "<!doctype html><title>snob</title>";
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\
+                     Connection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(reply.as_bytes()).await;
+            });
         }
     }));
 
