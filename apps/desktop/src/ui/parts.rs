@@ -80,6 +80,10 @@ pub fn paragraph(id: impl Into<ElementId>, text: impl Into<SharedString>, look: 
         .child(said(id, text))
 }
 
+/// How tall the toolkit's large text field is, which a button beside one
+/// matches.
+pub const FIELD_HEIGHT: f32 = 44.0;
+
 /// Which of the two buttons.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -99,9 +103,41 @@ pub fn button(
     look: &Look,
 ) -> Button {
     let label = label.into();
+    plain_button(id, label.clone(), kind, enabled, look).child(label)
+}
+
+/// A button that shows a drawing and no words: named all the same, for
+/// whoever does not see the drawing.
+pub fn icon_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    drawing: &'static str,
+    enabled: bool,
+    look: &Look,
+) -> Button {
+    let ink = if enabled {
+        look.palette.text
+    } else {
+        look.palette.disabled_text
+    };
+    plain_button(id, label, Kind::Secondary, enabled, look)
+        .w(sp(FIELD_HEIGHT))
+        .h(sp(FIELD_HEIGHT))
+        .px(px(0.))
+        .child(icon(drawing, 18.).text_color(color(ink)))
+}
+
+/// A button's shape and states, with nothing in it yet.
+fn plain_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    kind: Kind,
+    enabled: bool,
+    look: &Look,
+) -> Button {
     let palette = look.palette;
     let button = Button::new(id)
-        .accessibility_label(label.clone())
+        .accessibility_label(label)
         .disabled(!enabled)
         .h(sp(shape::BUTTON_HEIGHT + 4.))
         .min_w(px(shape::MIN_TARGET))
@@ -113,7 +149,7 @@ pub fn button(
         .text_size(sp(14.))
         .border_1()
         .focus_visible(focus_ring(&palette));
-    let button = if !enabled {
+    if !enabled {
         button
             .bg(color(palette.disabled_fill))
             .border_color(color(palette.control_line))
@@ -134,8 +170,7 @@ pub fn button(
                 .hover(move |style| style.bg(color(palette.frame)))
                 .cursor_pointer(),
         }
-    };
-    button.child(label)
+    }
 }
 
 /// A drawing of the app's, colored by the caller, `size` logical pixels at

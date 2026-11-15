@@ -522,3 +522,126 @@ async fn a_check_that_does_not_answer_is_waited_for_and_then_given_up_on(cx: &mu
     app.until_screen(cx, |screen| *screen == Screen::Paste)
         .await;
 }
+
+/// The session ID the scripted backend expects.
+const SESSION_ID: &str = "42%3AAbCdEfGhIjKl%3A20";
+
+async fn on_the_paste_screen(cx: &mut TestAppContext, backend: Scripted) -> App {
+    let app = open(cx, backend);
+    app.until_screen(cx, start()).await;
+    app.click(cx, "start-paste");
+    app.until_screen(cx, |screen| *screen == Screen::Paste)
+        .await;
+    app
+}
+
+fn disabled(app: &App, cx: &mut TestAppContext, id: &'static str) -> bool {
+    app.in_window(cx, |window, _| window.find(id).disabled() == Some(true))
+}
+
+#[gpui_kit::test]
+async fn what_is_typed_is_judged_once_the_typing_stops_and_says_what_to_copy(
+    cx: &mut TestAppContext,
+) {
+    let app = on_the_paste_screen(cx, Scripted::with(Vec::new())).await;
+    assert!(
+        disabled(&app, cx, "paste-submit"),
+        "nothing is in the field"
+    );
+
+    app.click(cx, "session-id");
+    app.in_window(cx, |window, cx| window.input("sessionid", cx));
+    // Not judged while the person may still be typing.
+    assert_eq!(app.label_of(cx, "announcements"), "");
+
+    app.until(cx, |window, _| {
+        window.find("announcements").label() != Some("")
+    })
+    .await;
+    assert!(disabled(&app, cx, "paste-submit"));
+    assert_eq!(
+        app.label_of(cx, "announcements"),
+        "Copy only the value of the sessionid cookie."
+    );
+}
+
+#[gpui_kit::test]
+async fn a_pasted_id_is_judged_at_once_stays_hidden_and_signs_in(cx: &mut TestAppContext) {
+    let backend = Scripted::with(Vec::new());
+    let app = on_the_paste_screen(cx, backend.clone()).await;
+
+    app.system.put_on_clipboard(&format!("  {SESSION_ID}\n"));
+    app.click(cx, "paste-paste");
+    assert!(!disabled(&app, cx, "paste-submit"), "judged with no wait");
+
+    // Hidden, and never told to whoever reads the window.
+    let told = |app: &App, cx: &mut TestAppContext| {
+        app.in_window(cx, |window, _| {
+            window.elements().iter().any(|element| {
+                [element.label(), element.value(), element.description()]
+                    .into_iter()
+                    .flatten()
+                    .any(|said| said.contains("AbCdEfGhIjKl"))
+            })
+        })
+    };
+    assert!(!told(&app, cx));
+    assert_eq!(app.label_of(cx, "paste-reveal"), "Show the session ID");
+    app.click(cx, "paste-reveal");
+    assert_eq!(app.label_of(cx, "paste-reveal"), "Hide the session ID");
+    assert!(!told(&app, cx), "shown to the eye, still not read out");
+
+    backend.hold();
+    app.click(cx, "paste-submit");
+    assert_eq!(app.label_of(cx, "paste-submit"), "Checking with Instagram");
+    assert!(disabled(&app, cx, "paste-submit"));
+    assert_eq!(
+        backend.asked().last(),
+        Some(&Asked::SignInWith { expected: true })
+    );
+
+    backend.release();
+    app.until_screen(cx, |screen| matches!(screen, Screen::Welcome(_)))
+        .await;
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+}
+
+#[gpui_kit::test]
+async fn an_id_instagram_refuses_is_an_error_and_the_field_is_empty_on_the_way_back(
+    cx: &mut TestAppContext,
+) {
+    let backend = Scripted::with(Vec::new());
+    backend.script(|script| {
+        script.sign_in(SignIn::Failed {
+            why: Failure::Rejected,
+            id: "7K2Q-9FMX".into(),
+            until: None,
+        });
+    });
+    let app = on_the_paste_screen(cx, backend.clone()).await;
+    app.system.put_on_clipboard(SESSION_ID);
+    app.click(cx, "paste-paste");
+    app.click(cx, "paste-submit");
+    app.until_screen(cx, |screen| matches!(screen, Screen::Failed { .. }))
+        .await;
+    assert_eq!(
+        app.label_of(cx, "error-why"),
+        "That session ID no longer works. Get a new one, or sign in with the browser."
+    );
+
+    app.click(cx, "error-retry");
+    app.until_screen(cx, |screen| *screen == Screen::Paste)
+        .await;
+    assert!(disabled(&app, cx, "paste-submit"), "nothing was kept");
+}
+
+#[gpui_kit::test]
+async fn the_paste_screen_says_where_to_find_an_id_in_four_steps(cx: &mut TestAppContext) {
+    let app = on_the_paste_screen(cx, Scripted::with(Vec::new())).await;
+    app.in_window(cx, |window, _| {
+        let steps = window.find_all_by_role(Role::ListItem);
+        assert_eq!(steps.len(), 4);
+        assert!(steps.iter().all(|step| step.visible()));
+        assert_eq!(steps[3].label(), Some("Copy the value of sessionid."));
+    });
+}

@@ -9,8 +9,9 @@ use gpui_kit::{App, Global, Hsla, Rems, Rgba, px, rems, rgb};
 
 use crate::i18n::Texts;
 use crate::system::Settings;
+use crate::theme::fonts::{MONO, SANS};
 use crate::theme::motion::{self, Move};
-use crate::theme::tokens::{Palette, Rgb, Scheme};
+use crate::theme::tokens::{Palette, Rgb, Scheme, shape};
 
 /// The look of the app.
 #[derive(Clone)]
@@ -71,8 +72,29 @@ const TEXT_SIZE: f32 = 16.0;
 /// Makes `look` the look in use: its colors and words, and its text size,
 /// which the toolkit's root applies to the window on every frame.
 pub fn wear(look: Look, cx: &mut App) {
-    gpui_kit::component::Theme::global_mut(cx).font_size =
-        px(TEXT_SIZE * look.settings.text_scale());
+    let palette = look.palette;
+    let theme = gpui_kit::component::Theme::global_mut(cx);
+    theme.font_size = px(TEXT_SIZE * look.settings.text_scale());
+    theme.font_family = SANS.into();
+    theme.mono_font_family = MONO.into();
+    theme.radius = px(shape::CONTROL_RADIUS);
+    theme.radius_lg = px(shape::CARD_RADIUS);
+    // What the toolkit's own controls are drawn with: the field a session ID
+    // is pasted into, and whatever of it is used after.
+    theme.background = color(palette.panel);
+    theme.foreground = color(palette.text);
+    theme.muted = color(palette.frame);
+    theme.muted_foreground = color(palette.secondary);
+    theme.border = color(palette.line);
+    theme.input = color(palette.control_line);
+    theme.ring = color(palette.accent);
+    theme.caret = color(palette.text);
+    theme.selection = color_at(palette.accent, 0.35);
+    theme.primary = color(palette.accent);
+    theme.primary_foreground = color(palette.on_accent);
+    theme.popover = color(palette.panel);
+    theme.popover_foreground = color(palette.text);
+    theme.danger = color(palette.error);
     cx.set_global(look);
     cx.refresh_windows();
 }

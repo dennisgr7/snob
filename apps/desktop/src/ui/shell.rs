@@ -9,10 +9,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, FocusHandle, Pixels, ScrollHandle, SharedString, Window, point, px,
+    AnyElement, Context, Entity, FocusHandle, Pixels, ScrollHandle, SharedString, Subscription,
+    Window, point, px,
 };
+use snob_core::secret::Secret;
 use snob_core::{Epoch, Pk};
 use snob_engine::login::Failure;
 use snob_ig::pace::CancelToken;
@@ -22,6 +25,7 @@ use super::look::Look;
 use super::{frame, screens};
 use crate::backend::{Account, Backend, Loaded, SignIn};
 use crate::state::flow::{Effect, Event, Flow, Found, Method, Screen, Update};
+use crate::state::paste::{self, Field};
 use crate::state::status::{self, Band, Status};
 use crate::system::{self, System};
 use crate::theme::motion;
@@ -47,6 +51,24 @@ impl Phase {
         rise: 0.0,
         scale: 1.0,
     };
+}
+
+/// The field a session ID is pasted into, for as long as its screen is
+/// shown. **Gone with the screen, and what was in it with it.**
+pub(crate) struct PasteForm {
+    pub input: Entity<InputState>,
+    /// Whether the person asked to see what is in the field.
+    pub revealed: bool,
+    /// What the field was judged to hold: nothing yet while the person is
+    /// still typing.
+    pub judged: Option<Field>,
+    /// Whether Instagram is being asked about it.
+    pub checking: bool,
+    /// How many times the field changed.
+    edits: usize,
+    /// Whether the change under way is a paste, which is judged at once.
+    pasting: bool,
+    _watching: Subscription,
 }
 
 /// A screen as the log names it: which one, and nothing of what is on it.
@@ -119,6 +141,7 @@ pub struct Shell {
     pub(crate) notice: Option<SharedString>,
     /// The report of a crash nobody has been shown yet.
     pub(crate) crash: Option<String>,
+    pub(crate) paste: Option<PasteForm>,
 }
 
 impl Shell {
@@ -221,6 +244,7 @@ impl Shell {
             announced: SharedString::default(),
             notice: None,
             crash: None,
+            paste: None,
         }
     }
 
@@ -373,6 +397,134 @@ impl Shell {
         .detach();
     }
 
+    /// The field of the paste screen, new and empty.
+    fn paste_form(&mut self, window: &mut Window, cx: &mut Context<Self>) -> PasteForm {
+        let input = cx.new(|cx| InputState::new(window, cx).masked(true));
+        let watching = cx.subscribe_in(
+            &input,
+            window,
+            |shell, _, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => shell.the_field_changed(window, cx),
+                InputEvent::PressEnter { .. } => shell.submit_the_paste(window, cx),
+                _ => {}
+            },
+        );
+        PasteForm {
+            input,
+            revealed: false,
+            judged: None,
+            checking: false,
+            edits: 0,
+            pasting: false,
+            _watching: watching,
+        }
+    }
+
+    /// What is in the field is about to change by a paste.
+    pub(crate) fn pasted_into_the_field(&mut self) {
+        if let Some(form) = &mut self.paste {
+            form.pasting = true;
+        }
+    }
+
+    /// The field changed: judged at once after a paste, and otherwise once
+    /// the person has stopped typing.
+    fn the_field_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = &mut self.paste else {
+            return;
+        };
+        form.edits += 1;
+        form.judged = None;
+        let edits = form.edits;
+        if std::mem::take(&mut form.pasting) {
+            self.judge_the_field(cx);
+            return;
+        }
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(paste::JUDGED_AFTER).await;
+            this.update(cx, |shell, cx| {
+                if shell.paste.as_ref().is_some_and(|form| form.edits == edits) {
+                    shell.judge_the_field(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn judge_the_field(&mut self, cx: &mut Context<Self>) {
+        let Some(form) = &mut self.paste else {
+            return;
+        };
+        let judged = paste::judge(&form.input.read(cx).value());
+        form.judged = Some(judged);
+        if judged == Field::Invalid {
+            let said = Look::now(cx).tr("paste-hint-invalid");
+            self.announce(said, cx);
+        }
+        cx.notify();
+    }
+
+    /// Shows or hides what is in the field.
+    pub(crate) fn reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = &mut self.paste else {
+            return;
+        };
+        form.revealed = !form.revealed;
+        let masked = !form.revealed;
+        form.input
+            .update(cx, |input, cx| input.set_masked(masked, window, cx));
+        cx.notify();
+    }
+
+    /// Puts what is on the clipboard in the field, in place of what was.
+    pub(crate) fn paste_from_the_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self.system.pasted(cx) else {
+            return;
+        };
+        let Some(form) = &mut self.paste else {
+            return;
+        };
+        form.edits += 1;
+        form.input
+            .update(cx, |input, cx| input.set_value(text.trim(), window, cx));
+        self.judge_the_field(cx);
+    }
+
+    /// Signs in with what is in the field, when it has the shape of a
+    /// session ID. **The secret goes to the engine and nowhere else**, and
+    /// the field is emptied as it goes.
+    pub(crate) fn submit_the_paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = &mut self.paste else {
+            return;
+        };
+        let value = form.input.read(cx).value();
+        if form.checking || paste::judge(&value) != Field::Valid {
+            return;
+        }
+        form.checking = true;
+        form.judged = Some(Field::Valid);
+        let session_id = Secret::new(value.trim().to_string());
+        form.input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.announce(Look::now(cx).tr("paste-checking"), cx);
+
+        self.attempt += 1;
+        let attempt = self.attempt;
+        let signing_in = self.backend.sign_in_with(session_id);
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = signing_in.await;
+            this.update_in(cx, |this, window, cx| {
+                if this.attempt == attempt {
+                    this.signed(outcome.ok(), window, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Leaves the sign-in under way: its answer no longer counts.
     pub(crate) fn leave_the_sign_in(&mut self) {
         self.attempt += 1;
@@ -443,6 +595,10 @@ impl Shell {
         self.scroll.set_offset(point(px(0.), px(0.)));
         tracing::info!(screen = name(&self.shown), "screen");
         window.focus(&self.title, cx);
+        self.paste = match self.shown {
+            Screen::Paste => Some(self.paste_form(window, cx)),
+            _ => None,
+        };
 
         let look = Look::now(cx).clone();
         match &self.shown {

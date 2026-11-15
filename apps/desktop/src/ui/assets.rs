@@ -38,6 +38,10 @@ icons! {
     WINDOW_MAXIMIZE = "window-maximize.svg";
     WINDOW_RESTORE = "window-restore.svg";
     WINDOW_CLOSE = "window-close.svg";
+    STEP_SITE = "step-site.svg";
+    STEP_TOOLS = "step-tools.svg";
+    STEP_COOKIES = "step-cookies.svg";
+    STEP_COPY = "step-copy.svg";
 }
 
 /// What GPUI loads a drawing from.
@@ -66,7 +70,7 @@ mod tests {
 
     #[test]
     fn every_drawing_named_is_built_in_and_is_a_drawing() {
-        assert_eq!(ALL.len(), 18);
+        assert_eq!(ALL.len(), 22);
         for (name, bytes) in ALL {
             let loaded = Assets.load(name).unwrap().expect("built in");
             assert_eq!(&*loaded, *bytes);
