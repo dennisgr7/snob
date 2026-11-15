@@ -2521,4 +2521,21 @@ mod tests {
         #[cfg(windows)]
         assert!(!paths.accounts_dir().to_string_lossy().contains("Roaming"));
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::with_cases(256) })]
+
+        /// An agent-supplied or on-disk job id never panics `JobId::parse`.
+        #[test]
+        fn parsing_a_job_id_never_panics_on_any_text(
+            text in prop_oneof![
+                any::<String>(),
+                "j[0-9A-Z]{0,35}",
+            ],
+        ) {
+            let _ = JobId::parse(&text);
+        }
+    }
 }

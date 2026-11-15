@@ -133,4 +133,40 @@ mod tests {
         assert_eq!(format(Duration::from_secs(90)), "90s");
         assert_eq!(format(Duration::from_secs(0)), "0");
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::with_cases(256) })]
+
+        /// Arbitrary command-line or config strings never panic `duration::parse`.
+        #[test]
+        fn parsing_a_duration_never_panics_on_any_text(
+            text in prop_oneof![
+                any::<String>(),
+                "[0-9smhdwSMHDW +-]{0,32}",
+            ],
+        ) {
+            let _ = parse(&text);
+        }
+
+        /// Every duration in `0..=i64::MAX` seconds round-trips through
+        /// `format` and `parse`.
+        #[test]
+        fn formatting_and_parsing_a_duration_round_trips(secs in 0u64..=(i64::MAX as u64)) {
+            let duration = Duration::from_secs(secs);
+            prop_assert_eq!(parse(&format(duration)), Ok(duration));
+        }
+
+        /// Any valid parsed duration writes back as text that parses to the
+        /// exact same duration.
+        #[test]
+        fn parsing_formatting_and_reparsing_a_duration_gives_the_same_value(
+            text in "[ 0-9smhdw]{0,24}",
+        ) {
+            if let Ok(duration) = parse(&text) {
+                prop_assert_eq!(parse(&format(duration)), Ok(duration));
+            }
+        }
+    }
 }

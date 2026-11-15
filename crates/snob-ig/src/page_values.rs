@@ -364,4 +364,23 @@ mod tests {
             assert_eq!(web_session_id(wrong), None, "{wrong:?}");
         }
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::with_cases(256) })]
+
+        /// An HTML or JSON document captured from a tab never panics the
+        /// bootstrap extractor, with or without module markers present.
+        #[test]
+        fn parsing_page_values_never_panics_on_any_document(
+            document in prop_oneof![
+                any::<String>(),
+                (prop::sample::select(&DEFINED[..]), any::<String>())
+                    .prop_map(|(name, tail)| format!("{}{tail}", marker(name))),
+            ],
+        ) {
+            let _ = PageValues::parse(&document);
+        }
+    }
 }

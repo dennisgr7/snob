@@ -324,6 +324,10 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphic
 # Test-only
 wiremock = "0.6"
 tempfile = "3"
+# Property tests for the parsers. `default-features = false` with `std`
+# compiles `proptest!` and its strategies without pulling in `fork` (process
+# forking / `rusty-fork`), `timeout` or `bit-set`.
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 [profile.release]
 # `"s"` rather than `3`, and the numbers are from this program rather than from

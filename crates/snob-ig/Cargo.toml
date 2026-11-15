@@ -85,6 +85,8 @@ windows-sys.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
 tracing-subscriber.workspace = true
 wiremock.workspace = true
+# Property tests for error classification, page value extraction and shortcodes.
+proptest.workspace = true
 
 [lints]
 workspace = true

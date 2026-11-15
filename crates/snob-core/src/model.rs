@@ -677,4 +677,100 @@ mod tests {
         }
         assert_eq!(seen.len(), 7);
     }
+
+    use proptest::prelude::*;
+
+    /// Independent reference for [`possible_username`]: `1..=30` of
+    /// `[A-Za-z0-9._]`, one leading at sign dropped, never `.` or `..`.
+    fn reference_possible_username(input: &str) -> bool {
+        let stripped = input.strip_prefix('@').unwrap_or(input);
+        (1..=USERNAME_MAX).contains(&stripped.chars().count())
+            && stripped != "."
+            && stripped != ".."
+            && stripped
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::with_cases(256) })]
+
+        /// Sanitizing profile strings never panics, is idempotent, and leaves
+        /// no `Cc`, `Cf` or `Default_Ignorable_Code_Point` except a
+        /// presentation selector right after a character that takes one.
+        #[test]
+        fn printable_never_panics_is_idempotent_and_leaves_no_disallowed_code_points(
+            text in prop_oneof![
+                any::<String>(),
+                prop::collection::vec(
+                    prop_oneof![
+                        any::<char>(),
+                        Just('\u{fe0e}'),
+                        Just('\u{fe0f}'),
+                        Just('\u{fe00}'),
+                        Just('\u{20e3}'),
+                        Just('\u{200b}'),
+                        Just('\u{202e}'),
+                        Just('\u{00ad}'),
+                        Just('\u{feff}'),
+                        Just('\u{2764}'),
+                        Just('\x1b'),
+                        Just('1'),
+                        Just('a'),
+                    ],
+                    0..64,
+                )
+                .prop_map(|chars| chars.into_iter().collect::<String>()),
+            ],
+        ) {
+            let once = printable(&text);
+            prop_assert_eq!(
+                &printable(&once),
+                &once,
+                "printable was not idempotent on {:?}",
+                text
+            );
+            let chars: Vec<char> = once.chars().collect();
+            for (index, &c) in chars.iter().enumerate() {
+                prop_assert!(
+                    !c.is_control(),
+                    "control char {c:?} survived in {once:?} from {text:?}"
+                );
+                prop_assert!(
+                    !('\u{fe00}'..='\u{fe0d}').contains(&c),
+                    "unconditional variation selector {c:?} survived in {once:?} from {text:?}"
+                );
+                if c == '\u{fe0e}' || c == '\u{fe0f}' {
+                    let prev = index.checked_sub(1).map(|p| chars[p]);
+                    let keycap = chars.get(index + 1) == Some(&'\u{20e3}');
+                    prop_assert!(
+                        prev.is_some_and(|base| takes_a_presentation(base, keycap)),
+                        "dangling presentation selector in {once:?} from {text:?}"
+                    );
+                } else {
+                    prop_assert!(
+                        !is_invisible(c),
+                        "invisible char {c:?} survived in {once:?} from {text:?}"
+                    );
+                }
+            }
+        }
+
+        /// `possible_username` matches its documented character, length, at-sign
+        /// and dot-segment rule on both arbitrary and near-username strings.
+        #[test]
+        fn possible_username_agrees_with_its_documented_rule(
+            name in prop_oneof![
+                any::<String>(),
+                "@{0,2}[A-Za-z0-9._!# -]{0,35}",
+            ],
+        ) {
+            prop_assert_eq!(
+                possible_username(&name),
+                reference_possible_username(&name),
+                "disagreement on {:?}",
+                name
+            );
+        }
+    }
 }

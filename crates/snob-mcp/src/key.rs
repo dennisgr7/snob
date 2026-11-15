@@ -547,4 +547,21 @@ mod tests {
         assert!(may_print(true, true));
         assert!(!may_print(false, false));
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::with_cases(256) })]
+
+        /// An environment variable or keyring value never panics `Key::parse`.
+        #[test]
+        fn parsing_a_key_never_panics_on_any_text(
+            text in prop_oneof![
+                any::<String>(),
+                "snob_mcp_[A-Za-z0-9_=-]{0,60}",
+            ],
+        ) {
+            let _ = Key::parse(&text);
+        }
+    }
 }

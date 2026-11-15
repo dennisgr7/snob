@@ -1,0 +1,42 @@
+name: Features
+
+# Actions are pinned to a commit, not to a tag; `.github/dependabot.yml` says
+# why, and is what moves the pins.
+
+# Weekly in its own file rather than in ci.yml: `--feature-powerset` compiles
+# every combination of the workspace's features (dozens of `cargo check`
+# invocations), which would weigh down every push and pull request when ci.yml
+# already checks `--all-features` and `-p snob-cli --no-default-features`.
+on:
+  schedule:
+    # Weekly on Mondays at 06:47 UTC, half an hour after supply-chain.yml.
+    - cron: "47 6 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A failed build should not be followed by a slow one.
+  CARGO_INCREMENTAL: 0
+
+# Read-only: compiles third-party build scripts and never writes back.
+permissions:
+  contents: read
+
+jobs:
+  feature-powerset:
+    name: Feature powerset (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          # Released 2026-11-01 (two weeks old).
+          tool: cargo-hack@0.6.46
+      - run: cargo hack check --workspace --feature-powerset --no-dev-deps --locked

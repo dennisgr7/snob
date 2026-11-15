@@ -943,4 +943,34 @@ mod tests {
         assert!(unbuilt.is_builder());
         assert_eq!(IgError::Network(unbuilt).reaction(), Reaction::Abort);
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::with_cases(256) })]
+
+        /// An HTTP status and body from Instagram, JSON or anything else, can
+        /// classify into an error variant without panicking (release builds
+        /// abort on panic).
+        #[test]
+        fn classifying_any_status_and_body_never_panics(
+            status in any::<u16>(),
+            body in prop_oneof![
+                any::<String>(),
+                (any::<String>(), any::<String>(), any::<String>()).prop_map(
+                    |(msg, url, title)| {
+                        serde_json::json!({
+                            "message": msg,
+                            "status": "fail",
+                            "challenge": { "url": url },
+                            "feedback_title": title,
+                        })
+                        .to_string()
+                    }
+                ),
+            ],
+        ) {
+            let _ = classify(status, &body);
+        }
+    }
 }

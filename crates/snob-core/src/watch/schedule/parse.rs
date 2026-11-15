@@ -325,4 +325,25 @@ mod tests {
             assert!(parse_time(bad).is_err(), "\"{bad}\" should be refused");
         }
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::with_cases(256) })]
+
+        /// User-written weekday names, wall-clock times and five-field cron
+        /// expressions never panic the schedule parsers.
+        #[test]
+        fn parsing_a_weekday_time_or_cron_expression_never_panics(
+            text in prop_oneof![
+                any::<String>(),
+                "[0-9A-Za-z*,/: -]{0,40}",
+            ],
+        ) {
+            let _ = Weekday::parse(&text);
+            let _ = parse_time(&text);
+            let _ = parse_cron(&text);
+            let _ = Schedule::cron(&text);
+        }
+    }
 }

@@ -1000,4 +1000,21 @@ agreed_at = 1786925176
         assert!(config.webhook.is_none());
         assert!(config.accounts.is_empty());
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::with_cases(128) })]
+
+        /// Arbitrary hand-edited `watch.toml` contents never panic the parser.
+        #[test]
+        fn parsing_a_watch_config_never_panics_on_any_text(
+            text in prop_oneof![
+                any::<String>(),
+                any::<String>().prop_map(|body| format!("schema = 2\n{body}")),
+            ],
+        ) {
+            let _ = at(&text);
+        }
+    }
 }

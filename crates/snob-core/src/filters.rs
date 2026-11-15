@@ -263,4 +263,37 @@ mod tests {
         };
         assert!(!f.allows(&verified()));
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::with_cases(256) })]
+
+        /// Any exclusion file contents can be read without panicking.
+        #[test]
+        fn parsing_a_username_list_never_panics_on_any_text(
+            text in prop_oneof![
+                any::<String>(),
+                "[\u{feff}#A-Za-z0-9._! -]{0,80}",
+            ],
+        ) {
+            let _ = parse_username_list(&text);
+        }
+
+        /// A name read from a list is compared as it is stored: lowercased and
+        /// trimmed. A line that cannot be a username is kept, and matches nobody.
+        #[test]
+        fn every_name_read_from_a_list_is_trimmed_and_lowercased(
+            text in prop_oneof![
+                any::<String>(),
+                "[\u{feff}#@A-Za-z0-9._! -]{0,80}",
+            ],
+        ) {
+            for name in parse_username_list(&text) {
+                prop_assert!(!name.is_empty(), "from {:?}", text);
+                prop_assert_eq!(name.trim(), name.as_str(), "from {:?}", text);
+                prop_assert_eq!(name.to_lowercase(), name.clone(), "from {:?}", text);
+            }
+        }
+    }
 }

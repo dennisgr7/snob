@@ -40,6 +40,8 @@ sha2.workspace = true
 # Only to assert the wire form of what `serde` derives here: a model whose JSON
 # shape changed silently is a report a receiver stops understanding.
 serde_json.workspace = true
+# Property tests for the model, duration, schedule and filter parsers.
+proptest.workspace = true
 
 [lints]
 workspace = true

@@ -439,4 +439,32 @@ mod tests {
         assert_eq!(pk.to_string(), "3807824420233075826");
         assert!(serde_json::from_str::<MediaPk>(r#""x""#).is_err());
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::with_cases(256) })]
+
+        /// User-supplied post links, shortcodes and comment ids never panic
+        /// either parser.
+        #[test]
+        fn parsing_a_shortcode_or_comment_pk_never_panics_on_any_text(
+            text in prop_oneof![
+                any::<String>(),
+                "[A-Za-z0-9_/:.?=&%#-]{0,80}",
+                (
+                    prop::sample::select(&[
+                        "https://www.instagram.com/p/",
+                        "https://instagram.com/reel/",
+                        "https://www.instagram.com/u/tv/",
+                    ][..]),
+                    any::<String>(),
+                )
+                    .prop_map(|(prefix, rest)| format!("{prefix}{rest}")),
+            ],
+        ) {
+            let _ = Shortcode::parse(&text);
+            let _ = CommentPk::parse(&text);
+        }
+    }
 }

@@ -114,6 +114,8 @@ dbus-run-session -- bash -c '
 - `supply-chain.yml` (pushes, pull requests, Mondays): `cargo deny check
   advisories sources licenses`, never a bare `cargo deny check` (`bans` is off
   on purpose). Every `ignore` in `deny.toml` says why and when it goes.
+- `features.yml` (Mondays, manual): `cargo hack check --workspace
+  --feature-powerset --no-dev-deps --locked` on Linux and Windows.
 - Locally on Windows the lines above run as written; they skip `cfg(unix)`
   code. `bash tools/ci/run.sh` runs the Linux job in Docker; `tools/ci/ci.sh`
   stays in step with `ci.yml`.
@@ -163,6 +165,10 @@ dbus-run-session -- bash -c '
   sentence in `.rs` (`layout-allow`), and a `snob ...` command to type back
   containing an at sign (no escape). `.agents/` and `pnpm-lock.yaml` are
   skipped.
+- **Property tests** (`proptest`, in each parser's `mod tests`): a parser fed
+  by a person, a browser or Instagram is checked never to panic on any input
+  (the release profile aborts), with the rules its documentation states. A new
+  parser of outside input gets one.
 - Migrations: the `validate()` tests run the whole chain of both databases.
 - Hand-run: `cargo test -p snob-cli --features testing --test headless
   serve_the_fake_world -- --ignored --nocapture` serves the fake Instagram for
