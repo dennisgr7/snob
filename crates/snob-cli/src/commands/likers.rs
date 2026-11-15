@@ -151,6 +151,9 @@ async fn ask(app: &App, yes: bool, someone_is_there: bool, code: &str) -> Result
             ExitCode::Interrupted,
             format!("nothing was read: the likers of {code} were not confirmed"),
         )
+        // As a list's question answered no (`sentences::refuse_declined`),
+        // so a script tells it from a Ctrl+C, which shares the exit code.
+        .with_reason("declined")
         .into());
     }
     Ok(())
