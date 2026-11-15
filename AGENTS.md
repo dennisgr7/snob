@@ -11,12 +11,20 @@ why, is in that module: **read a file's `//!` header before changing it.**
 
 ## What snob is
 
-`snob` is a native Instagram client for the desktop, with tools around it: a
-command line, an MCP server for AI agents, automations (the monitor) and
-webhooks. Its binary is `snob`, built by the crate `snob-cli` (the crate keeps
-that name); the version is in `[workspace.package]` of `Cargo.toml`. The
-desktop app is `apps/desktop` (binary `snob-desktop`), a window on the engine
-that is not released yet.
+**snob is a desktop app**: a native Instagram client, installed with its
+tools beside it in one package (the desktop edition) — the command line, the
+MCP server for AI agents, the automations (the monitor, `snob watch`) and
+webhooks. Servers and containers take the tools alone (the cli edition,
+"Release and packaging").
+
+| Part | Where | Binary |
+|---|---|---|
+| The app | `apps/desktop`, a GPUI window on the engine; not released yet | `snob-desktop` |
+| The command line and the MCP server | `crates/snob-cli` (the crate keeps that name), `crates/snob-mcp` | `snob` |
+| What both run on | `crates/snob-engine` and below | |
+
+The version is in `[workspace.package]` of `Cargo.toml`; the app's is
+`0.0.0` until it ships, then the same.
 
 The command line walks followers and following and crosses them
 (`unfollowers`, `fans`, `friends`, `scan`); shows profiles, stories, highlights,
