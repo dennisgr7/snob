@@ -23,6 +23,7 @@ pub(super) fn unit(args: WatchUnitArgs, paths: &snob_store::paths::AppPaths) -> 
          print the unit again after an upgrade",
     )?;
     let exe = exe.to_string_lossy();
+    fits_a_unit(&exe)?;
     let kind = args.kind.unwrap_or_else(UnitKind::of_this_platform);
     ui::say!("{}", render(kind, &exe).trim_end());
     ui::info(
@@ -43,6 +44,19 @@ pub(super) fn unit(args: WatchUnitArgs, paths: &snob_store::paths::AppPaths) -> 
 const NO_WEBHOOK: &str = "watch.toml names no [webhook], so the reports these runs make are \
      printed where the scheduler keeps a run's output, if it keeps any, and \"snob watch diff\" \
      no longer shows them once a run has made them. Set one with \"snob watch setup\".";
+
+/// Refuses a path no scheduler's file can hold: a crontab line ends at a line
+/// break, and in a unit file what follows one is read as a directive of its
+/// own.
+fn fits_a_unit(exe: &str) -> Result<()> {
+    if exe.chars().any(char::is_control) {
+        anyhow::bail!(
+            "the path to snob holds a control character, which no scheduler's file can \
+             carry; install snob at a path without one"
+        );
+    }
+    Ok(())
+}
 
 /// The unit for `kind`, running `exe`.
 fn render(kind: UnitKind, exe: &str) -> String {
@@ -101,8 +115,13 @@ fn systemd(exe: &str) -> String {
 
 /// One crontab line. cron reads `%` as a line break, and runs the line in
 /// `sh`, so the path is single-quoted.
+///
+/// **A `%` goes outside the quotes, as `\%`**: cronie takes the backslash off
+/// before `sh` sees the line and Vixie cron, Debian's, leaves it, where inside
+/// single quotes it would stay in the path. Outside them `sh` reads `%` and
+/// `\%` alike.
 fn cron(exe: &str) -> String {
-    let quoted = format!("'{}'", exe.replace('\'', r"'\''").replace('%', r"\%"));
+    let quoted = format!("'{}'", exe.replace('\'', r"'\''").replace('%', r"'\%'"));
     format!(
         "# crontab -e, and add:\n\
          */{ASK_EVERY_MINUTES} * * * * {quoted} {run}\n\
@@ -157,7 +176,21 @@ fn launchd(exe: &str) -> String {
 /// Task Scheduler's own cmdlets, which are the same in Windows PowerShell 5.1
 /// and in PowerShell 7.
 fn schtasks(exe: &str) -> String {
-    let quoted = |text: &str| format!("'{}'", text.replace('\'', "''"));
+    // PowerShell ends a single-quoted string at any of five quotes, the four
+    // typographic ones included (its `IsSingleQuote`), and takes each doubled
+    // as itself: a path through `O’Brien` would otherwise end the string.
+    let quoted = |text: &str| {
+        let mut out = String::with_capacity(text.len() + 2);
+        out.push('\'');
+        for c in text.chars() {
+            out.push(c);
+            if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+                out.push(c);
+            }
+        }
+        out.push('\'');
+        out
+    };
     format!(
         "# Run once, in PowerShell, signed in as the user snob signs in as:\n\
          $action = New-ScheduledTaskAction -Execute {exe} -Argument {run}\n\
@@ -203,12 +236,38 @@ mod tests {
     fn the_path_is_quoted_as_each_scheduler_reads_it() {
         assert!(systemd(EXE).contains("ExecStart=\"/opt/snob 100%%/bin/snob\" watch once"));
         assert!(systemd(DOLLAR).contains("ExecStart=\"/opt/$$HOME/snob\" watch once"));
-        assert!(cron(EXE).contains("'/opt/snob 100\\%/bin/snob' watch once"));
+        assert!(cron(EXE).contains("'/opt/snob 100'\\%'/bin/snob' watch once"));
+        assert!(cron("/opt/o'brien/snob").contains(r"'/opt/o'\''brien/snob' watch once"));
         assert!(launchd("/a&b/snob").contains("<string>/a&amp;b/snob</string>"));
         assert!(
             schtasks(r"C:\Users\o'brien\snob.exe")
                 .contains(r"-Execute 'C:\Users\o''brien\snob.exe'")
         );
+    }
+
+    /// A line break in the path would start a line of the unit's own.
+    #[test]
+    fn a_path_with_a_line_break_is_refused_before_any_unit_is_printed() {
+        assert!(fits_a_unit("/opt/snob\nExecStartPre=/tmp/other").is_err());
+        assert!(fits_a_unit("/opt/snob\r* * * * * other").is_err());
+        assert!(fits_a_unit(EXE).is_ok());
+        assert!(fits_a_unit(r"C:\Program Files\snob\snob.exe").is_ok());
+    }
+
+    /// PowerShell closes a single-quoted string at a typographic quote too,
+    /// so each of the five is doubled, or the rest of the path is read as
+    /// commands.
+    #[test]
+    fn a_typographic_quote_in_the_path_does_not_end_the_powershell_string() {
+        for quote in ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'] {
+            let task = schtasks(&format!(r"C:\Users\o{quote}; calc; {quote}\snob.exe"));
+            assert!(
+                task.contains(&format!(
+                    r"-Execute 'C:\Users\o{quote}{quote}; calc; {quote}{quote}\snob.exe' -Argument"
+                )),
+                "{task}"
+            );
+        }
     }
 
     /// The task is one PowerShell reads as written: the path whole, spaces
