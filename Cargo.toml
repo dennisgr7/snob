@@ -25,9 +25,6 @@ snob-store = { path = "crates/snob-store" }
 snob-ig = { path = "crates/snob-ig" }
 snob-engine = { path = "crates/snob-engine" }
 snob-mcp = { path = "crates/snob-mcp" }
-# Only as `snob-mcp`'s dev-dependency: its tests parse what it builds with
-# the command line's grammar.
-snob-cli = { path = "crates/snob-cli" }
 
 anyhow = "1"
 thiserror = "2"

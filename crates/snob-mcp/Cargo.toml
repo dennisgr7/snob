@@ -80,10 +80,6 @@ windows-sys.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
-# Every command line the server builds is one the command line parses, which
-# only its own grammar can say. A test's cycle, never a build's: the
-# command line depends on this crate, and this crate's tests on it.
-snob-cli.workspace = true
 tempfile.workspace = true
 # The client the HTTP half's tests send with. Already in the tree through
 # snob-ig.

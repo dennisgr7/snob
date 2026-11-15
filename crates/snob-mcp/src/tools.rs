@@ -1221,7 +1221,7 @@ pub struct Confirmed<'a> {
 
 /// How a client is named, from its one home: a job records its client the
 /// same way, and jobs build without this crate.
-pub use snob_engine::app::client_label;
+pub(crate) use snob_engine::app::client_label;
 
 /// What a command may send to Instagram.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2355,15 +2355,6 @@ mod tests {
             "a call that names none is bound as before"
         );
         assert!(as_me.ask.unwrap().text.ends_with("as the account me."));
-        // The whole line is one clap takes.
-        let line = as_other
-            .globals()
-            .into_iter()
-            .chain(as_other.command_line(None));
-        let parsed = <snob_cli::cli::Cli as clap::Parser>::try_parse_from(
-            std::iter::once("snob".to_string()).chain(line),
-        );
-        assert!(parsed.is_ok(), "{parsed:?}");
 
         // A page of one account's list is not another's.
         let list = |args: Value| call("snob_list", args).unwrap().page.unwrap().of;
@@ -2468,14 +2459,6 @@ mod tests {
             signed_out.command_line(Some(&confirmed)),
             ["logout", "--only=other"]
         );
-        let line = signed_out
-            .globals()
-            .into_iter()
-            .chain(signed_out.command_line(Some(&confirmed)));
-        let parsed = <snob_cli::cli::Cli as clap::Parser>::try_parse_from(
-            std::iter::once("snob".to_string()).chain(line),
-        );
-        assert!(parsed.is_ok(), "{parsed:?}");
 
         // Started for one account: that one, with no flag of the call's.
         let pinned = Offer {
@@ -2587,10 +2570,6 @@ mod tests {
             assert!(plan.ask.is_none());
             assert_eq!(plan.spends, Spends::Nothing);
             assert_eq!(plan.command_line(None), plan.args, "no --spend-alone");
-            let parsed = <snob_cli::cli::Cli as clap::Parser>::try_parse_from(
-                std::iter::once("snob".to_string()).chain(plan.args.iter().cloned()),
-            );
-            assert!(parsed.is_ok(), "{parsed:?}");
         }
         for wrong in [
             json!({"since": "--offline"}),
@@ -2662,12 +2641,6 @@ mod tests {
                 "--small-pictures"
             ]
         );
-        for plan in [&stories, &tray, &one] {
-            let parsed = <snob_cli::cli::Cli as clap::Parser>::try_parse_from(
-                std::iter::once("snob".to_string()).chain(plan.args.iter().cloned()),
-            );
-            assert!(parsed.is_ok(), "{parsed:?}");
-        }
         assert!(matches!(
             call("snob_highlights", json!({"highlight": 2})),
             Err(Unplannable::Invalid(_))
@@ -2726,10 +2699,6 @@ mod tests {
         assert!(all.ask.is_none());
         assert_eq!(all.spends, Spends::Reads);
         assert_eq!(all.run, Run::Inline);
-        let parsed = <snob_cli::cli::Cli as clap::Parser>::try_parse_from(
-            std::iter::once("snob".to_string()).chain(all.args.iter().cloned()),
-        );
-        assert!(parsed.is_ok(), "{parsed:?}");
 
         let some = call(
             "snob_post_download",
@@ -2816,10 +2785,6 @@ mod tests {
                 "--mcp-write-cap=3"
             ]
         );
-        let parsed = <snob_cli::cli::Cli as clap::Parser>::try_parse_from(
-            std::iter::once("snob".to_string()).chain(line.iter().cloned()),
-        );
-        assert!(parsed.is_ok(), "{parsed:?}");
         let profile = call("snob_profile", json!({"account": "someone"})).unwrap();
         assert!(profile.ahead_line(3).is_none());
     }
@@ -3280,8 +3245,6 @@ mod tests {
             !line.iter().any(|arg| arg == "--spend-alone"),
             "the walk is given it by its supervisor"
         );
-        // And what the job runs is a command a job may run.
-        assert!(snob_cli::jobs::argv::check(&line[after + 1..]).is_ok());
 
         for refused in [json!(51), json!(-1), json!(1.5), json!("20")] {
             assert!(
@@ -3632,10 +3595,6 @@ mod tests {
                 "--no-interactive"
             ]
         );
-        let parsed = <snob_cli::cli::Cli as clap::Parser>::try_parse_from(
-            std::iter::once("snob".to_string()).chain(plan.args.iter().cloned()),
-        );
-        assert!(parsed.is_ok(), "{parsed:?}");
         assert!(!plan.binding("snob_posts").contains("secret"));
 
         let one = call("snob_posts", json!({"until": code, "pages": 1})).unwrap();

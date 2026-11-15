@@ -5,10 +5,8 @@
 //! crate that draws on or reads from a terminal, nor on `snob-mcp` or
 //! `snob-cli`, so an app can link it in process; `snob-mcp` does not depend on
 //! `snob-cli`; and `snob-ig` does not depend on `snob-store`. A dependency is
-//! one of `[dependencies]`, `[build-dependencies]` or a target's; the engine's
-//! dev-dependencies are held to the same, and `snob-mcp`'s test-only cycle on
-//! `snob-cli` (its tests parse what it builds with the command line's
-//! grammar) is the one dev-dependency allowed to point up.
+//! one of `[dependencies]`, `[build-dependencies]` or a target's, and a
+//! dev-dependency is held to the same: no test points up either.
 
 mod common;
 use common::repo_root;
@@ -96,7 +94,12 @@ fn broken(engine: &Named, mcp: &Named, ig: &Named) -> Vec<String> {
             broken.push(format!("snob-engine depends on {name}"));
         }
     }
-    if mcp.build.iter().any(|name| name == "snob-cli") {
+    if mcp
+        .build
+        .iter()
+        .chain(&mcp.dev)
+        .any(|name| name == "snob-cli")
+    {
         broken.push("snob-mcp depends on snob-cli".to_string());
     }
     if ig
@@ -155,7 +158,7 @@ snob-cli.workspace = true
     assert_eq!(named.dev, ["snob-cli"]);
 }
 
-/// Each way up is caught, and the one allowed cycle is not.
+/// Each way up is caught, a test's included.
 #[test]
 fn a_dependency_that_points_up_is_caught() {
     let of = |build: &[&str], dev: &[&str]| Named {
@@ -165,7 +168,7 @@ fn a_dependency_that_points_up_is_caught() {
     let clean = || {
         (
             of(&["snob-core"], &[]),
-            of(&["snob-engine"], &["snob-cli"]),
+            of(&["snob-engine"], &["tempfile"]),
             of(&[], &[]),
         )
     };
@@ -188,6 +191,12 @@ fn a_dependency_that_points_up_is_caught() {
         (
             clean().0,
             of(&["snob-cli"], &[]),
+            clean().2,
+            "snob-mcp depends on snob-cli",
+        ),
+        (
+            clean().0,
+            of(&[], &["snob-cli"]),
             clean().2,
             "snob-mcp depends on snob-cli",
         ),

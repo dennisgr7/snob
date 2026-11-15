@@ -18,19 +18,19 @@
 // What the server reads of the engine, by the names it has always used.
 use snob_engine::{exe, exit, jobs, posts, random, sentences};
 
-pub mod answer;
+pub(crate) mod answer;
 pub mod args;
 pub mod child;
 pub mod config;
 #[cfg(feature = "http")]
 pub mod http;
-pub mod job;
+pub(crate) mod job;
 #[cfg(feature = "http")]
 pub mod key;
-pub mod limits;
-pub mod pages;
-pub mod seal;
-pub mod tasks;
+pub(crate) mod limits;
+pub(crate) mod pages;
+pub(crate) mod seal;
+pub(crate) mod tasks;
 pub mod tools;
 mod ui;
 
