@@ -1,18 +1,15 @@
-//! Writing the result.
+//! Writing the result: which format, and each format's rendering. Where the
+//! bytes go, a file or standard output, is the engine's (`snob_engine::files`).
 
 use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 use snob_core::model::User;
+use snob_engine::files::{create_new, file_named, write_bytes};
 
 use crate::cli::Format;
 use crate::ui;
-
-pub use snob_engine::files::{
-    Replacing, StdoutSink, create_new, default_path, file_named, is_stdout, one_file_to_stdout,
-    stdout_download_ahead, usable_stem, write_bytes,
-};
 
 /// The six JSON keys of `User`, in the order the struct declares them: the
 /// column set every row format shares.

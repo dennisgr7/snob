@@ -4,6 +4,11 @@
 use std::path::Path;
 
 use anyhow::Result;
+use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::media;
+use snob_engine::posts::{
+    self, CommentLine, Comments, Post, Thread, comment_json, post_json, thread_document,
+};
 use snob_ig::shortcode::Shortcode;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
@@ -11,14 +16,8 @@ use snob_store::secrets::SecretStore;
 use crate::cli::{Format, PostArgs, StoryFormat};
 use crate::commands::common;
 use crate::commands::posts::{download_items, post_text, videos_of};
-use crate::output::{self, Presentation};
-use crate::report;
+use crate::output::Presentation;
 use crate::ui;
-use snob_engine::exit::{ExitCode, ExitError};
-use snob_engine::media;
-use snob_engine::posts::{
-    self, CommentLine, Comments, Post, Thread, comment_json, post_json, thread_document,
-};
 
 pub async fn run(args: PostArgs, store: SecretStore, paths: &AccountPaths) -> Result<ExitCode> {
     // Before anything is opened or asked: a link that names no post costs
@@ -30,7 +29,13 @@ pub async fn run(args: PostArgs, store: SecretStore, paths: &AccountPaths) -> Re
         )
     })?;
     args.action.refuse_stdout_download_early()?;
-    if args.json && args.action.output.as_deref().is_some_and(output::is_stdout) {
+    if args.json
+        && args
+            .action
+            .output
+            .as_deref()
+            .is_some_and(snob_engine::files::is_stdout)
+    {
         return Err(ExitError::new(
             ExitCode::Error,
             "--json prints what was saved on standard output, so the files cannot go there \
@@ -247,7 +252,7 @@ pub fn comment_line(comment: &CommentLine) -> String {
         } else {
             &comment.text
         },
-        report::dated(comment.at)
+        snob_engine::sentences::dated(comment.at)
     );
     if comment.likes > 0 {
         line.push_str(&match comment.likes {

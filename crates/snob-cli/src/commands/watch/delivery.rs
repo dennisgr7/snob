@@ -3,6 +3,8 @@
 use anyhow::{Context, Result, bail};
 use snob_core::secret::Secret;
 use snob_core::{Epoch, Pk};
+use snob_engine::engine::watch::TickReport;
+use snob_engine::watch::webhook::{self, Attempt, Webhook, WebhookClient};
 use snob_ig::pace::CancelToken;
 use snob_store::config::{WatchConfig, WebhookConfig, WebhookFormat};
 use snob_store::secrets::{Kind, SecretStore, Stored};
@@ -10,9 +12,7 @@ use snob_store::store::{Store, deliveries, watch::Queued};
 use url::Url;
 
 use crate::cli::WebhookArgs;
-use crate::{report, ui};
-use snob_engine::engine::watch::TickReport;
-use snob_engine::watch::webhook::{self, Attempt, Webhook, WebhookClient};
+use crate::ui;
 
 use super::wire::{event, outgoing, payload};
 
@@ -461,7 +461,7 @@ fn describe_when(at: Epoch, now: Epoch) -> String {
     if at > now {
         format!(
             "the first run after {} tries it again",
-            report::stored_on(at)
+            snob_engine::sentences::stored_on(at)
         )
     } else {
         "the next run tries it again".to_string()

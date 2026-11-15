@@ -3,15 +3,15 @@
 
 use anyhow::Result;
 use snob_core::{Epoch, Pk};
+use snob_engine::account::Unresolved;
+use snob_engine::app::Viewer;
+use snob_engine::exit::ExitCode;
 use snob_store::paths::AppPaths;
 use snob_store::registry::Registry;
 use snob_store::secrets::SecretStore;
 
 use crate::cli::{AccountCommand, AccountListArgs, AccountUseArgs};
 use crate::ui;
-use snob_engine::account::Unresolved;
-use snob_engine::app::Viewer;
-use snob_engine::exit::ExitCode;
 
 /// Runs `account list` or `account use`.
 pub fn run(
@@ -56,7 +56,7 @@ fn list(
         Err(refused) => return Err(refused.into_error()),
     };
     if let Some(viewer) = &viewer {
-        crate::report::act_as(viewer.clone());
+        snob_engine::sentences::act_as(viewer.clone());
     }
 
     let active = registry.active_account().map(|account| account.pk);
@@ -163,7 +163,7 @@ fn table(rows: &[Row]) -> String {
                 row.pk.to_string(),
                 row.session.unwrap_or("no session").to_string(),
                 row.last_used
-                    .map_or_else(|| "never".to_string(), crate::report::dated),
+                    .map_or_else(|| "never".to_string(), snob_engine::sentences::dated),
             ]
         })
         .collect();

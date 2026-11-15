@@ -243,15 +243,14 @@ pub fn warn(message: &str) {
     eprintln!("warning: {message}");
 }
 
-pub use snob_engine::files::say_line;
-
-/// `println!`, through [`say_line`]. Same arguments, same shape, one difference.
+/// `println!`, through `snob_engine::files::say_line`. Same arguments, same
+/// shape, one difference.
 macro_rules! say {
     () => {
-        $crate::ui::say_line(format_args!(""))
+        ::snob_engine::files::say_line(format_args!(""))
     };
     ($($arg:tt)*) => {
-        $crate::ui::say_line(format_args!($($arg)*))
+        ::snob_engine::files::say_line(format_args!($($arg)*))
     };
 }
 pub(crate) use say;

@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use snob_core::Pk;
+use snob_engine::exit::ExitCode;
 use snob_store::config;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
@@ -9,7 +10,6 @@ use snob_store::secrets::SecretStore;
 use crate::cli::WatchOnceArgs;
 use crate::report;
 use crate::ui;
-use snob_engine::exit::ExitCode;
 
 use super::delivery::delivery_from;
 use super::run::{Printing, run_viewers, settle_all};
@@ -95,7 +95,7 @@ pub(super) async fn once(
     // spent requests, and this is the mode somebody is watching.
     ui::info(&format!(
         "{} - {}",
-        report::stored_on(snob_core::clock::now()),
+        snob_engine::sentences::stored_on(snob_core::clock::now()),
         report::requests(outcome.spent)
     ));
 
@@ -159,7 +159,10 @@ fn due_for(
         ))),
         Due::At(at) => {
             use std::io::IsTerminal as _;
-            let said = format!("Not due yet: the next run is on {}.", report::stored_on(at));
+            let said = format!(
+                "Not due yet: the next run is on {}.",
+                snob_engine::sentences::stored_on(at)
+            );
             if std::io::stderr().is_terminal() {
                 ui::info(&said);
             } else {

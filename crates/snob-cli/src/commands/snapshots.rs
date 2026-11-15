@@ -7,13 +7,13 @@
 use anyhow::Result;
 use snob_core::Pk;
 use snob_core::model::{ListKind, printable};
+use snob_engine::exit::{ExitCode, ExitError};
 use snob_store::paths::AccountPaths;
 use snob_store::store::{Store, accounts, snapshots};
 
 use crate::cli::SnapshotsArgs;
 use crate::output::grid::{Grid, Value};
 use crate::output::{self, Presentation};
-use snob_engine::exit::{ExitCode, ExitError};
 
 /// The account's database, read without writing, and the account a command is
 /// about in it: the viewer's own, or the one `target` names, found by the name
@@ -26,7 +26,8 @@ pub(crate) fn stored_account(
         return Err(nothing_here(target));
     };
     let Some(name) = target else {
-        let own = crate::report::acting_as().map_or_else(|| "your account".into(), |v| v.label());
+        let own = snob_engine::sentences::acting_as()
+            .map_or_else(|| "your account".into(), |v| v.label());
         return Ok((store, account.pk(), own));
     };
     let name = snob_engine::engine::target::clean(name);

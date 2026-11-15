@@ -3,14 +3,14 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
+use snob_engine::exit::ExitCode;
+use snob_engine::posts::MAX_POST_BYTES;
 use snob_ig::client::CdnClient;
 use snob_ig::error::IgError;
 
 use crate::cli::FetchArgs;
 use crate::output;
 use crate::ui;
-use snob_engine::exit::ExitCode;
-use snob_engine::posts::MAX_POST_BYTES;
 
 /// Fetches `args.url`, sending `--user-agent`, else the one `account_ua` reads
 /// off the account, else the installed browser's.
@@ -26,9 +26,12 @@ pub async fn run(
              HTTPS; this is {what}"
         ));
     }
-    let to_stdout_asked = args.output.as_deref().is_some_and(output::is_stdout);
+    let to_stdout_asked = args
+        .output
+        .as_deref()
+        .is_some_and(snob_engine::files::is_stdout);
     if to_stdout_asked {
-        output::one_file_to_stdout(1)?;
+        snob_engine::files::one_file_to_stdout(1)?;
     }
 
     let given = args.user_agent.clone().filter(|ua| !ua.trim().is_empty());
@@ -54,7 +57,7 @@ pub async fn run(
         Some(path) => {
             // The user named it, so replacing what is there is their call;
             // but only with a file that arrived whole.
-            let mut file = output::Replacing::open(path)?;
+            let mut file = snob_engine::files::Replacing::open(path)?;
             cdn.download_to(&args.url, MAX_POST_BYTES, file.file())
                 .await
                 .map_err(explained)?;
@@ -72,7 +75,7 @@ pub async fn run(
 
 /// The file, streamed to standard output.
 async fn to_stdout(cdn: &CdnClient, url: &str) -> Result<()> {
-    let mut sink = output::StdoutSink::default();
+    let mut sink = snob_engine::files::StdoutSink::default();
     let streamed = cdn.download_to(url, MAX_POST_BYTES, &mut sink).await;
     sink.finish(streamed.map_err(explained))
 }
@@ -83,7 +86,7 @@ async fn to_named_file(cdn: &CdnClient, url: &url::Url) -> Result<PathBuf> {
     let (stem, from_address) = name_of(url);
     let dir = Path::new(".");
     let part = dir.join(format!("{stem}.{}.part", std::process::id()));
-    let mut file = output::create_new(&part)?;
+    let mut file = snob_engine::files::create_new(&part)?;
     let downloaded = match cdn
         .download_to(url.as_str(), MAX_POST_BYTES, &mut file)
         .await
@@ -101,7 +104,7 @@ async fn to_named_file(cdn: &CdnClient, url: &url::Url) -> Result<PathBuf> {
         .map_err(|e| anyhow!("could not finish writing {}: {e}", part.display()))
         .and_then(|()| {
             let extension = extension_for(&downloaded.head, from_address.as_deref());
-            output::default_path(dir, &stem, extension)
+            snob_engine::files::default_path(dir, &stem, extension)
         })
         .and_then(|name| {
             std::fs::rename(&part, &name)

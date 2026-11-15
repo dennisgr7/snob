@@ -1,12 +1,12 @@
 //! `snob watch diff`: what changed, out of storage, changing nothing.
 
 use anyhow::Result;
+use snob_engine::exit::ExitCode;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
 use crate::cli::WatchDiffArgs;
 use crate::commands::common;
-use snob_engine::exit::ExitCode;
 
 use super::say::describe;
 use super::wire::stored_json;
@@ -17,7 +17,7 @@ pub(super) fn diff(
     secrets: SecretStore,
     account: Option<&AccountPaths>,
 ) -> Result<ExitCode> {
-    let account = account.ok_or_else(common::no_session)?;
+    let account = account.ok_or_else(snob_engine::sentences::no_session)?;
     // Nothing is fetched here, so there is no bar to draw.
     let app = common::app(&secrets.session_of(account), account, false)?;
 

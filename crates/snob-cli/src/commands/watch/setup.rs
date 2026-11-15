@@ -5,6 +5,8 @@ use snob_core::model::printable;
 use snob_core::secret::Secret;
 use snob_core::{Epoch, Pk};
 use snob_core::{duration, watch::schedule};
+use snob_engine::engine::check::Verdict;
+use snob_engine::exit::{ExitCode, ExitError};
 use snob_store::config::{self, WatchConfig};
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::registry::Registry;
@@ -12,8 +14,6 @@ use snob_store::secrets::{Kind, SecretStore};
 
 use crate::cli::WatchSetupArgs;
 use crate::ui;
-use snob_engine::engine::check::Verdict;
-use snob_engine::exit::{ExitCode, ExitError};
 
 use super::preflight::{baseline_now, describe_check, preflight};
 use super::schedule::{calendar_from, schedule_from};

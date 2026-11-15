@@ -9,6 +9,10 @@ use anyhow::Result;
 use snob_core::model::{ListKind, printable};
 use snob_core::watch::{RunOutcome, schedule};
 use snob_core::{Epoch, Pk};
+use snob_engine::app::Viewer;
+use snob_engine::engine::check::Verdict;
+use snob_engine::engine::watch::Watched;
+use snob_engine::exit::ExitCode;
 use snob_store::config::{self, WatchConfig};
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::registry::Registry;
@@ -17,10 +21,6 @@ use snob_store::store::{Store, deliveries, watch as watch_store};
 
 use crate::cli::WatchStatusArgs;
 use crate::report;
-use snob_engine::app::Viewer;
-use snob_engine::engine::check::Verdict;
-use snob_engine::engine::watch::Watched;
-use snob_engine::exit::ExitCode;
 
 use super::schedule::schedule_from;
 use super::watched::watched_from;
@@ -329,7 +329,10 @@ impl Recorded {
             let mut ran = false;
             for RunOf { run, who, .. } in self.runs.iter().filter(|of| of.viewer.pk == viewer.pk) {
                 ran = true;
-                let mut line = format!("  {who} last ran on {}", report::stored_on(run.started_at));
+                let mut line = format!(
+                    "  {who} last ran on {}",
+                    snob_engine::sentences::stored_on(run.started_at)
+                );
                 if let Some(outcome) = &run.outcome
                     && *outcome != RunOutcome::Ok
                 {
@@ -359,8 +362,8 @@ impl Recorded {
                         .unwrap_or_default();
                     lines.push(format!(
                         "    It was due on {} and began on {}{late}.",
-                        report::stored_on(run.due_at.unwrap_or_default()),
-                        report::stored_on(timing.began_at),
+                        snob_engine::sentences::stored_on(run.due_at.unwrap_or_default()),
+                        snob_engine::sentences::stored_on(timing.began_at),
                     ));
                 }
             }
@@ -375,7 +378,7 @@ impl Recorded {
                 lines.push(format!(
                     "  {who}: {} last reported on {}",
                     mark.kind,
-                    report::stored_on(mark.compared_at)
+                    snob_engine::sentences::stored_on(mark.compared_at)
                 ));
             }
             for PostsOf {
@@ -384,13 +387,16 @@ impl Recorded {
             {
                 reported = true;
                 let last = match mark.reported_at {
-                    Some(at) => format!("a new one last reported on {}", report::stored_on(at)),
+                    Some(at) => format!(
+                        "a new one last reported on {}",
+                        snob_engine::sentences::stored_on(at)
+                    ),
                     None => "none new reported yet".to_string(),
                 };
                 let mut line = format!(
                     "  {who}: posts seen since {}, last read on {}, {last}",
-                    report::stored_on(mark.baseline_at),
-                    report::stored_on(mark.read_at),
+                    snob_engine::sentences::stored_on(mark.baseline_at),
+                    snob_engine::sentences::stored_on(mark.read_at),
                 );
                 if *owed > 0 {
                     line.push_str(&format!(
@@ -555,7 +561,7 @@ fn health(
         at_least(Verdict::Warned);
         notes.push(format!(
             "the run that is due is waiting for power: the battery has been critical since {}",
-            report::stored_on(wait.since)
+            snob_engine::sentences::stored_on(wait.since)
         ));
     } else if let Some(gap) = gap
         && let Some(newest) = runs.iter().map(|r| r.run.started_at).max()
@@ -573,13 +579,13 @@ fn health(
             at_least(Verdict::Failed);
             notes.push(format!(
                 "it has not run since {}, which is {missed} scheduled runs ago",
-                report::stored_on(newest)
+                snob_engine::sentences::stored_on(newest)
             ));
         } else if missed >= 1 {
             at_least(Verdict::Warned);
             notes.push(format!(
                 "it has not run since {}, and one was due by now",
-                report::stored_on(newest)
+                snob_engine::sentences::stored_on(newest)
             ));
         }
     }
@@ -739,7 +745,7 @@ fn next_run(paths: &AppPaths, config: &WatchConfig, now: Epoch) -> Option<NextRu
 
 fn next_line(next: NextRun) -> String {
     match next {
-        NextRun::At(at) => format!("Next run: {}.", report::stored_on(at)),
+        NextRun::At(at) => format!("Next run: {}.", snob_engine::sentences::stored_on(at)),
         NextRun::Now => {
             "Next run: due now, at the next start of the monitor or of its timer.".to_string()
         }

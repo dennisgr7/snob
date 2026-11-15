@@ -2,13 +2,12 @@
 //! sentences the engine returns are its own (`sentences`), named here too.
 
 use snob_core::model::{ListKind, StopReason, User, printable};
+use snob_engine::app::Viewer;
+use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::sentences::{acting_as, advice_for, and_list, cooldown_ends_at, stored_on};
 use snob_ig::pager::Warning;
 
 use crate::ui::theme::Role;
-use snob_engine::app::Viewer;
-use snob_engine::exit::{ExitCode, ExitError};
-
-pub use snob_engine::sentences::*;
 
 /// What a machine with no `watch.toml` is told, by both things that look: `snob
 /// watch check`, through `commands::watch::say::problem_line`, and
@@ -462,6 +461,10 @@ mod tests {
     use snob_core::{Epoch, EpochMs};
     use snob_engine::app::Held;
     use snob_engine::engine::{ListOutcome, Provenance};
+    use snob_engine::sentences::{
+        Blocked, refuse_cooldown_mid_walk, refuse_different_moments, refuse_in_cooldown,
+        refuse_nothing_stored, what_instagram_said,
+    };
 
     /// What `watch once <name> --webhook` says before its question names the
     /// account and where its changes go, the secret path of a Slack webhook

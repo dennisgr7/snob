@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use snob_core::Pk;
+use snob_engine::app::Viewer;
+use snob_engine::exit::{ExitCode, ExitError};
 use snob_store::paths::{self, AccountPaths, AppPaths, JobId};
 use snob_store::registry::Registry;
 use snob_store::secrets::{Kind, SecretStore};
@@ -11,8 +13,6 @@ use snob_store::store::shared::Shared;
 
 use crate::cli::PurgeArgs;
 use crate::ui;
-use snob_engine::app::Viewer;
-use snob_engine::exit::{ExitCode, ExitError};
 
 /// What a purge would remove, worked out before anything is deleted.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -135,7 +135,7 @@ pub fn survey(store: &SecretStore, app_paths: &AppPaths) -> Plan {
 /// The jobs of `account`'s not over yet, read without writing anything.
 fn running_jobs(account: &AccountPaths) -> Vec<JobId> {
     let now = snob_core::clock::now_ms().get();
-    crate::jobs::all(account, now)
+    snob_engine::jobs::all(account, now)
         .unwrap_or_default()
         .into_iter()
         .filter(|seen| !seen.status.is_over())
@@ -413,7 +413,7 @@ fn ask(args: &PurgeArgs, plan: &Plan, someone_is_there: bool) -> Result<Option<E
     if !args.consent.yes && !someone_is_there {
         // The shared refusal, which is where the exit code and the "advice in
         // the message, never on a hint" rule live.
-        return Err(crate::report::refuse_unattended(
+        return Err(snob_engine::sentences::refuse_unattended(
             "nothing was deleted: it needs confirmation".to_string(),
             match &plan.only {
                 Some(account) => format!(

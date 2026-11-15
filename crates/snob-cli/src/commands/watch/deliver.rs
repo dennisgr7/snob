@@ -3,6 +3,7 @@
 //! **No request to Instagram, and no session.**
 
 use anyhow::Result;
+use snob_engine::exit::{ExitCode, ExitError};
 use snob_store::config;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
@@ -10,7 +11,6 @@ use snob_store::store::{Store, deliveries};
 
 use crate::cli::WatchDeliverArgs;
 use crate::ui;
-use snob_engine::exit::{ExitCode, ExitError};
 
 use super::delivery::delivery_from;
 use super::run::{account_databases, drain_all, settle_all};

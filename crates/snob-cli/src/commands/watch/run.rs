@@ -9,6 +9,9 @@
 use anyhow::Result;
 use snob_core::model::printable;
 use snob_core::{Epoch, Pk};
+use snob_engine::app::{App, Viewer};
+use snob_engine::engine::watch::{RunTiming, TickReport, Watched, group_by_viewer};
+use snob_engine::exit::{ExitCode, ExitError};
 use snob_ig::pace::CancelToken;
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::registry::Registry;
@@ -18,9 +21,6 @@ use snob_store::store::shared::Shared;
 
 use crate::report;
 use crate::ui;
-use snob_engine::app::{App, Viewer};
-use snob_engine::engine::watch::{RunTiming, TickReport, Watched, group_by_viewer};
-use snob_engine::exit::{ExitCode, ExitError};
 
 use super::delivery::{Delivery, deliver, drain};
 use super::say::{describe_tick, refusal_line, say_what_was_given_up};
@@ -249,7 +249,7 @@ fn skipped_because(as_whom: Option<&str>, why: &str, entries: &[Watched]) -> Exi
         })
         .collect();
     let verb = if names.len() > 1 { "are" } else { "is" };
-    let named = crate::report::and_list(&names).unwrap_or_else(|| "nothing".to_string());
+    let named = snob_engine::sentences::and_list(&names).unwrap_or_else(|| "nothing".to_string());
     let message = match as_whom {
         Some(viewer) => format!("{viewer}: {why}, so {named} {verb} skipped this run"),
         None => format!("{why}, so {named} {verb} skipped this run"),
@@ -377,7 +377,7 @@ impl Tally {
             report::print_error_as(&earlier, printing.wording(), viewer.as_ref());
         }
         let failed = failed.map(|(viewer, e)| {
-            report::set_acting_as(viewer);
+            snob_engine::sentences::set_acting_as(viewer);
             e
         });
         RunSummary {

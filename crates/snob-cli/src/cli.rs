@@ -75,7 +75,7 @@ pub struct Cli {
     /// Say how a walk goes as one JSON line on standard error per page and
     /// per wait, instead of drawing a bar
     // Hidden: plumbing for a job's supervisor (`jobs/supervise.rs`), which
-    // reads the walk's progress back from its log (`jobs::show`).
+    // reads the walk's progress back from its log (`snob_engine::jobs::show`).
     #[arg(long, global = true, hide = true)]
     pub progress_json: bool,
 
@@ -272,7 +272,7 @@ pub(crate) fn username(value: &str) -> Result<String, String> {
 }
 
 /// The line of [`EXAMPLES`] that announces `SNOB_MCP_KEY`, in a build that
-/// reads it (`commands::mcp::key`, feature `mcp-http`) and in no other: a
+/// reads it (`snob_mcp::key`, feature `mcp-http`) and in no other: a
 /// build without the HTTP half has no key to read.
 #[cfg(feature = "mcp-http")]
 macro_rules! mcp_key_variable {
@@ -758,7 +758,7 @@ pub enum Command {
 
     /// A job's own processes (`jobs`): started by the commands and by
     /// `snob mcp`; nobody types them.
-    #[command(name = crate::jobs::start::COMMAND, hide = true, subcommand)]
+    #[command(name = snob_engine::jobs::COMMAND, hide = true, subcommand)]
     Job(JobCommand),
 }
 
@@ -2127,12 +2127,12 @@ impl MediaActionArgs {
             .then_some(self.output.as_deref())
             .flatten()
             // `-o -` is standard output, where a listing goes anyway.
-            .filter(|path| !crate::output::is_stdout(path))
+            .filter(|path| !snob_engine::files::is_stdout(path))
     }
 
     /// How many files `-d` names, at least, before the listing is read: the
     /// count of the numbers given, or `None` for `all` or no `-d`. What
-    /// `output::stdout_download_ahead` refuses `-o -` on before a request.
+    /// `snob_engine::files::stdout_download_ahead` refuses `-o -` on before a request.
     pub fn files_named(&self) -> Option<usize> {
         match self.selection()? {
             DownloadSelection::These(numbers) => Some(numbers.len()),
@@ -2148,7 +2148,7 @@ impl MediaActionArgs {
         if self.selection().is_none() {
             return Ok(());
         }
-        crate::output::stdout_download_ahead(self.output.as_deref(), self.files_named())
+        snob_engine::files::stdout_download_ahead(self.output.as_deref(), self.files_named())
     }
 
     /// Whether this run takes the terminal over. The order is
@@ -2388,13 +2388,13 @@ pub struct PostArgs {
 
     /// Start no further file once this many bytes were fetched
     // Hidden: plumbing for `snob mcp`, which bounds what one call of an agent's
-    // may fetch (`commands::mcp::tools::SAVE_AT_MOST`).
+    // may fetch (`snob_mcp::tools::SAVE_AT_MOST`).
     #[arg(long, hide = true, requires = "json", value_name = "BYTES")]
     pub save_at_most: Option<u64>,
 
     /// Start no further file once the downloads have taken this long
     // Hidden: plumbing for `snob mcp`, as `--save-at-most`
-    // (`commands::mcp::tools::SAVE_WITHIN`).
+    // (`snob_mcp::tools::SAVE_WITHIN`).
     #[arg(
         long,
         hide = true,
@@ -2522,7 +2522,7 @@ pub struct FollowArgs {
 ///
 /// **Hidden: plumbing for `snob mcp`**, which adds them to a child's command
 /// line after the yes it obtained, and after what the yes is bound to was
-/// taken (`commands::mcp::tools::Plan::command_line`). A command a person
+/// taken (`snob_mcp::tools::Plan::command_line`). A command a person
 /// types records nothing and counts toward no cap.
 #[derive(Args, Debug, Clone, Default)]
 pub struct AgentArgs {
@@ -2537,7 +2537,7 @@ pub struct AgentArgs {
     pub confirmed_for: Option<String>,
 }
 
-/// How `snob mcp` obtained a yes (`commands::mcp`, `consent`).
+/// How `snob mcp` obtained a yes (`snob_mcp`, `consent`).
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfirmedVia {
     /// A form the client showed, answered in the call (2026-07-28 and later).

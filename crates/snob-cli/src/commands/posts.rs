@@ -21,6 +21,11 @@ use std::path::Path;
 use anyhow::{Result, anyhow};
 use comfy_table::Cell;
 use snob_core::model::printable;
+use snob_engine::exit::ExitCode;
+use snob_engine::media;
+use snob_engine::posts::{
+    self, Fetched, Grid, GridRead, Post, Videos, files_of, post_json, read_grid, read_tab,
+};
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
@@ -28,16 +33,9 @@ use crate::cli::{
     DownloadSelection, Format, MediaActionArgs, PostsArgs, Quality, StoryFormat, VideoArgs,
 };
 use crate::commands::common;
-use crate::output;
 use crate::output::Presentation;
 use crate::output::media::empty_document;
-use crate::report;
 use crate::ui;
-use snob_engine::exit::ExitCode;
-use snob_engine::media;
-use snob_engine::posts::{
-    self, Fetched, Grid, GridRead, Post, Videos, files_of, post_json, read_grid, read_tab,
-};
 
 pub async fn run(args: PostsArgs, store: SecretStore, paths: &AccountPaths) -> Result<ExitCode> {
     args.action.refuse_stdout_download_early()?;
@@ -239,7 +237,11 @@ pub(crate) fn videos_of(video: &VideoArgs, action: &MediaActionArgs) -> Result<V
     if action.selection().is_none() {
         return Ok(Videos::Compat { say_how: false });
     }
-    if action.output.as_deref().is_some_and(output::is_stdout) {
+    if action
+        .output
+        .as_deref()
+        .is_some_and(snob_engine::files::is_stdout)
+    {
         if video.quality == Some(Quality::Best) {
             anyhow::bail!(
                 "-o - streams one file as it arrives, and a video at its best is two \
@@ -412,7 +414,7 @@ pub fn about(post: &Post) -> Vec<String> {
     // A tab's post carries no date: its place, if any, stands alone.
     let mut when: Vec<String> = Vec::new();
     if post.taken_at != snob_core::Epoch::default() {
-        when.push(report::dated(post.taken_at));
+        when.push(snob_engine::sentences::dated(post.taken_at));
     }
     when.extend(post.location.clone());
     if !when.is_empty() {

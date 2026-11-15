@@ -13,6 +13,10 @@ use anyhow::{Context, Result};
 use snob_core::Pk;
 use snob_core::filters::{Attribute, Filter, parse_username_list};
 use snob_core::model::{ListKind, User};
+use snob_engine::app::{App, Viewer};
+use snob_engine::engine::{self, ListOutcome};
+use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::sentences::{no_session, signed_out_here};
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::secrets::{SecretStore, SessionStore};
 
@@ -22,12 +26,6 @@ use crate::cli::{
 use crate::output::{self, Presentation, Rendered};
 use crate::report;
 use crate::ui::accounts::Browsed;
-use snob_engine::app::{App, Viewer};
-use snob_engine::engine::{self, ListOutcome};
-use snob_engine::exit::{ExitCode, ExitError};
-
-pub use snob_engine::app::{client_label, held_in, standing};
-pub use snob_engine::sentences::{no_session, signed_out_here};
 
 /// The three forms either media listing has, and the refusal for the others —
 /// so `-o out.xlsx` cannot fall through to a table with a spreadsheet's name on
@@ -180,7 +178,7 @@ pub fn write_cap_reached(writes: u32, free_at: snob_core::EpochMs) -> anyhow::Er
     .with_hint(format!(
         "the next is allowed {}; the person can still follow and unfollow in their own \
          terminal, or start the server with a higher --max-writes-per-day",
-        report::stored_on(free_at.to_epoch_not_before())
+        snob_engine::sentences::stored_on(free_at.to_epoch_not_before())
     ))
     .into()
 }
@@ -213,7 +211,7 @@ pub fn alone_ahead(
     }
     // A job's walk holds the account for as long as it walks, from before
     // its walk takes `spend.lock` (queued) to its end.
-    if let Some(going) = crate::jobs::all(paths, now.get())?
+    if let Some(going) = snob_engine::jobs::all(paths, now.get())?
         .into_iter()
         .find(|seen| !seen.status.is_over())
     {
@@ -334,7 +332,7 @@ pub fn refuse_during_cooldown(app: &App, doing: &str) -> Result<()> {
 pub fn in_cooldown(held: &snob_engine::app::Held, doing: &str) -> anyhow::Error {
     ExitError::new(
         ExitCode::RateLimited,
-        format!("{}, so {doing}", report::held_until(held)),
+        format!("{}, so {doing}", snob_engine::sentences::held_until(held)),
     )
     .with_cooldown_until(held.until_ms)
     .into()
@@ -360,7 +358,7 @@ pub async fn switch<T>(
 ) -> Result<Switched<(Box<App>, T)>> {
     let refused = |e: anyhow::Error| {
         // `App::open` made `to` the account a failure is told as.
-        report::act_as(from.clone());
+        snob_engine::sentences::act_as(from.clone());
         Switched::Refused(format!("Could not switch to {}: {e}", to.label()))
     };
     let account = paths.account(to.pk);
@@ -682,7 +680,9 @@ mod tests {
             &viewer(7, "me"),
             &viewer(8, "work"),
             false,
-            async |_: &mut App| -> Result<()> { Err(report::refuse_declined("@me")) },
+            async |_: &mut App| -> Result<()> {
+                Err(snob_engine::sentences::refuse_declined("@me"))
+            },
         )
         .await;
         store.delete().unwrap();

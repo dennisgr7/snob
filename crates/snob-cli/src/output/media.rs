@@ -5,13 +5,13 @@ use std::path::Path;
 
 use anyhow::Result;
 use comfy_table::{ContentArrangement, Table, presets};
+use snob_engine::exit::ExitCode;
+use snob_engine::media::{Saved, Story, bytes_of, download_many, save_story};
 use snob_ig::client::IgClient;
 
 use crate::cli::{DownloadSelection, Format};
 use crate::output::{self, Presentation, Rendered};
 use crate::ui;
-use snob_engine::exit::ExitCode;
-use snob_engine::media::{Saved, Story, bytes_of, download_many, save_story};
 
 /// Writes a listing and, at a terminal, the hint about what to do with it.
 pub(crate) fn print_listing(
@@ -107,9 +107,9 @@ pub(crate) async fn download_selected(
     no_such: impl Fn(usize) -> anyhow::Error,
 ) -> Result<ExitCode> {
     let numbers = numbers_of(selection, items.len(), &no_such)?;
-    let to_stdout = destination.is_some_and(output::is_stdout);
+    let to_stdout = destination.is_some_and(snob_engine::files::is_stdout);
     if to_stdout {
-        output::one_file_to_stdout(numbers.len())?;
+        snob_engine::files::one_file_to_stdout(numbers.len())?;
     }
     let [number] = numbers[..] else {
         return download_many(client, stem_base, items.to_vec(), numbers, destination).await;
@@ -123,7 +123,7 @@ pub(crate) async fn download_selected(
         // `-o -`: the file itself, and nothing said about where it went.
         Some(_) if to_stdout => {
             let bytes = bytes_of(&client, story).await?;
-            output::write_bytes(&bytes, None)?;
+            snob_engine::files::write_bytes(&bytes, None)?;
         }
         // A directory that is there already: the file goes into it under the
         // listing's name, as several would.
@@ -137,7 +137,7 @@ pub(crate) async fn download_selected(
         // is downloading it again.
         Some(path) => {
             let bytes = bytes_of(&client, story).await?;
-            output::write_bytes(&bytes, Some(path))?;
+            snob_engine::files::write_bytes(&bytes, Some(path))?;
             ui::info(&format!("Saved {}", path.display()));
         }
         None => match save_story(&client, &stem_base, items, number, Path::new(".")).await? {

@@ -336,13 +336,13 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     #[cfg(feature = "mcp")]
     if let Command::Mcp(args) = &cli.command {
         return match &args.command {
-            Some(snob_cli::cli::McpCommand::Config(config)) => commands::mcp::config::run(
+            Some(snob_cli::cli::McpCommand::Config(config)) => snob_mcp::config::run(
                 config,
                 mcp_globals(&cli, cli.max_wait)?,
-                cli.max_wait.unwrap_or(commands::mcp::MAX_WAIT),
+                cli.max_wait.unwrap_or(snob_mcp::MAX_WAIT),
             ),
             // The key is the machine's, in the keyring whatever
-            // `--no-keyring` says (`commands::mcp::key`); a sandbox's under
+            // `--no-keyring` says (`snob_mcp::key`); a sandbox's under
             // its own name, like everything else it keeps there.
             #[cfg(feature = "mcp-http")]
             Some(snob_cli::cli::McpCommand::Key(key)) => {
@@ -351,12 +351,12 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     Some(service) => store.with_service(service),
                     None => store,
                 };
-                commands::mcp::key::run(key, &store)
+                snob_mcp::key::run(key, &store)
             }
             None => {
                 // `--max-wait` is the server's to hand each child, which
                 // waits as long as what it runs allows (`mcp::Waits`).
-                let launch = commands::mcp::child::Launch::new(
+                let launch = snob_mcp::child::Launch::new(
                     snob_engine::exe::program()?,
                     mcp_globals(&cli, None)?,
                 );
@@ -374,10 +374,10 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     .with_hint("unset SNOB_ACCOUNT for this server, or leave --any-account out")
                     .into());
                 }
-                let settings = commands::mcp::Settings {
+                let settings = snob_mcp::Settings {
                     writes: args.allow_writes,
                     any_account: args.any_account,
-                    pinned: pinned.and_then(commands::mcp::tools::acting_name),
+                    pinned: pinned.and_then(snob_mcp::tools::acting_name),
                     downloads: args.downloads_dir.clone(),
                     in_chat: args.confirm_in_chat,
                     writes_a_day: args.max_writes_per_day,
@@ -392,15 +392,14 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                         Some(service) => store.with_service(service),
                         None => store,
                     };
-                    let listen = commands::mcp::http::Listen {
+                    let listen = snob_mcp::http::Listen {
                         at,
                         public: args.public_url.clone(),
                         data_dir: paths.data_dir().to_path_buf(),
                     };
-                    return boxed(|| commands::mcp::http::serve(launch, settings, listen, &store))
-                        .await;
+                    return boxed(|| snob_mcp::http::serve(launch, settings, listen, &store)).await;
                 }
-                boxed(|| commands::mcp::serve(launch, settings)).await
+                boxed(|| snob_mcp::serve(launch, settings)).await
             }
         };
     }
@@ -500,14 +499,15 @@ async fn dispatch(
             &registry,
         )?;
         if let Some(found) = &found {
-            snob_cli::report::act_as(found.clone());
+            snob_engine::sentences::act_as(found.clone());
         }
         Ok::<_, anyhow::Error>(found.map(|found| paths.account(found.pk)))
     };
     // A command that has nothing to do without an account refuses as every
     // command does with no session.
-    let required =
-        || -> anyhow::Result<AccountPaths> { resolved()?.ok_or_else(commands::common::no_session) };
+    let required = || -> anyhow::Result<AccountPaths> {
+        resolved()?.ok_or_else(snob_engine::sentences::no_session)
+    };
     let session = |account: &AccountPaths| store.session_of(account);
 
     // Whether this run was told which account, rather than left to the
@@ -536,7 +536,7 @@ async fn dispatch(
                     &registry,
                 ) {
                     Ok(found) => {
-                        snob_cli::report::act_as(found.clone());
+                        snob_engine::sentences::act_as(found.clone());
                         Some(found)
                     }
                     Err(Unresolved::NoAccount | Unresolved::NoneChosen) => None,
@@ -985,7 +985,7 @@ mod mcp_tests {
             .expect("the limit is passed on");
         assert_eq!(globals[at + 1], "0s");
         // And handed by the server to every child, a job's walk included.
-        let waits = commands::mcp::Waits::given(cli.max_wait);
+        let waits = snob_mcp::Waits::given(cli.max_wait);
         assert_eq!(waits.call, std::time::Duration::ZERO);
         assert_eq!(waits.job, std::time::Duration::ZERO);
 
@@ -996,9 +996,9 @@ mod mcp_tests {
             !globals.iter().any(|arg| arg == "--max-wait"),
             "{globals:?}"
         );
-        let waits = commands::mcp::Waits::given(cli.max_wait);
-        assert_eq!(waits.call, commands::mcp::MAX_WAIT);
-        assert_eq!(waits.job, commands::mcp::JOB_MAX_WAIT);
+        let waits = snob_mcp::Waits::given(cli.max_wait);
+        assert_eq!(waits.call, snob_mcp::MAX_WAIT);
+        assert_eq!(waits.job, snob_mcp::JOB_MAX_WAIT);
     }
 }
 

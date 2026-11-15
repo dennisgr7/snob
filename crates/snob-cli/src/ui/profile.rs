@@ -18,6 +18,12 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Cell, Padding, Paragraph, Row, Table, TableState, Wrap};
 use snob_core::model::{ListKind, User, printable};
+use snob_engine::app::{App, Viewer};
+use snob_engine::engine;
+use snob_engine::exit::ExitCode;
+use snob_engine::files::ABANDONED_AFTER;
+use snob_engine::media::Story;
+use snob_engine::posts::Fetched;
 use snob_ig::client::IgClient;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
@@ -32,18 +38,13 @@ use crate::ui::browser::busy::Busy;
 use crate::ui::browser::input::{
     self, Action, Raw, Stopped, action_of, page, watching_cancel_keys,
 };
-use crate::ui::browser::scratch::{ABANDONED_AFTER, Scratch};
+use crate::ui::browser::scratch::Scratch;
 use crate::ui::help;
 use crate::ui::highlights::{Folder, empty_note, folder_title, keep_folder, stem_of, walk_in};
 use crate::ui::people::Shelf;
 use crate::ui::preview;
 use crate::ui::theme::Role;
 use crate::ui::tui::{self, Tui};
-use snob_engine::app::{App, Viewer};
-use snob_engine::engine;
-use snob_engine::exit::ExitCode;
-use snob_engine::media::Story;
-use snob_engine::posts::Fetched;
 
 /// How long a stored list may serve a click without a question: the default
 /// `--max-age` gives the list commands.

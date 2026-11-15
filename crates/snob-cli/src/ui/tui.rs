@@ -33,10 +33,10 @@ use ratatui::widgets::{
     ScrollbarOrientation, ScrollbarState, Table,
 };
 use ratatui::{Terminal, TerminalOptions, Viewport};
+use snob_engine::app::Viewer;
 
 use crate::ui::graphics;
 use crate::ui::theme::Role;
-use snob_engine::app::Viewer;
 
 /// DEC private mode 2026, "synchronized output": between the two the terminal
 /// holds what it is sent and paints it in one go.

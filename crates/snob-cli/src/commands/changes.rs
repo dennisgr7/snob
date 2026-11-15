@@ -14,14 +14,13 @@ use serde_json::{Value as Json, json};
 use snob_core::model::{ListKind, User};
 use snob_core::watch::{ListDiff, Rename};
 use snob_core::{Epoch, Pk};
+use snob_engine::exit::{ExitCode, ExitError};
 use snob_store::paths::AccountPaths;
 use snob_store::store::{Store, snapshots, watch as watch_store};
 
 use crate::cli::{ChangesArgs, Format};
 use crate::output::grid::{Grid, Value};
 use crate::output::{self, Presentation, Rendered};
-use crate::report;
-use snob_engine::exit::{ExitCode, ExitError};
 
 /// One list's comparison, or why there is none.
 struct Compared {
@@ -182,7 +181,9 @@ fn compare(
                             note = Some(format!(
                                 "no {kind} capture is that old; compared from the oldest one \
                                  stored, of {}",
-                                report::stored_on(oldest.taken_at.unwrap_or_default())
+                                snob_engine::sentences::stored_on(
+                                    oldest.taken_at.unwrap_or_default()
+                                )
                             ));
                         }
                         oldest
@@ -252,14 +253,14 @@ fn said(whose: &str, one: &Compared) -> String {
                 "{whose}'s {} list has no whole capture newer than the one of {} ({}), so \
                  there is nothing to compare it with yet; a later walk gives one.",
                 one.kind,
-                report::stored_on(capture.taken_at.unwrap_or_default()),
+                snob_engine::sentences::stored_on(capture.taken_at.unwrap_or_default()),
                 capture.id,
             ),
             Some((capture, Missing::Earlier)) => format!(
                 "{whose}'s {} list has no whole capture older than the one of {} ({}), so \
                  there is nothing to compare it with.",
                 one.kind,
-                report::stored_on(capture.taken_at.unwrap_or_default()),
+                snob_engine::sentences::stored_on(capture.taken_at.unwrap_or_default()),
                 capture.id,
             ),
             None => format!(
@@ -276,9 +277,9 @@ fn said(whose: &str, one: &Compared) -> String {
         one.diff.gained.len(),
         one.diff.lost.len(),
         one.renamed.len(),
-        report::stored_on(before.taken_at.unwrap_or_default()),
+        snob_engine::sentences::stored_on(before.taken_at.unwrap_or_default()),
         before.id,
-        report::stored_on(after.taken_at.unwrap_or_default()),
+        snob_engine::sentences::stored_on(after.taken_at.unwrap_or_default()),
         after.id,
     )
 }

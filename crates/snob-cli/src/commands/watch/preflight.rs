@@ -3,15 +3,14 @@
 use anyhow::Result;
 use snob_core::Pk;
 use snob_core::model::printable;
+use snob_engine::app::App;
+use snob_engine::engine::watch::{Watched, group_by_viewer};
 use snob_store::config::{self, WatchConfig};
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::registry::Registry;
 use snob_store::secrets::SecretStore;
 
 use crate::cli::{WatchCheckArgs, WatchRunArgs, WebhookArgs};
-use crate::report;
-use snob_engine::app::App;
-use snob_engine::engine::watch::{Watched, group_by_viewer};
 
 use super::delivery::{delivery_from, run_id};
 use super::run::{Printing, run_viewers};
@@ -235,7 +234,7 @@ pub(super) fn describe_check(report: &snob_engine::engine::check::CheckReport) -
             What::Schedule { next } => (
                 "schedule".to_string(),
                 next.iter()
-                    .map(|at| report::stored_on(*at))
+                    .map(|at| snob_engine::sentences::stored_on(*at))
                     .collect::<Vec<_>>()
                     .join(", "),
             ),
@@ -275,7 +274,9 @@ pub(super) fn describe_check(report: &snob_engine::engine::check::CheckReport) -
             What::Baseline { taken_at } => (
                 "baseline".to_string(),
                 match taken_at.first() {
-                    Some((_, at)) => format!("stored on {}", report::stored_on(*at)),
+                    Some((_, at)) => {
+                        format!("stored on {}", snob_engine::sentences::stored_on(*at))
+                    }
                     None => "nothing stored yet".to_string(),
                 },
             ),
@@ -289,7 +290,8 @@ pub(super) fn describe_check(report: &snob_engine::engine::check::CheckReport) -
                     snob_engine::app::target_label(target.as_deref())
                 ),
                 [
-                    baseline_at.map(|at| format!("seen since {}", report::stored_on(at))),
+                    baseline_at
+                        .map(|at| format!("seen since {}", snob_engine::sentences::stored_on(at))),
                     save_to
                         .as_deref()
                         .map(|dir| format!("saved to {}", printable(dir))),

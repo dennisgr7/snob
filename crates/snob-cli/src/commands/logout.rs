@@ -7,13 +7,13 @@
 
 use anyhow::Result;
 use snob_core::Pk;
+use snob_engine::exit::ExitCode;
 use snob_store::paths::{self, AccountPaths, AppPaths};
 use snob_store::registry::Registry;
 use snob_store::secrets::SecretStore;
 
 use crate::cli::LogoutArgs;
 use crate::ui;
-use snob_engine::exit::ExitCode;
 
 /// Deletes the session and the browser profile of `account`, the account
 /// resolved for this run, or of every account with `--all` or with none

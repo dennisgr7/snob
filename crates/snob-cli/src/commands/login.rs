@@ -7,6 +7,9 @@
 
 use anyhow::{Context, Result, bail};
 use snob_core::session::Session;
+use snob_engine::app::Viewer;
+use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::{browser, cdp, interrupt};
 use snob_ig::login::{self, ValidationOutcome};
 use snob_ig::pace::CancelToken;
 use snob_store::paths::{self, AccountPaths, AppPaths};
@@ -15,11 +18,8 @@ use snob_store::secrets::{Backend, SecretStore};
 
 use crate::cli::LoginArgs;
 use crate::progress::Progress;
-use crate::report;
 use crate::ui::{self, LoginMethod};
-use snob_engine::app::Viewer;
-use snob_engine::exit::{ExitCode, ExitError};
-use snob_engine::{browser, cdp, interrupt};
+
 /// Logs in again as `renewing`, the account resolved for this run, or as
 /// another account.
 pub async fn run(
@@ -758,7 +758,7 @@ async fn finish(
                 "it was not checked: {}. Nothing is spent until then — not even the \
                  single request this would cost. Check it with \"snob whoami\" once it \
                  lifts.",
-                report::held_until(&held)
+                snob_engine::sentences::held_until(&held)
             ));
         }
     }

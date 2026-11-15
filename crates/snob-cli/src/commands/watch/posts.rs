@@ -13,16 +13,16 @@
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-
-use crate::ui;
 use snob_engine::app::App;
 use snob_engine::engine::watch::{TickReport, Watched};
 use snob_engine::engine::watch_posts::SavedPost;
 use snob_engine::exit::ExitCode;
 use snob_engine::posts::{Bounds, Post, Videos, files_of, save_telling};
 
+use crate::ui;
+
 /// The most one run fetches into an account's directory: 1 GiB, the ceiling one
-/// call of an agent has (`commands::mcp::tools::SAVE_AT_MOST`, kept apart
+/// call of an agent has (`snob_mcp::tools::SAVE_AT_MOST`, kept apart
 /// because that module is behind the `mcp` feature).
 pub(super) const SAVE_AT_MOST: u64 = 1 << 30;
 

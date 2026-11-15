@@ -8,6 +8,7 @@
 
 use anyhow::Result;
 use snob_core::Epoch;
+use snob_engine::exit::ExitCode;
 use snob_ig::client::IgClient;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
@@ -15,7 +16,6 @@ use snob_store::secrets::SecretStore;
 use crate::cli::WhoamiArgs;
 use crate::report;
 use crate::ui;
-use snob_engine::exit::ExitCode;
 
 /// Reports on the session of `account`, the account resolved for this run,
 /// if any account is signed in at all.
@@ -26,7 +26,7 @@ pub async fn run(
 ) -> Result<ExitCode> {
     let store = account.as_ref().map(|paths| secrets.session_of(paths));
     // The account asked about, whether or not it has a session to report on.
-    let viewer = crate::report::acting_as().map(|viewer| viewer.json());
+    let viewer = snob_engine::sentences::acting_as().map(|viewer| viewer.json());
     // Where the session was found, which is where it is written back and
     // what is reported: on a machine with no keyring, `login` fell back to
     // the file, and this run's store would still say the keyring.
@@ -84,11 +84,11 @@ pub async fn run(
         failure = Some(serde_json::json!({
             "code": code.as_str(),
             "url": serde_json::Value::Null,
-            "message": report::SIGNED_OUT_HERE,
+            "message": snob_engine::sentences::SIGNED_OUT_HERE,
         }));
         eprintln!(
             "{}. Run \"snob login\".",
-            report::opening(report::SIGNED_OUT_HERE)
+            report::opening(snob_engine::sentences::SIGNED_OUT_HERE)
         );
     } else if !args.offline {
         // Through `app::pacer_saying_a_line`, so Ctrl+C reaches the request
@@ -102,7 +102,7 @@ pub async fn run(
             cooldown_until = Some(held.until_ms.to_epoch());
             eprintln!(
                 "{}, so the session was not checked.",
-                report::opening(&report::held_until(&held))
+                report::opening(&snob_engine::sentences::held_until(&held))
             );
         } else {
             let client = IgClient::new(session.clone(), pacer)?;
@@ -134,7 +134,7 @@ pub async fn run(
                     // `snob` subcommand lives there, and a dead session, which
                     // is the whole reason somebody runs this command, is one
                     // of the failures that carries it.
-                    let said = report::what_instagram_said(&e);
+                    let said = snob_engine::sentences::what_instagram_said(&e);
                     failure = Some(serde_json::json!({
                         "code": code.as_str(),
                         // Validated against instagram.com before it ever reached

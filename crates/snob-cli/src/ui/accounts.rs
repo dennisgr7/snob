@@ -8,14 +8,14 @@ use ratatui::layout::Constraint;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Cell, Row, TableState};
 use snob_core::Pk;
+use snob_engine::app::Viewer;
+use snob_engine::exit::ExitCode;
 use snob_store::paths::AppPaths;
 use snob_store::registry::{Registry, RegistryError};
 use snob_store::secrets::SecretStore;
 
 use crate::ui::browser::input::{self, Action, Raw, action_of};
 use crate::ui::tui::{self, Tui};
-use snob_engine::app::Viewer;
-use snob_engine::exit::ExitCode;
 
 /// One account, as the picker shows it.
 #[derive(Debug, Clone)]

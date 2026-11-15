@@ -14,6 +14,9 @@ use anyhow::{Result, anyhow};
 use comfy_table::Cell;
 use snob_core::Epoch;
 use snob_core::model::printable;
+use snob_engine::app::{App, Viewer};
+use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::media::{self, Story, download_many, was_canceled};
 use snob_ig::client::IgClient;
 use snob_ig::pace::Pace;
 use snob_store::paths::AccountPaths;
@@ -24,11 +27,7 @@ use crate::commands::common::{self, Switched};
 use crate::commands::stories::story_from;
 use crate::output::Presentation;
 use crate::output::media::empty_document;
-use crate::report;
 use crate::ui;
-use snob_engine::app::{App, Viewer};
-use snob_engine::exit::{ExitCode, ExitError};
-use snob_engine::media::{self, Story, download_many, was_canceled};
 
 /// One tray entry: the cover the profile shows, not yet its items.
 #[derive(Debug, Clone)]
@@ -90,7 +89,7 @@ pub async fn run(
             .action
             .output
             .as_deref()
-            .is_some_and(crate::output::is_stdout)
+            .is_some_and(snob_engine::files::is_stdout)
     {
         return Err(whole_highlights_to_stdout());
     }
@@ -420,7 +419,7 @@ async fn download_entries(
     })?;
     // A whole highlight is as many files as it holds, which is not known until
     // it is read: refused before that read rather than after it.
-    if destination.is_some_and(crate::output::is_stdout) {
+    if destination.is_some_and(snob_engine::files::is_stdout) {
         return Err(whole_highlights_to_stdout());
     }
 
@@ -592,7 +591,7 @@ fn tray_table(tray: &Tray, presentation: Presentation) -> String {
             Cell::new(
                 entry
                     .updated_at
-                    .map(report::dated)
+                    .map(snob_engine::sentences::dated)
                     .unwrap_or_else(|| "-".into()),
             ),
         ]);
@@ -610,7 +609,7 @@ fn items_table(items: &[Story], presentation: Presentation) -> String {
         table.add_row([
             Cell::new(index + 1),
             Cell::new(story.kind.label()),
-            Cell::new(report::dated(story.taken_at)),
+            Cell::new(snob_engine::sentences::dated(story.taken_at)),
             Cell::new(media::mentions_of(story)),
         ]);
     }
@@ -781,7 +780,7 @@ mod tests {
 
     #[test]
     fn the_tray_table_marks_what_it_does_not_know_with_a_dash() {
-        let updated = report::dated(Epoch::new(1_773_576_000));
+        let updated = snob_engine::sentences::dated(Epoch::new(1_773_576_000));
         assert_eq!(
             tray_table(&tray(), plain()),
             [
@@ -798,7 +797,7 @@ mod tests {
 
     #[test]
     fn the_items_table_dates_with_the_year_and_has_no_countdown() {
-        let posted = report::dated(Epoch::new(1_773_576_000));
+        let posted = snob_engine::sentences::dated(Epoch::new(1_773_576_000));
         assert_eq!(
             items_table(&items(), plain()),
             [

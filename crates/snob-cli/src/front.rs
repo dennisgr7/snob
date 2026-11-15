@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use snob_core::Epoch;
 use snob_core::model::{ListKind, StopReason};
+use snob_engine::host::{self, Front, Wait};
 use snob_ig::pager::Event;
 
 use crate::progress::Progress;
-use snob_engine::host::{self, Front, Wait};
 
 /// A run's front: the bars (`with_progress` says whether they draw), and a
 /// question on the terminal with the bars out of its way.

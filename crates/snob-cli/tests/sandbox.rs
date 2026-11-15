@@ -9444,7 +9444,7 @@ fn mcp_key_new_env_prints_a_key_for_the_variable_and_keeps_none() {
 /// refused without being repeated.
 ///
 /// Through the variable only, and so it reads nothing from the keyring: the
-/// variable wins before the keyring is asked (`commands::mcp::key`).
+/// variable wins before the keyring is asked (`snob_mcp::key`).
 #[cfg(feature = "mcp-http")]
 #[test]
 fn mcp_key_show_names_the_environment_and_prints_a_fingerprint() {

@@ -38,13 +38,13 @@ use ratatui::layout::{Constraint, Rect};
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
+use snob_engine::media::Kind;
 
 use crate::ui::browser::input::{self, Raw};
 use crate::ui::graphics;
 use crate::ui::help;
 use crate::ui::theme;
 use crate::ui::tui::{self, Tui};
-use snob_engine::media::Kind;
 
 /// Whether this build draws previews at all.
 pub const AVAILABLE: bool = cfg!(feature = "preview");

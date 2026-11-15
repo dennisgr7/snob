@@ -5,10 +5,10 @@
 //! (`once::is_due`, the evaluator the scheduled mode sleeps on).
 
 use anyhow::Result;
+use snob_engine::exit::ExitCode;
 
 use crate::cli::{UnitKind, WatchUnitArgs};
 use crate::ui;
-use snob_engine::exit::ExitCode;
 
 /// How often every unit asks. A quarter of an hour is how late a run on a
 /// calendar may start, against 96 starts a day that send nothing.

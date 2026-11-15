@@ -11,6 +11,9 @@ use std::path::Path;
 use anyhow::{Result, anyhow};
 use comfy_table::Cell;
 use snob_core::model::printable;
+use snob_engine::app::{App, Viewer};
+use snob_engine::exit::ExitCode;
+use snob_engine::media::{self, Kind, Stories, Story, left_of, posted_of};
 use snob_ig::client::IgClient;
 use snob_ig::model::{ReelItem, largest};
 use snob_store::paths::AccountPaths;
@@ -21,9 +24,6 @@ use crate::commands::common;
 use crate::output::Presentation;
 use crate::output::media::empty_document;
 use crate::ui;
-use snob_engine::app::{App, Viewer};
-use snob_engine::exit::ExitCode;
-use snob_engine::media::{self, Kind, Stories, Story, left_of, posted_of};
 
 pub async fn run(args: StoriesArgs, store: SecretStore, paths: &AccountPaths) -> Result<ExitCode> {
     args.action.refuse_stdout_download_early()?;
@@ -262,7 +262,6 @@ fn as_json(stories: &Stories, format: Format) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::report;
     use snob_core::Epoch;
     use snob_ig::model::{Candidates, PictureVersion};
 
@@ -387,7 +386,7 @@ mod tests {
 
     #[test]
     fn the_table_draws_what_the_listing_numbers() {
-        let posted = report::stored_on(Epoch::new(1_773_576_000));
+        let posted = snob_engine::sentences::stored_on(Epoch::new(1_773_576_000));
         assert_eq!(
             as_table(&two_stories(), plain()),
             [

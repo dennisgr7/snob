@@ -14,24 +14,24 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::{Cell, Row, TableState};
 use snob_core::model::printable;
+use snob_engine::app::Viewer;
+use snob_engine::exit::ExitCode;
+use snob_engine::files::ABANDONED_AFTER;
+use snob_engine::media::{
+    Stories, Story, bytes_of, default_name, extension_of, left_of, posted_of,
+};
 use snob_ig::client::IgClient;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::output;
 use crate::ui::accounts::{self, Browsed, Picked};
 use crate::ui::browser::busy::Busy;
 use crate::ui::browser::input::{self, Action, page};
-use crate::ui::browser::scratch::{ABANDONED_AFTER, Scratch};
+use crate::ui::browser::scratch::Scratch;
 use crate::ui::help;
 use crate::ui::preview;
 use crate::ui::theme::Role;
 use crate::ui::tui;
-use snob_engine::app::Viewer;
-use snob_engine::exit::ExitCode;
-use snob_engine::media::{
-    Stories, Story, bytes_of, default_name, extension_of, left_of, posted_of,
-};
 
 /// Drives the list until the user leaves it, or picks another account to see it
 /// as.
@@ -415,7 +415,7 @@ pub(crate) fn draw_items_view(
         let (when, left) = if with_left {
             (posted_of(story), Some(left_of(story)))
         } else {
-            (crate::report::dated(story.taken_at), None)
+            (snob_engine::sentences::dated(story.taken_at), None)
         };
         item_row(
             index,
@@ -512,11 +512,11 @@ fn story_widths(items: &[Story], with_left: bool) -> Vec<Constraint> {
     let when = if with_left {
         (items.iter().map(|s| posted_of(s).len()).max().unwrap_or(6) as u16).max(6)
     } else {
-        // A kept story's date is `report::dated`, not the story browser's
+        // A kept story's date is `snob_engine::sentences::dated`, not the story browser's
         // wording, so its column is measured from that.
         items
             .iter()
-            .map(|s| crate::report::dated(s.taken_at).len())
+            .map(|s| snob_engine::sentences::dated(s.taken_at).len())
             .max()
             .unwrap_or(6)
             .max(5) as u16
@@ -610,7 +610,7 @@ pub(crate) async fn fetched(
     // the same reason: the name came off the server.
     let name = default_name(scratch.dir(), stem_base, index + 1, extension_of(&bytes))?;
     let path = scratch.dir().join(name);
-    output::create_new(&path)?
+    snob_engine::files::create_new(&path)?
         .write_all(&bytes)
         .with_context(|| format!("could not write {}", path.display()))?;
     cache[index] = Some(path.clone());
@@ -636,7 +636,7 @@ pub(crate) async fn keep(
     // Created, not written over: the name is one this program invented, and
     // `snob stories --download` refuses to replace a file under such a name,
     // so this key refuses too.
-    output::create_new(&path)?
+    snob_engine::files::create_new(&path)?
         .write_all(&bytes)
         .with_context(|| format!("could not write {}", path.display()))?;
     Ok(path)
@@ -789,8 +789,8 @@ mod tests {
         let taken = listing(2).items[0].taken_at;
         assert_eq!(
             without[2],
-            Constraint::Length(crate::report::dated(taken).len().max(5) as u16),
-            "a kept story's date is measured as `report::dated` writes it"
+            Constraint::Length(snob_engine::sentences::dated(taken).len().max(5) as u16),
+            "a kept story's date is measured as `snob_engine::sentences::dated` writes it"
         );
     }
 

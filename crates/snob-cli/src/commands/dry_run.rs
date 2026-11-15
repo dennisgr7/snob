@@ -6,6 +6,9 @@
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 use snob_core::model::ListKind;
+use snob_engine::app::Viewer;
+use snob_engine::engine::estimate::{self, Estimate, Fate, Standing};
+use snob_engine::exit::ExitCode;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SessionStore;
 use snob_store::store::rate_budget;
@@ -13,10 +16,6 @@ use snob_store::store::rate_budget;
 use crate::cli::{Format, OutputArgs, WalkArgs};
 use crate::commands::common;
 use crate::output::{self, Rendered};
-use crate::report;
-use snob_engine::app::Viewer;
-use snob_engine::engine::estimate::{self, Estimate, Fate, Standing};
-use snob_engine::exit::ExitCode;
 
 /// Estimates the walks of `kinds`, in the order the command makes them, of
 /// `target` or of the viewer, and prints the estimate where the result would
@@ -74,7 +73,7 @@ pub fn estimate_for(
     kinds: &[ListKind],
 ) -> Result<(Viewer, Estimate)> {
     let Some(session) = secrets.load()? else {
-        return Err(common::no_session());
+        return Err(snob_engine::sentences::no_session());
     };
     if session.ds_user_id != paths.pk() {
         anyhow::bail!(
@@ -88,12 +87,12 @@ pub fn estimate_for(
         pk: session.ds_user_id,
         username: session.username.clone(),
     };
-    report::act_as(viewer.clone());
+    snob_engine::sentences::act_as(viewer.clone());
 
     // An account that has never sent anything has no database, and its
     // budget is at rest: read over an empty one rather than making its file.
     let now = snob_core::clock::now_ms();
-    let (store, budget) = common::standing(paths, now)?;
+    let (store, budget) = snob_engine::app::standing(paths, now)?;
     let standing = Standing {
         viewer: &viewer,
         store: &store,
@@ -178,7 +177,8 @@ fn as_text(estimate: &Estimate, subject: &str) -> String {
         lines.push(match list.fate {
             Fate::ReusedUnlessMoved => format!(
                 "{name}: stored {}; {} if its count has not moved, {} if it has ({walk}).",
-                list.taken_at.map_or("earlier".into(), report::stored_on),
+                list.taken_at
+                    .map_or("earlier".into(), snob_engine::sentences::stored_on),
                 requests(list.requests.0),
                 requests(list.requests.1)
             ),
@@ -220,7 +220,7 @@ fn as_text(estimate: &Estimate, subject: &str) -> String {
         lines.push(format!(
             "A rest between sittings is still owed, {} of it: a walk waits for it before its \
              first page, and the time above counts it.",
-            report::rest_left(std::time::Duration::from_secs(estimate.rest_owed))
+            snob_engine::sentences::rest_left(std::time::Duration::from_secs(estimate.rest_owed))
         ));
     }
     lines.push(format!(
@@ -237,7 +237,7 @@ fn as_text(estimate: &Estimate, subject: &str) -> String {
     if estimate.pauses {
         lines.push(format!(
             "More accounts than that: {}; the time above does not count the pause.",
-            report::PAUSING_BY_DEFAULT
+            snob_engine::sentences::PAUSING_BY_DEFAULT
         ));
     } else if estimate.same_day && estimate.accounts > estimate.accounts_left {
         lines.push(
@@ -250,7 +250,7 @@ fn as_text(estimate: &Estimate, subject: &str) -> String {
         lines.push(format!(
             "The account is in cooldown until {}: a run now sends nothing and exits 5; the \
              cost above is once it ends.",
-            report::stored_on(until.to_epoch_not_before())
+            snob_engine::sentences::stored_on(until.to_epoch_not_before())
         ));
     }
     lines.join("\n")

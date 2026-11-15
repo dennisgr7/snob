@@ -3,6 +3,9 @@
 use anyhow::Result;
 use snob_core::filters::Filter;
 use snob_core::model::{ListKind, User};
+use snob_engine::app::{App, Viewer};
+use snob_engine::engine::{self, ListOutcome};
+use snob_engine::exit::ExitCode;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
@@ -11,9 +14,6 @@ use crate::commands::{common, dry_run};
 use crate::report;
 use crate::ui;
 use crate::ui::accounts::Browsed;
-use snob_engine::app::{App, Viewer};
-use snob_engine::engine::{self, ListOutcome};
-use snob_engine::exit::ExitCode;
 
 pub async fn run(
     args: ListArgs,
@@ -206,7 +206,7 @@ fn print_summary(walked: &Walked, kind: ListKind, whom: Option<&Viewer>) {
     if outcome.is_stored() {
         line.push_str(&format!(
             " - list stored on {}",
-            report::stored_on(outcome.taken_at)
+            snob_engine::sentences::stored_on(outcome.taken_at)
         ));
         line.push_str(&report::spent(outcome.requests));
     } else {

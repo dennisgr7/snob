@@ -4,6 +4,7 @@ use anyhow::Result;
 use snob_core::model::printable;
 use snob_core::watch::schedule::{self, Due, Schedule};
 use snob_core::{Epoch, Pk};
+use snob_engine::exit::{ExitCode, ExitError};
 use snob_store::config;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
@@ -12,7 +13,6 @@ use snob_store::store::shared::Shared;
 use crate::cli::WatchRunArgs;
 use crate::report;
 use crate::ui;
-use snob_engine::exit::{ExitCode, ExitError};
 
 use super::delivery::delivery_from;
 use super::run::{Printing, account_databases, run_viewers, settle_all};

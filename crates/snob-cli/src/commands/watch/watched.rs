@@ -99,7 +99,7 @@ pub(super) fn watching_label(watched: &[Watched]) -> String {
         .map(|w| snob_engine::app::target_label(w.name()))
         .collect();
 
-    crate::report::and_list(&names).unwrap_or_else(|| "nothing".to_string())
+    snob_engine::sentences::and_list(&names).unwrap_or_else(|| "nothing".to_string())
 }
 
 #[cfg(test)]

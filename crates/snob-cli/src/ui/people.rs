@@ -18,6 +18,9 @@ use ratatui::widgets::{Cell, Paragraph, Row, TableState};
 use snob_core::filters::Filter;
 use snob_core::model::User;
 use snob_core::sets;
+use snob_engine::app::{App, Viewer};
+use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::files::ABANDONED_AFTER;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 
@@ -27,12 +30,10 @@ use crate::ui::accounts::{self, Browsed, Picked};
 use crate::ui::browser::busy::Busy;
 use crate::ui::browser::input::Action;
 use crate::ui::browser::input::{self, Raw, action_of, page};
-use crate::ui::browser::scratch::{ABANDONED_AFTER, Scratch};
+use crate::ui::browser::scratch::Scratch;
 use crate::ui::help;
 use crate::ui::profile::{self, Answer, answer, question_modal};
 use crate::ui::tui::{self, Tui};
-use snob_engine::app::{App, Viewer};
-use snob_engine::exit::{ExitCode, ExitError};
 
 /// What the browser shows: one list, or a tray of them.
 pub struct Shelf<'a> {

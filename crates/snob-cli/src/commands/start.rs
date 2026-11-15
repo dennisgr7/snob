@@ -10,7 +10,6 @@ use snob_store::paths::AppPaths;
 use snob_store::registry::Registry;
 use snob_store::store::{Store, snapshots};
 
-use crate::report;
 use snob_engine::exit::ExitCode;
 
 /// What is said when the command is missing on a terminal.
@@ -92,7 +91,7 @@ fn stored_lists(paths: &AppPaths, pk: snob_core::Pk) -> String {
                 "Stored: your {}, {} accounts, read {}.\n",
                 kind.as_str(),
                 snapshot.member_count,
-                report::stored_on(taken_at),
+                snob_engine::sentences::stored_on(taken_at),
             ));
         }
     }
