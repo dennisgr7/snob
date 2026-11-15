@@ -152,7 +152,7 @@ pub struct Shell {
     pub(crate) failed_until: Option<Epoch>,
     pub(crate) details_open: bool,
     /// What a screen reader was last told.
-    pub(crate) announced: SharedString,
+    pub announced: SharedString,
     /// Something said once, under the screen's title: an update that failed.
     pub(crate) notice: Option<SharedString>,
     /// The report of a crash nobody has been shown yet.
@@ -281,6 +281,11 @@ impl Shell {
     /// The screen drawn.
     pub fn shown(&self) -> &Screen {
         &self.shown
+    }
+
+    /// The screen drawn, as the log names it.
+    pub fn screen_name(&self) -> &'static str {
+        name(&self.shown)
     }
 
     /// Every account signed in here, the one in use first.

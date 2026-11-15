@@ -5,6 +5,8 @@
 //! reaches Instagram through `snob_engine`, never a client of its own.
 
 pub mod backend;
+#[cfg(feature = "testing")]
+pub mod control;
 pub mod front;
 pub mod i18n;
 pub mod instance;

@@ -54,8 +54,22 @@ sys-locale = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
-# The fake Instagram the backend is driven against (`tests/engine.rs`).
+# The fake Instagram the backend is driven against (`tests/engine.rs`), and
+# the one the harness serves to the app it drives.
 snob-fake-ig = { path = "../../crates/snob-fake-ig" }
+# The harness compares a screenshot with the approved one, pixel by pixel:
+# PNG read and written, nothing else of it.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# The harness reads what the app's process costs at rest: its memory and
+# its share of a processor, the same call on the three systems.
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+
+# `cargo harness`: every test of the app from one place. An example, so it
+# links the dev-dependencies and nothing of it is in the app.
+[[example]]
+name = "harness"
+path = "examples/harness/main.rs"
+required-features = ["testing"]
 
 [features]
 # The test build: never part of a release. GPUI's own test support renders a

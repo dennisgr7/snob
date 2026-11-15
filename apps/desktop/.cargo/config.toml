@@ -1,0 +1,5 @@
+# `cargo harness`, from this directory: every test of the desktop app
+# (`examples/harness`). What the repository's own `.cargo/config.toml` sets
+# still holds here: Cargo reads both.
+[alias]
+harness = "run --quiet --features testing --example harness --"

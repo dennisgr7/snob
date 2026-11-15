@@ -98,6 +98,12 @@ fn simulated(_: &[String]) -> Option<Settings> {
 /// is started a second time.
 type Wired = (Rc<dyn System>, Box<dyn Fn() + Send>);
 
+/// The system a test speaks for, when the app was started on one.
+#[cfg(feature = "testing")]
+type Spoken = Option<snob_desktop::system::simulated::Simulated>;
+#[cfg(not(feature = "testing"))]
+type Spoken = ();
+
 /// The real system, which also follows the theme the window is drawn in.
 fn native(cx: &mut gpui_kit::App) -> (Wired, Rc<Native>) {
     let native = Rc::new(Native::new(cx));
@@ -107,26 +113,73 @@ fn native(cx: &mut gpui_kit::App) -> (Wired, Rc<Native>) {
 }
 
 #[cfg(feature = "testing")]
-fn system(simulated: Option<Settings>, cx: &mut gpui_kit::App) -> (Wired, Option<Rc<Native>>) {
+fn system(
+    simulated: Option<Settings>,
+    cx: &mut gpui_kit::App,
+) -> (Wired, Option<Rc<Native>>, Spoken) {
     use snob_desktop::system::simulated::Simulated;
     match simulated {
         Some(settings) => {
             let system = Simulated::new(settings);
             let says = system.clone();
             let activate = Box::new(move || says.say(Event::Activate));
-            ((Rc::new(system), activate), None)
+            ((Rc::new(system.clone()), activate), None, Some(system))
         }
         None => {
             let (wired, native) = native(cx);
-            (wired, Some(native))
+            (wired, Some(native), None)
         }
     }
 }
 
 #[cfg(not(feature = "testing"))]
-fn system(_: Option<Settings>, cx: &mut gpui_kit::App) -> (Wired, Option<Rc<Native>>) {
+fn system(_: Option<Settings>, cx: &mut gpui_kit::App) -> (Wired, Option<Rc<Native>>, Spoken) {
     let (wired, native) = native(cx);
-    (wired, Some(native))
+    (wired, Some(native), ())
+}
+
+/// Lets a test drive this app: read its window, act on it, speak for its
+/// system (`snob_desktop::control`).
+#[cfg(feature = "testing")]
+fn be_driven(
+    paths: &AppPaths,
+    runtime: &Runtime,
+    window: gpui_kit::AnyWindowHandle,
+    shell: gpui_kit::Entity<ui::shell::Shell>,
+    system: Spoken,
+    cx: &mut gpui_kit::App,
+) {
+    use snob_desktop::control;
+    // A listener is made on the runtime it is listened on.
+    let _on_the_runtime = runtime.handle().enter();
+    let listener = match control::bind(paths) {
+        Ok(Some(listener)) => listener,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(error = %e, "no test can drive this app");
+            return;
+        }
+    };
+    let (asked, heard) = tokio::sync::mpsc::unbounded_channel();
+    runtime.handle().spawn(control::serve(listener, asked));
+    let driven = control::Driven {
+        window,
+        shell,
+        system,
+    };
+    cx.spawn(async move |cx| driven.answer(heard, cx).await)
+        .detach();
+}
+
+#[cfg(not(feature = "testing"))]
+fn be_driven(
+    _: &AppPaths,
+    _: &Runtime,
+    _: gpui_kit::AnyWindowHandle,
+    _: gpui_kit::Entity<ui::shell::Shell>,
+    _: Spoken,
+    _: &mut gpui_kit::App,
+) {
 }
 
 /// What this program is, for a crash report and a diagnostic one.
@@ -168,7 +221,7 @@ fn main() -> anyhow::Result<()> {
     let simulated = simulated(&args);
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         cx.set_quit_mode(QuitMode::LastWindowClosed);
-        let ((system, activate), native) = system(simulated, cx);
+        let ((system, activate), native, spoken) = system(simulated, cx);
         runtime.handle().spawn(instance::serve(listener, activate));
 
         ui::window::init(&*system, testing, cx);
@@ -190,7 +243,7 @@ fn main() -> anyhow::Result<()> {
             about(),
         ));
         let opened = ui::window::open(backend, system, placement, cx);
-        let (window, _shell) = match opened {
+        let (window, shell) = match opened {
             Ok(opened) => opened,
             Err(e) => {
                 tracing::error!(error = %e, "the window could not be opened");
@@ -198,6 +251,7 @@ fn main() -> anyhow::Result<()> {
                 return;
             }
         };
+        be_driven(&paths, &runtime, window, shell, spoken, cx);
         if let Some(native) = native {
             let followed = window.update(cx, |_, window, _| {
                 window
