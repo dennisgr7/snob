@@ -33,8 +33,8 @@ pub fn choose(prompt: &str, labels: &[&str]) -> Result<Option<usize>> {
             Step::Interrupt => {
                 tui.terminal.clear()?;
                 drop(tui);
-                return Err(crate::exit::ExitError::new(
-                    crate::exit::ExitCode::Interrupted,
+                return Err(snob_engine::exit::ExitError::new(
+                    snob_engine::exit::ExitCode::Interrupted,
                     "canceled",
                 )
                 .into());

@@ -5,7 +5,7 @@ use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::secrets::SecretStore;
 
 use crate::cli::{WatchArgs, WatchCommand};
-use crate::exit::ExitCode;
+use snob_engine::exit::ExitCode;
 
 pub(super) mod delivery;
 

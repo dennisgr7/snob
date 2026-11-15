@@ -8,10 +8,10 @@ use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::registry::Registry;
 use snob_store::secrets::SecretStore;
 
-use crate::app::App;
 use crate::cli::{WatchCheckArgs, WatchRunArgs, WebhookArgs};
-use crate::engine::watch::{Watched, group_by_viewer};
 use crate::report;
+use snob_engine::app::App;
+use snob_engine::engine::watch::{Watched, group_by_viewer};
 
 use super::delivery::{delivery_from, run_id};
 use super::run::{Printing, run_viewers};
@@ -25,8 +25,8 @@ pub(super) async fn preflight(
     secrets: &SecretStore,
     paths: &AppPaths,
     account: Option<&AccountPaths>,
-) -> Result<crate::engine::check::CheckReport> {
-    use crate::engine::check::{self, Verdict};
+) -> Result<snob_engine::engine::check::CheckReport> {
+    use snob_engine::engine::check::{self, Verdict};
 
     let configured = config::load(paths)?;
     let now = snob_core::clock::now();
@@ -84,7 +84,10 @@ pub(super) async fn preflight(
         Some(account) => match App::open(&secrets.session_of(account), account, || {
             crate::front::front(false)
         }) {
-            Err(e) if crate::exit::from_chain(&e) == Some(crate::exit::ExitCode::NoSession) => {
+            Err(e)
+                if snob_engine::exit::from_chain(&e)
+                    == Some(snob_engine::exit::ExitCode::NoSession) =>
+            {
                 problem = check::Problem::SignedOutHere;
                 None
             }
@@ -115,9 +118,12 @@ pub(super) async fn preflight(
     }
 
     // The address as `check` may print it, with any path secret cut off.
-    let shown = delivery
-        .as_ref()
-        .map(|d| (crate::watch::webhook::shown_str(&d.destination), d.signed));
+    let shown = delivery.as_ref().map(|d| {
+        (
+            snob_engine::watch::webhook::shown_str(&d.destination),
+            d.signed,
+        )
+    });
 
     if let Some(line) = not_posted(
         shown
@@ -136,7 +142,7 @@ pub(super) async fn preflight(
         report.checked.push(
             check::webhook_of(
                 &delivery.client,
-                crate::watch::webhook::shown_str(&delivery.destination),
+                snob_engine::watch::webhook::shown_str(&delivery.destination),
                 delivery.signed,
                 &id,
                 &made.body,
@@ -158,7 +164,7 @@ fn say_who_else_reads(paths: &AppPaths, others: &[Watched]) {
     let registry = Registry::load(paths).unwrap_or_default();
     for (viewer, entries) in group_by_viewer(others) {
         let Some(pk) = viewer else { continue };
-        let name = crate::account::username(&registry, pk);
+        let name = snob_engine::account::username(&registry, pk);
         let named = name.map_or_else(|| pk.to_string(), printable);
         crate::ui::info(&format!(
             "{} entr{} read as {}; run with --account {named} to check {}.",
@@ -168,7 +174,7 @@ fn say_who_else_reads(paths: &AppPaths, others: &[Watched]) {
             } else {
                 "ies are"
             },
-            crate::app::label(pk, name),
+            snob_engine::app::label(pk, name),
             if entries.len() == 1 { "it" } else { "them" },
         ));
     }
@@ -178,8 +184,8 @@ fn say_who_else_reads(paths: &AppPaths, others: &[Watched]) {
 fn not_posted(
     webhook: Option<(&str, bool)>,
     no_webhook: bool,
-) -> Option<crate::engine::check::Checked> {
-    use crate::engine::check::{Checked, Problem, Verdict, What};
+) -> Option<snob_engine::engine::check::Checked> {
+    use snob_engine::engine::check::{Checked, Problem, Verdict, What};
 
     let (destination, signed) = webhook.filter(|_| no_webhook)?;
     Some(Checked {
@@ -212,15 +218,15 @@ pub(super) async fn baseline_now(
         Printing::unattended(false),
         true,
         // Asked for by hand, at the end of the wizard: due for nothing.
-        crate::engine::watch::RunTiming::by_hand(snob_core::clock::now()),
+        snob_engine::engine::watch::RunTiming::by_hand(snob_core::clock::now()),
     )
     .await
     .into_result()
 }
 
 /// One line per check, in the order they were made.
-pub(super) fn describe_check(report: &crate::engine::check::CheckReport) -> Vec<String> {
-    use crate::engine::check::{Verdict, What};
+pub(super) fn describe_check(report: &snob_engine::engine::check::CheckReport) -> Vec<String> {
+    use snob_engine::engine::check::{Verdict, What};
 
     let mut lines = Vec::new();
     for checked in &report.checked {
@@ -246,7 +252,7 @@ pub(super) fn describe_check(report: &crate::engine::check::CheckReport) -> Vec<
                 following,
                 ..
             } => (
-                crate::app::target_label(target.as_deref()),
+                snob_engine::app::target_label(target.as_deref()),
                 match (followers, following) {
                     (Some(a), Some(b)) => format!("{a} followers, {b} following"),
                     _ => String::new(),
@@ -278,7 +284,10 @@ pub(super) fn describe_check(report: &crate::engine::check::CheckReport) -> Vec<
                 save_to,
                 baseline_at,
             } => (
-                format!("{} posts", crate::app::target_label(target.as_deref())),
+                format!(
+                    "{} posts",
+                    snob_engine::app::target_label(target.as_deref())
+                ),
                 [
                     baseline_at.map(|at| format!("seen since {}", report::stored_on(at))),
                     save_to
@@ -331,7 +340,7 @@ mod tests {
     /// receiver configured?" is being asked.
     #[test]
     fn not_posting_is_not_the_same_as_having_nowhere_to_post() {
-        use crate::engine::check::{CheckReport, Verdict, What};
+        use snob_engine::engine::check::{CheckReport, Verdict, What};
 
         const WHERE_TO: &str = "https://n8n.local/webhook/snob";
 
@@ -346,11 +355,11 @@ mod tests {
         assert_eq!(checked.verdict, Verdict::Ok);
         assert_eq!(
             checked.problem,
-            Some(crate::engine::check::Problem::NotPosted),
+            Some(snob_engine::engine::check::Problem::NotPosted),
             "and the line has to say why nothing was posted"
         );
         assert!(
-            super::super::say::problem_line(&crate::engine::check::Problem::NotPosted)
+            super::super::say::problem_line(&snob_engine::engine::check::Problem::NotPosted)
                 .contains("--no-webhook"),
             "which is the flag it has to name"
         );

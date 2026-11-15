@@ -7,8 +7,8 @@
 use anyhow::Result;
 
 use crate::cli::{UnitKind, WatchUnitArgs};
-use crate::exit::ExitCode;
 use crate::ui;
+use snob_engine::exit::ExitCode;
 
 /// How often every unit asks. A quarter of an hour is how late a run on a
 /// calendar may start, against 96 starts a day that send nothing.
@@ -18,7 +18,7 @@ const ASK_EVERY_MINUTES: u32 = 15;
 const RUN: [&str; 3] = ["watch", "once", "--when-due"];
 
 pub(super) fn unit(args: WatchUnitArgs, paths: &snob_store::paths::AppPaths) -> Result<ExitCode> {
-    let exe = crate::exe::to_print(
+    let exe = snob_engine::exe::to_print(
         "a scheduler started from it stops working once an upgrade removes that directory; \
          print the unit again after an upgrade",
     )?;

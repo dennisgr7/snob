@@ -12,10 +12,10 @@ use snob_store::paths::AppPaths;
 use snob_store::registry::{Registry, RegistryError};
 use snob_store::secrets::SecretStore;
 
-use crate::app::Viewer;
-use crate::exit::ExitCode;
 use crate::ui::browser::input::{self, Action, Raw, action_of};
 use crate::ui::tui::{self, Tui};
+use snob_engine::app::Viewer;
+use snob_engine::exit::ExitCode;
 
 /// One account, as the picker shows it.
 #[derive(Debug, Clone)]
@@ -236,7 +236,7 @@ pub async fn pick(
                 tui.suspend()?;
                 let added = crate::commands::login::add_by_browser(secrets.clone(), paths).await;
                 tui.resume()?;
-                if crate::interrupt::interrupted() {
+                if snob_engine::interrupt::interrupted() {
                     return Ok(Picked::Leave(ExitCode::Interrupted));
                 }
                 picker.note = match added {
@@ -253,7 +253,7 @@ pub async fn pick(
                         Err(e) => format!("Could not read the accounts: {e}"),
                     },
                     Ok(_) => "No account was added".to_string(),
-                    Err(e) if crate::exit::from_chain(&e) == Some(ExitCode::Interrupted) => {
+                    Err(e) if snob_engine::exit::from_chain(&e) == Some(ExitCode::Interrupted) => {
                         "No account was added".to_string()
                     }
                     Err(e) => format!("Could not add an account: {e}"),

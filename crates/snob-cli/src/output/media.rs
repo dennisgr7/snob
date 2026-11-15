@@ -8,10 +8,10 @@ use comfy_table::{ContentArrangement, Table, presets};
 use snob_ig::client::IgClient;
 
 use crate::cli::{DownloadSelection, Format};
-use crate::exit::ExitCode;
-use crate::media::{Saved, Story, bytes_of, download_many, save_story};
 use crate::output::{self, Presentation, Rendered};
 use crate::ui;
+use snob_engine::exit::ExitCode;
+use snob_engine::media::{Saved, Story, bytes_of, download_many, save_story};
 
 /// Writes a listing and, at a terminal, the hint about what to do with it.
 pub(crate) fn print_listing(

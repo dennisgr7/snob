@@ -11,8 +11,8 @@
 
 use snob_cli::cli::{ConsentArgs, PurgeArgs};
 use snob_cli::commands::purge;
-use snob_cli::exit::ExitCode;
 use snob_core::session::{Session, SessionOrigin};
+use snob_engine::exit::ExitCode;
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::secrets::SecretStore;
 use snob_store::store::Store;
@@ -242,7 +242,7 @@ fn a_session_that_will_not_go_is_reported_and_the_exit_is_not_zero() {
 
     let error = purge::run(purge_now(), store, &paths)
         .expect_err("a credential that survived is not a success");
-    assert_eq!(snob_cli::exit::from_chain(&error), Some(ExitCode::Error));
+    assert_eq!(snob_engine::exit::from_chain(&error), Some(ExitCode::Error));
 
     // And the other half: one item refusing does not spare the rest. The
     // browser profile holds a logged-in session of its own, so leaving it
@@ -273,7 +273,7 @@ fn an_unattended_run_without_yes_is_refused_rather_than_assumed_no() {
     // The code the README's table and `--help` both promise for a confirmation
     // that was not given, which a script branches on to re-run with `--yes`.
     assert_eq!(
-        snob_cli::exit::from_chain(&error),
+        snob_engine::exit::from_chain(&error),
         Some(ExitCode::Interrupted)
     );
     assert!(

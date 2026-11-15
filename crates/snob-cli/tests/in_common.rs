@@ -10,8 +10,8 @@ use snob_core::model::{ListKind, StopReason, User};
 use snob_store::store::{Store, accounts, snapshots, users};
 use wiremock::MockServer;
 
-use snob_cli::app::App;
-use snob_cli::engine::people;
+use snob_engine::app::App;
+use snob_engine::engine::people;
 
 mod common;
 use common::{ME, user};

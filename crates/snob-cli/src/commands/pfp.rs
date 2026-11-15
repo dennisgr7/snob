@@ -7,14 +7,14 @@ use snob_ig::model::{Via, WebProfileInfo};
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::{App, Viewer};
 use crate::cli::PfpArgs;
 use crate::commands::common::{self, Switched};
-use crate::engine::target;
-use crate::exit::ExitCode;
 use crate::output::{self, Rendered};
 use crate::report;
 use crate::ui;
+use snob_engine::app::{App, Viewer};
+use snob_engine::engine::target;
+use snob_engine::exit::ExitCode;
 
 pub async fn run(args: PfpArgs, store: SecretStore, paths: &AccountPaths) -> Result<ExitCode> {
     let browses = args.browses(crate::ui::a_human_would_watch_the_listing_scroll_by());
@@ -159,7 +159,7 @@ impl Picture {
 impl Picture {
     /// Names the file after what actually arrived rather than after the URL.
     pub(crate) fn extension(&self) -> &'static str {
-        crate::media::extension_of(&self.bytes)
+        snob_engine::media::extension_of(&self.bytes)
     }
 }
 

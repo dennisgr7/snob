@@ -14,20 +14,22 @@ use snob_core::Epoch;
 use snob_core::model::{User, printable};
 use snob_core::watch::{Basis, Rename};
 
-use crate::app::Viewer;
-use crate::engine::watch::{ListReport, RunTiming, Skipped, TickReport, WatchReport, Watched};
-use crate::engine::watch_posts::{PostsReport, SavedPost};
-use crate::exit::ExitCode;
-use crate::posts::{Post, PostKind};
+use snob_engine::app::Viewer;
+use snob_engine::engine::watch::{
+    ListReport, RunTiming, Skipped, TickReport, WatchReport, Watched,
+};
+use snob_engine::engine::watch_posts::{PostsReport, SavedPost};
+use snob_engine::exit::ExitCode;
+use snob_engine::posts::{Post, PostKind};
 
 use super::status::{MarkOf, RunOf};
 
 /// `viewer` is the account the check was run as, when one was chosen.
 pub(super) fn check_json(
-    report: &crate::engine::check::CheckReport,
+    report: &snob_engine::engine::check::CheckReport,
     viewer: Option<&Viewer>,
 ) -> serde_json::Value {
-    use crate::engine::check::What;
+    use snob_engine::engine::check::What;
 
     serde_json::json!({
         "verdict": report.verdict().as_str(),
@@ -381,7 +383,7 @@ pub(super) fn failed_tick_json(
         },
         "run": run_json(at, false, requests, serde_json::json!([]), serde_json::Value::Null, None),
         "error": {
-            "code": crate::exit::from_chain(error).unwrap_or(ExitCode::Error).as_str(),
+            "code": snob_engine::exit::from_chain(error).unwrap_or(ExitCode::Error).as_str(),
             "message": printable(&format!("{error:#}")),
         },
     })
@@ -420,7 +422,7 @@ pub(super) fn payload(tick: &TickReport, run_id: &str, event: &str) -> serde_jso
 pub(super) fn preflight_body(run_id: &str, at: Epoch) -> serde_json::Value {
     serde_json::json!({
         "schema": SENT_SCHEMA,
-        "event": crate::engine::check::PREFLIGHT_EVENT,
+        "event": snob_engine::engine::check::PREFLIGHT_EVENT,
         "run": {
             "id": run_id,
             "at": at,
@@ -606,7 +608,7 @@ pub(super) fn outgoing(
             json["summary"] = serde_json::Value::String(summary);
             Outgoing {
                 body: json_line(&json),
-                content_type: crate::watch::webhook::JSON,
+                content_type: snob_engine::watch::webhook::JSON,
             }
         }
         WebhookFormat::Slack => {
@@ -616,7 +618,7 @@ pub(super) fn outgoing(
                 .replace('>', "&gt;");
             Outgoing {
                 body: json_line(&serde_json::json!({ "text": text })),
-                content_type: crate::watch::webhook::JSON,
+                content_type: snob_engine::watch::webhook::JSON,
             }
         }
         WebhookFormat::Discord => Outgoing {
@@ -628,7 +630,7 @@ pub(super) fn outgoing(
                 "content": fit(&summary.replace("](", "]\\("), DISCORD_MOST, chars),
                 "allowed_mentions": { "parse": [] },
             })),
-            content_type: crate::watch::webhook::JSON,
+            content_type: snob_engine::watch::webhook::JSON,
         },
         WebhookFormat::Ntfy => Outgoing {
             body: fit(&summary, NTFY_MOST_BYTES, str::len),
@@ -690,11 +692,11 @@ fn basis_token(basis: Basis) -> &'static str {
 mod tests {
     use super::*;
     use crate::commands::watch::fixtures::{list, post, posts_report, report_with, user};
-    use crate::engine::Provenance;
-    use crate::engine::watch::TickList;
     use snob_core::Pk;
     use snob_core::model::ListKind;
     use snob_core::watch::{Basis, ListDiff, Rename};
+    use snob_engine::engine::Provenance;
+    use snob_engine::engine::watch::TickList;
 
     /// The tokens are what a caller branches on, so they are asserted rather
     /// than left to whatever the enum happens to be called.
@@ -848,7 +850,7 @@ mod tests {
             let mut report = report_with(None, vec![]);
             report.posts = Some(posts_report(vec![post(1, "a post")]));
             let mut tick = TickReport::for_test(report, 14, Epoch::new(1_700_000_000));
-            tick.posts = Some(crate::engine::watch::TickPosts { skipped: None });
+            tick.posts = Some(snob_engine::engine::watch::TickPosts { skipped: None });
             payload(&tick, "run-1", "watch.changes")
         };
 
@@ -947,7 +949,10 @@ mod tests {
 
         // And the name is one constant, so the header and the body cannot come
         // to disagree.
-        assert_eq!(preflight["event"], crate::engine::check::PREFLIGHT_EVENT);
+        assert_eq!(
+            preflight["event"],
+            snob_engine::engine::check::PREFLIGHT_EVENT
+        );
         assert_eq!(
             preflight["event"], "watch.preflight",
             "the name on the wire"
@@ -1067,7 +1072,7 @@ mod tests {
         let error = anyhow::anyhow!("@friend's account is private");
         let line = failed_tick_json(
             None,
-            &Watched::consented("friend".into(), crate::engine::watch::Consent),
+            &Watched::consented("friend".into(), snob_engine::engine::watch::Consent),
             &error,
             Epoch::new(1_700_000_000),
             1,
@@ -1347,8 +1352,8 @@ mod tests {
     /// does not read as a run that found no new post.
     #[test]
     fn a_run_that_could_not_look_at_posts_does_not_read_as_no_new_posts() {
-        use crate::engine::watch::TickPosts;
-        use crate::engine::watch_posts::PostsSkipped;
+        use snob_engine::engine::watch::TickPosts;
+        use snob_engine::engine::watch_posts::PostsSkipped;
 
         let mut tick =
             TickReport::for_test(report_with(None, vec![]), 0, Epoch::new(1_700_000_000));
@@ -1490,7 +1495,7 @@ mod tests {
         let error = anyhow::anyhow!("@friend\u{202e} is private{hidden}");
         let line = failed_tick_json(
             None,
-            &Watched::consented("friend".into(), crate::engine::watch::Consent),
+            &Watched::consented("friend".into(), snob_engine::engine::watch::Consent),
             &error,
             Epoch::new(1_700_000_000),
             0,
@@ -1519,7 +1524,7 @@ mod tests {
         assert_eq!(tick_json(&tick)["viewer"], reader);
         assert_eq!(tick_json(&tick)["account"]["pk"], 7);
 
-        let friend = Watched::consented("friend".into(), crate::engine::watch::Consent);
+        let friend = Watched::consented("friend".into(), snob_engine::engine::watch::Consent);
         let error = anyhow::anyhow!("skipped this run");
         let at = Epoch::new(1_700_000_000);
         assert_eq!(
@@ -1531,7 +1536,7 @@ mod tests {
             "nobody was signed in to read it as"
         );
 
-        let checked = crate::engine::check::CheckReport::default();
+        let checked = snob_engine::engine::check::CheckReport::default();
         assert_eq!(check_json(&checked, Some(&tick.viewer))["viewer"], reader);
         assert!(check_json(&checked, None)["viewer"].is_null());
     }

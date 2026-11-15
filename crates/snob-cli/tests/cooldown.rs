@@ -14,8 +14,8 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use snob_cli::cli::ListArgs;
-use snob_cli::engine::{self, ListOutcome, Provenance};
-use snob_cli::exit::ExitCode;
+use snob_engine::engine::{self, ListOutcome, Provenance};
+use snob_engine::exit::ExitCode;
 
 mod common;
 use common::{HOUR, account_at, args, budget_at, requests, start_cooldown};
@@ -107,7 +107,7 @@ impl RateBudget for LateCooldown {
 
 fn assert_rate_limited(error: &anyhow::Error) {
     assert_eq!(
-        snob_cli::exit::from_chain(error),
+        snob_engine::exit::from_chain(error),
         Some(ExitCode::RateLimited)
     );
 }
@@ -467,7 +467,7 @@ async fn a_challenge_on_the_counter_poll_is_reported_as_one() {
                 .await
                 .unwrap_err();
             assert_eq!(
-                snob_cli::exit::exit_code_for(&error),
+                snob_engine::exit::exit_code_for(&error),
                 ExitCode::Challenge,
                 "{check}, stored: {stored}: {error:#}"
             );
@@ -528,7 +528,7 @@ async fn an_expired_session_on_the_counter_poll_is_reported_as_one() {
                 .await
                 .unwrap_err();
             assert_eq!(
-                snob_cli::exit::exit_code_for(&error),
+                snob_engine::exit::exit_code_for(&error),
                 ExitCode::NoSession,
                 "{status}, stored: {stored}: {error:#}"
             );

@@ -31,8 +31,8 @@ use snob_store::secrets::SecretStore;
 
 use super::{Detached, Job, SCHEMA, Status, argv, show};
 use crate::cli::{Cli, JobStartArgs};
-use crate::exit::{ExitCode, ExitError};
 use crate::report;
+use snob_engine::exit::{ExitCode, ExitError};
 
 pub use super::{COMMAND, SUPERVISOR_WITHIN};
 
@@ -101,7 +101,7 @@ pub async fn start(
         ),
         // Refused as the walk would refuse it at its start (`App::open`),
         // the check ahead of an agent's question included.
-        Some(session) if crate::owner::signed_out(account, &session) => {
+        Some(session) if snob_engine::owner::signed_out(account, &session) => {
             return Err(crate::commands::common::signed_out_here());
         }
         Some(_) => {}
@@ -168,7 +168,7 @@ pub async fn start(
         Made::Reused(id) => (id, false),
     };
 
-    let token = crate::interrupt::install();
+    let token = snob_engine::interrupt::install();
     let look = || -> Result<super::Seen> {
         super::look(account, &id, snob_core::clock::now_ms().get())?
             .ok_or_else(|| show::no_such_job(id.as_str()))
@@ -295,7 +295,7 @@ fn refused_in_cooldown(
     };
     let query = crate::commands::common::query(&checked.list.target, &checked.list.walk);
     for &kind in checked.kinds {
-        crate::engine::cooldown::stored(&store, account.pk(), &query, kind, &held)?;
+        snob_engine::engine::cooldown::stored(&store, account.pk(), &query, kind, &held)?;
     }
     Ok(())
 }
@@ -347,7 +347,7 @@ fn make(
     };
     // Asked again under the lock, as the session is: a logout may have
     // signed it out while this waited on it.
-    if crate::owner::signed_out(account, &session) {
+    if snob_engine::owner::signed_out(account, &session) {
         return Err(crate::commands::common::signed_out_here());
     }
     let now = snob_core::clock::now_ms().get();
@@ -369,8 +369,9 @@ fn make(
     args.extend([COMMAND.into(), "run".into(), id.as_str().into()]);
     // The program is this one, never a path read from anywhere (AGENTS.md,
     // "The MCP server": a supervisor runs itself).
-    let exe = crate::exe::program()?;
-    let started = crate::detach::spawn(&exe, &args, None, &super::file(&dir, "supervisor.log"));
+    let exe = snob_engine::exe::program()?;
+    let started =
+        snob_engine::detach::spawn(&exe, &args, None, &super::file(&dir, "supervisor.log"));
     let started = match started {
         Ok(started) => started,
         Err(e) => {

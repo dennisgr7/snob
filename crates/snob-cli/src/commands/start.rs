@@ -10,8 +10,8 @@ use snob_store::paths::AppPaths;
 use snob_store::registry::Registry;
 use snob_store::store::{Store, snapshots};
 
-use crate::exit::ExitCode;
 use crate::report;
+use snob_engine::exit::ExitCode;
 
 /// What is said when the command is missing on a terminal.
 pub fn run(paths: &AppPaths, flag: Option<&str>, env: Option<&str>) -> Result<ExitCode> {
@@ -23,7 +23,7 @@ pub fn run(paths: &AppPaths, flag: Option<&str>, env: Option<&str>) -> Result<Ex
 fn screen(paths: &AppPaths, flag: Option<&str>, env: Option<&str>) -> String {
     let mut out = String::from("snob: Instagram from the terminal.\n\n");
     let registry = Registry::load(paths).unwrap_or_default();
-    let account = crate::account::resolve(flag, env, &registry).ok();
+    let account = snob_engine::account::resolve(flag, env, &registry).ok();
     match &account {
         Some(viewer) => {
             out.push_str(&format!("Signed in here as {}.\n", viewer.label()));

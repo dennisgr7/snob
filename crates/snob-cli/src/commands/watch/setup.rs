@@ -11,9 +11,9 @@ use snob_store::registry::Registry;
 use snob_store::secrets::{Kind, SecretStore};
 
 use crate::cli::WatchSetupArgs;
-use crate::engine::check::Verdict;
-use crate::exit::{ExitCode, ExitError};
 use crate::ui;
+use snob_engine::engine::check::Verdict;
+use snob_engine::exit::{ExitCode, ExitError};
 
 use super::preflight::{baseline_now, describe_check, preflight};
 use super::schedule::{calendar_from, schedule_from};
@@ -62,7 +62,7 @@ pub async fn setup(
     let answers = ask_webhook()?;
     // The address goes down with it.
     let own = account.and_then(|a| {
-        crate::account::username(&Registry::load(paths).unwrap_or_default(), a.pk())
+        snob_engine::account::username(&Registry::load(paths).unwrap_or_default(), a.pk())
             .map(str::to_string)
     });
     let accounts = ask_accounts(answers.url.as_deref(), own.as_deref())?;
@@ -86,7 +86,7 @@ pub async fn setup(
 
     let registry = Registry::load(paths).unwrap_or_default();
     let text = config::template(&config, answers.signing_key.is_some(), |pk| {
-        crate::account::username(&registry, pk).map(str::to_string)
+        snob_engine::account::username(&registry, pk).map(str::to_string)
     });
 
     // Parsed before it is written, and before any secret is stored.
@@ -266,8 +266,8 @@ impl BaselineCost {
 /// Adds up what the preflight learned about every account it checked, its
 /// requests as they go out from the browser or, with `browser` false,
 /// directly.
-fn baseline_cost(report: &crate::engine::check::CheckReport, browser: bool) -> BaselineCost {
-    use crate::engine::check::What;
+fn baseline_cost(report: &snob_engine::engine::check::CheckReport, browser: bool) -> BaselineCost {
+    use snob_engine::engine::check::What;
 
     let mut cost = BaselineCost {
         accounts: 0,
@@ -303,7 +303,7 @@ fn baseline_cost(report: &crate::engine::check::CheckReport, browser: bool) -> B
             (Some(a), Some(b)) => {
                 cost.followers += a;
                 cost.following += b;
-                use crate::engine::walk::{pages_to_walk, requests_to_walk};
+                use snob_engine::engine::walk::{pages_to_walk, requests_to_walk};
                 cost.pages += pages_to_walk(*a) + pages_to_walk(*b);
                 cost.requests += requests_to_walk(*a, browser) + requests_to_walk(*b, browser);
             }
@@ -315,7 +315,7 @@ fn baseline_cost(report: &crate::engine::check::CheckReport, browser: bool) -> B
 
 /// Offers to take the first capture, saying what it costs.
 async fn offer_the_baseline(
-    report: &crate::engine::check::CheckReport,
+    report: &snob_engine::engine::check::CheckReport,
     secrets: &SecretStore,
     paths: &AppPaths,
     account: Option<&AccountPaths>,
@@ -608,7 +608,7 @@ fn ask_webhook() -> Result<WebhookAnswers> {
     let headers = last_of_each(typed);
 
     // Checked while the person is still here, address and headers together.
-    crate::watch::webhook::check(&crate::watch::webhook::Webhook {
+    snob_engine::watch::webhook::check(&snob_engine::watch::webhook::Webhook {
         url: parsed,
         headers: headers.clone(),
         key: None,
@@ -705,7 +705,7 @@ fn ask_accounts(webhook: Option<&str>, own_name: Option<&str>) -> Result<Vec<Ans
     if ui::confirm("Also watch somebody else's account?", false)? {
         loop {
             let name = ui::prompt_line("Whose? (their username, or blank to stop)")?;
-            let name = crate::engine::target::clean(name.trim());
+            let name = snob_engine::engine::target::clean(name.trim());
             if name.is_empty() {
                 break;
             }
@@ -801,7 +801,7 @@ fn consent_question(name: &str, webhook: Option<&str>) -> String {
             "Record that you agreed to read @{}'s lists, and to have what changes in them sent \
              to {}?",
             printable(name),
-            crate::watch::webhook::shown_str(url)
+            snob_engine::watch::webhook::shown_str(url)
         ),
         None => format!(
             "Record that you agreed to read @{}'s lists?",
@@ -876,7 +876,7 @@ evry = \"6h\"
     /// and prompts, and returns before the sentence without a terminal.
     #[test]
     fn the_offer_describes_the_walk_it_is_about_to_make() {
-        use crate::engine::check::{CheckReport, Checked, What};
+        use snob_engine::engine::check::{CheckReport, Checked, What};
 
         let account = |followers, following| Checked {
             what: What::Account {
@@ -946,10 +946,10 @@ evry = \"6h\"
             accounts: 1,
             followers,
             following,
-            pages: crate::engine::walk::pages_to_walk(followers)
-                + crate::engine::walk::pages_to_walk(following),
-            requests: crate::engine::walk::requests_to_walk(followers, true)
-                + crate::engine::walk::requests_to_walk(following, true),
+            pages: snob_engine::engine::walk::pages_to_walk(followers)
+                + snob_engine::engine::walk::pages_to_walk(following),
+            requests: snob_engine::engine::walk::requests_to_walk(followers, true)
+                + snob_engine::engine::walk::requests_to_walk(following, true),
             uncounted: 0,
             posts: 0,
         };
@@ -1426,7 +1426,7 @@ lists = false
     /// account whose lists are not watched.
     #[test]
     fn the_offer_counts_the_posts_it_reads_and_not_the_lists_it_leaves_alone() {
-        use crate::engine::check::{CheckReport, Checked, What};
+        use snob_engine::engine::check::{CheckReport, Checked, What};
 
         let report = CheckReport {
             checked: vec![

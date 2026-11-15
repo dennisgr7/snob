@@ -19,16 +19,16 @@ use snob_ig::pace::Pace;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::{App, Viewer};
 use crate::cli::{DownloadSelection, Format, HighlightsArgs, StoryFormat};
 use crate::commands::common::{self, Switched};
 use crate::commands::stories::story_from;
-use crate::exit::{ExitCode, ExitError};
-use crate::media::{self, Story, download_many, was_canceled};
 use crate::output::Presentation;
 use crate::output::media::empty_document;
 use crate::report;
 use crate::ui;
+use snob_engine::app::{App, Viewer};
+use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::media::{self, Story, download_many, was_canceled};
 
 /// One tray entry: the cover the profile shows, not yet its items.
 #[derive(Debug, Clone)]
@@ -97,7 +97,7 @@ pub async fn run(
     let app = common::reader(&store, paths, args.action.interactive, false)?;
     let typed = common::target_or_own(&app, args.target.as_deref()).await?;
 
-    let known = crate::engine::target::known_pk_of(&app, args.target.as_deref(), &typed)?;
+    let known = snob_engine::engine::target::known_pk_of(&app, args.target.as_deref(), &typed)?;
     let tray = match fetch_tray(app.client(), &typed, app.viewer().pk, known).await? {
         Fetched::Tray(tray) => tray,
         Fetched::Hidden { username } => {
@@ -196,7 +196,7 @@ async fn browse(
             let name = s.tray.username.clone();
             let from = s.app.viewer();
             let switched = common::switch(store, paths, from, &to, false, async |app: &mut App| {
-                let known = crate::engine::target::known_pk(app, &name)?;
+                let known = snob_engine::engine::target::known_pk(app, &name)?;
                 match fetch_tray(app.client(), &name, app.viewer().pk, known).await? {
                     Fetched::Tray(tray) if !tray.entries.is_empty() => Ok(tray),
                     Fetched::Tray(tray) => {
@@ -315,7 +315,7 @@ pub async fn fetch_tray(
     known: Option<snob_core::Pk>,
 ) -> Result<Fetched> {
     let info = client
-        .profile_named(crate::engine::target::clean(typed), known)
+        .profile_named(snob_engine::engine::target::clean(typed), known)
         .await?;
 
     // The same three-way rule as `profile`: a private account serves its
@@ -410,7 +410,7 @@ fn whole_highlights_to_stdout() -> anyhow::Error {
 /// Downloads whole entries: each one fetched and then saved the way `stories -d
 /// all` saves a reel, into one directory.
 async fn download_entries(
-    app: &crate::app::App,
+    app: &snob_engine::app::App,
     tray: &Tray,
     selection: DownloadSelection,
     destination: Option<&Path>,
@@ -445,7 +445,7 @@ async fn download_entries(
                 failed.push(format!("highlight {number}: {e}"));
                 // **Past a failure, not past a refusal.**
                 if is_a_refusal(&e) {
-                    stopped_by = Some(crate::exit::exit_code_for(&e));
+                    stopped_by = Some(snob_engine::exit::exit_code_for(&e));
                     not_tried = &numbers[at + 1..];
                     break;
                 }
@@ -722,7 +722,10 @@ mod tests {
         assert!(!is_a_refusal(&anyhow::anyhow!("a file would not write")));
         let canceled: anyhow::Error = IgError::Canceled.into();
         assert!(was_canceled(&canceled));
-        assert_eq!(crate::exit::exit_code_for(&canceled), ExitCode::Interrupted);
+        assert_eq!(
+            snob_engine::exit::exit_code_for(&canceled),
+            ExitCode::Interrupted
+        );
     }
 
     fn plain() -> Presentation {
@@ -771,8 +774,8 @@ mod tests {
             thumb: None,
         };
         vec![
-            story(crate::media::Kind::Photo, &["a", "b"]),
-            story(crate::media::Kind::Video, &[]),
+            story(snob_engine::media::Kind::Photo, &["a", "b"]),
+            story(snob_engine::media::Kind::Video, &[]),
         ]
     }
 

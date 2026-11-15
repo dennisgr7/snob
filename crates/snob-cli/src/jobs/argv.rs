@@ -432,7 +432,7 @@ mod tests {
 
     /// The time a walk takes, by the pace alone, from a fresh sitting.
     fn walking(pages: &[(u64, u64)], into_sitting: u64) -> (u64, u64) {
-        crate::engine::estimate::walks_seconds(pages, into_sitting, 0)
+        snob_engine::engine::estimate::walks_seconds(pages, into_sitting, 0)
     }
 
     /// A walk given `--max-pages` stops there whatever the list's size, so

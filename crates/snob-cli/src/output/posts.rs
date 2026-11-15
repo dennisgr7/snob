@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 use snob_ig::client::IgClient;
 
-use crate::exit::ExitCode;
-use crate::media::{Named, Saved, download_named, save_file, save_file_to};
 use crate::output;
-use crate::posts::{Opened, Post, fetched_item};
 use crate::ui;
+use snob_engine::exit::ExitCode;
+use snob_engine::media::{Named, Saved, download_named, save_file, save_file_to};
+use snob_engine::posts::{Opened, Post, fetched_item};
 
 /// Downloads `files` the way `-d` does: one file and `-o` names it; several,
 /// or none named, and they go into a directory (`-o`, or the working one)

@@ -6,7 +6,7 @@ use snob_store::secrets::SecretStore;
 
 use crate::cli::WatchDiffArgs;
 use crate::commands::common;
-use crate::exit::ExitCode;
+use snob_engine::exit::ExitCode;
 
 use super::say::describe;
 use super::wire::stored_json;
@@ -21,7 +21,7 @@ pub(super) fn diff(
     // Nothing is fetched here, so there is no bar to draw.
     let app = common::app(&secrets.session_of(account), account, false)?;
 
-    let report = crate::engine::watch::from_store(&app, args.target.as_deref())?;
+    let report = snob_engine::engine::watch::from_store(&app, args.target.as_deref())?;
 
     if args.output.json {
         let out = stored_json(app.viewer(), &report, snob_core::clock::now());

@@ -18,9 +18,6 @@ use snob_ig::client::IgClient;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::Viewer;
-use crate::exit::ExitCode;
-use crate::media::{Stories, Story, bytes_of, default_name, extension_of, left_of, posted_of};
 use crate::output;
 use crate::ui::accounts::{self, Browsed, Picked};
 use crate::ui::browser::busy::Busy;
@@ -30,6 +27,11 @@ use crate::ui::help;
 use crate::ui::preview;
 use crate::ui::theme::Role;
 use crate::ui::tui;
+use snob_engine::app::Viewer;
+use snob_engine::exit::ExitCode;
+use snob_engine::media::{
+    Stories, Story, bytes_of, default_name, extension_of, left_of, posted_of,
+};
 
 /// Drives the list until the user leaves it, or picks another account to see it
 /// as.
@@ -494,7 +496,7 @@ pub(crate) fn beside<'a>(
         picture: item
             .and_then(|item| item.thumb.as_deref())
             .and_then(|address| gallery.get(address)),
-        cover: item.is_some_and(|item| item.kind == crate::media::Kind::Video),
+        cover: item.is_some_and(|item| item.kind == snob_engine::media::Kind::Video),
     }
 }
 
@@ -647,7 +649,7 @@ mod tests {
     use snob_core::Epoch;
 
     use super::*;
-    use crate::media::Kind;
+    use snob_engine::media::Kind;
 
     fn story(mentions: &[&str]) -> Story {
         Story {

@@ -14,10 +14,7 @@ use snob_ig::client::IgClient;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::Viewer;
 use crate::commands::highlights::{Entry, Tray, items_of_entry};
-use crate::exit::ExitCode;
-use crate::media::{Saved, Story, save_story};
 use crate::report;
 use crate::ui::accounts::{self, Browsed, Picked};
 use crate::ui::browser::busy::Busy;
@@ -27,6 +24,9 @@ use crate::ui::help;
 use crate::ui::preview;
 use crate::ui::stories;
 use crate::ui::tui::{self, Tui};
+use snob_engine::app::Viewer;
+use snob_engine::exit::ExitCode;
+use snob_engine::media::{Saved, Story, save_story};
 
 /// Where the browser is, and what the arrow keys therefore move.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -818,7 +818,7 @@ mod tests {
     use snob_core::Epoch;
 
     use super::*;
-    use crate::media::Kind;
+    use snob_engine::media::Kind;
 
     fn entry(title: &str, declared: Option<u64>) -> Entry {
         Entry {

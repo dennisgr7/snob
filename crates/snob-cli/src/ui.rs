@@ -136,7 +136,7 @@ pub fn prompt_line(prompt: &str) -> Result<String> {
 /// A yes or no question, asked without holding an async worker while the person
 /// thinks about it.
 pub async fn confirm_off_thread(
-    progress: &std::sync::Arc<dyn crate::host::Progress>,
+    progress: &std::sync::Arc<dyn snob_engine::host::Progress>,
     question: String,
     default: bool,
 ) -> Result<bool> {
@@ -166,7 +166,7 @@ pub enum LoginMethod {
     Paste,
     Browser,
     /// The browser on this machine, shown in one on another through an SSH
-    /// tunnel (`crate::relay`).
+    /// tunnel (`snob_engine::relay`).
     Remote,
 }
 
@@ -177,8 +177,8 @@ pub enum LoginMethod {
 /// **Every label fits an 80-column terminal** with the menu's pointer in
 /// front of it: the menu clips a row at the edge, and the words a long label
 /// loses there are its last ones, which is where "(recommended)" is.
-pub fn login_methods(seat: &crate::seat::Seat) -> Vec<(LoginMethod, &'static str)> {
-    use crate::seat::Window;
+pub fn login_methods(seat: &snob_engine::seat::Seat) -> Vec<(LoginMethod, &'static str)> {
+    use snob_engine::seat::Window;
     const REMOTE: &str = "Log in from the browser of the computer you are at, over SSH";
     const REMOTE_FIRST: &str =
         "Log in from the browser of the computer you are at, over SSH  (recommended)";
@@ -208,7 +208,7 @@ pub fn login_methods(seat: &crate::seat::Seat) -> Vec<(LoginMethod, &'static str
 }
 
 /// Arrow-key selection menu. Returns `None` if canceled with Esc.
-pub fn choose_login_method(seat: &crate::seat::Seat) -> Result<Option<LoginMethod>> {
+pub fn choose_login_method(seat: &snob_engine::seat::Seat) -> Result<Option<LoginMethod>> {
     let methods = login_methods(seat);
     let labels: Vec<&str> = methods.iter().map(|(_, label)| *label).collect();
     let chosen = menu::choose("How do you want to log in?", &labels)?;
@@ -243,7 +243,7 @@ pub fn warn(message: &str) {
     eprintln!("warning: {message}");
 }
 
-pub use crate::files::say_line;
+pub use snob_engine::files::say_line;
 
 /// `println!`, through [`say_line`]. Same arguments, same shape, one difference.
 macro_rules! say {
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn the_login_menu_follows_the_seat() {
         use super::{LoginMethod, login_methods};
-        use crate::seat::{Seat, Window};
+        use snob_engine::seat::{Seat, Window};
         let at = |window| Seat { ssh: None, window };
         let order = |window| -> Vec<LoginMethod> {
             login_methods(&at(window))

@@ -10,9 +10,9 @@ use snob_store::store::{Store, deliveries, watch::Queued};
 use url::Url;
 
 use crate::cli::WebhookArgs;
-use crate::engine::watch::TickReport;
-use crate::watch::webhook::{self, Attempt, Webhook, WebhookClient};
 use crate::{report, ui};
+use snob_engine::engine::watch::TickReport;
+use snob_engine::watch::webhook::{self, Attempt, Webhook, WebhookClient};
 
 use super::wire::{event, outgoing, payload};
 
@@ -130,7 +130,7 @@ fn plan(
     // Every message below names the address, and the address may carry a
     // password: `check` refuses one, but these are built before it runs, and a
     // refusal that printed the secret first is not a refusal.
-    let shown = crate::watch::webhook::shown(&url);
+    let shown = snob_engine::watch::webhook::shown(&url);
 
     /// Names the origin a stored credential belongs to, for a warning about not
     /// sending it.
@@ -310,7 +310,7 @@ pub(crate) fn destination_of(url: &Url) -> String {
 /// The order is the whole of it: the report is queued and the marks retire in
 /// **one transaction**, and only then is anything sent.
 pub(super) async fn deliver(
-    app: &mut crate::app::App,
+    app: &mut snob_engine::app::App,
     tick: &TickReport,
     delivery: Option<&Delivery>,
 ) -> Result<()> {
@@ -336,7 +336,7 @@ pub(super) async fn deliver(
         None => None,
     };
 
-    let queued = crate::engine::watch::commit(
+    let queued = snob_engine::engine::watch::commit(
         app,
         tick,
         // A report and the address it was made for are one thing: the body is
@@ -651,7 +651,7 @@ mod tests {
             .await;
     }
 
-    fn owe(app: &crate::app::App, delivery: &Delivery, how_many: usize, at: Epoch) {
+    fn owe(app: &snob_engine::app::App, delivery: &Delivery, how_many: usize, at: Epoch) {
         for n in 0..how_many {
             deliveries::enqueue(
                 app.db().conn(),

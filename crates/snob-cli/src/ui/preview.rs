@@ -39,12 +39,12 @@ use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
-use crate::media::Kind;
 use crate::ui::browser::input::{self, Raw};
 use crate::ui::graphics;
 use crate::ui::help;
 use crate::ui::theme;
 use crate::ui::tui::{self, Tui};
+use snob_engine::media::Kind;
 
 /// Whether this build draws previews at all.
 pub const AVAILABLE: bool = cfg!(feature = "preview");
@@ -375,7 +375,7 @@ pub fn show_file(
 
 /// What the bytes are, for the sentence that says they are no JPEG.
 fn named(bytes: &[u8]) -> &'static str {
-    match crate::media::extension_of(bytes) {
+    match snob_engine::media::extension_of(bytes) {
         "mp4" => "a video",
         "webp" => "a WebP",
         "png" => "a PNG",

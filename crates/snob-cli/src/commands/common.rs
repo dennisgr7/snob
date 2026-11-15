@@ -16,18 +16,18 @@ use snob_core::model::{ListKind, User};
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::secrets::{SecretStore, SessionStore};
 
-use crate::app::{App, Viewer};
 use crate::cli::{
     AgentArgs, Attr, BrowseArgs, FilterArgs, Format, ListArgs, OutputArgs, ScanArgs, WalkArgs,
 };
-use crate::engine::{self, ListOutcome};
-use crate::exit::{ExitCode, ExitError};
 use crate::output::{self, Presentation, Rendered};
 use crate::report;
 use crate::ui::accounts::Browsed;
+use snob_engine::app::{App, Viewer};
+use snob_engine::engine::{self, ListOutcome};
+use snob_engine::exit::{ExitCode, ExitError};
 
-pub use crate::app::{client_label, held_in, standing};
-pub use crate::sentences::{no_session, signed_out_here};
+pub use snob_engine::app::{client_label, held_in, standing};
+pub use snob_engine::sentences::{no_session, signed_out_here};
 
 /// The three forms either media listing has, and the refusal for the others —
 /// so `-o out.xlsx` cannot fall through to a table with a spreadsheet's name on
@@ -208,7 +208,7 @@ pub fn alone_ahead(
         );
     }
     // As the run refuses it at its start (`App::open`).
-    if crate::owner::signed_out(paths, &session) {
+    if snob_engine::owner::signed_out(paths, &session) {
         return Err(signed_out_here());
     }
     // A job's walk holds the account for as long as it walks, from before
@@ -234,7 +234,7 @@ pub fn alone_ahead(
         .into());
     }
     if snob_store::paths::lock_is_held(&paths.spend_lock())?.unwrap_or(false) {
-        return Err(crate::app::held_elsewhere());
+        return Err(snob_engine::app::held_elsewhere());
     }
     Ok(session)
 }
@@ -331,7 +331,7 @@ pub fn refuse_during_cooldown(app: &App, doing: &str) -> Result<()> {
 
 /// The refusal [`refuse_during_cooldown`] gives, for `held`: also what
 /// `follow --check-ahead` answers, which has the budget's state and no `App`.
-pub fn in_cooldown(held: &crate::app::Held, doing: &str) -> anyhow::Error {
+pub fn in_cooldown(held: &snob_engine::app::Held, doing: &str) -> anyhow::Error {
     ExitError::new(
         ExitCode::RateLimited,
         format!("{}, so {doing}", report::held_until(held)),
@@ -377,7 +377,7 @@ pub async fn switch<T>(
         Err(e)
             if app.cancel().is_canceled()
                 || matches!(
-                    crate::exit::exit_code_for(&e),
+                    snob_engine::exit::exit_code_for(&e),
                     ExitCode::RateLimited | ExitCode::Challenge
                 ) =>
         {

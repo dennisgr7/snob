@@ -11,14 +11,14 @@ use snob_store::secrets::SecretStore;
 use crate::cli::{Format, PostArgs, StoryFormat};
 use crate::commands::common;
 use crate::commands::posts::{download_items, post_text, videos_of};
-use crate::exit::{ExitCode, ExitError};
-use crate::media;
 use crate::output::{self, Presentation};
-use crate::posts::{
-    self, CommentLine, Comments, Post, Thread, comment_json, post_json, thread_document,
-};
 use crate::report;
 use crate::ui;
+use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::media;
+use snob_engine::posts::{
+    self, CommentLine, Comments, Post, Thread, comment_json, post_json, thread_document,
+};
 
 pub async fn run(args: PostArgs, store: SecretStore, paths: &AccountPaths) -> Result<ExitCode> {
     // Before anything is opened or asked: a link that names no post costs
@@ -110,11 +110,11 @@ pub async fn run(args: PostArgs, store: SecretStore, paths: &AccountPaths) -> Re
 /// directory (the working one when none is given), and what became of each
 /// printed as one document.
 async fn save_telling(
-    app: &crate::app::App,
+    app: &snob_engine::app::App,
     post: &Post,
     selection: crate::cli::DownloadSelection,
     destination: Option<&Path>,
-    videos: &crate::posts::Videos,
+    videos: &snob_engine::posts::Videos,
     bounds: posts::Bounds,
 ) -> Result<ExitCode> {
     let numbers = crate::output::media::numbers_of(selection, post.items.len(), |n| {

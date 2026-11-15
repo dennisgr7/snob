@@ -9,7 +9,7 @@ use snob_core::model::User;
 use crate::cli::Format;
 use crate::ui;
 
-pub use crate::files::{
+pub use snob_engine::files::{
     Replacing, StdoutSink, create_new, default_path, file_named, is_stdout, one_file_to_stdout,
     stdout_download_ahead, usable_stem, write_bytes,
 };

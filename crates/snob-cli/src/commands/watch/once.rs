@@ -7,9 +7,9 @@ use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 
 use crate::cli::WatchOnceArgs;
-use crate::exit::ExitCode;
 use crate::report;
 use crate::ui;
+use snob_engine::exit::ExitCode;
 
 use super::delivery::delivery_from;
 use super::run::{Printing, run_viewers, settle_all};
@@ -44,9 +44,9 @@ pub(super) async fn once(
         let Some(due_at) = due_for(paths, configured.as_ref(), began)? else {
             return Ok(ExitCode::Ok);
         };
-        crate::engine::watch::RunTiming::due(due_at, began, std::time::Duration::ZERO)
+        snob_engine::engine::watch::RunTiming::due(due_at, began, std::time::Duration::ZERO)
     } else {
-        crate::engine::watch::RunTiming::by_hand(began)
+        snob_engine::engine::watch::RunTiming::by_hand(began)
     };
     let delivery = delivery_from(&args.delivery, configured.as_ref(), &secrets)?;
 
@@ -106,7 +106,7 @@ pub(super) async fn once(
     // 0: on a timer nothing tries the report again before the next run, and a
     // status that said all was well left nobody to look.
     if outcome.code == ExitCode::Ok && delivery.as_ref().is_some_and(|d| d.left_undelivered()) {
-        return Err(crate::exit::ExitError::new(
+        return Err(snob_engine::exit::ExitError::new(
             ExitCode::Error,
             "the run went through, but a report did not reach the webhook; it stays queued \
              for the next run, unless it was given up on as said above",

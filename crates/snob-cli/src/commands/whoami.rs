@@ -13,9 +13,9 @@ use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
 use crate::cli::WhoamiArgs;
-use crate::exit::ExitCode;
 use crate::report;
 use crate::ui;
+use snob_engine::exit::ExitCode;
 
 /// Reports on the session of `account`, the account resolved for this run,
 /// if any account is signed in at all.
@@ -77,7 +77,7 @@ pub async fn run(
     // not checked with Instagram, `--offline` or not: it is said as what it
     // is, with the code of having none, which every command refuses it with
     // at its start (`App::open`).
-    let signed_out = crate::owner::signed_out(paths, &session);
+    let signed_out = snob_engine::owner::signed_out(paths, &session);
     if signed_out {
         alive = Some(false);
         code = ExitCode::NoSession;
@@ -93,11 +93,11 @@ pub async fn run(
     } else if !args.offline {
         // Through `app::pacer_saying_a_line`, so Ctrl+C reaches the request
         // and a wait the budget imposes is announced.
-        let pacer = crate::app::pacer_saying_a_line(paths)?;
+        let pacer = snob_engine::app::pacer_saying_a_line(paths)?;
 
         // A cooldown means nothing is spent, and checking a session is a
         // request like any other.
-        if let Some(held) = crate::app::held(&pacer, Some(paths))? {
+        if let Some(held) = snob_engine::app::held(&pacer, Some(paths))? {
             // Seconds, like `created_at` and `validated_at` in the same object.
             cooldown_until = Some(held.until_ms.to_epoch());
             eprintln!(
@@ -129,7 +129,7 @@ pub async fn run(
                 }
                 Err(e) => {
                     alive = Some(false);
-                    code = crate::exit::from_ig_error(&e);
+                    code = snob_engine::exit::from_ig_error(&e);
                     // Through `report`, in both shapes: the advice naming a
                     // `snob` subcommand lives there, and a dead session, which
                     // is the whole reason somebody runs this command, is one

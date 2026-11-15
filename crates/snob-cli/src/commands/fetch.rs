@@ -7,10 +7,10 @@ use snob_ig::client::CdnClient;
 use snob_ig::error::IgError;
 
 use crate::cli::FetchArgs;
-use crate::exit::ExitCode;
 use crate::output;
-use crate::posts::MAX_POST_BYTES;
 use crate::ui;
+use snob_engine::exit::ExitCode;
+use snob_engine::posts::MAX_POST_BYTES;
 
 /// Fetches `args.url`, sending `--user-agent`, else the one `account_ua` reads
 /// off the account, else the installed browser's.
@@ -36,7 +36,7 @@ pub async fn run(
         Some(given) => given,
         None => account_ua()?
             .filter(|ua| !ua.trim().is_empty())
-            .or_else(|| crate::browser::detect().map(|browser| browser.user_agent()))
+            .or_else(|| snob_engine::browser::detect().map(|browser| browser.user_agent()))
             .ok_or_else(|| {
                 anyhow!(
                     "there is no User-Agent to send: nobody is signed in and no browser was \
@@ -44,7 +44,7 @@ pub async fn run(
                 )
             })?,
     };
-    let cdn = CdnClient::new(&user_agent, site, crate::interrupt::install())?;
+    let cdn = CdnClient::new(&user_agent, site, snob_engine::interrupt::install())?;
     // The client holds the address to the same rule again, and every
     // redirect hop after it.
     cdn.check_downloadable(&url)?;
@@ -165,7 +165,7 @@ fn extension_for(head: &[u8], from_address: Option<&str>) -> &'static str {
         "jpg", "jpeg", "png", "webp", "heic", "gif", "mp4", "webm", "m4a",
     ];
     let jpeg = head.starts_with(&[0xFF, 0xD8, 0xFF]);
-    let sniffed = crate::media::extension_of(head);
+    let sniffed = snob_engine::media::extension_of(head);
     if sniffed != "jpg" || jpeg {
         return sniffed;
     }

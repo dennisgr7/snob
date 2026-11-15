@@ -11,9 +11,7 @@ use snob_core::model::printable;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::Viewer;
 use crate::commands::pfp::Picture;
-use crate::exit::ExitCode;
 use crate::output;
 use crate::ui::accounts::{self, Browsed, Picked};
 use crate::ui::browser::input::{self, Action, next};
@@ -21,6 +19,8 @@ use crate::ui::browser::scratch::{ABANDONED_AFTER, Scratch};
 use crate::ui::help;
 use crate::ui::preview;
 use crate::ui::tui;
+use snob_engine::app::Viewer;
+use snob_engine::exit::ExitCode;
 
 /// Drives the row until the user leaves it, or picks another account to see
 /// the picture as. `note` is said on the first frame.

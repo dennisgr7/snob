@@ -23,9 +23,9 @@ use clap::Subcommand;
 use serde_json::Value;
 
 use crate::cli::Format;
-use crate::exit::ExitCode;
 use crate::output::{self, Rendered};
 use crate::ui;
+use snob_engine::exit::ExitCode;
 
 /// Ceiling on everything pulled out of the export, across all its files.
 ///

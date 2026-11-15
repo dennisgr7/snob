@@ -21,9 +21,7 @@ use snob_core::sets;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::{App, Viewer};
 use crate::commands::profile::{self as profile_read, MutualPolicy};
-use crate::exit::{ExitCode, ExitError};
 use crate::report;
 use crate::ui::accounts::{self, Browsed, Picked};
 use crate::ui::browser::busy::Busy;
@@ -33,6 +31,8 @@ use crate::ui::browser::scratch::{ABANDONED_AFTER, Scratch};
 use crate::ui::help;
 use crate::ui::profile::{self, Answer, answer, question_modal};
 use crate::ui::tui::{self, Tui};
+use snob_engine::app::{App, Viewer};
+use snob_engine::exit::{ExitCode, ExitError};
 
 /// What the browser shows: one list, or a tray of them.
 pub struct Shelf<'a> {

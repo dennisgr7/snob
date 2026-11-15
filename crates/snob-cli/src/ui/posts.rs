@@ -2,7 +2,7 @@
 //! post what it says, its items and its comments.
 //!
 //! **A post is opened with the two reads the app opens it with** (its info and
-//! its first page of comments, [`crate::posts::open`]), once a session: walking
+//! its first page of comments, [`snob_engine::posts::open`]), once a session: walking
 //! out and back in costs nothing.
 //!
 //! **Every wait is under a box that says what it is** (`ui::browser::busy`):
@@ -24,12 +24,12 @@ use snob_core::model::printable;
 use snob_ig::client::IgClient;
 use snob_store::paths::AppPaths;
 
-use crate::app::Viewer;
 use crate::commands::post::{MORE_NOT_SHOWN, comment_line};
 use crate::commands::posts::{about, headline_cell, size_of};
-use crate::exit::ExitCode;
-use crate::media::Kind;
-use crate::posts::{self, Comments, Grid, Opened, Post};
+use snob_engine::app::Viewer;
+use snob_engine::exit::ExitCode;
+use snob_engine::media::Kind;
+use snob_engine::posts::{self, Comments, Grid, Opened, Post};
 
 use crate::ui::browser::busy::Busy;
 use crate::ui::browser::input::{self, Action, Raw, page};
@@ -1473,7 +1473,7 @@ mod tests {
     use snob_ig::model::post::Media;
 
     use super::*;
-    use crate::posts::CommentLine;
+    use snob_engine::posts::CommentLine;
 
     fn post() -> Post {
         let media: Media = serde_json::from_str(

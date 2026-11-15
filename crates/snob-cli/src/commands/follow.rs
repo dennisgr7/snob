@@ -15,9 +15,9 @@ use snob_store::secrets::SessionStore;
 
 use crate::cli::FollowArgs;
 use crate::commands::common;
-use crate::engine::target;
-use crate::exit::{ExitCode, ExitError};
 use crate::ui;
+use snob_engine::engine::target;
+use snob_engine::exit::{ExitCode, ExitError};
 
 /// Which of the two verbs is being run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,7 +146,7 @@ pub async fn run(
 /// **Not a reason to fail the run**: the write has happened, and saying it
 /// failed would invite sending it again.
 fn remember_own_write(
-    app: &crate::app::App,
+    app: &snob_engine::app::App,
     profile: &snob_ig::model::WebProfileInfo,
     outcome: Outcome,
 ) {
@@ -224,7 +224,7 @@ fn check_ahead(
     // the write bucket on top, so its wait is the longest of the run's.
     let owed = budget.next_write_at.get().saturating_sub(now.get());
     let wait = std::time::Duration::from_millis(u64::try_from(owed).unwrap_or(0));
-    if let Some(limit) = crate::app::max_wait()
+    if let Some(limit) = snob_engine::app::max_wait()
         && wait > limit
     {
         return Err(snob_ig::error::IgError::WaitTooLong { wait, limit }.into());

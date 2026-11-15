@@ -1,6 +1,6 @@
 //! `snob posts`: the posts on an account's grid, and how to keep a copy.
 //!
-//! **What it costs** is in [`crate::posts`]: the profile, then one read per
+//! **What it costs** is in [`snob_engine::posts`]: the profile, then one read per
 //! page of twelve posts.
 //!
 //! **A reader that comes back** names the newest posts it already has with
@@ -28,23 +28,23 @@ use crate::cli::{
     DownloadSelection, Format, MediaActionArgs, PostsArgs, Quality, StoryFormat, VideoArgs,
 };
 use crate::commands::common;
-use crate::exit::ExitCode;
-use crate::media;
 use crate::output;
 use crate::output::Presentation;
 use crate::output::media::empty_document;
-use crate::posts::{
-    self, Fetched, Grid, GridRead, Post, Videos, files_of, post_json, read_grid, read_tab,
-};
 use crate::report;
 use crate::ui;
+use snob_engine::exit::ExitCode;
+use snob_engine::media;
+use snob_engine::posts::{
+    self, Fetched, Grid, GridRead, Post, Videos, files_of, post_json, read_grid, read_tab,
+};
 
 pub async fn run(args: PostsArgs, store: SecretStore, paths: &AccountPaths) -> Result<ExitCode> {
     args.action.refuse_stdout_download_early()?;
     let videos = videos_of(&args.video, &args.action)?;
     let app = common::reader(&store, paths, args.action.interactive, false)?;
     let typed = common::target_or_own(&app, args.target.as_deref()).await?;
-    let known = crate::engine::target::known_pk_of(&app, args.target.as_deref(), &typed)?;
+    let known = snob_engine::engine::target::known_pk_of(&app, args.target.as_deref(), &typed)?;
 
     // Decided before anything is read, because it decides how much is: the view
     // reads the first page and the next as it is scrolled to, and the printed
@@ -209,7 +209,7 @@ pub async fn run(args: PostsArgs, store: SecretStore, paths: &AccountPaths) -> R
 /// first ([`posts::filled`]), since a tab hands out no video's address and a
 /// carousel's items as covers alone. `None` when Ctrl+C stopped a wait.
 async fn filled_for_a_tab(
-    app: &crate::app::App,
+    app: &snob_engine::app::App,
     grid: &Grid,
     chosen: Vec<Post>,
 ) -> Result<Option<Vec<Post>>> {
@@ -221,7 +221,7 @@ async fn filled_for_a_tab(
 
 /// `-d` inside one post: the items by the numbers its listing printed.
 pub(crate) async fn download_items(
-    app: &crate::app::App,
+    app: &snob_engine::app::App,
     post: &Post,
     selection: DownloadSelection,
     destination: Option<&Path>,

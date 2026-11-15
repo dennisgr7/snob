@@ -25,7 +25,7 @@ use std::process::{Command, Output};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use snob_cli::{browser, cdp};
+use snob_engine::{browser, cdp};
 use snob_ig::pace::CancelToken;
 use snob_store::paths::AppPaths;
 use wiremock::matchers::{method, path as url_path, path_regex};
@@ -62,7 +62,7 @@ fn a_browser_starts() -> bool {
     match answer {
         Ok(()) => true,
         Err(why) => {
-            let required = snob_cli::headless::env_flag("SNOB_TEST_REQUIRE_BROWSER");
+            let required = snob_engine::headless::env_flag("SNOB_TEST_REQUIRE_BROWSER");
             assert!(!required, "{why}, and SNOB_TEST_REQUIRE_BROWSER needs one");
             eprintln!("{why}; skipping");
             false
@@ -1983,7 +1983,7 @@ async fn two_commands_at_once_share_one_browser() {
 /// and its browsers are closed.
 async fn owner_gone(paths: &AppPaths) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while snob_cli::owner::is_running(paths).await {
+    while snob_engine::owner::is_running(paths).await {
         assert!(
             std::time::Instant::now() < deadline,
             "the owner stayed with nothing to do"

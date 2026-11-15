@@ -13,7 +13,7 @@ use url::Url;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
-use snob_cli::watch::webhook::{self, Attempt, Webhook, WebhookClient};
+use snob_engine::watch::webhook::{self, Attempt, Webhook, WebhookClient};
 
 mod common;
 use common::{app, open_db};
@@ -401,7 +401,7 @@ async fn a_failed_report_is_queued_and_the_same_bytes_go_out_next_time() {
 /// here to retry or deduplicate.
 #[tokio::test]
 async fn the_preflight_posts_a_signed_message_and_reports_the_answer() {
-    use snob_cli::engine::check::{Verdict, What};
+    use snob_engine::engine::check::{Verdict, What};
 
     let receiver = MockServer::start().await;
     Mock::given(method("POST"))
@@ -418,7 +418,7 @@ async fn the_preflight_posts_a_signed_message_and_reports_the_answer() {
     );
 
     let body = r#"{"event":"watch.preflight"}"#;
-    let checked = snob_cli::engine::check::webhook_of(
+    let checked = snob_engine::engine::check::webhook_of(
         &client,
         "https://receiver.example".to_string(),
         true,
@@ -471,7 +471,7 @@ async fn the_preflight_posts_a_signed_message_and_reports_the_answer() {
 /// A receiver that is not there is a failure worth a red line, not a warning.
 #[tokio::test]
 async fn a_webhook_that_answers_404_reports_the_code_it_answered() {
-    use snob_cli::engine::check::{Problem, Verdict, What};
+    use snob_engine::engine::check::{Problem, Verdict, What};
 
     let server = MockServer::start().await;
     Mock::given(wiremock::matchers::method("POST"))
@@ -484,7 +484,7 @@ async fn a_webhook_that_answers_404_reports_the_code_it_answered() {
 
     let client = client_at(&server.uri(), None, vec![]);
 
-    let checked = snob_cli::engine::check::webhook_of(
+    let checked = snob_engine::engine::check::webhook_of(
         &client,
         server.uri(),
         false,
@@ -522,9 +522,9 @@ async fn a_webhook_that_answers_404_reports_the_code_it_answered() {
 
 #[tokio::test]
 async fn a_preflight_that_cannot_be_delivered_fails_the_check() {
-    use snob_cli::engine::check::Verdict;
+    use snob_engine::engine::check::Verdict;
 
-    let checked = snob_cli::engine::check::webhook_of(
+    let checked = snob_engine::engine::check::webhook_of(
         &client_at(UNREACHABLE, None, vec![]),
         UNREACHABLE.to_string(),
         false,

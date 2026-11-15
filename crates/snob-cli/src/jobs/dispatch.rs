@@ -10,7 +10,7 @@ use snob_store::paths::{self, AccountPaths};
 
 use super::show::{ended, find, finished, line, row, settle, whole};
 use super::{Seen, Stopping, argv, start, supervise, sweep_if_free};
-use crate::exit::ExitCode;
+use snob_engine::exit::ExitCode;
 
 fn now() -> i64 {
     snob_core::clock::now_ms().get()
@@ -39,14 +39,15 @@ pub async fn dispatch(
     cli: &crate::cli::Cli,
     store: &snob_store::secrets::SecretStore,
     app: &paths::AppPaths,
-) -> anyhow::Result<crate::exit::ExitCode> {
+) -> anyhow::Result<snob_engine::exit::ExitCode> {
     use crate::cli::{Command, JobCommand, JobsArgs, JobsCommand};
 
     let env = std::env::var("SNOB_ACCOUNT").ok();
     let registry = snob_store::registry::Registry::load(app)?;
-    let viewer = crate::account::resolve_if_any(cli.account.as_deref(), env.as_deref(), &registry)?
-        .ok_or_else(crate::commands::common::no_session)?;
-    crate::sentences::act_as(viewer.clone());
+    let viewer =
+        snob_engine::account::resolve_if_any(cli.account.as_deref(), env.as_deref(), &registry)?
+            .ok_or_else(crate::commands::common::no_session)?;
+    snob_engine::sentences::act_as(viewer.clone());
     let account = app.account(viewer.pk);
     // What reads the jobs sweeps what is past its keeping first, when the
     // lock is free: a start sweeps under it, and a supervisor touches only

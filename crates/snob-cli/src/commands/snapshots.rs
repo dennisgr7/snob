@@ -11,9 +11,9 @@ use snob_store::paths::AccountPaths;
 use snob_store::store::{Store, accounts, snapshots};
 
 use crate::cli::SnapshotsArgs;
-use crate::exit::{ExitCode, ExitError};
 use crate::output::grid::{Grid, Value};
 use crate::output::{self, Presentation};
+use snob_engine::exit::{ExitCode, ExitError};
 
 /// The account's database, read without writing, and the account a command is
 /// about in it: the viewer's own, or the one `target` names, found by the name
@@ -29,7 +29,7 @@ pub(crate) fn stored_account(
         let own = crate::report::acting_as().map_or_else(|| "your account".into(), |v| v.label());
         return Ok((store, account.pk(), own));
     };
-    let name = crate::engine::target::clean(name);
+    let name = snob_engine::engine::target::clean(name);
     match accounts::find_pk_by_username(store.conn(), name)? {
         Some(pk) => Ok((store, pk, format!("@{}", printable(name)))),
         None => Err(nothing_here(Some(name))),
@@ -41,7 +41,7 @@ pub(crate) fn stored_account(
 fn nothing_here(target: Option<&str>) -> anyhow::Error {
     let (whose, walk) = match target {
         Some(name) => {
-            let name = printable(crate::engine::target::clean(name));
+            let name = printable(snob_engine::engine::target::clean(name));
             (format!("@{name}"), format!("snob followers {name}"))
         }
         None => ("your account".to_string(), "snob scan".to_string()),

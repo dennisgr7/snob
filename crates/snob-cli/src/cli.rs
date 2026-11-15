@@ -748,12 +748,12 @@ pub enum Command {
 
     /// The process that runs the browsers for every command (`owner`).
     /// Started by the commands themselves; nobody types it.
-    #[command(name = crate::owner::COMMAND, hide = true)]
+    #[command(name = snob_engine::owner::COMMAND, hide = true)]
     BrowserOwner,
 
     /// The updater's own processes (`update`): started by the commands;
     /// nobody types them.
-    #[command(name = crate::update::COMMAND, hide = true, subcommand)]
+    #[command(name = snob_engine::update::COMMAND, hide = true, subcommand)]
     Updater(UpdaterCommand),
 
     /// A job's own processes (`jobs`): started by the commands and by
@@ -1553,7 +1553,7 @@ impl Default for WalkArgs {
         Self {
             refresh: false,
             offline: false,
-            max_age: crate::engine::DEFAULT_MAX_AGE,
+            max_age: snob_engine::engine::DEFAULT_MAX_AGE,
             no_resume: false,
             max_pages: None,
             same_day: false,
@@ -2933,8 +2933,11 @@ mod tests {
         let Command::Followers(args) = cli.command else {
             panic!("followers");
         };
-        assert_eq!(args.walk.max_age, crate::engine::DEFAULT_MAX_AGE);
-        assert_eq!(WalkArgs::default().max_age, crate::engine::DEFAULT_MAX_AGE);
+        assert_eq!(args.walk.max_age, snob_engine::engine::DEFAULT_MAX_AGE);
+        assert_eq!(
+            WalkArgs::default().max_age,
+            snob_engine::engine::DEFAULT_MAX_AGE
+        );
     }
 
     /// `--cache` is the earlier spelling; a script written against it still

@@ -21,16 +21,16 @@ use snob_ig::pace::Pace;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::{App, Viewer};
 use crate::cli::{Format, ProfileArgs, ProfileFormat};
 use crate::commands::common::{self, Switched};
 use crate::commands::stories::story_from;
-use crate::engine::target;
-use crate::exit::ExitCode;
-use crate::media::Story;
 use crate::output::{self, Presentation, Rendered};
 use crate::report;
 use crate::ui;
+use snob_engine::app::{App, Viewer};
+use snob_engine::engine::target;
+use snob_engine::exit::ExitCode;
+use snob_engine::media::Story;
 
 /// How many pages of the mutual list are walked before the rest is counted
 /// rather than named.
@@ -945,7 +945,7 @@ mod tests {
 
     fn story() -> Story {
         Story {
-            kind: crate::media::Kind::Photo,
+            kind: snob_engine::media::Kind::Photo,
             taken_at: Epoch::new(0),
             expiring_at: None,
             url: None,

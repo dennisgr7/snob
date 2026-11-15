@@ -13,8 +13,8 @@ use snob_store::store::shared::Shared;
 use snob_store::store::{Store, accounts, mcp_acts, snapshots, users, watch as watch_store};
 
 use crate::cli::{StatusArgs, StatusSections};
-use crate::exit::ExitCode;
 use crate::report;
+use snob_engine::exit::ExitCode;
 
 /// Reports on `account`, the account resolved for this run, and with `--json`
 /// and no section named on the updater as well (`update::report`, read from its
@@ -46,7 +46,7 @@ pub fn run(
     // A session this computer no longer sends as is no session to report on
     // either, and is said as what it is: every command refuses it at its
     // start (`App::open`), with the same code.
-    if crate::owner::signed_out(paths, &session) {
+    if snob_engine::owner::signed_out(paths, &session) {
         return no_session(&args, viewer, report::SIGNED_OUT_HERE, paths, sandboxed);
     }
 
@@ -137,7 +137,7 @@ pub fn run(
         let mut out = found.json();
         out["viewer"] = viewer.unwrap_or(Value::Null);
         if !args.names_a_section() {
-            out["update"] = crate::update::report(paths, sandboxed);
+            out["update"] = snob_engine::update::report(paths, sandboxed);
         }
         crate::ui::say!("{}", serde_json::to_string_pretty(&out)?);
     } else {
@@ -179,7 +179,10 @@ fn no_session(
         );
         out.insert("viewer".into(), viewer.unwrap_or(Value::Null));
         if !args.names_a_section() {
-            out.insert("update".into(), crate::update::report(paths, sandboxed));
+            out.insert(
+                "update".into(),
+                snob_engine::update::report(paths, sandboxed),
+            );
         }
         crate::ui::say!("{}", serde_json::to_string_pretty(&Value::Object(out))?);
     }
@@ -199,7 +202,7 @@ fn braked_names(budget: &BudgetState, held: Option<EpochMs>, paths: &AppPaths) -
     brake
         .accounts
         .iter()
-        .map(|&pk| crate::app::label(pk, registry.get(pk).map(|r| r.username.as_str())))
+        .map(|&pk| snob_engine::app::label(pk, registry.get(pk).map(|r| r.username.as_str())))
         .collect()
 }
 
@@ -533,7 +536,7 @@ impl Found<'_> {
             let mut lines = vec!["Cooldown".to_string()];
             match self.held {
                 Some(until) => {
-                    let said = report::held_until(&crate::app::Held {
+                    let said = report::held_until(&snob_engine::app::Held {
                         until_ms: until,
                         braked: self.braked.to_vec(),
                     });
@@ -599,7 +602,7 @@ impl Found<'_> {
                 let outcome = run.outcome.as_ref().map_or("unfinished", |o| o.as_str());
                 lines.push(format!(
                     "  {}  {outcome} {}, {} requests, {} changes",
-                    crate::app::label(run.account_pk, name.as_deref()),
+                    snob_engine::app::label(run.account_pk, name.as_deref()),
                     report::stored_on(run.started_at),
                     run.requests,
                     run.changes

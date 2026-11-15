@@ -4,12 +4,12 @@
 
 use anyhow::Context;
 use clap::Parser;
-use snob_cli::account::Unresolved;
 use snob_cli::cli::{Cli, Command};
 use snob_cli::commands;
 use snob_cli::commands::sets::SetOp;
-use snob_cli::exit::ExitCode;
 use snob_core::model::ListKind;
+use snob_engine::account::Unresolved;
+use snob_engine::exit::ExitCode;
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::registry::Registry;
 use snob_store::secrets::SecretStore;
@@ -43,10 +43,10 @@ async fn main() -> std::process::ExitCode {
         Ok(code) => code,
         Err(e) => {
             snob_cli::report::print_error(&e, wording);
-            snob_cli::exit::exit_code_for(&e)
+            snob_engine::exit::exit_code_for(&e)
         }
     };
-    std::process::ExitCode::from(snob_cli::exit::code(code))
+    std::process::ExitCode::from(snob_engine::exit::code(code))
 }
 
 /// Makes a future in a frame of its own and hands it back on the heap.
@@ -100,9 +100,9 @@ fn no_command() -> std::process::ExitCode {
     });
     let code = shown.unwrap_or_else(|e| {
         snob_cli::report::print_error(&e, snob_cli::report::Wording::Prose);
-        snob_cli::exit::exit_code_for(&e)
+        snob_engine::exit::exit_code_for(&e)
     });
-    std::process::ExitCode::from(snob_cli::exit::code(code))
+    std::process::ExitCode::from(snob_engine::exit::code(code))
 }
 
 /// Whether a failure is told in JSON: when the answer was going to be.
@@ -276,7 +276,7 @@ fn sandbox_keyring_namespace(root: &std::path::Path) -> String {
 
 async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let (paths, no_keyring, keyring_namespace) = wiring(&cli)?;
-    snob_cli::app::wait_at_most(cli.max_wait);
+    snob_engine::app::wait_at_most(cli.max_wait);
     let sandboxed = keyring_namespace.is_some();
 
     // The updater: its own processes, `snob update`, and every other command
@@ -284,11 +284,11 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     // this command again from the new binary.
     match &cli.command {
         Command::Updater(snob_cli::cli::UpdaterCommand::Fetch) => {
-            boxed(|| snob_cli::update::fetch(&paths)).await?;
+            boxed(|| snob_engine::update::fetch(&paths)).await?;
             return Ok(ExitCode::Ok);
         }
         Command::Updater(snob_cli::cli::UpdaterCommand::Apply(apply)) => {
-            snob_cli::update::apply_detached(&paths, &apply.exe)?;
+            snob_engine::update::apply_detached(&paths, &apply.exe)?;
             return Ok(ExitCode::Ok);
         }
         _ => {}
@@ -300,12 +300,12 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::BrowserOwner | Command::Updater(_) | Command::Update(_) => None,
         #[cfg(feature = "mcp")]
         Command::Mcp(_) => None,
-        Command::Job(snob_cli::cli::JobCommand::Run(_)) => Some(snob_cli::update::Role::Counted),
+        Command::Job(snob_cli::cli::JobCommand::Run(_)) => Some(snob_engine::update::Role::Counted),
         Command::Job(_) => None,
-        _ => Some(snob_cli::update::Role::Command),
+        _ => Some(snob_engine::update::Role::Command),
     };
     let _updating = match role {
-        Some(role) => Some(snob_cli::update::at_start(
+        Some(role) => Some(snob_engine::update::at_start(
             &paths,
             sandboxed,
             role,
@@ -314,19 +314,19 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         None => None,
     };
     if cli.stop_when_stdin_closes {
-        snob_cli::app::stop_when_stdin_closes();
+        snob_engine::app::stop_when_stdin_closes();
     }
     // The owner of the browsers and a job's supervisor are started to
     // outlive the command that started them (`detach`); everything else stops
     // with a program that drove it and went (`parent`).
-    snob_cli::app::stop_when_parent_exits(matches!(
+    snob_engine::app::stop_when_parent_exits(matches!(
         cli.command,
         Command::BrowserOwner
             | Command::Job(snob_cli::cli::JobCommand::Run(_))
             | Command::Updater(_)
     ));
     if cli.spend_alone {
-        snob_cli::app::spend_alone();
+        snob_engine::app::spend_alone();
     }
     if cli.progress_json {
         snob_cli::progress::progress_json();
@@ -357,16 +357,16 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 // `--max-wait` is the server's to hand each child, which
                 // waits as long as what it runs allows (`mcp::Waits`).
                 let launch = commands::mcp::child::Launch::new(
-                    snob_cli::exe::program()?,
+                    snob_engine::exe::program()?,
                     mcp_globals(&cli, None)?,
                 );
                 // The account the server is held to, by a flag or by the
                 // environment its children inherit; a server for any account
                 // is held to none, so the two are refused together.
                 let env = std::env::var("SNOB_ACCOUNT").ok();
-                let pinned = snob_cli::account::given(cli.account.as_deref(), env.as_deref());
+                let pinned = snob_engine::account::given(cli.account.as_deref(), env.as_deref());
                 if args.any_account && pinned.is_some() {
-                    return Err(snob_cli::exit::ExitError::new(
+                    return Err(snob_engine::exit::ExitError::new(
                         ExitCode::Error,
                         "--any-account lets a call say which account it acts as, and \
                          SNOB_ACCOUNT holds this server to one",
@@ -406,11 +406,11 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     }
     if let Command::BrowserOwner = cli.command {
         let linger = if keyring_namespace.is_some() {
-            snob_cli::owner::Linger::for_a_sandbox()
+            snob_engine::owner::Linger::for_a_sandbox()
         } else {
-            snob_cli::owner::Linger::for_people()
+            snob_engine::owner::Linger::for_people()
         };
-        boxed(|| snob_cli::owner::serve(&paths, linger)).await?;
+        boxed(|| snob_engine::owner::serve(&paths, linger)).await?;
         return Ok(ExitCode::Ok);
     }
     let store = SecretStore::new(paths.clone(), no_keyring);
@@ -426,7 +426,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Purge(_) | Command::Import(_) | Command::Fetch(_)
     ) && snob_store::layout::pending(&paths)
     {
-        boxed(|| snob_cli::owner::quit(&paths)).await;
+        boxed(|| snob_engine::owner::quit(&paths)).await;
         let settled = snob_store::layout::settle(&paths, &store)?;
         if let Some(parked) = settled.parked {
             snob_cli::ui::warn(&format!(
@@ -452,22 +452,22 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 
     // Every request to Instagram goes out from a browser from here on, unless
     // this run was told not to — see `headless/`.
-    if !snob_cli::headless::env_flag("SNOB_NO_BROWSER") {
-        let start = if snob_cli::headless::env_flag("SNOB_NO_OWNER") {
+    if !snob_engine::headless::env_flag("SNOB_NO_BROWSER") {
+        let start = if snob_engine::headless::env_flag("SNOB_NO_OWNER") {
             None
         } else {
             Some(owner_args(&cli)?)
         };
-        snob_cli::owner::install(&paths, start);
+        snob_engine::owner::install(&paths, start);
     }
-    snob_cli::owner::attended(somebody_waits(&cli));
+    snob_engine::owner::attended(somebody_waits(&cli));
     // A copy for the command, which consumes its store; the write-back needs
     // the same store, on the same keyring service, once it is done.
     let for_the_command = store.clone();
     let outcome = boxed(|| dispatch(cli, for_the_command, &paths, sandboxed)).await;
     // Whatever the command came to: the browser kept the session current
     // while it ran, and the stored copy learns what it kept.
-    boxed(|| snob_cli::owner::finish(&store, &paths)).await;
+    boxed(|| snob_engine::owner::finish(&store, &paths)).await;
     outcome
 }
 
@@ -494,8 +494,11 @@ async fn dispatch(
     // not stop `purge` from removing it.
     let resolved = || {
         let registry = Registry::load(paths)?;
-        let found =
-            snob_cli::account::resolve_if_any(cli.account.as_deref(), env.as_deref(), &registry)?;
+        let found = snob_engine::account::resolve_if_any(
+            cli.account.as_deref(),
+            env.as_deref(),
+            &registry,
+        )?;
         if let Some(found) = &found {
             snob_cli::report::act_as(found.clone());
         }
@@ -509,7 +512,7 @@ async fn dispatch(
 
     // Whether this run was told which account, rather than left to the
     // registry.
-    let named = snob_cli::account::given(cli.account.as_deref(), env.as_deref()).is_some();
+    let named = snob_engine::account::given(cli.account.as_deref(), env.as_deref()).is_some();
 
     // A list walk asked for in the background is a job's to run, and needs
     // the whole command line (`jobs::argv::globals`), which the match below
@@ -527,8 +530,11 @@ async fn dispatch(
                 None
             } else {
                 let registry = Registry::load(paths)?;
-                match snob_cli::account::resolve(cli.account.as_deref(), env.as_deref(), &registry)
-                {
+                match snob_engine::account::resolve(
+                    cli.account.as_deref(),
+                    env.as_deref(),
+                    &registry,
+                ) {
                     Ok(found) => {
                         snob_cli::report::act_as(found.clone());
                         Some(found)
@@ -550,12 +556,12 @@ async fn dispatch(
             // the one named, or nothing is signed out.
             if let Some(only) = &args.only {
                 let registry = Registry::load(paths)?;
-                let named = snob_cli::account::named(only, &registry)
+                let named = snob_engine::account::named(only, &registry)
                     .ok()
                     .map(|named| named.pk);
                 let acting = account.as_ref().map(AccountPaths::pk);
                 if named.is_none() || named != acting {
-                    return Err(snob_cli::exit::ExitError::new(
+                    return Err(snob_engine::exit::ExitError::new(
                         ExitCode::Error,
                         "This run acts as another account than the one it was asked to sign \
                          out, or the account is not one signed in here. Nothing was signed out.",
@@ -700,7 +706,7 @@ async fn dispatch(
 /// command.
 fn owner_args(cli: &Cli) -> anyhow::Result<Vec<std::ffi::OsString>> {
     let mut args = detached_globals(cli)?;
-    args.push(snob_cli::owner::COMMAND.into());
+    args.push(snob_engine::owner::COMMAND.into());
     Ok(args)
 }
 

@@ -9,16 +9,16 @@ use snob_core::{Epoch, Pk};
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::{App, Viewer};
 use crate::cli::{Format, ScanArgs};
 use crate::commands::common::{self, Destination};
-use crate::engine::{self, ListOutcome, people};
-use crate::exit::ExitCode;
 use crate::output::Rendered;
 #[cfg(feature = "xlsx")]
 use crate::output::xlsx::Cell;
 use crate::report;
 use crate::{output, ui};
+use snob_engine::app::{App, Viewer};
+use snob_engine::engine::{self, ListOutcome, people};
+use snob_engine::exit::ExitCode;
 
 /// How many names the opening line puts before it starts counting.
 const NAMES_SHOWN: usize = 3;
@@ -273,7 +273,7 @@ fn closing_line(scanned: &Scanned, filtered: bool, whom: Option<&Viewer>) {
 }
 
 /// How this summary names the account it is about.
-fn summary_target(typed: Option<&str>, viewer: &crate::app::Viewer) -> String {
+fn summary_target(typed: Option<&str>, viewer: &snob_engine::app::Viewer) -> String {
     match typed {
         Some(raw) => printable(engine::target::clean(raw)),
         None => viewer
@@ -563,7 +563,7 @@ mod tests {
     /// where a character below 0x20 is illegal XML rather than invisible.
     #[test]
     fn the_heading_is_filtered_whoever_the_name_came_from() {
-        let viewer = crate::app::Viewer {
+        let viewer = snob_engine::app::Viewer {
             pk: Pk::new(7),
             username: Some("me\u{1b}[2K".into()),
         };
@@ -572,7 +572,7 @@ mod tests {
         assert_eq!(summary_target(None, &viewer), "me[2K");
 
         // No name learned yet, so the id stands in for one.
-        let nameless = crate::app::Viewer {
+        let nameless = snob_engine::app::Viewer {
             pk: Pk::new(7),
             username: None,
         };

@@ -18,10 +18,10 @@ use snob_store::paths::AccountPaths;
 use snob_store::store::{Store, snapshots, watch as watch_store};
 
 use crate::cli::{ChangesArgs, Format};
-use crate::exit::{ExitCode, ExitError};
 use crate::output::grid::{Grid, Value};
 use crate::output::{self, Presentation, Rendered};
 use crate::report;
+use snob_engine::exit::{ExitCode, ExitError};
 
 /// One list's comparison, or why there is none.
 struct Compared {

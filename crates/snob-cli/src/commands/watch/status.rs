@@ -15,12 +15,12 @@ use snob_store::registry::Registry;
 use snob_store::store::shared::PowerWait;
 use snob_store::store::{Store, deliveries, watch as watch_store};
 
-use crate::app::Viewer;
 use crate::cli::WatchStatusArgs;
-use crate::engine::check::Verdict;
-use crate::engine::watch::Watched;
-use crate::exit::ExitCode;
 use crate::report;
+use snob_engine::app::Viewer;
+use snob_engine::engine::check::Verdict;
+use snob_engine::engine::watch::Watched;
+use snob_engine::exit::ExitCode;
 
 use super::schedule::schedule_from;
 use super::watched::watched_from;
@@ -228,7 +228,7 @@ fn recorded(
     for account in super::run::account_databases(paths) {
         let viewer = Viewer {
             pk: account.pk(),
-            username: crate::account::username(&registry, account.pk()).map(str::to_string),
+            username: snob_engine::account::username(&registry, account.pk()).map(str::to_string),
         };
         // Gone since it was listed: `purge` removed it meanwhile.
         let Some(db) = Store::read_existing(&account)? else {
@@ -262,7 +262,7 @@ impl Recorded {
                 return Ok(label.clone());
             }
             let name = snob_store::store::users::name(conn, pk)?;
-            let label = crate::app::label(pk, name.as_deref());
+            let label = snob_engine::app::label(pk, name.as_deref());
             labels.insert(pk, label.clone());
             Ok(label)
         };
@@ -415,10 +415,10 @@ const MISSED_BEFORE_FAILED: i64 = 3;
 
 /// When a recorded run was due and began, when it was recorded with both: what
 /// `status` and its `--json` tell a late run by.
-pub(super) fn timing_of(run: &watch_store::Run) -> Option<crate::engine::watch::RunTiming> {
-    Some(crate::engine::watch::RunTiming {
+pub(super) fn timing_of(run: &watch_store::Run) -> Option<snob_engine::engine::watch::RunTiming> {
+    Some(snob_engine::engine::watch::RunTiming {
         ended_at: run.finished_at,
-        ..crate::engine::watch::RunTiming::due(
+        ..snob_engine::engine::watch::RunTiming::due(
             Some(run.due_at?),
             run.began_at?,
             std::time::Duration::ZERO,
@@ -541,7 +541,7 @@ fn health(
     // stays empty.
     if let Some(webhook) = config.and_then(|c| c.webhook.as_ref())
         && let Some(problem) =
-            crate::watch::webhook::problem_with_config(&webhook.url, &webhook.headers)
+            snob_engine::watch::webhook::problem_with_config(&webhook.url, &webhook.headers)
     {
         at_least(Verdict::Failed);
         notes.push(problem);
@@ -777,7 +777,7 @@ pub(super) fn describe_config(config: &WatchConfig) -> Vec<String> {
     let address = config
         .webhook
         .as_ref()
-        .map(|webhook| printable(&crate::watch::webhook::shown_str(&webhook.url)));
+        .map(|webhook| printable(&snob_engine::watch::webhook::shown_str(&webhook.url)));
 
     match (&config.webhook, &address) {
         (Some(webhook), Some(address)) => {
@@ -1414,7 +1414,7 @@ url = \"https://example.com/hook\"
         );
         assert_eq!(status.notes.len(), 1, "{:?}", status.notes);
 
-        let check = crate::engine::check::without_a_session(None, None, NOW);
+        let check = snob_engine::engine::check::without_a_session(None, None, NOW);
         assert_eq!(check.checked.len(), 1, "{:?}", check.checked);
 
         assert_eq!(

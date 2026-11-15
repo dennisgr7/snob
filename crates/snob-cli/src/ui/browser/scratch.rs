@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-pub use crate::files::ABANDONED_AFTER;
+pub use snob_engine::files::ABANDONED_AFTER;
 
 /// The scratch directory, removed when the browsing session ends.
 ///

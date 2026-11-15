@@ -10,13 +10,13 @@ use snob_store::paths::AccountPaths;
 use snob_store::secrets::SessionStore;
 use snob_store::store::rate_budget;
 
-use crate::app::Viewer;
 use crate::cli::{Format, OutputArgs, WalkArgs};
 use crate::commands::common;
-use crate::engine::estimate::{self, Estimate, Fate, Standing};
-use crate::exit::ExitCode;
 use crate::output::{self, Rendered};
 use crate::report;
+use snob_engine::app::Viewer;
+use snob_engine::engine::estimate::{self, Estimate, Fate, Standing};
+use snob_engine::exit::ExitCode;
 
 /// Estimates the walks of `kinds`, in the order the command makes them, of
 /// `target` or of the viewer, and prints the estimate where the result would
@@ -40,7 +40,7 @@ pub fn run(
     }
 
     let (viewer, estimate) = estimate_for(walk, target, secrets, paths, kinds)?;
-    let subject = crate::engine::target::label_for(&viewer, target.as_deref());
+    let subject = snob_engine::engine::target::label_for(&viewer, target.as_deref());
 
     let rendered = match format {
         Format::Json | Format::Ndjson => {

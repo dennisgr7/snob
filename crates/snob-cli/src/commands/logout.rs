@@ -12,8 +12,8 @@ use snob_store::registry::Registry;
 use snob_store::secrets::SecretStore;
 
 use crate::cli::LogoutArgs;
-use crate::exit::ExitCode;
 use crate::ui;
+use snob_engine::exit::ExitCode;
 
 /// Deletes the session and the browser profile of `account`, the account
 /// resolved for this run, or of every account with `--all` or with none
@@ -45,10 +45,10 @@ pub async fn run(
     .await?;
     // Then every other process still holding one of these sessions: a walk
     // typed in another terminal, the monitor's run, an agent's call.
-    crate::owner::sign_out(paths, &leaving);
+    snob_engine::owner::sign_out(paths, &leaving);
     // A browser still running on a profile about to go would write into it as
     // it went, or keep Windows from removing it.
-    crate::owner::release(paths, if sweep { None } else { account.map(|a| a.pk()) }).await;
+    snob_engine::owner::release(paths, if sweep { None } else { account.map(|a| a.pk()) }).await;
     let stores: Vec<_> = leaving
         .iter()
         .map(|pk| secrets.session_of(&paths.account(*pk)))
@@ -86,7 +86,7 @@ pub async fn run(
     // leave the session on the machine while saying it had gone.
     let _ = args.purge_profile;
     let profiles = if sweep {
-        crate::headless::profile::every_profile(paths)
+        snob_engine::headless::profile::every_profile(paths)
     } else {
         leaving
             .iter()
@@ -96,7 +96,7 @@ pub async fn run(
     // A walk running its own browser (`SNOB_NO_OWNER`) closes it once it sees
     // the account signed out; until then the browser would make a removed
     // profile again as it closed.
-    crate::owner::let_go_of(&profiles).await;
+    snob_engine::owner::let_go_of(&profiles).await;
     let mut deleted = false;
     let mut profile_failure = None;
     for profile in profiles {

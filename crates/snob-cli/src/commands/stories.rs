@@ -16,21 +16,21 @@ use snob_ig::model::{ReelItem, largest};
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::{App, Viewer};
 use crate::cli::{Format, StoriesArgs, StoryFormat};
 use crate::commands::common;
-use crate::exit::ExitCode;
-use crate::media::{self, Kind, Stories, Story, left_of, posted_of};
 use crate::output::Presentation;
 use crate::output::media::empty_document;
 use crate::ui;
+use snob_engine::app::{App, Viewer};
+use snob_engine::exit::ExitCode;
+use snob_engine::media::{self, Kind, Stories, Story, left_of, posted_of};
 
 pub async fn run(args: StoriesArgs, store: SecretStore, paths: &AccountPaths) -> Result<ExitCode> {
     args.action.refuse_stdout_download_early()?;
     let app = common::reader(&store, paths, args.action.interactive, false)?;
     let typed = common::target_or_own(&app, args.target.as_deref()).await?;
 
-    let known = crate::engine::target::known_pk_of(&app, args.target.as_deref(), &typed)?;
+    let known = snob_engine::engine::target::known_pk_of(&app, args.target.as_deref(), &typed)?;
     let stories = fetch(app.client(), &typed, known).await?;
 
     if app.cancel().is_canceled() {
@@ -117,7 +117,7 @@ async fn browse(
                 &to,
                 false,
                 async |app: &mut App| {
-                    let known = crate::engine::target::known_pk(app, &name)?;
+                    let known = snob_engine::engine::target::known_pk(app, &name)?;
                     let stories = fetch(app.client(), &name, known).await?;
                     if stories.items.is_empty() {
                         anyhow::bail!("@{} has no stories up for it", printable(&stories.username));
@@ -152,7 +152,7 @@ pub async fn fetch(
     known: Option<snob_core::Pk>,
 ) -> Result<Stories> {
     let profile = client
-        .profile_named(crate::engine::target::clean(typed), known)
+        .profile_named(snob_engine::engine::target::clean(typed), known)
         .await?;
 
     let Some(reel) = client.stories(profile.id, &profile.username).await? else {

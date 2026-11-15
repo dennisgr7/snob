@@ -22,15 +22,10 @@ use snob_ig::client::IgClient;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::{App, Viewer};
 use crate::commands::common;
 use crate::commands::highlights::{Entry, Tray};
 use crate::commands::pfp::Picture;
 use crate::commands::profile::{Highlight, Profile, Visibility, badges};
-use crate::engine;
-use crate::exit::ExitCode;
-use crate::media::Story;
-use crate::posts::Fetched;
 use crate::report;
 use crate::ui::accounts::{self, Browsed, Picked};
 use crate::ui::browser::busy::Busy;
@@ -44,6 +39,11 @@ use crate::ui::people::Shelf;
 use crate::ui::preview;
 use crate::ui::theme::Role;
 use crate::ui::tui::{self, Tui};
+use snob_engine::app::{App, Viewer};
+use snob_engine::engine;
+use snob_engine::exit::ExitCode;
+use snob_engine::media::Story;
+use snob_engine::posts::Fetched;
 
 /// How long a stored list may serve a click without a question: the default
 /// `--max-age` gives the list commands.
@@ -192,7 +192,7 @@ impl Media {
             picture: self.side.as_ref(),
             cover: self
                 .item_under_the_cursor(state)
-                .is_some_and(|item| item.kind == crate::media::Kind::Video),
+                .is_some_and(|item| item.kind == snob_engine::media::Kind::Video),
         }
     }
 }
@@ -602,7 +602,7 @@ pub async fn browse(
                                         .run(
                                             &mut tui,
                                             app.client().pacer().cancel_token(),
-                                            crate::posts::fetch_grid(
+                                            snob_engine::posts::fetch_grid(
                                                 app.client(),
                                                 &profile.username,
                                                 viewer.pk,
@@ -3105,7 +3105,7 @@ mod tests {
 
     fn story() -> Story {
         Story {
-            kind: crate::media::Kind::Photo,
+            kind: snob_engine::media::Kind::Photo,
             taken_at: Epoch::new(0),
             expiring_at: None,
             url: None,
