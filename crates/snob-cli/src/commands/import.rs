@@ -923,7 +923,8 @@ mod tests {
         );
         // Multi-byte text right after the ampersand: the bound cuts no
         // character in half.
-        assert_eq!(decode_entities("&ééééééééé;"), "&ééééééééé;");
+        let wide = "\u{4e2d}".repeat(9);
+        assert_eq!(decode_entities(&format!("&{wide};")), format!("&{wide};"));
         assert_eq!(decode_entities("&#x10FFFF;"), "\u{10FFFF}");
     }
 
