@@ -244,34 +244,14 @@ fn wiring(cli: &Cli) -> anyhow::Result<(AppPaths, bool, Option<String>)> {
 
     #[cfg(feature = "testing")]
     if let Some(root) = &cli.sandbox_root {
-        if let Some(base) = cli.ig_base_url.clone() {
-            // Before any client is built, and once.
-            snob_ig::client::point_every_client_at(base)
-                .map_err(|already| anyhow::anyhow!("already pointed at {already}"))?;
-        }
-        // The browser path against the fake server too, so it can be driven end
-        // to end.
-        if cli.through_the_browser {
-            snob_ig::client::page::use_the_page_off_instagram();
-        }
-        return Ok((
-            AppPaths::rooted_at(root),
-            true,
-            Some(sandbox_keyring_namespace(root)),
-        ));
+        let sandbox = snob_engine::sandbox::Sandbox::under(
+            root,
+            cli.ig_base_url.clone(),
+            cli.through_the_browser,
+        )?;
+        return Ok((sandbox.paths, true, Some(sandbox.service)));
     }
     Ok((AppPaths::discover()?, cli.no_keyring, None))
-}
-
-/// The keyring service name a sandbox run is confined to.
-#[cfg(feature = "testing")]
-fn sandbox_keyring_namespace(root: &std::path::Path) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in root.as_os_str().as_encoded_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("snob-ig-sandbox-{hash:016x}")
 }
 
 async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
@@ -1026,21 +1006,6 @@ mod tests {
             "a sandbox on the real service deletes the real session"
         );
         assert!(namespace.starts_with("snob-ig-sandbox-"), "{namespace}");
-    }
-
-    /// One process writes the entry and another reads it back, so a name that
-    /// changed between invocations would lose the session every time.
-    #[test]
-    fn the_namespace_is_the_same_answer_twice_and_differs_per_root() {
-        let one = sandbox_keyring_namespace(std::path::Path::new("/tmp/one"));
-        let again = sandbox_keyring_namespace(std::path::Path::new("/tmp/one"));
-        let other = sandbox_keyring_namespace(std::path::Path::new("/tmp/two"));
-
-        assert_eq!(one, again, "the same root has to name the same entries");
-        assert_ne!(
-            one, other,
-            "two sandboxes at once must not be able to delete each other's entries"
-        );
     }
 
     /// Without the flag there is no namespace, so a real run is untouched by

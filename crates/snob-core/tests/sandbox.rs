@@ -37,14 +37,17 @@ use common::{relative, repo_root, source_files};
 /// a user would type; the identifiers are what clap derives them from, so both
 /// are listed and either one appearing unguarded is the same defect. And
 /// `with_page`, which hands a client a page of the caller's making: a fake
-/// tab in a test, and in a release build a way round the browser.
-const SEAM: [&str; 6] = [
+/// tab in a test, and in a release build a way round the browser. And the
+/// engine's module that does all of it for whichever program runs it.
+const SEAM: [&str; 8] = [
     "point_every_client_at",
     "SANDBOX_BASE",
     "sandbox_root",
     "ig_base_url",
     "--ig-base-url",
     "with_page",
+    "mod sandbox",
+    "Sandbox::under",
 ];
 
 #[test]

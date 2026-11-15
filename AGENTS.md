@@ -144,7 +144,8 @@ dbus-run-session -- bash -c '
   `snob-ig/testing`) is the
   only seam that points snob elsewhere (`--sandbox-root`, `--ig-base-url`,
   `--through-the-browser`, `point_every_client_at`, `SANDBOX_BASE`,
-  `with_page`). A release binary has none of it:
+  `with_page`, and `snob_engine::sandbox`, which confines whichever program
+  runs the engine to one directory). A release binary has none of it:
   `crates/snob-core/tests/sandbox.rs` fails when a seam name appears without
   `#[cfg(feature = "testing")]` directly above it. `--workspace` alone runs no
   binary-level test; never narrow the CI line with `--test`, which skips the

@@ -28,6 +28,8 @@ pub mod posts;
 pub mod power;
 pub mod random;
 pub mod relay;
+#[cfg(feature = "testing")]
+pub mod sandbox;
 pub mod seat;
 pub mod sentences;
 pub mod update;
