@@ -18,6 +18,7 @@ use snob_fake_ig::world::{self, World};
 use snob_ig::login::BrowserCookies;
 use snob_ig::pace::CancelToken;
 use snob_store::registry::Registry;
+use snob_store::viewer::Card;
 use tempfile::TempDir;
 
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
@@ -26,7 +27,12 @@ const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
 /// The one fake Instagram of this process, which every client is pointed at
 /// once: served from a thread of its own, since each test has its own runtime.
 fn world() -> &'static World {
-    static WORLD: OnceLock<World> = OnceLock::new();
+    &served().0
+}
+
+/// The fake Instagram and the server it answers on.
+fn served() -> &'static (World, wiremock::MockServer) {
+    static WORLD: OnceLock<(World, wiremock::MockServer)> = OnceLock::new();
     WORLD.get_or_init(|| {
         let (said, heard) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -37,15 +43,34 @@ fn world() -> &'static World {
             runtime.block_on(async {
                 let world = World::new();
                 let server = world.serve_rest().await;
-                said.send((world, server.uri())).expect("somebody waiting");
+                said.send((world, server)).expect("somebody waiting");
                 std::future::pending::<()>().await;
             });
         });
-        let (world, address) = heard.recv().expect("the fake Instagram started");
-        snob_ig::client::point_every_client_at(address.parse().expect("an address"))
+        let (world, server) = heard.recv().expect("the fake Instagram started");
+        snob_ig::client::point_every_client_at(server.uri().parse().expect("an address"))
             .expect("pointed once");
-        world
+        (world, server)
     })
+}
+
+/// The paths of the requests sent with `sessionid`, in the order they came.
+async fn asked_with(sessionid: &str) -> Vec<String> {
+    served()
+        .1
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|request| {
+            request
+                .headers
+                .get("cookie")
+                .and_then(|cookie| cookie.to_str().ok())
+                .is_some_and(|cookie| cookie.contains(sessionid))
+        })
+        .map(|request| request.url.path().to_string())
+        .collect()
 }
 
 /// A sandbox of a test's own, on the fake Instagram.
@@ -377,4 +402,83 @@ async fn signing_out_where_nothing_is_stored_says_there_was_no_session() {
     assert!(!left.had_session);
     assert!(left.sessions.is_ok());
     assert!(!left.profiles_deleted);
+}
+
+#[tokio::test]
+async fn a_login_keeps_what_its_check_showed_of_the_account_and_asks_nothing_more() {
+    let (_root, sandbox) = sandbox();
+    let session = sessionid(world::ME, "card");
+    let account = sandbox.paths.account(Pk::new(world::ME));
+
+    paste(&sandbox, &session).await.unwrap();
+
+    let card = Card::load(&account).expect("a card is kept");
+    assert_eq!(card.full_name.as_deref(), Some("Invented me"));
+    assert_eq!(card.biography.as_deref(), Some("the invented bio of me"));
+    assert!(card.picture.is_some());
+    assert_eq!(card.kept_picture, None, "no picture is fetched by a login");
+    assert!(!account.viewer_picture().exists());
+    assert_eq!(
+        asked_with(&session).await,
+        [
+            format!("/api/v1/friendships/{}/following/", world::ME),
+            format!("/api/v1/users/{}/info/", world::ME),
+        ],
+        "the check and the name: what a login cost before it kept a card"
+    );
+
+    // Logging in again, the name known: the check alone, and the card stays.
+    let again = sessionid(world::ME, "card-again");
+    paste(&sandbox, &again).await.unwrap();
+    assert_eq!(asked_with(&again).await.len(), 1);
+    assert_eq!(Card::load(&account), Some(card));
+}
+
+#[tokio::test]
+async fn the_picture_is_fetched_once_and_goes_with_the_session() {
+    let (_root, sandbox) = sandbox();
+    let session = sessionid(world::ME, "picture");
+    let account = sandbox.paths.account(Pk::new(world::ME));
+    paste(&sandbox, &session).await.unwrap();
+    let client = || {
+        snob_ig::client::IgClient::new(
+            stored_session(&sandbox, world::ME).unwrap(),
+            snob_engine::app::pacer_saying_a_line(&account, CancelToken::default()).unwrap(),
+        )
+        .unwrap()
+    };
+
+    let picture = snob_engine::viewer::picture(&client(), &account)
+        .await
+        .expect("the picture is kept");
+    assert_eq!(picture, account.viewer_picture());
+    assert!(
+        std::fs::read(&picture)
+            .unwrap()
+            .starts_with(b"\xff\xd8\xff")
+    );
+    let fetches = || async {
+        asked_with(&session)
+            .await
+            .iter()
+            .filter(|path| path.starts_with("/media/"))
+            .count()
+    };
+    let once = fetches().await;
+
+    assert!(
+        snob_engine::viewer::picture(&client(), &account)
+            .await
+            .is_some()
+    );
+    assert_eq!(
+        fetches().await,
+        once,
+        "the picture kept is not fetched again"
+    );
+
+    let who = Who::of(&sandbox.paths, Some(Pk::new(world::ME)), false);
+    signed_out(&sandbox, &who).await;
+    assert_eq!(Card::load(&account), None);
+    assert!(!account.viewer_picture().exists());
 }

@@ -441,13 +441,22 @@ pub async fn finish(
     // is a login's own (`owner::signed_out`).
     account.admit_login(session.created_at, kept)?;
     host::info("Checking the session against Instagram...");
-    let validated = login::validate(&mut session, pacer).await;
+    let validated = login::validate_seeing(&mut session, pacer).await;
     let rejected = matches!(
         &validated,
         Err(LoginError::Instagram(ig)) if ig.invalidates_session()
     );
     let stored = match validated {
-        Ok(outcome) => store.save(&session).map(|()| outcome).map_err(Into::into),
+        Ok((outcome, face)) => store
+            .save(&session)
+            .map(|()| {
+                // Beside the session it came with, and gone with it.
+                if let Some(face) = face {
+                    crate::viewer::keep(&account, face);
+                }
+                outcome
+            })
+            .map_err(Into::into),
         // A rejection during login means different things depending on where
         // the session came from.
         Err(e) => Err(match &e {

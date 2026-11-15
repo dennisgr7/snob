@@ -52,7 +52,7 @@ Rust 2024, resolver 3. Dependencies point one way:
 | `snob-core` | The domain: `Pk`, the models (the JSON contract), set arithmetic, the monitor's diff and schedule, webhook signing and the one constant-time comparison (`watch::sign::same`), `Secret`, `Session`, the `RateBudget` trait and cooldown policy, `clock`. | Do I/O: no file, database, network or directory (`clock` excepted). |
 | `snob-ig` | The Instagram web client: `client/`, `web.rs`, `allowlist.rs`, `pager.rs`, `pace.rs`, `graphql.rs`, `error.rs` (classifying answers), `http.rs` (the only place `reqwest` is configured). | Touch SQLite or the keyring, or drive a browser (it only defines the page's request shapes). |
 | `snob-store` | SQLite (`store/`, migrations in `store/sql/`), paths, the secret store, `accounts.toml`, `watch.toml`, the layout's migration. | Hold domain logic. |
-| `snob-engine` | What a desktop app links in process: `app.rs` (`App`), `engine/` (cache, consent, cooldown, walks, estimates, monitor), the browser (`headless/`, `cdp/`, `pipe.rs`, `owner/`), jobs' state and supervisor (`jobs/`), signing in (`login.rs`, which hands back a `Stored` and tells a failure apart with `failure_of`) and out (`logout.rs`), `relay/`, `update/`, reading and saving posts and stories (`posts.rs`, `media.rs`, `files.rs`), `ffmpeg.rs`, `watch/webhook.rs`, `exit.rs`, and `sentences.rs` (the plain sentences of its refusals). `host.rs` is what it is handed: a `Progress` and an `Ask` per run (`host::Front`, given to `App::open`), and a sink for notices. | Depend on `clap`, `console`, `indicatif`, `ratatui`, `crossterm`, `dialoguer`, or on `snob-mcp`/`snob-cli`; ask anybody anything itself; decide how anything looks. |
+| `snob-engine` | What a desktop app links in process: `app.rs` (`App`), `engine/` (cache, consent, cooldown, walks, estimates, monitor), the browser (`headless/`, `cdp/`, `pipe.rs`, `owner/`), jobs' state and supervisor (`jobs/`), signing in (`login.rs`, which hands back a `Stored` and tells a failure apart with `failure_of`) and out (`logout.rs`), the account's card (`viewer.rs`), `relay/`, `update/`, reading and saving posts and stories (`posts.rs`, `media.rs`, `files.rs`), `ffmpeg.rs`, `watch/webhook.rs`, `exit.rs`, and `sentences.rs` (the plain sentences of its refusals). `host.rs` is what it is handed: a `Progress` and an `Ask` per run (`host::Front`, given to `App::open`), and a sink for notices. | Depend on `clap`, `console`, `indicatif`, `ratatui`, `crossterm`, `dialoguer`, or on `snob-mcp`/`snob-cli`; ask anybody anything itself; decide how anything looks. |
 | `snob-mcp` | `snob mcp`: the server over stdio and, with its `http` feature, over HTTP (`http.rs`); its key (`key.rs`), `snob mcp config` (`config.rs`), its arguments (`args.rs`). | Build an Instagram client or open a database; depend on `snob-cli`, its tests included (the lines it builds are parsed in `crates/snob-cli/tests/mcp_lines.rs`). |
 | `snob-cli` | The `snob` binary and its library: `cli.rs`, `main.rs`, `commands/`, `output/`, `report.rs`, `progress.rs` (the bars), `front.rs` (what it hands the engine), `ui/`, and the clap-tied half of jobs (`jobs/argv.rs`, `jobs/start.rs`). It names what it uses of the engine and of the server by their own crates (`snob_engine::`, `snob_mcp::`). | |
 | `snob-fake-ig` | The fake Instagram the tests talk to (`world.rs`) and a tab on it with no browser (`tab.rs`). Never published. | Depend on anything above `snob-ig`; be named outside `[dev-dependencies]` by a crate that ships (`layers.rs`). |
@@ -420,6 +420,12 @@ compile; the session is an explicit header on the one client meant to carry it.
   `watch::commit_report`: thirty days, and each account's newest 36.
 - Jobs under `accounts/<pk>/jobs/<id>/`, `0600` on Unix: a result kept a day,
   a job a week, at most 50.
+- **An account's card** (`accounts/<pk>/viewer.json`, `snob_store::viewer`):
+  its name, bio and the address of its small picture, kept from what a
+  login's check was answered and **never asked for on its own**
+  (`login::validate_seeing`); the picture (`viewer.jpg`) is one download from
+  the CDN, only for a view that shows it (`snob_engine::viewer::picture`).
+  Both go on a sign-out.
 - **One writer at a time**: `session.json` and `watch.toml` are replaced under a
   lock on `<temporary>.lock` (`paths::replace_private_alone`); `accounts.toml`
   changes only through `Registry::update`, under `accounts.toml.lock`.
@@ -880,7 +886,9 @@ Assumptions not yet confirmed against the real app. Settle them with a capture
   page asks for (3 or 5 seen; snob sends 3), what a private account's tab
   answers (snob asks none);
 - the second page of a thread of replies, never captured: snob reads the first
-  and logs the answer's keys when it says there is more.
+  and logs the answer's keys when it says there is more;
+- whether the document's `PolarisViewer` carries the account's bio, as it does
+  its name and picture (`page_values::Face`): read when there, never needed.
 
 ## Website
 

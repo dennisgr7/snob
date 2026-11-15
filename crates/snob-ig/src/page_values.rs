@@ -43,6 +43,19 @@ pub struct Viewer {
     pub username: String,
     /// The Facebook-side id Relay sends as `av`. Not the pk.
     pub fbid: String,
+    /// What the document says of the account beside its name.
+    #[serde(default)]
+    pub face: Face,
+}
+
+/// What an account shows of itself where it is named: all of it cosmetic,
+/// another person's words, and absent whenever an answer leaves it out.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Face {
+    pub full_name: Option<String>,
+    pub biography: Option<String>,
+    /// The address of its small picture, which expires.
+    pub picture: Option<String>,
 }
 
 /// The build and page context the document was served in: the **first**
@@ -157,6 +170,11 @@ fn viewer(value: &Value) -> Option<Viewer> {
         pk: string(value.get("id"))?.parse().ok()?,
         username: string(data.get("username"))?,
         fbid: string(data.get("fbid"))?,
+        face: Face {
+            full_name: string(data.get("full_name")),
+            biography: string(data.get("biography")),
+            picture: string(data.get("profile_pic_url")),
+        },
     })
 }
 
@@ -205,6 +223,11 @@ mod tests {
                 pk: Pk::new(1_234_567_890),
                 username: "some.viewer".into(),
                 fbid: "17841400000000001".into(),
+                face: Face {
+                    full_name: Some("Some Viewer".into()),
+                    biography: None,
+                    picture: Some("https://example.invalid/a.jpg".into()),
+                },
             })
         );
         assert_eq!(

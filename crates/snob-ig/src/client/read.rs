@@ -11,7 +11,7 @@ use crate::model::{
     Counters, FriendshipsPage, Highlight, HighlightsTray, Identity, Reel, ReelsMedia, SearchUser,
     TopSearch, UserInfo, UserInfoEnvelope, WebProfileInfo, WebProfileInfoEnvelope,
 };
-use crate::page_values::Viewer;
+use crate::page_values::{Face, Viewer};
 use crate::web::{Ask, Told};
 
 use super::IgClient;
@@ -94,6 +94,20 @@ impl IgClient {
             return Ok(Some(self.profile_by_pk(pk, "").await?.username));
         }
         Ok(self.user_info(pk).await?.map(|u| u.username))
+    }
+
+    /// The account's own name and face. **From the browser nothing is
+    /// sent**: the tab's document says both; without one it is the request
+    /// [`Self::resolve_username`] makes.
+    pub async fn own_face(&self) -> Result<Option<(String, Face)>, IgError> {
+        if self.has_page() {
+            let viewer = self.viewer().await?;
+            return Ok(Some((viewer.username, viewer.face)));
+        }
+        Ok(self
+            .user_info(self.session.ds_user_id)
+            .await?
+            .map(|user| (user.username.clone(), user.face())))
     }
 
     /// The profile of the account called `name`, `known` its pk when an

@@ -35,4 +35,5 @@ pub mod sandbox;
 pub mod seat;
 pub mod sentences;
 pub mod update;
+pub mod viewer;
 pub mod watch;

@@ -80,6 +80,23 @@ pub struct UserInfo {
     /// signature.
     #[serde(default)]
     pub hd_profile_pic_url_info: Option<PictureVersion>,
+    #[serde(default)]
+    pub full_name: Option<String>,
+    #[serde(default)]
+    pub biography: Option<String>,
+    #[serde(default)]
+    pub profile_pic_url: Option<String>,
+}
+
+impl UserInfo {
+    /// What this answer shows of the account beside its name.
+    pub fn face(&self) -> crate::page_values::Face {
+        crate::page_values::Face {
+            full_name: self.full_name.clone(),
+            biography: self.biography.clone(),
+            picture: self.profile_pic_url.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

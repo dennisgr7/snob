@@ -1277,6 +1277,7 @@ pub(crate) mod fixtures {
                 pk: Pk::new(1_234_567_890),
                 username: "some.viewer".into(),
                 fbid: "17841400000000001".into(),
+                face: crate::page_values::Face::default(),
             }),
             site: Some(Site {
                 revision: "1000000001".into(),

@@ -157,7 +157,7 @@ pub async fn small_pictures(
 
 /// What kind of picture `bytes` are, by how they start: the three kinds
 /// Instagram serves. `None` for anything else, a video among them.
-fn picture_type(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn picture_type(bytes: &[u8]) -> Option<&'static str> {
     let webp = bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP");
     match bytes {
         [0xff, 0xd8, 0xff, ..] => Some("image/jpeg"),

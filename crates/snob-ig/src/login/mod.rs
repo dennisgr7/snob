@@ -10,6 +10,7 @@ use thiserror::Error;
 use crate::client::IgClient;
 use crate::error::IgError;
 use crate::pace::Pacer;
+use crate::page_values::Face;
 
 #[derive(Debug, Error)]
 pub enum LoginError {
@@ -107,8 +108,21 @@ pub async fn validate(
     session: &mut Session,
     pacer: Pacer,
 ) -> Result<ValidationOutcome, LoginError> {
+    validate_seeing(session, pacer)
+        .await
+        .map(|(outcome, _)| outcome)
+}
+
+/// [`validate`], and what its answers showed of the account, when one did.
+/// **It asks for nothing [`validate`] does not**: the tab's document is read
+/// for free, and without a browser the face comes only with the request that
+/// resolves a name not known yet.
+pub async fn validate_seeing(
+    session: &mut Session,
+    pacer: Pacer,
+) -> Result<(ValidationOutcome, Option<Face>), LoginError> {
     if let Some(until_ms) = pacer.cooldown()? {
-        return Ok(ValidationOutcome::Skipped { until_ms });
+        return Ok((ValidationOutcome::Skipped { until_ms }, None));
     }
 
     let client = IgClient::new(session.clone(), pacer)?;
@@ -120,21 +134,28 @@ pub async fn validate(
         // A cooldown another process wrote since the check above: the same
         // fact, and it must not cost the person the session just produced.
         Err(crate::error::IgError::InCooldown { until_ms }) => {
-            return Ok(ValidationOutcome::Skipped { until_ms });
+            return Ok((ValidationOutcome::Skipped { until_ms }, None));
         }
         Err(e) if e.invalidates_session() => return Err(e.into()),
         Err(e) if e.is_login_tolerable() => {
             tracing::warn!(error = %e, "could not confirm the session");
-            return Ok(ValidationOutcome::Unconfirmed);
+            return Ok((ValidationOutcome::Unconfirmed, None));
         }
         Err(e) => return Err(e.into()),
     }
 
     // The username is cosmetic. A push-back on it is not: a cooldown was just
     // written, and the person has to be told.
-    if session.username.is_none() {
-        match client.resolve_username(session.ds_user_id).await {
-            Ok(name) => session.username = name,
+    let mut face = None;
+    if session.username.is_none() || client.has_page() {
+        match client.own_face().await {
+            Ok(Some((name, seen))) => {
+                if session.username.is_none() {
+                    session.username = Some(name);
+                }
+                face = Some(seen);
+            }
+            Ok(None) => {}
             Err(e) if e.is_push_back() => {
                 tracing::warn!(error = %e, "the session works, but Instagram pushed back on the follow-up request; the account is in cooldown");
             }
@@ -142,7 +163,7 @@ pub async fn validate(
         }
     }
 
-    Ok(ValidationOutcome::Confirmed)
+    Ok((ValidationOutcome::Confirmed, face))
 }
 
 #[cfg(test)]

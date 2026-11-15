@@ -892,7 +892,10 @@ impl State {
         }
         let boot = boot_script(viewer, &forms);
         let html = shaped(
-            Some(&self.account(viewer)),
+            Some((
+                &self.account(viewer),
+                self.media(&format!("{viewer}-small")),
+            )),
             spin_t,
             &format!("{extra_json}<script>{boot}</script>"),
             extra_script,
@@ -908,9 +911,14 @@ impl State {
 /// A document shaped like the web app's: the modules the page values are
 /// read from, `between` (the preloads and the app's boot), then
 /// `extra_script`.
-fn shaped(viewer: Option<&Person>, spin_t: u64, between: &str, extra_script: &str) -> String {
+fn shaped(
+    viewer: Option<(&Person, String)>,
+    spin_t: u64,
+    between: &str,
+    extra_script: &str,
+) -> String {
     let (polaris, lsd, relay, session) = match viewer {
-        Some(p) => (
+        Some((p, picture)) => (
             json!({
                 "data": {
                     "id": p.pk.to_string(),
@@ -918,6 +926,7 @@ fn shaped(viewer: Option<&Person>, spin_t: u64, between: &str, extra_script: &st
                     "full_name": p.full_name,
                     "fbid": fbid(p.pk),
                     "is_private": p.private,
+                    "profile_pic_url": picture,
                 },
                 "id": p.pk.to_string(),
             }),
@@ -2601,6 +2610,8 @@ impl Respond for Legacy {
                 "pk": pk,
                 "username": person.username,
                 "full_name": person.full_name,
+                "biography": person.bio,
+                "profile_pic_url": state.media(&format!("{pk}-small")),
                 "hd_profile_pic_url_info": { "url": state.media(&format!("{pk}-full")), "width": 1080, "height": 1080 },
             }, "status": "ok" }));
         }

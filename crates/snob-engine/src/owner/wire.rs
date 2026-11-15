@@ -393,6 +393,10 @@ mod tests {
                 pk: Pk::new(42),
                 username: "me".to_string(),
                 fbid: "17841400000000042".to_string(),
+                face: snob_ig::page_values::Face {
+                    full_name: Some("Me".to_string()),
+                    ..Default::default()
+                },
             }))),
             Ok(Box::new(Told::Tray(Some(vec!["9001".to_string()])))),
             Ok(Box::new(Told::Pk {

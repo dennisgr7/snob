@@ -560,6 +560,7 @@ mod tests {
             pk: Pk::new(42),
             username: "me".into(),
             fbid: "17841400000000042".into(),
+            face: crate::page_values::Face::default(),
         })
     }
 

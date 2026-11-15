@@ -98,6 +98,10 @@ pub async fn sign_out(
             sessions = deleted;
         }
     }
+    // What each showed of itself goes with its session.
+    for pk in &who.leaving {
+        snob_store::viewer::Card::forget(&paths.account(*pk));
+    }
 
     // **Always.** The browser profile is where every request is sent from
     // (`headless/`), so it holds the live session, kept current by the

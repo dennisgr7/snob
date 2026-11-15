@@ -11,5 +11,6 @@ pub mod paths;
 pub mod registry;
 pub mod secrets;
 pub mod store;
+pub mod viewer;
 #[cfg(windows)]
 pub mod windows_user;
