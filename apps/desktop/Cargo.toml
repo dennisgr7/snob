@@ -52,6 +52,16 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # (`system/native.rs`): one call per platform, and nothing else of it used.
 sys-locale = "0.3"
 
+# What Windows says and GPUI does not (`system/windows.rs`): a contrast
+# theme and animations (`UI_Accessibility`, `UI_WindowsAndMessaging`), the
+# text size and transparency (`System_Registry`), the battery saver
+# (`System_Power`), the network (`NetworkManagement_IpHelper`, whose hint is
+# a `Networking_WinSock` type) and the session ending (`System_Shutdown`),
+# heard in a window of its own (`System_LibraryLoader`). The version the
+# engine already links.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_LibraryLoader", "Win32_System_Power", "Win32_System_Registry", "Win32_System_Shutdown", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }
+
 [dev-dependencies]
 tempfile = "3"
 # The fake Instagram the backend is driven against (`tests/engine.rs`), and

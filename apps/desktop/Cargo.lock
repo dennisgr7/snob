@@ -7264,6 +7264,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unic-langid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -1,14 +1,16 @@
 //! The system the app runs on, asked through GPUI: the theme, sleep and
 //! wake, notifications, the clipboard, the file manager.
 //!
-//! **What GPUI does not say is left at its default here** and said so:
-//! more contrast, less transparency, the text size, whether there is a
-//! network and holding a shutdown each need a call of the platform's own,
-//! and until one is made the app behaves as on a system that set none.
+//! What GPUI does not say needs a call of the platform's own: more
+//! contrast, less motion and transparency, the text size, whether there is
+//! a network, the session ending. **Windows is asked (`windows.rs`); on
+//! macOS and Linux these stay at their defaults**, and the app behaves as
+//! on a system that set none.
 
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use gpui_kit::{App, ClipboardItem, Subscription, SystemNotification, WindowAppearance};
@@ -44,10 +46,12 @@ fn locale() -> String {
 
 /// The real system.
 pub struct Native {
-    settings: Rc<RefCell<Settings>>,
+    settings: Arc<Mutex<Settings>>,
     said: mpsc::UnboundedSender<Event>,
     heard: RefCell<Option<mpsc::UnboundedReceiver<Event>>>,
     _listening: Vec<Subscription>,
+    #[cfg(windows)]
+    windows: super::windows::Windows,
 }
 
 /// Something that says what the system said from another thread: a second
@@ -64,12 +68,14 @@ impl Says {
 
 impl Native {
     pub fn new(cx: &mut App) -> Self {
-        let settings = Rc::new(RefCell::new(Settings {
+        let settings = Arc::new(Mutex::new(Settings {
             dark: is_dark(cx.window_appearance()),
             locale: locale(),
             ..Settings::default()
         }));
         let (said, heard) = mpsc::unbounded_channel();
+        #[cfg(windows)]
+        let windows = super::windows::Windows::listen(Arc::clone(&settings), said.clone());
 
         let slept_at = Rc::new(RefCell::new(None::<SystemTime>));
         let sleeping = {
@@ -106,6 +112,8 @@ impl Native {
             said,
             heard: RefCell::new(Some(heard)),
             _listening: vec![sleeping, waking],
+            #[cfg(windows)]
+            windows,
         }
     }
 
@@ -118,7 +126,7 @@ impl Native {
     pub fn appearance_changed(&self, appearance: WindowAppearance) {
         let dark = is_dark(appearance);
         let changed = {
-            let mut settings = self.settings.borrow_mut();
+            let mut settings = self.settings.lock().unwrap_or_else(|e| e.into_inner());
             let changed = settings.dark != dark;
             settings.dark = dark;
             changed.then(|| settings.clone())
@@ -131,10 +139,16 @@ impl Native {
 
 impl System for Native {
     fn settings(&self) -> Settings {
-        self.settings.borrow().clone()
+        self.settings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     fn online(&self) -> Option<bool> {
+        #[cfg(windows)]
+        return self.windows.online();
+        #[cfg(not(windows))]
         None
     }
 
@@ -159,8 +173,14 @@ impl System for Native {
         cx.read_from_clipboard().and_then(|item| item.text())
     }
 
-    fn hold_shutdown(&self, _why: &str) -> Box<dyn Send> {
-        Box::new(())
+    fn hold_shutdown(&self, why: &str) -> Box<dyn Send> {
+        #[cfg(windows)]
+        return self.windows.hold_shutdown(why);
+        #[cfg(not(windows))]
+        {
+            let _ = why;
+            Box::new(())
+        }
     }
 
     fn attended(&self, attended: bool) {

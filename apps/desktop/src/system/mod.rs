@@ -17,6 +17,8 @@ use tokio::sync::mpsc;
 pub mod native;
 #[cfg(feature = "testing")]
 pub mod simulated;
+#[cfg(windows)]
+mod windows;
 
 /// How the person set the system up, as far as the app follows it.
 #[derive(Debug, Clone, PartialEq)]
