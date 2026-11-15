@@ -5,7 +5,10 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, PoisonError};
+
+use gpui_kit::App;
+use tokio::sync::mpsc;
 
 use super::{Event, Notification, Settings, System};
 
@@ -13,7 +16,7 @@ use super::{Event, Notification, Settings, System};
 struct State {
     settings: Settings,
     online: Option<bool>,
-    events: Option<mpsc::Sender<Event>>,
+    events: Option<mpsc::UnboundedSender<Event>>,
     /// What happened before anybody listened, handed over when they do.
     early: Vec<Event>,
     notified: Vec<Notification>,
@@ -87,6 +90,16 @@ impl Simulated {
         self.state().clipboard = Some(text.to_string());
     }
 
+    /// Shows a notification, which here is keeping it.
+    pub fn show(&self, notification: Notification) {
+        self.state().notified.push(notification);
+    }
+
+    /// Opens a folder, which here is keeping its path.
+    pub fn open(&self, folder: &Path) {
+        self.state().opened.push(folder.to_path_buf());
+    }
+
     /// Every reason a shutdown was held for, and how many holds are in place.
     pub fn holds(&self) -> (Vec<String>, usize) {
         (self.state().holds.clone(), self.held.load(Ordering::SeqCst))
@@ -116,20 +129,20 @@ impl System for Simulated {
         self.state().online
     }
 
-    fn notify(&self, notification: Notification) {
-        self.state().notified.push(notification);
+    fn notify(&self, notification: Notification, _: &mut App) {
+        self.show(notification);
     }
 
-    fn open_folder(&self, folder: &Path) {
-        self.state().opened.push(folder.to_path_buf());
+    fn open_folder(&self, folder: &Path, _: &mut App) {
+        self.open(folder);
     }
 
-    fn copy(&self, text: &str) {
-        self.state().clipboard = Some(text.to_string());
+    fn copy(&self, text: &str, _: &mut App) {
+        self.put_on_clipboard(text);
     }
 
-    fn pasted(&self) -> Option<String> {
-        self.state().clipboard.clone()
+    fn pasted(&self, _: &mut App) -> Option<String> {
+        self.clipboard()
     }
 
     fn hold_shutdown(&self, why: &str) -> Box<dyn Send> {
@@ -142,8 +155,8 @@ impl System for Simulated {
         self.attended.store(attended, Ordering::SeqCst);
     }
 
-    fn events(&self) -> mpsc::Receiver<Event> {
-        let (said, heard) = mpsc::channel();
+    fn events(&self) -> mpsc::UnboundedReceiver<Event> {
+        let (said, heard) = mpsc::unbounded_channel();
         let mut state = self.state();
         for event in state.early.drain(..) {
             let _ = said.send(event);
@@ -164,14 +177,14 @@ mod tests {
     fn what_the_system_says_is_heard_in_order_early_or_late() {
         let system = Simulated::new(Settings::default());
         system.say(Event::Sleeping);
-        let heard = system.events();
+        let mut heard = system.events();
         system.say(Event::Woke {
             slept: Duration::from_secs(7200),
         });
         system.say(Event::ShuttingDown);
 
         assert_eq!(
-            heard.try_iter().collect::<Vec<_>>(),
+            std::iter::from_fn(|| heard.try_recv().ok()).collect::<Vec<_>>(),
             [
                 Event::Sleeping,
                 Event::Woke {
@@ -185,7 +198,7 @@ mod tests {
     #[test]
     fn a_change_said_is_what_the_system_answers_from_then_on() {
         let system = Simulated::new(Settings::default());
-        let heard = system.events();
+        let mut heard = system.events();
         assert_eq!(system.online(), None);
 
         system.change(|settings| settings.dark = true);
@@ -193,24 +206,24 @@ mod tests {
 
         assert!(system.settings().dark);
         assert_eq!(system.online(), Some(false));
-        assert_eq!(heard.try_iter().count(), 2);
+        assert_eq!(std::iter::from_fn(|| heard.try_recv().ok()).count(), 2);
     }
 
     #[test]
     fn what_the_app_asked_for_is_read_back() {
         let system = Simulated::new(Settings::default());
-        system.notify(Notification {
+        system.show(Notification {
             about: Notice::UpdateReady,
             title: "snob".into(),
             body: "A new version is ready.".into(),
         });
-        system.open_folder(Path::new("/data/logs"));
-        system.copy("a report");
+        system.open(Path::new("/data/logs"));
+        system.put_on_clipboard("a report");
         system.attended(false);
 
         assert_eq!(system.notified().len(), 1);
         assert_eq!(system.opened(), [PathBuf::from("/data/logs")]);
-        assert_eq!(system.pasted().as_deref(), Some("a report"));
+        assert_eq!(system.clipboard().as_deref(), Some("a report"));
         assert!(!system.is_attended());
 
         let hold = system.hold_shutdown("saving");

@@ -9,8 +9,10 @@
 //! in a scenario and not something done to the machine.
 
 use std::path::Path;
-use std::sync::mpsc;
 use std::time::Duration;
+
+use gpui_kit::App;
+use tokio::sync::mpsc;
 
 #[cfg(feature = "testing")]
 pub mod simulated;
@@ -94,8 +96,9 @@ pub struct Notification {
     pub body: String,
 }
 
-/// The operating system, as the app uses it.
-pub trait System: Send + Sync {
+/// The operating system, as the app uses it. **Used from the window's
+/// thread alone**, which is where the real one has to be asked.
+pub trait System {
     /// How the system is set up now.
     fn settings(&self) -> Settings;
 
@@ -104,16 +107,16 @@ pub trait System: Send + Sync {
     fn online(&self) -> Option<bool>;
 
     /// Shows a notification.
-    fn notify(&self, notification: Notification);
+    fn notify(&self, notification: Notification, cx: &mut App);
 
     /// Opens a folder in the system's file manager.
-    fn open_folder(&self, folder: &Path);
+    fn open_folder(&self, folder: &Path, cx: &mut App);
 
     /// Puts `text` on the clipboard.
-    fn copy(&self, text: &str);
+    fn copy(&self, text: &str, cx: &mut App);
 
     /// The text on the clipboard, when there is some.
-    fn pasted(&self) -> Option<String>;
+    fn pasted(&self, cx: &mut App) -> Option<String>;
 
     /// Asks the system to wait before a shutdown, saying `why`, until the
     /// guard is dropped. The system grants seconds at most, and the person
@@ -125,7 +128,7 @@ pub trait System: Send + Sync {
     fn attended(&self, attended: bool);
 
     /// Everything the system says from now on. Called once.
-    fn events(&self) -> mpsc::Receiver<Event>;
+    fn events(&self) -> mpsc::UnboundedReceiver<Event>;
 }
 
 #[cfg(test)]

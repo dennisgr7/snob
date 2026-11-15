@@ -3,5 +3,6 @@
 //! change of the system's theme or contrast is one palette swapped for
 //! another.
 
+pub mod fonts;
 pub mod motion;
 pub mod tokens;
