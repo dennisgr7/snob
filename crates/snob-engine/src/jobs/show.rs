@@ -260,6 +260,9 @@ pub fn eta(
                 _ => None,
             }
         })
+        // No walk reads past its cap, whatever a stored estimate says: the
+        // time left is counted a page at a time.
+        .map(|(least, most)| (least.min(cap), most.min(cap)))
         .collect();
     let page = progress["page"].as_u64().unwrap_or(0);
     let pages = if progress["event"] == "finished" {
@@ -280,7 +283,11 @@ pub fn eta(
         .as_i64()
         .map_or(0, |at| u64::try_from(now.saturating_sub(at)).unwrap_or(0));
     let wait_left = if progress["event"] == "waiting" {
-        (progress["seconds"].as_u64().unwrap_or(0) * 1000).saturating_sub(waited)
+        progress["seconds"]
+            .as_u64()
+            .unwrap_or(0)
+            .saturating_mul(1000)
+            .saturating_sub(waited)
     } else {
         0
     };
@@ -295,6 +302,12 @@ pub fn eta(
     } else {
         (owed, wait_left.div_ceil(1000))
     };
+    // What a log line says is held to what the pace can owe: no rest is
+    // longer than the longest, and the sums below do not wrap on a number a
+    // damaged line carries.
+    let rest = rest.min(snob_ig::pace::SITTING_PAUSE_MS.1);
+    let with_the_wait =
+        |(least, most): (u64, u64)| Some((least.saturating_add(other), most.saturating_add(other)));
     // Where the account's sitting is, a line first says once a page has left it
     // (`Event::Page`): before the walk's first page, `started` and the waits
     // before it say nothing, and a sitting earlier work left part full would be
@@ -302,21 +315,24 @@ pub fn eta(
     if progress["sitting"].is_null()
         && page == 0
         && progress["event"] != "finished"
-        && let Some((least, most)) = from_estimate()
+        && let Some(left) = from_estimate()
     {
-        return Some((least + other, most + other));
+        return with_the_wait(left);
     }
     // The account's sitting, as the newest page left it; an older line that
     // does not say it is read as the walk's own pages.
     let into_sitting = match progress["sitting"].as_u64() {
         Some(pages) if pages >= full && rest == 0 => 0,
-        Some(pages) => pages,
+        Some(pages) => pages.min(full),
         None => page % full,
     };
     let mut walks = vec![(pages, pages)];
     walks.extend(to_come);
-    let (least, most) = crate::engine::estimate::walks_seconds(&walks, into_sitting, rest);
-    Some((least + other, most + other))
+    with_the_wait(crate::engine::estimate::walks_seconds(
+        &walks,
+        into_sitting,
+        rest,
+    ))
 }
 
 /// The record of a job, as one JSON object.
@@ -634,6 +650,38 @@ mod tests {
     /// The time a walk takes, by the pace alone, from a fresh sitting.
     fn walking(pages: &[(u64, u64)], into_sitting: u64) -> (u64, u64) {
         crate::engine::estimate::walks_seconds(pages, into_sitting, 0)
+    }
+
+    /// A job's estimate and its log are files, and what they carry is read
+    /// as it stands: numbers no walk could have written leave the time left
+    /// bounded by what a walk can read, where before a list of that many
+    /// pages was counted a page at a time and a wait that long wrapped.
+    #[test]
+    fn numbers_no_walk_wrote_do_not_stall_or_wrap_the_time_left() {
+        let now = snob_core::clock::now_ms().get();
+        let seen = crossing(json!([
+            {"list": "followers", "fate": "walked", "pages": {"least": 20, "most": 20}},
+            {"list": "following", "fate": "walked",
+             "pages": {"least": u64::MAX, "most": u64::MAX}},
+        ]));
+        let cap = u64::from(snob_ig::pager::HARD_PAGE_CAP);
+        let line = json!({
+            "event": "waiting", "kind": "day", "seconds": u64::MAX, "at": now,
+            "page": 10, "accounts": 120, "of": u64::MAX, "list": "followers",
+            "sitting": u64::MAX, "rest_until": i64::MAX,
+        });
+        let started = std::time::Instant::now();
+        let (least, most) = eta(&seen, Some(&line), &[], now, none).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "counted too far"
+        );
+        assert!(least <= most);
+        // The wait is the line's own; the walks are no longer than two
+        // lists read to their cap.
+        let walks = walking(&[(cap, cap), (cap, cap)], 0).1;
+        assert!(most >= u64::MAX / 1000, "{most}");
+        assert!(least >= u64::MAX / 1000 && least - u64::MAX / 1000 <= 2 * walks);
     }
 
     /// In the first list of a crossing, the time left counts the second

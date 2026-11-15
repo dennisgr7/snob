@@ -273,14 +273,16 @@ impl Seen {
 
     /// For a lost job: the moment its walk's claim on the list frees at the
     /// latest, which is how long another walk of that list is refused
-    /// (`report::walked_elsewhere`). **`None` for a job that is not lost, and
+    /// (`sentences::walked_elsewhere`). **`None` for a job that is not lost, and
     /// for a lost one that never started a walk** ([`Seen::walked`]), which
     /// holds nothing: refusing its lists for the claim's 45 minutes would
     /// refuse them over a walk that never was.
     pub fn claim_frees_at(&self) -> Option<i64> {
         (self.status == Status::Lost && self.walked()).then(|| {
             let ttl = snob_store::store::snapshots::CLAIM_TTL_SECS * 1000;
-            self.last_alive() + HEARTBEAT.as_millis() as i64 + ttl
+            self.last_alive()
+                .saturating_add(HEARTBEAT.as_millis() as i64)
+                .saturating_add(ttl)
         })
     }
 
