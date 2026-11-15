@@ -106,15 +106,7 @@ fn clear_a_lock_left_by_another_host(profile: &Path) {
     let Some((host, _pid)) = target.rsplit_once('-') else {
         return;
     };
-    let mut name = [0u8; 256];
-    // SAFETY: the buffer is valid for its whole length, and the call writes at
-    // most that many bytes into it.
-    if unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) } != 0 {
-        return;
-    }
-    let ours = std::ffi::CStr::from_bytes_until_nul(&name)
-        .map(|c| c.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let ours = crate::headless::profile::this_host();
     if ours.is_empty() || host == ours {
         return;
     }

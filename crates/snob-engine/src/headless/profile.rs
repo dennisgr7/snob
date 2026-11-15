@@ -14,14 +14,10 @@ use super::{COMMAND_TIMEOUT, Live};
 /// Makes sure the browser carries this session, and only this account, and says
 /// whether it does: `false` when it keeps a later login of the account instead.
 ///
-/// **A login is authoritative; after it, the browser is.**
-///
-/// **Unless it was made before the mark's.**
-///
-/// **A browser already holding exactly the session is left alone** too,
-/// whatever its mark says, and the mark is brought up to date.
-///
-/// **Another account's cookies are emptied out first.**
+/// **A login is authoritative; after it, the browser is** ([`needs`]): a
+/// session is written in unless the browser holds it already, or holds a
+/// login the mark dates later. Another account's cookies are emptied out
+/// first.
 pub(super) async fn sync_cookies(
     live: &mut Live,
     session: &Session,
@@ -471,7 +467,7 @@ pub(crate) fn in_use(dir: &Path) -> bool {
 }
 
 #[cfg(unix)]
-fn this_host() -> String {
+pub(crate) fn this_host() -> String {
     let mut name = [0u8; 256];
     // SAFETY: the buffer is valid for its whole length, and the call writes at
     // most that many bytes into it.
