@@ -121,6 +121,7 @@ crash-copied = Informe copiado
 palette-title = Paleta de comandos
 palette-placeholder = Escribe un comando
 palette-empty = Ningún comando coincide
+palette-switch = Cambiar a { $account }
 
 ## Notificaciones: solo para lo que pasa mientras no se mira la ventana.
 notify-expired-title = Tu sesión ha caducado

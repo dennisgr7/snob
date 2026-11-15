@@ -122,6 +122,7 @@ crash-copied = Report copied
 palette-title = Command palette
 palette-placeholder = Type a command
 palette-empty = No command matches
+palette-switch = Switch to { $account }
 
 ## Notifications: only for what happens while the window is not looked at.
 notify-expired-title = Your session has expired

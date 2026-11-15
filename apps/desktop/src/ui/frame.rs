@@ -93,6 +93,9 @@ pub fn render(
         .on_action(cx.listener(|shell, _: &super::OpenSettings, window, cx| {
             shell.open_settings(window, cx);
         }))
+        .on_action(cx.listener(|shell, _: &super::OpenPalette, window, cx| {
+            shell.toggle_the_palette(window, cx);
+        }))
         .relative()
         .size_full()
         .bg(color(palette.frame))
@@ -135,6 +138,7 @@ pub fn render(
         .child(band(shell, &look, window, cx))
         .children(super::menu::render(shell, &look, window, cx))
         .children(super::menu::sign_out_question(shell, &look, cx))
+        .children(super::palette::render(shell, &look, cx))
         // What a screen reader is told that no control says: a status that
         // changed, an error, the welcome. Not drawn.
         .child(

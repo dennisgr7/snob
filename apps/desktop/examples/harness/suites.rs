@@ -194,7 +194,7 @@ fn logic() -> Vec<Outcome> {
 
 /// The screens a picture is taken of and an audit made of, and how each is
 /// reached from the screen before it.
-const SCREENS: [&str; 8] = [
+const SCREENS: [&str; 9] = [
     "start",
     "paste",
     "failed",
@@ -203,6 +203,7 @@ const SCREENS: [&str; 8] = [
     "menu-accounts",
     "sign-out",
     "settings",
+    "palette",
 ];
 
 /// Takes the app from one of [`SCREENS`] to the next.
@@ -252,6 +253,16 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
             })
             .await?;
             app.until_screen("settings").await?;
+        }
+        "palette" => {
+            stage
+                .app()?
+                .press(if cfg!(target_os = "macos") {
+                    "cmd-k"
+                } else {
+                    "ctrl-k"
+                })
+                .await?;
         }
         other => bail!("no screen is called {other}"),
     }
@@ -508,20 +519,34 @@ async fn accessibility(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
             // What is under an open menu or question is out of reach on
             // purpose.
             let over = seen.nodes.iter().any(|node| {
-                node.visible && matches!(node.role.as_deref(), Some("Menu" | "AlertDialog"))
+                node.visible
+                    && matches!(
+                        node.role.as_deref(),
+                        Some("Menu" | "AlertDialog" | "Dialog")
+                    )
             });
             if over {
                 wanted.retain(|id| {
                     seen.nodes.iter().any(|node| {
                         node.id == *id
-                            && node
-                                .inside
-                                .iter()
-                                .any(|above| above == "account-menu" || above == "sign-out")
+                            && node.inside.iter().any(|above| {
+                                ["account-menu", "sign-out", "palette"].contains(&above.as_str())
+                            })
                     })
                 });
             }
-            let presses = wanted.len() * 2 + 4;
+            // Twice around everything Tab can stop at, a list's rows
+            // included.
+            let stops = seen
+                .nodes
+                .iter()
+                .filter(|node| {
+                    node.visible
+                        && (acted_on(node.role.as_deref())
+                            || node.role.as_deref() == Some("ListBoxOption"))
+                })
+                .count();
+            let presses = stops * 2 + 4;
             for _ in 0..presses {
                 let seen = app.press("tab").await?;
                 wanted.retain(|id| !node(&seen, id).is_ok_and(|node| node.focused == Some(true)));

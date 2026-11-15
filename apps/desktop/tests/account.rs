@@ -435,3 +435,144 @@ async fn a_version_to_update_by_hand_is_said_by_the_system_to_somebody_not_looki
     assert_eq!(notified[0].about, Notice::UpdateReady);
     assert_eq!(notified[0].title, "A new version of snob is available");
 }
+
+/// What the palette lists, by name, and which row is chosen.
+fn listed(app: &App, cx: &mut TestAppContext) -> (Vec<String>, Option<usize>) {
+    app.in_window(cx, |window, _| {
+        let mut names = Vec::new();
+        let mut chosen = None;
+        while let Some(row) = window.try_find(("palette-command", names.len())) {
+            assert_eq!(row.role(), Some(Role::ListBoxOption));
+            if row.selected() == Some(true) {
+                chosen = Some(names.len());
+            }
+            names.push(row.label().unwrap_or_default().to_string());
+        }
+        (names, chosen)
+    })
+}
+
+#[gpui_kit::test]
+async fn the_palette_lists_what_the_screen_can_do_and_finds_it_by_typing(cx: &mut TestAppContext) {
+    let app = at_home(cx, two_accounts()).await;
+    assert!(!shown(&app, cx, "palette"));
+
+    app.press(cx, "ctrl-k");
+    app.in_window(cx, |window, _| {
+        let palette = window.find("palette");
+        assert_eq!(palette.role(), Some(Role::Dialog));
+        assert_eq!(palette.label(), Some("Command palette"));
+        assert_eq!(window.find("palette-commands").role(), Some(Role::ListBox));
+    });
+    assert_eq!(
+        listed(&app, cx),
+        (
+            [
+                "Settings",
+                "Add account",
+                "Switch to @someone",
+                "Sign out",
+                "Open the logs folder",
+                "Copy the diagnostic report",
+            ]
+            .map(str::to_string)
+            .to_vec(),
+            Some(0)
+        )
+    );
+
+    // What is typed goes to its field without a click, and narrows the list.
+    app.in_window(cx, |window, cx| window.input("LOGS open", cx));
+    assert_eq!(
+        listed(&app, cx),
+        (vec!["Open the logs folder".to_string()], Some(0))
+    );
+    app.press(cx, "enter");
+    assert!(!shown(&app, cx, "palette"), "doing a command closes it");
+    assert_eq!(app.system.opened().len(), 1, "the logs folder was opened");
+
+    app.press(cx, "ctrl-k");
+    app.in_window(cx, |window, cx| window.input("nothing like this", cx));
+    assert_eq!(listed(&app, cx), (Vec::new(), None));
+    assert!(shown(&app, cx, "palette-empty"));
+    app.press(cx, "enter");
+    assert!(shown(&app, cx, "palette"), "there is nothing to do");
+}
+
+#[gpui_kit::test]
+async fn the_arrows_choose_in_the_palette_and_escape_hands_focus_back(cx: &mut TestAppContext) {
+    let app = at_home(cx, Scripted::with(vec![account(42, "me", true)])).await;
+    app.press(cx, "ctrl-k");
+    let (names, chosen) = listed(&app, cx);
+    assert_eq!(chosen, Some(0));
+
+    app.press(cx, "down");
+    assert_eq!(listed(&app, cx).1, Some(1));
+    app.press(cx, "up");
+    app.press(cx, "up");
+    assert_eq!(listed(&app, cx).1, Some(names.len() - 1), "around the end");
+    app.press(cx, "down");
+    assert_eq!(listed(&app, cx).1, Some(0));
+
+    app.press(cx, "escape");
+    assert!(!shown(&app, cx, "palette"));
+    assert!(focused(&app, cx, "title"), "back where it was");
+
+    // The second row is the one Enter does.
+    app.press(cx, "ctrl-k");
+    app.press(cx, "down");
+    app.press(cx, "enter");
+    app.until_screen(cx, |screen| matches!(screen, Screen::Start { .. }))
+        .await;
+    assert!(!shown(&app, cx, "palette"));
+}
+
+#[gpui_kit::test]
+async fn the_palette_offers_the_two_ways_in_and_nothing_on_the_way(cx: &mut TestAppContext) {
+    let backend = Scripted::with(Vec::new());
+    backend.hold();
+    let app = open(cx, backend.clone());
+    app.press(cx, "ctrl-k");
+    assert!(
+        !shown(&app, cx, "palette"),
+        "nothing to do under the splash"
+    );
+    backend.release();
+    app.until_screen(cx, |screen| matches!(screen, Screen::Start { .. }))
+        .await;
+
+    app.press(cx, "ctrl-k");
+    assert_eq!(
+        listed(&app, cx).0,
+        ["Sign in to Instagram", "Use your session ID (advanced)"]
+    );
+    app.press(cx, "down");
+    app.press(cx, "enter");
+    app.until_screen(cx, |screen| *screen == Screen::Paste)
+        .await;
+    app.press(cx, "ctrl-k");
+    assert!(!shown(&app, cx, "palette"));
+}
+
+#[gpui_kit::test]
+async fn the_arrows_walk_the_menu_around_its_ends(cx: &mut TestAppContext) {
+    let app = at_home(cx, Scripted::with(vec![account(42, "me", true)])).await;
+    app.click(cx, "account");
+    let items = ["menu-add", "menu-settings", "menu-sign-out"];
+    let on = |app: &App, cx: &mut TestAppContext| {
+        items
+            .iter()
+            .position(|id| focused(app, cx, id))
+            .map(|at| items[at])
+    };
+
+    app.press(cx, "down");
+    assert_eq!(on(&app, cx), Some("menu-add"));
+    app.press(cx, "down");
+    assert_eq!(on(&app, cx), Some("menu-settings"));
+    app.press(cx, "down");
+    app.press(cx, "down");
+    assert_eq!(on(&app, cx), Some("menu-add"), "around the end");
+    app.press(cx, "up");
+    assert_eq!(on(&app, cx), Some("menu-sign-out"), "and back around it");
+}

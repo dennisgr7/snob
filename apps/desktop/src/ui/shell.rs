@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, Entity, FocusHandle, Pixels, ScrollHandle, SharedString, Subscription,
-    Window, point, px,
+    AnyElement, App, Context, Entity, FocusHandle, Pixels, ScrollHandle, SharedString,
+    Subscription, Window, point, px,
 };
 use snob_core::secret::Secret;
 use snob_core::{Epoch, Pk};
@@ -24,6 +24,7 @@ use tokio::sync::watch;
 use super::look::Look;
 use super::{frame, screens};
 use crate::backend::{Account, Backend, Loaded, SignIn};
+use crate::state::commands::{self, Command};
 use crate::state::flow::{Effect, Event, Flow, Found, Method, Named, Screen, Update};
 use crate::state::paste::{self, Field};
 use crate::state::status::{self, Band, Status};
@@ -72,6 +73,18 @@ pub(crate) struct PasteForm {
     edits: usize,
     /// Whether the change under way is a paste, which is judged at once.
     pasting: bool,
+    _watching: Subscription,
+}
+
+/// The command palette, while it is open.
+pub(crate) struct Palette {
+    pub input: Entity<InputState>,
+    /// Which of the commands listed Enter does.
+    pub selected: usize,
+    /// What keeps focus inside it.
+    pub focus: FocusHandle,
+    /// Where focus was, and returns when it closes.
+    back_to: Option<FocusHandle>,
     _watching: Subscription,
 }
 
@@ -163,6 +176,7 @@ pub struct Shell {
     pub(crate) crash: Option<String>,
     pub(crate) paste: Option<PasteForm>,
     pub(crate) menu: Option<AccountMenu>,
+    pub(crate) palette: Option<Palette>,
     /// What opens the menu, and where focus returns when it closes.
     pub(crate) account_button: FocusHandle,
     pub(crate) signing_out: Option<SigningOut>,
@@ -288,6 +302,7 @@ impl Shell {
             crash: None,
             paste: None,
             menu: None,
+            palette: None,
             account_button: cx.focus_handle(),
             signing_out: None,
             crash_open: false,
@@ -364,10 +379,157 @@ impl Shell {
         }
     }
 
-    /// Closes whatever is open over the screen: the question first, then
-    /// the menu.
+    /// Goes to the next item of the open menu, or the one before, around
+    /// its ends: what the arrows do.
+    pub(crate) fn move_in_the_menu(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(inside) = self.menu.as_ref().map(|menu| menu.focus.clone()) else {
+            return;
+        };
+        // The tab order is the window's: walked until it is back inside.
+        let mut seen = Vec::new();
+        loop {
+            if forward {
+                window.focus_next(cx);
+            } else {
+                window.focus_prev(cx);
+            }
+            if inside.contains_focused(window, cx) {
+                break;
+            }
+            let focused = window.focused(cx);
+            if seen.contains(&focused) {
+                window.focus(&inside, cx);
+                break;
+            }
+            seen.push(focused);
+        }
+    }
+
+    /// The commands the palette lists: what the screen offers that is what
+    /// was typed, each with what it is called.
+    pub(crate) fn listed(&self, cx: &App) -> Vec<(Command, String)> {
+        let Some(palette) = &self.palette else {
+            return Vec::new();
+        };
+        let typed = palette.input.read(cx).value();
+        let look = Look::now(cx);
+        let others: Vec<Pk> = self
+            .accounts
+            .iter()
+            .filter(|account| !account.active)
+            .map(|account| account.named.pk)
+            .collect();
+        commands::offered(self.flow.screen(), &others)
+            .into_iter()
+            .map(|command| (command, super::palette::label(command, self, look)))
+            .filter(|(_, label)| commands::matches(label, &typed))
+            .collect()
+    }
+
+    /// Opens the command palette, or closes it. Not over the question
+    /// signing out asks, and not where there is nothing to offer.
+    pub(crate) fn toggle_the_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.palette.is_some() {
+            self.close_the_palette(window, cx);
+            return;
+        }
+        let settled = name(&self.shown) == name(self.flow.screen());
+        if !settled
+            || self.signing_out.is_some()
+            || commands::offered(self.flow.screen(), &[]).is_empty()
+        {
+            return;
+        }
+        tracing::info!(action = "open_command_palette", "action");
+        self.close_the_menu(window, cx);
+        let placeholder = Look::now(cx).tr("palette-placeholder");
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+        let watching = cx.subscribe_in(
+            &input,
+            window,
+            |shell, _, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    if let Some(palette) = &mut shell.palette {
+                        palette.selected = 0;
+                    }
+                    cx.notify();
+                }
+                InputEvent::PressEnter { .. } => shell.run_the_selected(window, cx),
+                _ => {}
+            },
+        );
+        let back_to = window.focused(cx);
+        input.update(cx, |input, cx| input.focus(window, cx));
+        self.palette = Some(Palette {
+            input,
+            selected: 0,
+            focus: cx.focus_handle(),
+            back_to,
+            _watching: watching,
+        });
+        cx.notify();
+    }
+
+    /// Closes the palette and hands focus back to where it was.
+    pub(crate) fn close_the_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(palette) = self.palette.take() {
+            window.focus(palette.back_to.as_ref().unwrap_or(&self.title), cx);
+            cx.notify();
+        }
+    }
+
+    /// Chooses the command `by` rows further down, around the ends.
+    pub(crate) fn palette_moves(&mut self, by: isize, cx: &mut Context<Self>) {
+        let listed = self.listed(cx).len() as isize;
+        if let Some(palette) = &mut self.palette
+            && listed > 0
+        {
+            palette.selected = (palette.selected as isize + by).rem_euclid(listed) as usize;
+            cx.notify();
+        }
+    }
+
+    /// Enter in the palette: does the command chosen.
+    fn run_the_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = self.palette.as_ref().map(|palette| palette.selected);
+        let command = chosen.and_then(|at| self.listed(cx).get(at).map(|(command, _)| *command));
+        if let Some(command) = command {
+            self.run_from_the_palette(command, window, cx);
+        }
+    }
+
+    /// Closes the palette and does `command`, as its button would.
+    pub(crate) fn run_from_the_palette(
+        &mut self,
+        command: Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_the_palette(window, cx);
+        match command {
+            Command::SignInBrowser => self.chose(Method::Browser, window, cx),
+            Command::SignInPaste => self.chose(Method::Paste, window, cx),
+            Command::Home => self.happened(Event::Back, window, cx),
+            Command::Settings => self.open_settings(window, cx),
+            Command::AddAccount => self.add_an_account(window, cx),
+            Command::SwitchTo(pk) => self.switch_to(pk, window, cx),
+            Command::SignOut => self.ask_to_sign_out(window, cx),
+            Command::OpenLogs => self.open_the_logs(cx),
+            Command::CopyReport => self.copy_the_report(window, cx),
+        }
+    }
+
+    /// Closes whatever is open over the screen: the palette or the question
+    /// first, then the menu.
     pub(crate) fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.signing_out.is_some() {
+        if self.palette.is_some() {
+            self.close_the_palette(window, cx);
+        } else if self.signing_out.is_some() {
             self.keep_signed_in(window, cx);
         } else {
             self.close_the_menu(window, cx);
@@ -582,6 +744,7 @@ impl Shell {
         }
         self.menu = None;
         self.signing_out = None;
+        self.palette = None;
         if !window.is_window_active() {
             let look = Look::now(cx);
             let body = match &account.username {

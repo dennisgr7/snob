@@ -4,7 +4,7 @@
 //!
 //! **Both keep focus inside them while they are open, close on Escape or a
 //! press outside, and hand focus back to where it was.** Nothing in them is
-//! reached by the pointer alone.
+//! reached by the pointer alone: Tab and the arrows walk the menu.
 
 use gpui_kit::base::{Button, FocusTrapElement as _, TestSupportExt as _};
 use gpui_kit::prelude::*;
@@ -256,11 +256,7 @@ pub fn render(
             )
     });
 
-    let shortcut = if cfg!(target_os = "macos") {
-        "\u{2318},"
-    } else {
-        "Ctrl+,"
-    };
+    let shortcut = super::SETTINGS_SHORTCUT;
     let separator = || div().h(px(1.)).my(sp(6.)).bg(color(palette.line));
 
     let menu = div()
@@ -268,6 +264,13 @@ pub fn render(
         .test_support()
         .role(Role::Menu)
         .aria_label(look.tr("account-menu"))
+        .key_context("SnobMenu")
+        .on_action(cx.listener(|shell, _: &super::MenuUp, window, cx| {
+            shell.move_in_the_menu(false, window, cx);
+        }))
+        .on_action(cx.listener(|shell, _: &super::MenuDown, window, cx| {
+            shell.move_in_the_menu(true, window, cx);
+        }))
         .occlude()
         .absolute()
         .top(px(frame::BAND - 2.))
