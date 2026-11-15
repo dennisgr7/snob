@@ -348,6 +348,31 @@ impl App {
         &self.client
     }
 
+    /// What keeps the answers of this run's account in its cache
+    /// (`crate::cache`): none for an app wired by hand.
+    pub fn cache(&self) -> Option<crate::cache::Keeper> {
+        let paths = self.app_paths.as_ref()?;
+        Some(crate::cache::Keeper::new(
+            paths.account(self.viewer.pk),
+            self.client.session(),
+        ))
+    }
+
+    /// `IgClient::profile_named`, **the same requests**, with what it
+    /// answered kept in the account's cache for a view to show at once next
+    /// time. Every profile the engine reads goes through here.
+    pub async fn profile_named(
+        &self,
+        name: &str,
+        known: Option<Pk>,
+    ) -> Result<snob_ig::model::WebProfileInfo, snob_ig::error::IgError> {
+        let profile = self.client.profile_named(name, known).await?;
+        if let Some(keeper) = self.cache() {
+            keeper.profile(&profile);
+        }
+        Ok(profile)
+    }
+
     /// The client, to be held by a task.
     pub fn client_shared(&self) -> Arc<IgClient> {
         Arc::clone(&self.client)

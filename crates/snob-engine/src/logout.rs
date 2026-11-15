@@ -98,9 +98,14 @@ pub async fn sign_out(
             sessions = deleted;
         }
     }
-    // What each showed of itself goes with its session.
+    // What each showed of itself goes with its session, and what each was
+    // shown of others with it.
     for pk in &who.leaving {
-        snob_store::viewer::Card::forget(&paths.account(*pk));
+        let account = paths.account(*pk);
+        snob_store::viewer::Card::forget(&account);
+        if let Err(e) = snob_store::cache::forget(&account) {
+            tracing::debug!(error = %e, "an account's cache could not be removed");
+        }
     }
 
     // **Always.** The browser profile is where every request is sent from

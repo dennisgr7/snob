@@ -9,6 +9,7 @@
 pub mod account;
 pub mod app;
 pub mod browser;
+pub mod cache;
 pub mod cdp;
 pub mod detach;
 pub mod engine;

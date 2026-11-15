@@ -113,7 +113,7 @@ pub async fn resolve(app: &mut App, args: &ListQuery) -> Result<Target> {
     };
 
     let known = known_pk(app, typed)?;
-    let profile = app.client().profile_named(clean(typed), known).await?;
+    let profile = app.profile_named(clean(typed), known).await?;
     let is_self = app.viewer().pk == profile.id;
 
     // Only certainty blocks.
