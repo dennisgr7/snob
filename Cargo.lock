@@ -3162,6 +3162,7 @@ dependencies = [
  "serde_json",
  "snob-core",
  "snob-ig",
+ "tokio",
  "url",
  "wiremock",
 ]

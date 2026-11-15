@@ -26,5 +26,9 @@ base64.workspace = true
 # The forms the app posts, read as the server reads them.
 url.workspace = true
 
+[dev-dependencies]
+# The hand-run drift test runs the fake server and tab on it.
+tokio.workspace = true
+
 [lints]
 workspace = true

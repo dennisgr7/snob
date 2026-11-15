@@ -189,8 +189,9 @@ dbus-run-session -- bash -c '
 - Hand-run: `cargo test -p snob-cli --features testing --test headless
   serve_the_fake_world -- --ignored --nocapture` serves the fake Instagram for
   `SNOB_TEST_SERVE_SECS` (`serve_the_website_world` is what
-  `web/video/record.sh` records); `tools/parity/tui.sh` diffs two builds'
-  views in tmux.
+  `web/video/record.sh` records); `cargo test -p snob-fake-ig --test drift --
+  --ignored --nocapture` compares `World` answers against `SNOB_CAPTURES` (or
+  `tools/capture/out`); `tools/parity/tui.sh` diffs two builds' views in tmux.
 
 ## Talking to Instagram
 
