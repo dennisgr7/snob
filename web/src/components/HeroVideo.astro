@@ -40,6 +40,7 @@ const { class: className } = Astro.props;
     </video>
     <figcaption id="hero-video-description" class="sr-only">{HERO_VIDEO.description}</figcaption>
   </figure>
+  <p class="w-full font-mono text-xs text-muted">{HERO_VIDEO.caption}</p>
   {/* Under the recording rather than on it, where it would cover what it shows. */}
   <button
     type="button"

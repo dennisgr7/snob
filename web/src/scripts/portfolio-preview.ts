@@ -1,6 +1,6 @@
 /**
  * The live preview on the author's portfolio (dennisgr7.dev), which shows this
- * page in an iframe on its Snob CLI entry. The portfolio keeps its static
+ * page in an iframe on its snob entry. The portfolio keeps its static
  * screenshot until the framed page says it has rendered, with this one message;
  * the type is the portfolio's protocol, named after the first site to use it.
  * The portfolio also says which theme it shows, light or dark: in the URL

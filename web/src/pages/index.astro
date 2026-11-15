@@ -5,33 +5,96 @@ import Hero from '@/components/Hero.astro';
 import HumanVsAgent from '@/components/HumanVsAgent.astro';
 import InstallTabs from '@/components/InstallTabs.astro';
 import Platforms from '@/components/Platforms.astro';
+import Points from '@/components/Points.astro';
 import Section from '@/components/Section.astro';
+import Status from '@/components/Status.astro';
 import Terminal from '@/components/Terminal.astro';
-import { AGENTS, BEHAVIOR, FEATURES, FEATURES_SECTION, INSTALL_SECTION, STAR } from '@/lib/content';
+import {
+  AGENTS,
+  APP,
+  AUTOMATIONS,
+  BEHAVIOR,
+  CLIENT,
+  COMMAND_LINE,
+  FEATURES,
+  HOME_TITLE,
+  INSTALL_SECTION,
+  STAR,
+} from '@/lib/content';
 import { SITE } from '@/lib/site';
 ---
 
-<BaseLayout title={`${SITE.name}, the ${SITE.category}: who doesn't follow you back`} markdownTwin="/index.md" ogImage="/og.png">
+<BaseLayout title={HOME_TITLE} markdownTwin="/index.md" ogImage="/og.png">
   <Hero />
 
-  <Section id="features" title={FEATURES_SECTION.title} accent={FEATURES_SECTION.accent} lead={FEATURES_SECTION.lead}>
+  <Section id="client" title={CLIENT.title} accent={CLIENT.accent} lead={CLIENT.lead}>
+    <div class="rounded-card border border-line bg-surface p-5">
+      <h3 class="font-mono text-sm font-bold">
+        {APP.name} <Status released={APP.released} class="ml-2 align-middle" />
+      </h3>
+      <p class="mt-2 max-w-[70ch] text-sm text-muted">{APP.description}</p>
+    </div>
+    <h3 class="mt-12 font-mono text-sm font-bold">{CLIENT.toolsLabel}</h3>
+    <ul class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {
+        CLIENT.tools.map((tool) => (
+          <li class="flex flex-col rounded-card border border-line bg-surface p-4">
+            <h4 class="font-mono text-sm font-bold">
+              <a href={`#${tool.id}`} class="text-text no-underline hover:text-accent">
+                {tool.name}
+              </a>
+            </h4>
+            <p class="mt-1 font-mono text-xs text-accent">{tool.command}</p>
+            <p class="mt-2 text-sm text-muted">{tool.description}</p>
+            <Status released={tool.released} class="mt-3 self-start" />
+          </li>
+        ))
+      }
+    </ul>
+  </Section>
+
+  <Section id="command-line" title={COMMAND_LINE.title} accent={COMMAND_LINE.accent} lead={COMMAND_LINE.lead}>
     <ul class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {FEATURES.map((feature) => <FeatureCard name={feature.name} description={feature.description} lines={feature.sample} />)}
     </ul>
+    <div class="mt-20">
+      <HumanVsAgent />
+    </div>
+  </Section>
+
+  <Section id="agents" title={AGENTS.title} accent={AGENTS.accent} lead={AGENTS.lead}>
+    <div class="grid items-start gap-10 lg:grid-cols-2">
+      <Points points={AGENTS.points} />
+      <Terminal label={AGENTS.sample.label} lines={AGENTS.sample.lines} />
+    </div>
+  </Section>
+
+  <Section id="automations" title={AUTOMATIONS.title} accent={AUTOMATIONS.accent} lead={AUTOMATIONS.lead}>
+    <div class="grid items-start gap-10 lg:grid-cols-2">
+      <div>
+        <h3 class="font-mono text-sm font-bold">{AUTOMATIONS.monitor.title}</h3>
+        <Points points={AUTOMATIONS.monitor.points} class="mt-4" />
+      </div>
+      <Terminal label={AUTOMATIONS.monitor.sample.label} lines={AUTOMATIONS.monitor.sample.lines} />
+    </div>
+    <div class="mt-16 grid items-start gap-10 lg:grid-cols-2">
+      <div>
+        <h3 id={AUTOMATIONS.webhooks.id} class="scroll-mt-8 font-mono text-sm font-bold">{AUTOMATIONS.webhooks.title}</h3>
+        <Points points={AUTOMATIONS.webhooks.points} class="mt-4" />
+      </div>
+      <Terminal label={AUTOMATIONS.webhooks.sample.label} lines={AUTOMATIONS.webhooks.sample.lines} />
+    </div>
   </Section>
 
   <Section id="behavior" title={BEHAVIOR.title} accent={BEHAVIOR.accent} lead={BEHAVIOR.lead}>
     <div class="grid items-start gap-10 lg:grid-cols-2">
       <p class="border-l-2 border-accent pl-4 text-muted">{BEHAVIOR.honest}</p>
-      <Terminal label="How snob behaves" lines={BEHAVIOR.checks} />
+      <Terminal label={BEHAVIOR.label} lines={BEHAVIOR.checks} />
     </div>
   </Section>
 
-  <Section id="agents" title={AGENTS.title} accent={AGENTS.accent} lead={AGENTS.lead}>
-    <HumanVsAgent />
-  </Section>
-
   <Section id="install" title={INSTALL_SECTION.title} accent={INSTALL_SECTION.accent} lead={INSTALL_SECTION.lead}>
+    <p class="mb-8 max-w-[70ch] border-l-2 border-accent pl-4 text-sm text-muted">{INSTALL_SECTION.today}</p>
     <Platforms />
     <InstallTabs />
     <p class="mt-12 text-sm text-muted">

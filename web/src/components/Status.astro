@@ -1,0 +1,25 @@
+---
+import { STATUS } from '@/lib/content';
+
+/**
+ * Whether a part of snob is in a release: a chip in the shape of the
+ * architectures' (Platforms.astro). What is still being built takes the
+ * accent, since it is the one a visitor must not miss.
+ */
+interface Props {
+  released: boolean;
+  class?: string;
+}
+
+const { released, class: className } = Astro.props;
+---
+
+<span
+  class:list={[
+    'inline-block rounded-control border px-2 py-0.5 font-mono text-xs font-normal whitespace-nowrap',
+    released ? 'border-line text-muted' : 'border-accent text-accent',
+    className,
+  ]}
+>
+  {released ? STATUS.released : STATUS.building}
+</span>

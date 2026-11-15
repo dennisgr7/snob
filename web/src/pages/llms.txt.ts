@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import { FEATURES, HERO } from '@/lib/content';
+import { FEATURES, HERO, LLMS } from '@/lib/content';
 import { SITE } from '@/lib/site';
 
 /**
@@ -19,11 +19,11 @@ ${HERO.lead} Commands: ${commands}.
 
 ## Pages
 
-- [Home](${at('/index.md')}): what Snob CLI does, how it behaves, its output for scripts and agents, and how to install it.
+- [Home](${at('/index.md')}): ${LLMS.home}
 
 ## Source
 
-- [Repository](${SITE.repository}): source code, releases and the README.
+- [Repository](${SITE.repository}): ${LLMS.repository}
 `;
   return new Response(body, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
 };

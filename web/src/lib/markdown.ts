@@ -1,18 +1,25 @@
 import {
   AGENTS,
+  APP,
+  AUTOMATIONS,
   BEHAVIOR,
+  CLIENT,
+  COMMAND_LINE,
   FEATURES,
-  FEATURES_SECTION,
+  FOOTER,
   HERO,
   HERO_VIDEO,
   INSTALL,
   INSTALL_SECTION,
   ARM,
   PLATFORMS,
+  SCRIPTS,
   STAR,
+  STATUS,
   splitAround,
   type InstallBlock,
   type InstallMethod,
+  type Point,
   type Sample,
 } from '@/lib/content';
 import { SITE } from '@/lib/site';
@@ -48,23 +55,85 @@ export function homeToMarkdown(site: URL | string): string {
 
   const platforms = PLATFORMS.map((p) => `- ${p.name}: ${p.arches.map((a) => a.name).join(', ')}`).join('\n');
 
-  const flags = AGENTS.flags.map((item) => `- \`${item.flag}\`: ${item.means}`).join('\n');
-  const exits = AGENTS.exitCodes.map((item) => `- \`${item.code}\`: ${item.means}`).join('\n');
-  const mcp = AGENTS.mcp.points.map((item) => `- \`${item.term}\`: ${item.means}`).join('\n');
+  const list = (points: readonly Point[]): string => points.map((item) => `- \`${item.term}\`: ${item.means}`).join('\n');
+  const status = (released: boolean): string => (released ? STATUS.released : STATUS.building);
+  const tools = CLIENT.tools
+    .map((tool) => `- **${tool.name}** (\`${tool.command}\`, ${status(tool.released)}): ${tool.description}`)
+    .join('\n');
 
   return `# ${SITE.name}
+
+> ${SITE.description}
 
 ## ${HERO.title} ${HERO.accent}
 
 ${HERO.lead}
 
+${HERO_VIDEO.caption.replace(/^# /, '')}.
+
 ${HERO_VIDEO.description}
 
-## ${heading(FEATURES_SECTION.title, FEATURES_SECTION.accent)}
+## ${heading(CLIENT.title, CLIENT.accent)}
 
-${FEATURES_SECTION.lead}
+${CLIENT.lead}
+
+### ${APP.name} (${status(APP.released)})
+
+${APP.description}
+
+### ${CLIENT.toolsLabel}
+
+${tools}
+
+## ${heading(COMMAND_LINE.title, COMMAND_LINE.accent)}
+
+${COMMAND_LINE.lead}
 
 ${features}
+
+### ${heading(SCRIPTS.title, SCRIPTS.accent)}
+
+${SCRIPTS.lead}
+
+${SCRIPTS.human.twin}
+
+${block(SCRIPTS.human.lines)}
+
+${SCRIPTS.machine.twin}
+
+${block(SCRIPTS.machine.lines)}
+
+#### ${SCRIPTS.flags.title}
+
+${list(SCRIPTS.flags.points)}
+
+#### ${SCRIPTS.exitCodes.title}
+
+${list(SCRIPTS.exitCodes.points)}
+
+## ${heading(AGENTS.title, AGENTS.accent)}
+
+${AGENTS.lead}
+
+${list(AGENTS.points)}
+
+${block(AGENTS.sample.lines)}
+
+## ${heading(AUTOMATIONS.title, AUTOMATIONS.accent)}
+
+${AUTOMATIONS.lead}
+
+### ${AUTOMATIONS.monitor.title}
+
+${list(AUTOMATIONS.monitor.points)}
+
+${block(AUTOMATIONS.monitor.sample.lines)}
+
+### ${AUTOMATIONS.webhooks.title}
+
+${list(AUTOMATIONS.webhooks.points)}
+
+${block(AUTOMATIONS.webhooks.sample.lines)}
 
 ## ${heading(BEHAVIOR.title, BEHAVIOR.accent)}
 
@@ -74,37 +143,11 @@ ${BEHAVIOR.lead}
 
 ${block(BEHAVIOR.checks)}
 
-## ${heading(AGENTS.title, AGENTS.accent)}
-
-${AGENTS.lead}
-
-On a terminal, the view (its frame left out):
-
-${block(AGENTS.human)}
-
-Down a pipe:
-
-${block(AGENTS.machine)}
-
-### Flags for scripts
-
-${flags}
-
-### Exit codes
-
-${exits}
-
-### ${AGENTS.mcp.title}
-
-${AGENTS.mcp.lead}
-
-${mcp}
-
-${block(AGENTS.mcp.sample)}
-
 ## ${heading(INSTALL_SECTION.title, INSTALL_SECTION.accent)}
 
 ${INSTALL_SECTION.lead}
+
+${INSTALL_SECTION.today}
 
 ${platforms}
 
@@ -116,7 +159,7 @@ ${STAR.line} [${STAR.link}](${SITE.repository})
 
 ---
 
-Source: ${SITE.repository} · License: MIT · Not affiliated with Instagram or Meta.
+Source: ${SITE.repository} · License: ${FOOTER.license} · ${FOOTER.disclaimer}
 
 HTML version: ${url}
 `;

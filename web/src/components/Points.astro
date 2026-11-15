@@ -1,0 +1,22 @@
+---
+import type { Point } from '@/lib/content';
+
+/** Terms in mono, commands and flags mostly, each with what it means. */
+interface Props {
+  points: readonly Point[];
+  class?: string;
+}
+
+const { points, class: className } = Astro.props;
+---
+
+<dl class:list={['space-y-3 text-sm', className]}>
+  {
+    points.map((point) => (
+      <div>
+        <dt class="font-mono text-text">{point.term}</dt>
+        <dd class="text-muted">{point.means}</dd>
+      </div>
+    ))
+  }
+</dl>
