@@ -917,7 +917,16 @@ Assumptions not yet confirmed against the real app. Settle them with a capture
 - the second page of a thread of replies, never captured: snob reads the first
   and logs the answer's keys when it says there is more;
 - whether the document's `PolarisViewer` carries the account's bio, as it does
-  its name and picture (`page_values::Face`): read when there, never needed.
+  its name and picture (`page_values::Face`): read when there, never needed;
+- keys the fake Instagram sends that two captures never showed
+  (`snob-fake-ig`'s drift test lists them): the hover card's `biography`,
+  `category`, `external_url`, `is_business` and `friendship_status.muting`;
+  `play_count` on grid items; a reel's `caption` and `media_notes`;
+  `video_versions: null` on reels, reposts and tagged posts; and
+  `has_anonymous_profile_picture`. snob reads some of them, all optional: a test
+  may pass on a key the real query never sends. Each leaves the fake once a
+  capture of the case that should carry it (a video in the grid, a post with
+  notes) still lacks it.
 
 ## Website
 

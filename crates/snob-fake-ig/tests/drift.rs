@@ -818,7 +818,14 @@ fn print_report(entry: &CapturedShape, diff: &ShapeDiff) {
     for (path, kinds) in &diff.real_only {
         println!("    + {path}: {}", format_kinds(kinds));
     }
-    println!("  fake_only ({}):", diff.fake_only.len());
+    // Not proof that Instagram never sends them: a key may come only with a
+    // video, or notes. One goes from the fake once a capture of such a case
+    // still lacks it (AGENTS.md, "Open questions").
+    println!(
+        "  fake_only ({}), not seen in {} captured answers:",
+        diff.fake_only.len(),
+        entry.samples
+    );
     for (path, kinds) in &diff.fake_only {
         println!("    - {path}: {}", format_kinds(kinds));
     }
