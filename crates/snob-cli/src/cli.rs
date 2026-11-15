@@ -1,3 +1,9 @@
+//! The command line as clap reads it: every command, flag and value, and the
+//! parsers that refuse a value before anything is asked or spent (exit 2).
+//!
+//! **The `///` on an argument is its help**, shown to people; what a reader
+//! of the code needs is in `//` beside it.
+
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};

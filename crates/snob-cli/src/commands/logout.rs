@@ -1,3 +1,10 @@
+//! `snob logout`: the session and the browser profile of an account, or of
+//! every one, removed from this computer.
+//!
+//! **The order is AGENTS.md's "Signing out"**: the jobs stopped and their lock
+//! held to the end, every other process signed out, the browsers released,
+//! and only then the session and the profiles removed.
+
 use anyhow::Result;
 use snob_core::Pk;
 use snob_store::paths::{self, AccountPaths, AppPaths};

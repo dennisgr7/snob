@@ -1,3 +1,11 @@
+//! `snob whoami`: whose session is stored here, and whether Instagram still
+//! takes it.
+//!
+//! **It builds its own client, with no `App`** (AGENTS.md, "Workspace map"):
+//! the one request it sends is the check of the session, none in a cooldown,
+//! and a session signed out on this computer is its answer, where
+//! `App::open` refuses the run.
+
 use anyhow::Result;
 use snob_core::Epoch;
 use snob_ig::client::IgClient;

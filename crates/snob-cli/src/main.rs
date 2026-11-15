@@ -1,3 +1,7 @@
+//! The `snob` binary: the command line parsed, the run wired (trust, paths,
+//! the keyring, the updater, the owner of the browsers), and the command
+//! dispatched as the account it resolves to.
+
 use anyhow::Context;
 use clap::Parser;
 use snob_cli::account::Unresolved;
