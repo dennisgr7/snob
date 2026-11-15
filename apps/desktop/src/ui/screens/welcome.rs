@@ -33,8 +33,13 @@ pub fn render(
         .find(|known| known.named.pk == account.pk)
         .cloned();
 
-    // The picture grows into place while the words rise under it.
-    let grown = PICTURE * (0.9 + 0.1 * phase.presence);
+    // The picture grows into place while the words rise under it; under
+    // "reduce motion" it is there at its size and only fades in.
+    let grown = if look.settings.reduce_motion {
+        PICTURE
+    } else {
+        PICTURE * (0.9 + 0.1 * phase.presence)
+    };
     let picture = signed_in.map(|account| {
         div()
             .id("welcome-photo")

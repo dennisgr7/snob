@@ -1244,7 +1244,12 @@ impl Shell {
                 (since.elapsed(), moved, true)
             }
             None => {
-                let moved = look.moved(motion::ENTER, if splash { 0.0 } else { 14.0 }, 1.0);
+                let enter = if matches!(self.shown, Screen::Welcome(_)) {
+                    motion::WELCOME_ENTER
+                } else {
+                    motion::ENTER
+                };
+                let moved = look.moved(enter, if splash { 0.0 } else { 14.0 }, 1.0);
                 (self.entered.elapsed(), moved, false)
             }
         };

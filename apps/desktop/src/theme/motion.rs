@@ -20,8 +20,15 @@ pub const FADE: Duration = Duration::from_millis(120);
 /// The least the splash stays, so a start that takes no time does not flash.
 pub const SPLASH_AT_LEAST: Duration = Duration::from_millis(400);
 
-/// How long the welcome stays before the home screen takes its place.
-pub const WELCOME_STAYS: Duration = Duration::from_millis(1200);
+/// How the welcome comes in: slower than another screen, since it is
+/// looked at rather than used. A [`FADE`] under "reduce motion", like any
+/// other move.
+pub const WELCOME_ENTER: Duration = Duration::from_millis(600);
+
+/// How long the welcome stays, from when it starts coming in, before the
+/// home screen takes its place. **The same under "reduce motion"**: it is
+/// time to read the name, not a move. 1.2 s was reported as too short.
+pub const WELCOME_STAYS: Duration = Duration::from_millis(2800);
 
 /// One turn of the loading ring.
 pub const RING_TURN: Duration = Duration::from_millis(1100);
@@ -70,6 +77,13 @@ mod tests {
             assert!((250..=350).contains(&lasts.as_millis()));
         }
         assert!(FADE < INTERACTION);
+    }
+
+    #[test]
+    fn the_welcome_is_on_screen_long_enough_to_read_once_it_has_come_in() {
+        assert!(WELCOME_ENTER > ENTER);
+        let read = WELCOME_STAYS - WELCOME_ENTER;
+        assert!(read >= Duration::from_secs(2), "{read:?} to read the name");
     }
 
     #[test]
