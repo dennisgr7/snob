@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# What the container runs: the same five commands the Linux lint and test
+# What the container runs: the same four commands the Linux lint and test
 # jobs run, in the same order, against the same target. Keep this in step with
 # .github/workflows/ci.yml -- a local check that drifts from the remote one
 # is a check that passes here and fails there.
@@ -22,8 +22,7 @@ cargo clippy -p snob-cli --all-targets --no-default-features --locked -- -D warn
 # without one the secret store falls back to a file and the backend under
 # test is not the one users get. Same as CI.
 dbus-run-session -- bash -c '
+  set -euo pipefail
   echo "" | gnome-keyring-daemon --unlock --components=secrets
-  cargo test --workspace --locked --target '"$target"'
-  cargo test -p snob-cli --features testing --locked --target '"$target"'
-  cargo test -p snob-engine --features testing --locked --target '"$target"'
+  cargo nextest run --profile ci --workspace --all-features --locked --target '"$target"'
 '

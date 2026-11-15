@@ -1,0 +1,87 @@
+# Serialized across processes: the credential store (Windows Credential Manager,
+# macOS Keychain, Linux Secret Service over D-Bus) is one service per machine,
+# and an in-process mutex (`keyring_lock` in `secrets.rs`, `LOCK` in
+# `tests/layout.rs`) cannot serialize tests that nextest runs in separate
+# processes.
+[test-groups.keyring]
+max-threads = 1
+
+[profile.default]
+# Run the whole suite so one run reports every failure.
+fail-fast = false
+# Headless browser tests take 50 to 90 s under parallel load; warn at 60 s and
+# kill a hung browser after 5 minutes (5 * 60 s).
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[[profile.default.overrides]]
+filter = """
+  (package(snob-store) & (
+    test(secrets::tests)
+    | test(=layout::tests::a_keyring_session_moved_without_a_database_is_found_again)
+    | binary(layout)
+  ))
+  | (package(snob-engine) & (
+    binary(login)
+    | test(app::tests)
+    | test(=headless::tests::two_accounts_rotating_in_one_run_each_keep_their_own)
+    | test(=headless::write_back::tests::each_account_keeps_what_its_own_browser_rotated)
+  ))
+  | (package(snob-cli) & (
+    binary(purge)
+    | test(=commands::watch::setup::tests::each_webhook_secret_is_stored_under_the_kind_that_says_what_it_is_for)
+    | test(=commands::purge::tests::a_plan_with_no_session_and_no_directories_removes_nothing)
+    | test(commands::common::tests)
+    | test(=commands::watch::run::tests::a_run_with_no_session_still_settles_the_queue)
+    | (binary(web) & (
+      test(=watch_check_reads_each_account_by_its_profile)
+      | test(=watch_check_reads_the_own_account_as_its_profile_opens)
+    ))
+    | (binary(watch_tick) & (
+      test(=watch_check_spends_nothing_during_a_cooldown)
+      | test(=check_stops_asking_once_an_account_earns_a_cooldown)
+      | test(=a_cooldown_does_not_downgrade_a_missing_consent)
+      | test(=a_session_with_no_stored_username_is_resolved_rather_than_waved_through)
+      | test(=checking_twice_spends_twice)
+    ))
+    | (binary(headless) & (
+      test(=logout_deletes_the_accounts_profile_or_every_one)
+      | test(=another_accounts_login_logout_or_purge_leaves_this_ones_browser)
+      | test(=a_walk_running_when_its_account_is_logged_out_of_sends_nothing_more)
+    ))
+    | (binary(sandbox) & (
+      test(=a_sandbox_run_keeps_its_session_in_the_sandbox)
+      | test(=the_whole_tool_end_to_end)
+      | test(=logout_removes_every_browser_profile)
+      | test(=an_old_layout_moves_under_its_account)
+      | test(=logging_one_account_out_leaves_the_other)
+      | test(=a_logout_with_no_account_resolved_takes_every_session)
+      | test(=a_login_with_none_active_adds_its_account)
+      | test(=purging_one_account_leaves_the_other)
+      | test(=an_agent_signs_an_account_out_only_after_a_yes_that_names_it)
+      | test(=purge_lists_then_stops_running_jobs_before_removing_everything)
+      | test(=a_jobs_directory_that_cannot_be_made_keeps_no_session)
+      | test(=logout_stops_running_jobs)
+      | test(=mcp_key_revoke_warns_when_the_environment_holds_the_key)
+    ))
+  ))
+"""
+test-group = "keyring"
+
+[profile.ci]
+# Two retries surface a transient runner or D-Bus flake as FLAKY in the summary
+# instead of failing the run or hiding it without a trace.
+retries = 2
+
+# Quick local loop skipping the browser-driven tests; run the default profile
+# before opening a pull request.
+[profile.agent]
+default-filter = """
+  not (
+    binary(headless)
+    | binary(browser_pipe)
+    | (package(snob-engine) & (
+      test(/^headless::tests::[^:]+$/)
+      | test(=owner::tests::an_intent_is_answered_through_the_owner_and_without_one)
+    ))
+  )
+"""

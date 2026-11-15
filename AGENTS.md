@@ -98,15 +98,12 @@ bash packaging/render.sh <version> SHA256SUMS   # then git diff --exit-code on F
 # test: ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest
 # Windows and macOS (Linux never compiles their cfg code):
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-SNOB_TEST_REQUIRE_BROWSER=1 cargo test --workspace --locked
-SNOB_TEST_REQUIRE_BROWSER=1 cargo test -p snob-cli --features testing --locked -- --test-threads=1
-SNOB_TEST_REQUIRE_BROWSER=1 cargo test -p snob-engine --features testing --locked -- --test-threads=1
+SNOB_TEST_REQUIRE_BROWSER=1 cargo nextest run --profile ci --workspace --all-features --locked
 # Linux, against musl, in a session bus with gnome-keyring unlocked:
 dbus-run-session -- bash -c '
+  set -euo pipefail
   echo "" | gnome-keyring-daemon --unlock --components=secrets
-  cargo test --workspace --locked --target "$(uname -m)-unknown-linux-musl"
-  cargo test -p snob-cli --features testing --locked --target "$(uname -m)-unknown-linux-musl"
-  cargo test -p snob-engine --features testing --locked --target "$(uname -m)-unknown-linux-musl"'
+  cargo nextest run --profile ci --workspace --all-features --locked --target "$(uname -m)-unknown-linux-musl"'
 ```
 
 - The render check is skipped while the version is unreleased; **never
@@ -120,6 +117,9 @@ dbus-run-session -- bash -c '
 - Locally on Windows the lines above run as written; they skip `cfg(unix)`
   code. `bash tools/ci/run.sh` runs the Linux job in Docker; `tools/ci/ci.sh`
   stays in step with `ci.yml`.
+- The test lines need `cargo-nextest` (`cargo install --locked cargo-nextest`):
+  `--profile agent` is the quick local loop, and the full default profile runs
+  before a pull request.
 - **Never export `RUSTFLAGS`**: it replaces `.cargo/config.toml` instead of
   merging, silently dropping `+crt-static` and `/Brepro` on Windows. Add a flag
   to a table there, or to a second config file as `release.yml` does.
@@ -152,12 +152,12 @@ dbus-run-session -- bash -c '
   bin's own unit tests.
 - **A test that starts a job stops it and waits for its lock before its
   `TempDir` drops**, a panic included.
-- **Browser tests** skip when no browser starts and fail under
-  `SNOB_TEST_REQUIRE_BROWSER=1`; run them with `--test-threads=1`, never as
-  root.
+- **Browser tests** skip when no browser starts, fail under
+  `SNOB_TEST_REQUIRE_BROWSER=1`, and never run as root; `.config/nextest.toml`
+  serializes the `keyring` group.
 - **Source-reading guards** in `crates/snob-core/tests/`: `no_seen.rs`,
-  `keyring.rs`, `sandbox.rs`, `layers.rs` (which crate may depend on which,
-  from the manifests), and `language.rs`, which scans
+  `keyring.rs`, `sandbox.rs`, `nextest.rs`, `layers.rs` (which crate may depend
+  on which, from the manifests), and `language.rs`, which scans
   `rs sql md toml yml yaml sh ps1 rb json` (this file too) for Spanish (escape
   `i18n-allow`), British spelling (`spelling-allow`), runs of spaces in a
   sentence in `.rs` (`layout-allow`), and a `snob ...` command to type back
