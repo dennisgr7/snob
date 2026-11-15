@@ -72,6 +72,12 @@ pub fn app_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Where Cargo builds the app: `CARGO_TARGET_DIR` when it is set, as in the
+/// container, and the app's own `target` otherwise.
+pub fn target_dir() -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| app_dir().join("target"), PathBuf::from)
+}
+
 fn usage() -> String {
     let mut text = String::from(
         "cargo harness [SUITE ...] [FILTER ...] [--approve] [--out DIR]\ncargo harness demo\n\n\
@@ -126,7 +132,7 @@ fn asked(args: &[String]) -> Result<Asked, String> {
         filters: Vec::new(),
         approve: false,
         demo: false,
-        out: app_dir().join("target").join("harness"),
+        out: target_dir().join("harness"),
     };
     let mut args = args.iter();
     while let Some(arg) = args.next() {

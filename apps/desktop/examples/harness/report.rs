@@ -101,7 +101,7 @@ pub fn compared(
         outcome.passed = false;
         outcome.detail = format!("{different} of {all} pixels differ from the approved picture");
     }
-    outcome
+    outcome.ended()
 }
 
 /// What the app's process holds in memory now, in bytes.
@@ -171,15 +171,13 @@ async fn measure(lab: &Lab, asked: &Asked) -> anyhow::Result<Measures> {
         app.until_screen("start").await?;
         usable.push(app.started.elapsed().as_secs_f64() * 1000.0);
 
-        let since = Instant::now();
-        app.click("start-paste").await?;
-        app.until_screen("paste").await?;
-        changes.push(since.elapsed().as_secs_f64() * 1000.0);
-
         if run == 4 {
-            // At rest: nothing moves and nobody asks.
+            // At rest, on the first screen: nothing moves, nobody asks, and
+            // no field has a caret to blink.
             tokio::time::sleep(Duration::from_secs(2)).await;
-            if let Some(cpu) = cpu_of(&app, Duration::from_secs(5)).await {
+            // Long enough that one tick of the system's clock, some 16 ms,
+            // is a tenth of a percent and not a third.
+            if let Some(cpu) = cpu_of(&app, Duration::from_secs(15)).await {
                 measures.insert("idle_cpu_percent".to_string(), f64::from(cpu));
             }
             if let Some(memory) = memory_of(&app) {
@@ -189,6 +187,11 @@ async fn measure(lab: &Lab, asked: &Asked) -> anyhow::Result<Measures> {
                 );
             }
         }
+        let since = Instant::now();
+        app.click("start-paste").await?;
+        app.until_screen("paste").await?;
+        changes.push(since.elapsed().as_secs_f64() * 1000.0);
+
         app.quit().await?;
     }
     measures.insert("start_to_window_ms".to_string(), median(answers));
@@ -209,15 +212,7 @@ pub async fn measured(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
     let measures = match measure(lab, asked).await {
         Ok(measures) => measures,
         Err(e) => {
-            return vec![Outcome {
-                suite: "performance",
-                name: "measuring".to_string(),
-                passed: false,
-                took: since.elapsed(),
-                detail: format!("{e:#}"),
-                pictures: Vec::new(),
-                log: None,
-            }];
+            return vec![Outcome::of("performance", "measuring", since).failed(format!("{e:#}"))];
         }
     };
     let baseline: Measures = std::fs::read_to_string(baseline_file())
@@ -264,15 +259,12 @@ pub async fn measured(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
                     format!("{value:.1}: no baseline yet (--approve takes this one)"),
                 ),
             };
-            Outcome {
-                suite: "performance",
-                name: name.clone(),
-                passed,
-                took: Duration::ZERO,
-                detail,
-                pictures: Vec::new(),
-                log: None,
-            }
+            // A number read off one run of the app: it took no time of its
+            // own.
+            let mut outcome = Outcome::of("performance", name.clone(), Instant::now());
+            outcome.passed = passed;
+            outcome.detail = detail;
+            outcome
         })
         .collect()
 }

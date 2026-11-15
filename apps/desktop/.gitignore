@@ -1,1 +1,4 @@
 /target/
+# This machine's own numbers (`cargo harness performance --approve`): a
+# baseline taken on one machine says nothing of another.
+/tests/baseline/

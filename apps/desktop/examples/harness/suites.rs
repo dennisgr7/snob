@@ -25,10 +25,11 @@ pub struct Outcome {
     pub pictures: Vec<(String, PathBuf)>,
     /// The app's log of a failed run.
     pub log: Option<PathBuf>,
+    since: Instant,
 }
 
 impl Outcome {
-    fn of(suite: &'static str, name: impl Into<String>, since: Instant) -> Self {
+    pub fn of(suite: &'static str, name: impl Into<String>, since: Instant) -> Self {
         Self {
             suite,
             name: name.into(),
@@ -37,18 +38,25 @@ impl Outcome {
             detail: String::new(),
             pictures: Vec::new(),
             log: None,
+            since,
         }
     }
 
-    fn failed(mut self, why: impl Into<String>) -> Self {
+    /// It ended now: how long it took is counted up to here.
+    pub fn ended(mut self) -> Self {
+        self.took = self.since.elapsed();
+        self
+    }
+
+    pub fn failed(mut self, why: impl Into<String>) -> Self {
         self.passed = false;
         self.detail = why.into();
-        self
+        self.ended()
     }
 
     fn noted(mut self, what: impl Into<String>) -> Self {
         self.detail = what.into();
-        self
+        self.ended()
     }
 }
 
@@ -495,7 +503,7 @@ async fn accessibility(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
             }
             .await;
             outcomes.push(match audited {
-                Ok(()) => outcome,
+                Ok(()) => outcome.ended(),
                 Err(e) => outcome.failed(format!("{e:#}")),
             });
         }
@@ -560,7 +568,7 @@ async fn accessibility(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
         }
         .await;
         outcomes.push(match walked {
-            Ok(()) => outcome,
+            Ok(()) => outcome.ended(),
             Err(e) => outcome.failed(format!("{e:#}")),
         });
     }
@@ -595,7 +603,7 @@ fn no_test_mode_in_a_release() -> Outcome {
         }
     }
     // And what is in the binary of a build without the feature.
-    let plain = app_dir().join("target").join("plain");
+    let plain = crate::target_dir().join("plain");
     let built = cargo(&[
         "build",
         "--bin",
