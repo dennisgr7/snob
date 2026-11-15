@@ -20,6 +20,7 @@ pub mod headless;
 pub mod host;
 pub mod interrupt;
 pub mod jobs;
+pub mod login;
 pub mod media;
 pub mod owner;
 pub mod parent;

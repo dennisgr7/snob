@@ -6,14 +6,13 @@
 //! that there was nowhere to put the result.
 
 use anyhow::{Context, Result, bail};
-use snob_core::session::Session;
 use snob_engine::app::Viewer;
 use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::login::{self, Agent, ByBrowser, Check, Method, Opened, Stored};
 use snob_engine::{browser, cdp, interrupt};
-use snob_ig::login::{self, ValidationOutcome};
+use snob_ig::login::BrowserCookies;
 use snob_ig::pace::CancelToken;
-use snob_store::paths::{self, AccountPaths, AppPaths};
-use snob_store::registry::Registry;
+use snob_store::paths::AppPaths;
 use snob_store::secrets::{Backend, SecretStore};
 
 use crate::cli::LoginArgs;
@@ -84,7 +83,7 @@ pub async fn run(
             if let Some(account) = &renewing
                 && let Ok(Some(stored)) = store.session_of(&paths.account(account.pk)).load()
             {
-                announce_replacement(&stored);
+                login::announce_replacement(&stored);
             }
             by_browser(args, store, paths, renewing, method).await
         }
@@ -118,23 +117,6 @@ fn renew_or_add(account: &Viewer) -> Result<Option<bool>> {
         &[again.as_str(), "Add another account"],
     )?;
     Ok(chosen.map(|i| i == 0))
-}
-
-/// Says whose session is about to be replaced.
-fn announce_replacement(stored: &Session) {
-    let who = who(stored);
-    ui::info(&format!(
-        "There is already a session for {who}. Logging in as {who} again replaces it."
-    ));
-}
-
-/// How to name the account a session belongs to.
-fn who(session: &Session) -> String {
-    Viewer {
-        pk: session.ds_user_id,
-        username: session.username.clone(),
-    }
-    .label()
 }
 
 /// Whether the data directory takes a file: the account's database goes
@@ -254,224 +236,62 @@ async fn by_browser(
         "Which browser should snob open?"
     };
     let Some(found) = choose_browser(purpose, &installed)? else {
-        bail!(
-            "no Chromium-based browser was found installed, and this needs one to \
-             open.\n\
-             Use \"snob login --paste\" instead."
-        );
-    };
-
-    // The profile the login happens in.
-    let (profile, existed) = match &renewing {
-        Some(previous) => {
-            snob_engine::owner::release(paths, Some(previous.pk)).await;
-            snob_engine::headless::profile::for_account(paths, previous.pk)?
-        }
-        None => (snob_engine::headless::profile::for_a_login(paths)?, false),
+        return Err(login::NoBrowser.into());
     };
     let cancel = interrupt::install();
+    let requested = args.user_agent.clone();
 
-    // Where the profile is kept, rather than the name a login's own profile
-    // has until its account is known.
-    let kept_at = match &renewing {
-        Some(_) => profile.clone(),
-        None => paths.browser_profile(),
-    };
-    if remote {
-        ui::info(&format!(
-            "Starting {} here, without a window, on Instagram's login page.\n\
-             It uses a profile of its own, under {}, so it is not your everyday browser \
-             and logging in there changes nothing about it.",
-            found.name,
-            kept_at.display(),
-        ));
-    } else {
-        ui::info(&format!(
-            "Opening {} on Instagram's login page.\n\
-             It uses a profile of its own, under {}, so it is not your everyday browser \
-             and logging in there changes nothing about it.\n\
-             Log in as usual; snob will notice when you are done, and gives up after \
-             {} minutes. Ctrl+C to cancel.",
-            found.name,
-            kept_at.display(),
-            cdp::LOGIN_TIMEOUT.as_secs() / 60
-        ));
-    }
-
-    // Anything from here on can be interrupted, and a Ctrl+C has to read as
-    // one rather than as a failure, so the result is held rather than unwrapped
-    // until the browser has been shut down.
-    let captured = if remote {
-        capture_remotely(&found, args.user_agent.clone(), &profile, paths, &cancel).await
-    } else {
-        capture(&found, args.user_agent.clone(), &profile, &cancel).await
-    };
-    // Whatever `capture` came back with, and before either exit below: the
-    // profile holds a live session from the moment the form was submitted.
-    //
-    // **Never when it was already here**: the commonest way for this launch to
-    // fail is another snob holding that very profile, and it is not deleted
-    // under that snob's browser.
-    if !existed && (captured.is_err() || cancel.is_canceled()) {
-        // Off the worker: the removal retries with sleeps adding up to five
-        // seconds, and this runtime has two workers, one of which has to stay
-        // free for the Ctrl+C task to run at all.
-        let profile = profile.clone();
-        tokio::task::spawn_blocking(move || discard_profile(&profile))
-            .await
-            .context("the profile could not be removed")?;
-    }
-    if cancel.is_canceled() {
-        ui::info("Login canceled.");
-        return Ok(ExitCode::Interrupted);
-    }
-    let (cookies, user_agent) = captured?;
-
-    let mut session = login::session_from_cookies(&cookies, &user_agent)?;
-    session.user_agent_pinned = args.user_agent.is_some();
-    session.browser = Some(found.name.to_string());
-
-    if let Some(previous) = &renewing
-        && existed
-        && previous.pk != session.ds_user_id
-    {
-        let previous = previous.label();
-        ui::warn(&format!(
-            "account {} signed in on the browser profile of {previous}, which is now \
-             {}'s: Instagram has seen both sign in from it. {previous} starts from a \
-             fresh profile when it logs in again.",
-            session.ds_user_id, session.ds_user_id
-        ));
-    }
-
-    // A browser the owner started on the account's profile since this command
-    // began, for another command, is closed before the profile is replaced.
-    snob_engine::owner::release(paths, Some(session.ds_user_id)).await;
-    if let Some(previous) = &renewing
-        && previous.pk != session.ds_user_id
-    {
-        snob_engine::owner::release(paths, Some(previous.pk)).await;
-    }
-
-    // The login happened in this profile, so it is the device Instagram just
-    // saw sign in, and it becomes the account's before anything is sent: the
-    // check below goes out from the account's profile.
-    let swap = match snob_engine::headless::profile::ProfileSwap::replace(
+    let stored = login::by_browser(
+        ByBrowser {
+            browser: &found,
+            user_agent_pinned: requested.is_some(),
+            renewing,
+            method: if remote {
+                Method::Remote
+            } else {
+                Method::Browser
+            },
+        },
+        store,
         paths,
-        &profile,
-        session.ds_user_id,
-    ) {
-        Ok(swap) => Some(swap),
-        Err(e) => {
-            ui::warn(&format!(
-                "{e:#}\n\
-                     The profile the login happened in stays at {}, holding the session, \
-                     and the account's requests go out from another; \"snob logout\" \
-                     removes it.",
-                profile.display()
-            ));
-            None
-        }
-    };
-    let made_it = swap
-        .as_ref()
-        .map_or(profile.as_path(), |s| s.profile.as_path());
-    // The profile made this session, and is the browser's to keep current from
-    // now on: the next run must not write the stored copy back over it.
-    snob_engine::headless::ProfileMark::after_login(made_it, &found, &session);
-    let finished = finish(session, store, method, paths, renewing.as_ref()).await;
-    if let Some(swap) = swap {
-        match &finished {
-            Ok(_) => swap.keep(),
-            Err(_) => swap.undo(),
-        }
-    }
-    finished
-}
-
-/// Removes a profile a login created and did not finish.
-///
-/// **About 90 MB, and possibly a half-finished session.**
-fn discard_profile(profile: &std::path::Path) {
-    if !profile.exists() {
-        return;
-    }
-    if !paths::is_safe_to_remove(profile) {
-        ui::warn(&format!(
-            "{} is too close to the root to remove; delete it by hand",
-            profile.display()
-        ));
-        return;
-    }
-
-    if let Err(e) = paths::remove_tree_patiently(profile) {
-        ui::warn(&format!(
-            "the browser profile at {} could not be removed ({e}). It holds a \
-             logged-in session; delete it by hand, or run \
-             \"snob logout\" later.",
-            profile.display()
-        ));
-    }
-}
-
-/// Drives the browser from launch to captured session, and always closes it.
-async fn capture(
-    found: &browser::Browser,
-    requested_user_agent: Option<String>,
-    profile: &std::path::Path,
-    cancel: &CancelToken,
-) -> Result<(login::BrowserCookies, String)> {
-    let cdp = cdp::Cdp::connect(cdp::launch(found, profile)?, cancel).await?;
-    let outcome = collect(&cdp, found, requested_user_agent, cancel).await;
-    cdp.close().await;
-    outcome
-}
-
-async fn collect(
-    cdp: &cdp::Cdp,
-    found: &browser::Browser,
-    requested_user_agent: Option<String>,
-    cancel: &CancelToken,
-) -> Result<(login::BrowserCookies, String)> {
-    // Asked for rather than reconstructed: this is the browser the cookie will
-    // belong to, and Instagram checks that the two agree.
-    let user_agent = match requested_user_agent {
-        Some(ua) => ua,
-        None => cdp.user_agent().await.unwrap_or_else(|e| {
-            tracing::debug!(error = %e, "falling back to the rebuilt User-Agent");
-            found.user_agent()
-        }),
-    };
-
-    // The profile keeps whatever was logged in last time, and Instagram sends a
-    // browser that still has a session straight past the login page.
-    let cookies = match cdp.instagram_cookies().await? {
-        Some(existing) => {
-            ui::info(
-                "This browser profile was still logged in, so that session is the one \
-                 being stored.\n\
-                 To sign in as somebody else, run \"snob login --add\".",
-            );
-            existing
-        }
+        &cancel,
+        async |opened: Opened<'_>| {
+            if remote {
+                ui::info(&format!(
+                    "Starting {} here, without a window, on Instagram's login page.\n\
+                     It uses a profile of its own, under {}, so it is not your everyday browser \
+                     and logging in there changes nothing about it.",
+                    found.name,
+                    opened.kept_at.display(),
+                ));
+                capture_remotely(&found, requested, opened.profile, paths, &cancel).await
+            } else {
+                ui::info(&format!(
+                    "Opening {} on Instagram's login page.\n\
+                     It uses a profile of its own, under {}, so it is not your everyday browser \
+                     and logging in there changes nothing about it.\n\
+                     Log in as usual; snob will notice when you are done, and gives up after \
+                     {} minutes. Ctrl+C to cancel.",
+                    found.name,
+                    opened.kept_at.display(),
+                    cdp::LOGIN_TIMEOUT.as_secs() / 60
+                ));
+                let progress = Progress::new(true);
+                login::in_a_window(&found, requested, opened.profile, &cancel, &progress).await
+            }
+        },
+    )
+    .await?;
+    match stored {
+        Some(stored) => Ok(say(&stored)),
         None => {
-            // Ten minutes with nothing on screen reads as a hang, and this is
-            // the one stretch where the user is in another window typing a
-            // password and a code and comes back to check.
-            let progress = Progress::new(true);
-            progress.waiting("waiting for you to log in", cdp::LOGIN_TIMEOUT);
-            let captured = cdp::wait_for_login(cdp, cancel).await;
-            // Before the `?`, so both the Ctrl+C bail and a broken socket leave
-            // a clean terminal behind.
-            progress.finish();
-            captured?
+            ui::info("Login canceled.");
+            Ok(ExitCode::Interrupted)
         }
-    };
-
-    Ok((cookies, user_agent))
+    }
 }
 
-/// [`capture`], for a login watched from another machine: the browser runs here
+/// [`login::in_a_window`], for a login watched from another machine: the browser runs here
 /// without a window, and its tab is relayed through a tunnel to a page in the
 /// person's own browser (`snob_engine::relay`), until the session is in it.
 async fn capture_remotely(
@@ -480,7 +300,7 @@ async fn capture_remotely(
     profile: &std::path::Path,
     paths: &AppPaths,
     cancel: &CancelToken,
-) -> Result<(login::BrowserCookies, String)> {
+) -> Result<(BrowserCookies, String)> {
     let relay = snob_engine::relay::Relay::bind(paths)?;
     let snob_engine::headless::RemoteLogin {
         cdp,
@@ -499,14 +319,10 @@ async fn relayed(
     tab: &str,
     relay: snob_engine::relay::Relay,
     cancel: &CancelToken,
-) -> Result<login::BrowserCookies> {
+) -> Result<BrowserCookies> {
     // As in a windowed login: a profile still signed in is taken as it is.
     if let Some(existing) = cdp.instagram_cookies().await? {
-        ui::info(
-            "This browser profile was still logged in, so that session is the one \
-             being stored.\n\
-             To sign in as somebody else, run \"snob login --add\".",
-        );
+        ui::info(login::STILL_LOGGED_IN);
         return Ok(existing);
     }
     // Only now, with the tab dressed (`headless::for_a_remote_login`): the
@@ -523,7 +339,7 @@ async fn relayed(
         &relay,
         snob_engine::seat::Seat::here().ssh.as_ref(),
     ));
-    // As in `collect`: one bar, started once nothing else is printed.
+    // One bar, started once nothing else is printed.
     let progress = Progress::new(true);
     let captured = relay.serve(cdp, tab, cancel, &progress).await;
     progress.finish();
@@ -565,7 +381,7 @@ async fn by_paste(args: LoginArgs, store: SecretStore, paths: &AppPaths) -> Resu
     // questions.
     let chosen = match args.user_agent {
         // The flag is the user saying it outright.
-        Some(ua) => ChosenAgent::pinned(ua),
+        Some(ua) => Agent::pinned(ua),
         None => resolve_user_agent()?,
     };
 
@@ -576,212 +392,62 @@ async fn by_paste(args: LoginArgs, store: SecretStore, paths: &AppPaths) -> Resu
         bail!("no sessionid was entered");
     }
 
-    let mut session = login::session_from_paste(&sessionid, &chosen.user_agent)?;
-    session.user_agent_pinned = chosen.pinned;
-    session.browser = chosen.browser;
-    // The requests go out from the browser that made the account's profile,
-    // while it is installed (`ProfileMark`), whichever one was named here.
-    if let Some(named) = &session.browser
-        && !snob_engine::headless::env_flag("SNOB_NO_BROWSER")
-        && let Some(maker) =
-            snob_engine::headless::ProfileMark::read(&paths.browser_profile_for(session.ds_user_id))
-                .browser
-        && maker.is_file()
-        && browser::detect_named(named).is_some_and(|b| b.path != maker)
-    {
-        ui::info(&format!(
-            "Requests for this account go out from {}, the browser that made its profile, \
-             rather than from {named}: a profile opens only in the browser that made it.",
-            maker.display()
-        ));
-    }
-    // Taken as given rather than prompted for, because it is not a credential
-    // in the sense the sessionid is — it is the CSRF double-submit token, which
-    // is worth nothing without the cookie — and because prompting for a second
-    // secret nobody needs would put a question in front of every paste login to
-    // serve the two commands that write.
-    session.csrftoken = args
-        .csrftoken
-        .as_deref()
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .map(Into::into);
-    // The check goes out from a browser that takes this session, whatever the
-    // clock said when the one it held was made (`headless::newer_login`).
-    snob_engine::owner::release(paths, Some(session.ds_user_id)).await;
-    snob_engine::headless::ProfileMark::forget_session(
-        &paths.browser_profile_for(session.ds_user_id),
-    );
-    finish(session, store, LoginMethod::Paste, paths, None).await
+    let cancel = interrupt::install();
+    let stored = login::by_paste(
+        &sessionid,
+        chosen,
+        args.csrftoken.as_deref(),
+        store,
+        paths,
+        &cancel,
+    )
+    .await?;
+    Ok(say(&stored))
 }
 
-/// Validates, stores and reports.
-async fn finish(
-    mut session: Session,
-    secrets: SecretStore,
-    method: LoginMethod,
-    paths: &AppPaths,
-    renewing: Option<&Viewer>,
-) -> Result<ExitCode> {
-    let pk = session.ds_user_id;
-    let account = paths.account(pk);
-    let existed = account.dir().exists();
-    // Before anything is written to the account's own database, which would
-    // then be the one it keeps.
-    let adopted = match snob_store::layout::adopt(paths, pk) {
-        Ok(adopted) => adopted,
-        Err(e) => {
-            ui::warn(&format!(
-                "{e}\nThe data kept from before several accounts could be signed in stays at {}.",
-                paths.unclaimed_dir().display()
-            ));
-            false
+/// Says how a login ended.
+fn say(stored: &Stored) -> ExitCode {
+    let now = stored.viewer.label();
+    match &stored.check {
+        Check::Confirmed => {
+            crate::ui::say!("Session stored for {now} in the {}.", stored.kept_in);
         }
-    };
-    let store = secrets.session_of(&account);
-    let previous = store
-        .load()
-        .ok()
-        .flatten()
-        .filter(|previous| previous.ds_user_id == pk);
-    if let Some(previous) = &previous
-        && renewing.is_none_or(|renewing| renewing.pk != pk)
-    {
-        announce_replacement(previous);
-    }
-    // Neither method hands over a username.
-    let kept = previous.as_ref().map(|previous| previous.created_at);
-    if session.username.is_none() {
-        session.username = previous.and_then(|previous| previous.username);
-    }
-
-    // Checking a session is a request like any other, charged to the budget
-    // of the account that signed in: repeated logins spend.
-    let pacer = snob_engine::app::pacer_saying_a_line(&account)?;
-    // Let in before the check, which goes out as any request does: a logout or
-    // purge of the account signed out every session it had then, and this one
-    // is a login's own (`owner::signed_out`).
-    account.admit_login(session.created_at, kept)?;
-    ui::info("Checking the session against Instagram...");
-    let validated = login::validate(&mut session, pacer).await;
-    let rejected = matches!(
-        &validated,
-        Err(login::LoginError::Instagram(ig)) if ig.invalidates_session()
-    );
-    let stored = match validated {
-        Ok(outcome) => store.save(&session).map(|()| outcome).map_err(Into::into),
-        // A rejection during login means different things depending on where
-        // the session came from.
-        Err(e) => Err(match &e {
-            login::LoginError::Instagram(snob_ig::error::IgError::SignedOutHere) => {
-                anyhow::anyhow!(e)
-            }
-            login::LoginError::Instagram(ig) if ig.invalidates_session() => anyhow::anyhow!(e)
-                .context(match method {
-                    LoginMethod::Paste => {
-                        "Instagram rejected the session. Check that the sessionid was \
-                             copied whole and that the User-Agent belongs to the same browser"
-                    }
-                    LoginMethod::Browser | LoginMethod::Remote => {
-                        "Instagram rejected the session the browser handed over. It may \
-                             have been signed out in the meantime; run \"snob logout\" and \
-                             log in again"
-                    }
-                }),
-            _ => anyhow::anyhow!(e),
-        }),
-    };
-    let outcome = match stored {
-        Ok(outcome) => outcome,
-        Err(e) => {
-            // The browser the check went out from holds this session now, as
-            // the account's newest, and would go on sending it in place of the
-            // one still stored; and a browser login's profile is about to be
-            // put back under it.
-            snob_engine::owner::release(paths, Some(pk)).await;
-            snob_engine::headless::ProfileMark::forget_session(&paths.browser_profile_for(pk));
-            forget_the_attempt(&account, adopted, !existed && rejected);
-            return Err(e);
-        }
-    };
-    if adopted {
-        ui::info(&format!(
-            "The data kept from before several accounts could be signed in is {}'s now.",
-            who(&session)
-        ));
-    }
-
-    // The account that signed in is the one commands act as from now on.
-    let username = session.username.clone();
-    let mut previous = None;
-    let registry = Registry::update(paths, |registry| {
-        previous = registry
-            .active_account()
-            .map(snob_engine::app::Viewer::from);
-        let name = username
-            .or_else(|| registry.get(pk).map(|a| a.username.clone()))
-            .unwrap_or_default();
-        registry.upsert(pk, &name, snob_core::clock::now());
-        registry.active = Some(pk);
-    })
-    .context("the session was stored, but the list of accounts could not be updated")?;
-
-    match outcome {
-        ValidationOutcome::Confirmed => {
-            crate::ui::say!(
-                "Session stored for {} in the {}.",
-                who(&session),
-                store.describe()
-            );
-        }
-        ValidationOutcome::Unconfirmed => {
-            crate::ui::say!("Session stored in the {}.", store.describe());
+        Check::Unconfirmed => {
+            crate::ui::say!("Session stored in the {}.", stored.kept_in);
             ui::warn(
                 "it could not be confirmed with Instagram because it is throttling \
                  requests. The session is probably valid; check in a few minutes \
                  with \"snob whoami\".",
             );
         }
-        ValidationOutcome::Skipped { until_ms } => {
-            crate::ui::say!("Session stored in the {}.", store.describe());
-            // Asked again, as the check's pacer is spent: what held it may be
-            // the brake on every account rather than a cooldown of its own.
-            let held = snob_engine::app::pacer_saying_a_line(&account)
-                .and_then(|pacer| snob_engine::app::held(&pacer, Some(paths)))
-                .ok()
-                .flatten()
-                .unwrap_or(snob_engine::app::Held {
-                    until_ms,
-                    braked: Vec::new(),
-                });
+        Check::Skipped(held) => {
+            crate::ui::say!("Session stored in the {}.", stored.kept_in);
             ui::warn(&format!(
                 "it was not checked: {}. Nothing is spent until then — not even the \
                  single request this would cost. Check it with \"snob whoami\" once it \
                  lifts.",
-                snob_engine::sentences::held_until(&held)
+                snob_engine::sentences::held_until(held)
             ));
         }
     }
     // Said when it moved, and only where there is another to have moved from.
-    if registry.accounts.len() > 1 && previous.as_ref().is_none_or(|was| was.pk != pk) {
-        let now = who(&session);
-        match previous {
+    if stored.accounts > 1
+        && stored
+            .was_active
+            .as_ref()
+            .is_none_or(|was| was.pk != stored.viewer.pk)
+    {
+        match &stored.was_active {
             Some(was) => crate::ui::say!("Active account: {now} (was {})", was.label()),
             None => crate::ui::say!("Active account: {now}"),
         }
     }
 
-    // A browser login meant for another account that signed in as this one
-    // leaves that account's session where it was.
-    if let Some(renewing) = renewing.filter(|renewing| renewing.pk != pk)
-        && secrets
-            .session_of(&paths.account(renewing.pk))
-            .something_is_stored()
-    {
+    if let Some(other) = &stored.stays_signed_in {
         ui::info(&format!(
             "{} stays signed in; \"snob logout --account {}\" signs it out.",
-            renewing.label(),
-            renewing.pk
+            other.label(),
+            other.pk
         ));
     }
 
@@ -789,61 +455,14 @@ async fn finish(
     // whole-account summary is the answer to the question they came with.
     ui::info("Try \"snob scan\" for the whole picture, or \"snob unfollowers\".");
 
-    Ok(ExitCode::Ok)
-}
-
-/// Undoes what a login that did not happen left for an account nothing signs in
-/// as, so the id stays nobody's: the data it adopted goes back to waiting, and
-/// a directory it made for a session Instagram rejected goes.
-fn forget_the_attempt(account: &AccountPaths, adopted: bool, made_for_nothing: bool) {
-    let listed =
-        Registry::load(account).map_or(true, |registry| registry.get(account.pk()).is_some());
-    if listed {
-        return;
-    }
-    if adopted {
-        if let Err(e) = snob_store::layout::unadopt(account, account.pk()) {
-            ui::warn(&format!(
-                "{e}\nThe data kept from before several accounts could be signed in stays at {}.",
-                account.dir().display()
-            ));
-        }
-    } else if made_for_nothing
-        && paths::is_safe_to_remove(&account.dir())
-        && let Err(e) = paths::remove_tree_patiently(&account.dir())
-    {
-        ui::warn(&format!(
-            "{} could not be removed: {e}",
-            account.dir().display()
-        ));
-    }
-}
-
-/// A User-Agent and what is known about where it came from.
-struct ChosenAgent {
-    user_agent: String,
-    /// The user gave it outright, so nothing may rewrite it later.
-    pinned: bool,
-    /// Which browser it describes, when one was picked.
-    browser: Option<String>,
-}
-
-impl ChosenAgent {
-    fn pinned(user_agent: String) -> Self {
-        Self {
-            user_agent,
-            pinned: true,
-            browser: None,
-        }
-    }
+    ExitCode::Ok
 }
 
 /// Gets the User-Agent without sending the user to the browser console.
-fn resolve_user_agent() -> Result<ChosenAgent> {
+fn resolve_user_agent() -> Result<Agent> {
     let installed = browser::detect_all();
 
     if let Some(b) = choose_browser("Which browser is your Instagram session in?", &installed)? {
-        let user_agent = b.user_agent();
         ui::info(&format!(
             "Using the User-Agent of {} {}.",
             b.name, b.major_version
@@ -854,11 +473,7 @@ fn resolve_user_agent() -> Result<ChosenAgent> {
         if installed.len() == 1 && !ui::confirm("Is that the browser your session is in?", true)? {
             return prompt_user_agent();
         }
-        return Ok(ChosenAgent {
-            user_agent,
-            pinned: false,
-            browser: Some(b.name.to_string()),
-        });
+        return Ok(Agent::of(&b));
     }
 
     ui::warn("no Chromium-based browser was found installed");
@@ -867,7 +482,7 @@ fn resolve_user_agent() -> Result<ChosenAgent> {
 
 /// Asks for it outright, which is the last resort and also the most explicit
 /// thing the user can do — so what comes back is pinned.
-fn prompt_user_agent() -> Result<ChosenAgent> {
+fn prompt_user_agent() -> Result<Agent> {
     // Guarded, or `echo "$SESSIONID" | snob login --paste` on a server with no
     // browser installed would feed the piped sessionid in as the User-Agent,
     // and then fail with a message about the User-Agent — never mentioning
@@ -906,7 +521,7 @@ fn prompt_user_agent() -> Result<ChosenAgent> {
         );
     }
 
-    Ok(ChosenAgent::pinned(text))
+    Ok(Agent::pinned(text))
 }
 
 #[cfg(test)]

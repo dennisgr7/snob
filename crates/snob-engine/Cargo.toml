@@ -78,6 +78,8 @@ tempfile.workspace = true
 # The log lines a test of the browser's path reads back (`headless`); already
 # a dependency of the command line, which writes them.
 tracing-subscriber.workspace = true
+# The fake Instagram a login is checked against (`tests/login.rs`).
+snob-fake-ig.workspace = true
 
 [lints]
 workspace = true

@@ -3088,6 +3088,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "snob-core",
+ "snob-fake-ig",
  "snob-ig",
  "snob-store",
  "tempfile",

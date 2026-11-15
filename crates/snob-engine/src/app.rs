@@ -127,7 +127,7 @@ pub fn held_elsewhere() -> anyhow::Error {
 /// `pacer` with the announcement the single-request commands, `login` and
 /// `whoami`, want: one line on standard error, because there is nothing for a
 /// bar to count.
-pub fn pacer_saying_a_line(paths: &AccountPaths) -> Result<Pacer> {
+pub fn pacer_saying_a_line(paths: &AccountPaths, cancel: CancelToken) -> Result<Pacer> {
     pacer(
         paths,
         Arc::new(|waited: std::time::Duration| {
@@ -136,7 +136,7 @@ pub fn pacer_saying_a_line(paths: &AccountPaths) -> Result<Pacer> {
                 snob_core::duration::format(waited)
             ));
         }),
-        interrupt::install(),
+        cancel,
     )
 }
 

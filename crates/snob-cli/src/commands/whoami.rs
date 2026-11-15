@@ -93,7 +93,8 @@ pub async fn run(
     } else if !args.offline {
         // Through `app::pacer_saying_a_line`, so Ctrl+C reaches the request
         // and a wait the budget imposes is announced.
-        let pacer = snob_engine::app::pacer_saying_a_line(paths)?;
+        let pacer =
+            snob_engine::app::pacer_saying_a_line(paths, snob_engine::interrupt::install())?;
 
         // A cooldown means nothing is spent, and checking a session is a
         // request like any other.

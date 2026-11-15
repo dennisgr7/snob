@@ -109,6 +109,27 @@ async fn the_browser_answers_on_the_pipe_and_opens_no_port() {
     cdp.close().await;
 }
 
+/// A browser that leaves while a login is waited for was closed by the
+/// person, and is said so: not as a profile another browser holds, which is
+/// what the same exit means before it has answered.
+#[tokio::test]
+async fn a_browser_closed_while_a_login_is_waited_for_is_a_closed_window() {
+    let Some((_temporary, _profile, cdp)) = started(true).await else {
+        return;
+    };
+    let cancel = CancelToken::default();
+
+    let (waited, _) = tokio::join!(cdp::wait_for_login(&cdp, &cancel), async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let _ = cdp
+            .browser_call("Browser.close", serde_json::json!({}))
+            .await;
+    });
+
+    let error = waited.expect_err("nobody logged in");
+    assert!(error.is::<cdp::WindowClosed>(), "{error:#}");
+}
+
 /// The password manager stays off in the profile the browser ran on: the
 /// preferences seeded before it started are the ones it read, and it wrote
 /// them back as they were when it closed.

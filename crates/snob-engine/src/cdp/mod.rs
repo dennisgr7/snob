@@ -285,6 +285,34 @@ impl std::fmt::Display for ProfileInUse {
 
 impl std::error::Error for ProfileInUse {}
 
+/// The login window was closed before anybody logged in.
+#[derive(Debug)]
+pub struct WindowClosed;
+
+impl std::fmt::Display for WindowClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the browser window was closed before anybody logged in")
+    }
+}
+
+impl std::error::Error for WindowClosed {}
+
+/// Nobody logged in within [`LOGIN_TIMEOUT`].
+#[derive(Debug)]
+pub struct NobodyLoggedIn;
+
+impl std::fmt::Display for NobodyLoggedIn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "no login happened within {} minutes",
+            LOGIN_TIMEOUT.as_secs() / 60
+        )
+    }
+}
+
+impl std::error::Error for NobodyLoggedIn {}
+
 /// What to say when the browser started and stopped again.
 fn died_early(code: Option<i32>, profile: &Path) -> String {
     match code {
@@ -429,6 +457,26 @@ impl Cdp {
             .into(),
             _ => anyhow!(said),
         })
+    }
+
+    /// Whether the browser exited of its own accord, as it does when its last
+    /// window is closed. **Waited for a moment**: the pipe closes before the
+    /// process is gone.
+    async fn was_closed(&self) -> bool {
+        for _ in 0..20 {
+            let ended = self
+                .process
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .try_wait()
+                .ok()
+                .flatten();
+            if let Some(ended) = ended {
+                return ended.code == Some(0);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        false
     }
 
     /// Closes the browser politely, so the profile is not left looking like it
@@ -596,14 +644,16 @@ pub async fn wait_for_login(cdp: &Cdp, cancel: &CancelToken) -> Result<BrowserCo
         if cancel.is_canceled() {
             bail!("canceled");
         }
-        if let Some(cookies) = cdp.instagram_cookies().await? {
-            return Ok(cookies);
+        match cdp.instagram_cookies().await {
+            Ok(Some(cookies)) => return Ok(cookies),
+            Ok(None) => {}
+            // It answered once, to whoever saw no session in it, so leaving
+            // now is the person closing it and not a profile held elsewhere.
+            Err(_) if cdp.was_closed().await => return Err(WindowClosed.into()),
+            Err(e) => return Err(e),
         }
         if tokio::time::Instant::now() >= deadline {
-            bail!(
-                "no login happened within {} minutes",
-                LOGIN_TIMEOUT.as_secs() / 60
-            );
+            return Err(NobodyLoggedIn.into());
         }
         if cancel
             .sleep_or_cancel(poll_interval(started.elapsed()))
