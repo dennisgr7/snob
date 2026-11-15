@@ -61,7 +61,7 @@ pub struct Spec {
     pub open_world: bool,
 }
 
-/// The argument a yes given in the chat comes back in (`mod.rs`, `consent`).
+/// The argument a yes given in the chat comes back in (`lib.rs`, `consent`).
 /// **Not part of the command**: taken out of the arguments before the call
 /// is planned, so it is never in `Plan.args`, nor in what a yes is bound to.
 pub const CONFIRMATION: &str = "confirmation";
@@ -1219,8 +1219,8 @@ pub struct Confirmed<'a> {
     pub writes_a_day: u32,
 }
 
-/// How a client is named (`commands::common::client_label`, its one home: a
-/// job records its client the same way, and jobs build without this module).
+/// How a client is named, from its one home: a job records its client the
+/// same way, and jobs build without this crate.
 pub use snob_engine::app::client_label;
 
 /// What a command may send to Instagram.
@@ -1603,7 +1603,7 @@ fn list(tool: &str, args: &Map<String, Value>) -> Result<Plan, String> {
     )?;
     let kind = match args.get("list").and_then(Value::as_str) {
         Some(kind @ ("followers" | "following" | "unfollowers" | "fans" | "friends")) => kind,
-        Some(other) => return Err(format!("\"{other}\" is not one of the lists")),
+        Some(other) => return Err(format!("\"{}\" is not one of the lists", echoed(other))),
         None => return Err("\"list\" is required".into()),
     };
     let whose = account(args, false)?;
@@ -1612,12 +1612,17 @@ fn list(tool: &str, args: &Map<String, Value>) -> Result<Plan, String> {
         Some(Value::String(mode)) if matches!(mode.as_str(), "auto" | "stored" | "refresh") => {
             mode.as_str()
         }
-        Some(other) => return Err(format!("mode {other} is not auto, stored or refresh")),
+        Some(other) => {
+            return Err(format!(
+                "mode {} is not auto, stored or refresh",
+                echoed(other)
+            ));
+        }
     };
     let dry_run = match args.get("dry_run") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(dry_run)) => *dry_run,
-        Some(other) => return Err(format!("dry_run {other} is not true or false")),
+        Some(other) => return Err(format!("dry_run {} is not true or false", echoed(other))),
     };
     let limit = count(args, "limit")?;
     let max_pages = count(args, "max_pages")?;
@@ -1683,8 +1688,7 @@ fn list(tool: &str, args: &Map<String, Value>) -> Result<Plan, String> {
         command.extend(["--max-pages".into(), pages.to_string()]);
     }
     // Another account's lists need consent, and a stored answer does not: it
-    // enumerates nothing new (`engine/mod.rs`, `decide`: "`--offline` is not
-    // asked about, because there is nothing to agree to").
+    // enumerates nothing new, so `--offline` is not asked about.
     let ask = match (&whose, mode) {
         (Some(who), "auto" | "refresh") => {
             command.push("-y".into());
@@ -1793,7 +1797,8 @@ fn posts(tool: &str, args: &Map<String, Value>) -> Result<Plan, String> {
         }
         Some(other) => {
             return Err(format!(
-                "tab {other} is not one of posts, reels, tagged and reposts"
+                "tab {} is not one of posts, reels, tagged and reposts",
+                echoed(other)
             ));
         }
     };
@@ -1879,8 +1884,9 @@ fn threads(args: &Map<String, Value>) -> Result<Vec<String>, String> {
             .and_then(snob_ig::shortcode::CommentPk::parse)
             .ok_or_else(|| {
                 format!(
-                    "\"replies_of\" names {one}, which is no comment's pk: one to {} digits, \
+                    "\"replies_of\" names {}, which is no comment's pk: one to {} digits, \
                      as text",
+                    echoed(one),
                     snob_ig::shortcode::MOST_COMMENT_PK_DIGITS
                 )
             })?;
@@ -1950,7 +1956,10 @@ fn stored_list(args: &Map<String, Value>) -> Result<Option<String>, String> {
         Some(Value::String(list)) if matches!(list.as_str(), "followers" | "following") => {
             Ok(Some(format!("--list={list}")))
         }
-        Some(other) => Err(format!("list {other} is not followers or following")),
+        Some(other) => Err(format!(
+            "list {} is not followers or following",
+            echoed(other)
+        )),
     }
 }
 
@@ -1965,7 +1974,7 @@ fn flag(args: &Map<String, Value>, key: &str) -> Result<bool, String> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(false),
         Some(Value::Bool(given)) => Ok(*given),
-        Some(other) => Err(format!("{key} {other} is not true or false")),
+        Some(other) => Err(format!("{key} {} is not true or false", echoed(other))),
     }
 }
 
@@ -1988,7 +1997,12 @@ fn logout(args: &Map<String, Value>, offer: Offer<'_>) -> Result<Plan, String> {
         Some(Value::String(given)) => acting_name(given).ok_or_else(|| {
             "account is the username or the pk of the account to sign out".to_string()
         })?,
-        Some(other) => return Err(format!("account {other} is not a username or a pk")),
+        Some(other) => {
+            return Err(format!(
+                "account {} is not a username or a pk",
+                echoed(other)
+            ));
+        }
     };
     let acting_as = match offer.pinned {
         Some(pinned) if pinned == account => None,
@@ -2042,7 +2056,8 @@ fn download(args: &Map<String, Value>, directory: &str) -> Result<Plan, String> 
                     }
                     _ => {
                         return Err(format!(
-                            "items {one} is not an item's number, from 1 to {MOST_ITEMS}"
+                            "items {} is not an item's number, from 1 to {MOST_ITEMS}",
+                            echoed(one)
                         ));
                     }
                 }
@@ -2064,7 +2079,7 @@ fn download(args: &Map<String, Value>, directory: &str) -> Result<Plan, String> 
         None | Some(Value::Null) => "compat",
         Some(Value::String(quality)) if quality == "compat" => "compat",
         Some(Value::String(quality)) if quality == "best" => "best",
-        Some(other) => return Err(format!("quality {other} is not compat or best")),
+        Some(other) => return Err(format!("quality {} is not compat or best", echoed(other))),
     };
     Ok(Plan {
         args: vec![
@@ -2143,7 +2158,7 @@ fn job(name: &str, args: &Map<String, Value>) -> Result<Plan, String> {
             match args.get("all") {
                 None | Some(Value::Null | Value::Bool(false)) => {}
                 Some(Value::Bool(true)) => line.push("--all".into()),
-                Some(other) => return Err(format!("all {other} is not true or false")),
+                Some(other) => return Err(format!("all {} is not true or false", echoed(other))),
             }
             Ok(read(line, Run::Inline))
         }
@@ -2170,13 +2185,9 @@ fn job(name: &str, args: &Map<String, Value>) -> Result<Plan, String> {
 fn job_id(args: &Map<String, Value>) -> Result<JobId, String> {
     match args.get("job_id") {
         None | Some(Value::Null) => Err("\"job_id\" is required".into()),
-        Some(Value::String(id)) => JobId::parse(id).ok_or_else(|| {
-            format!(
-                "\"{}\" is not a job's id; snob_jobs lists them",
-                snob_core::model::printable(&id.chars().take(40).collect::<String>())
-            )
-        }),
-        Some(other) => Err(format!("job_id {other} is not a job's id")),
+        Some(Value::String(id)) => JobId::parse(id)
+            .ok_or_else(|| format!("\"{}\" is not a job's id; snob_jobs lists them", echoed(id))),
+        Some(other) => Err(format!("job_id {} is not a job's id", echoed(other))),
     }
 }
 
@@ -2189,7 +2200,10 @@ fn wait_seconds(args: &Map<String, Value>) -> Result<u64, String> {
             .as_u64()
             .filter(|seconds| *seconds <= MOST_WAIT_SECONDS)
             .ok_or_else(|| {
-                format!("wait_seconds {value} is not a whole number from 0 to {MOST_WAIT_SECONDS}")
+                format!(
+                    "wait_seconds {} is not a whole number from 0 to {MOST_WAIT_SECONDS}",
+                    echoed(value)
+                )
             }),
     }
 }
@@ -2200,12 +2214,12 @@ fn account(args: &Map<String, Value>, required: bool) -> Result<Option<String>, 
         None | Some(Value::Null) if required => return Err("\"account\" is required".into()),
         None | Some(Value::Null) => return Ok(None),
         Some(Value::String(name)) => name.strip_prefix('@').unwrap_or(name),
-        Some(other) => return Err(format!("account {other} is not a username")),
+        Some(other) => return Err(format!("account {} is not a username", echoed(other))),
     };
     if !snob_core::model::possible_username(name) || name.starts_with('@') {
         return Err(format!(
             "\"{}\" cannot be an Instagram username: letters, digits, '.' and '_', at most 30",
-            snob_core::model::printable(name)
+            echoed(name)
         ));
     }
     Ok(Some(name.to_string()))
@@ -2216,7 +2230,10 @@ fn count(args: &Map<String, Value>, key: &str) -> Result<Option<u64>, String> {
         None | Some(Value::Null) => Ok(None),
         Some(value) => match value.as_u64() {
             Some(n) if n >= 1 => Ok(Some(n)),
-            _ => Err(format!("{key} {value} is not a whole number of at least 1")),
+            _ => Err(format!(
+                "{key} {} is not a whole number of at least 1",
+                echoed(value)
+            )),
         },
     }
 }
@@ -2228,7 +2245,12 @@ fn offset(args: &Map<String, Value>) -> Result<usize, String> {
         Some(value) => value
             .as_u64()
             .and_then(|n| usize::try_from(n).ok())
-            .ok_or_else(|| format!("offset {value} is not a whole number of at least 0")),
+            .ok_or_else(|| {
+                format!(
+                    "offset {} is not a whole number of at least 0",
+                    echoed(value)
+                )
+            }),
     }
 }
 
@@ -2237,9 +2259,57 @@ fn offset(args: &Map<String, Value>) -> Result<usize, String> {
 /// to be answered from storage.
 fn no_more(args: &Map<String, Value>, known: &[&str]) -> Result<(), String> {
     match args.keys().find(|key| !known.contains(&key.as_str())) {
-        Some(key) => Err(format!("this tool takes no argument \"{key}\"")),
+        Some(key) => Err(format!("this tool takes no argument \"{}\"", echoed(key))),
         None => Ok(()),
     }
+}
+
+/// The most characters of what the client sent that a refusal says back: a
+/// username, a job's id and every argument's name fit.
+const MOST_ECHOED: usize = 40;
+
+/// What the client sent, as a refusal says it back: its first
+/// [`MOST_ECHOED`] characters, through `printable`. **Never the whole of
+/// it**: the refusal goes into a model's context, and an argument is as long
+/// as its sender made it.
+pub(crate) fn echoed(given: impl std::fmt::Display) -> String {
+    start_of(given, MOST_ECHOED)
+}
+
+/// The first `most` characters of `given`, through `printable`, with three
+/// dots when that is not all of it.
+pub(crate) fn start_of(given: impl std::fmt::Display, most: usize) -> String {
+    use std::fmt::Write as _;
+
+    /// Keeps what is written while there is room, and fails past it, which
+    /// ends the formatting there: a long value is never written out whole.
+    struct Start {
+        kept: String,
+        room: usize,
+    }
+    impl std::fmt::Write for Start {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            for c in text.chars() {
+                if self.room == 0 {
+                    return Err(std::fmt::Error);
+                }
+                self.kept.push(c);
+                self.room -= 1;
+            }
+            Ok(())
+        }
+    }
+
+    let mut start = Start {
+        kept: String::new(),
+        room: most,
+    };
+    let cut = write!(start, "{given}").is_err();
+    let mut said = snob_core::model::printable(&start.kept);
+    if cut {
+        said.push_str("...");
+    }
+    said
 }
 
 #[cfg(test)]
@@ -2438,6 +2508,53 @@ mod tests {
 
     fn call(name: &str, args: Value) -> Result<Plan, Unplannable> {
         plan(name, args.as_object().unwrap(), EVERYTHING)
+    }
+
+    /// Every way the server says a yes was given is a value the command
+    /// line's `--confirmed-via` takes, and records under the same word, and
+    /// the command line takes no other.
+    #[test]
+    fn every_way_a_yes_was_given_is_one_the_command_line_takes() {
+        use clap::ValueEnum as _;
+        use snob_cli::cli::ConfirmedVia as Taken;
+        for via in ConfirmedVia::ALL {
+            let taken = Taken::from_str(via.as_str(), false).unwrap();
+            assert_eq!(taken.as_str(), via.as_str());
+        }
+        assert_eq!(Taken::value_variants().len(), ConfirmedVia::ALL.len());
+    }
+
+    /// A refusal says back the start of what the client sent, filtered, and
+    /// never the whole of it: a name, a value of any JSON type, a key.
+    #[test]
+    fn a_refusal_says_back_only_the_start_of_what_it_was_sent() {
+        assert_eq!(echoed("friends"), "friends");
+        assert_eq!(echoed(json!("x")), "\"x\"");
+        assert_eq!(echoed("a\u{202e}b\u{1b}c"), "abc");
+        let long = "x".repeat(100_000);
+        let said = echoed(&long);
+        assert_eq!(said, format!("{}...", "x".repeat(MOST_ECHOED)));
+        let refused = |tool: &str, args: Value| match call(tool, args) {
+            Err(Unplannable::Invalid(why)) => why,
+            other => panic!("{other:?}"),
+        };
+        for why in [
+            refused("snob_list", json!({ "list": long })),
+            refused("snob_list", json!({ "list": "followers", "mode": [long] })),
+            refused("snob_list", json!({ "list": "followers", "account": long })),
+            refused(
+                "snob_list",
+                json!({ "list": "followers", long.as_str(): 1 }),
+            ),
+            refused("snob_list", json!({ "list": "followers", "limit": long })),
+            refused("snob_job", json!({ "job_id": long })),
+            refused(
+                "snob_post",
+                json!({ "link": "DAbCdEfGhIj", "replies_of": [long] }),
+            ),
+        ] {
+            assert!(why.len() < 200, "{} bytes said back", why.len());
+        }
     }
 
     /// What was stored is read as the commands read it: nothing is sent,

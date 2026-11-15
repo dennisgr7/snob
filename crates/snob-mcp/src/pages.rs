@@ -1,8 +1,6 @@
 //! The long lists `snob mcp` handed back one page of, held for the pages after
-//! it.
-//!
-//! **That call never walks anything**, and the page it gets has to be a page of
-//! the same list the first call read.
+//! it: **a call for a later page never walks anything**, and the page it gets
+//! has to be a page of the same list the first call read.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};

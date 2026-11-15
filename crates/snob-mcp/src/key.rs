@@ -71,10 +71,11 @@ impl Key {
     pub fn generate() -> Result<Self> {
         let mut bytes = [0u8; BYTES];
         crate::random::fill_random(&mut bytes)?;
-        let text = format!(
-            "{PREFIX}{}",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-        );
+        // Written straight into the text that becomes the key: an encoded
+        // copy made on the way would be freed with the key still in it.
+        let mut text = String::with_capacity(PREFIX.len() + ENCODED);
+        text.push_str(PREFIX);
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode_string(bytes, &mut text);
         bytes.zeroize();
         Ok(Self(Secret::new(text)))
     }

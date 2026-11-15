@@ -11,7 +11,7 @@
 //!
 //! **A picture is handed back as a picture** ([`take_pictures`]): a listing
 //! asked for with its small pictures carries them in its JSON, in base64, and
-//! they leave it here, to go out as image content beside the answer (`mod.rs`,
+//! they leave it here, to go out as image content beside the answer (`lib.rs`,
 //! `saying`) rather than as text a model would read letter by letter.
 
 use serde_json::{Value, json};
@@ -210,7 +210,7 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
                 }
             }
             Some(other) => json!({ "value": other }),
-            None => json!({ "text": finished.text.trim() }),
+            None => text(&finished.text),
         }
     } else {
         let said = || {
@@ -219,7 +219,7 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
                 "message": last_lines(&finished.said),
             })
         };
-        // `main::wording_for` prints an object under `error`, but the line is
+        // `report::error_json_for` prints an object under `error`, but the line is
         // only known to be JSON with that key: `{"error":"x"}` is read here
         // too, and its `error` is put in an object rather than indexed into.
         let mut failure = match finished.error {
@@ -249,7 +249,10 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
         if let Some(partial) = finished.json {
             failure["partial"] = match partial {
                 Value::Array(items) => page(&compact(&items), offset, limit, false),
-                other => other,
+                mut other => {
+                    leave_out_of_accounts(&mut other);
+                    other
+                }
             };
         }
         if exit == ExitCode::NoSession {
@@ -346,6 +349,24 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
         body: cleaned(body),
         whole,
         pictures: shown,
+    }
+}
+
+/// What a command printed that was no JSON, as an answer: within
+/// [`PAGE_BYTES`], its start alone past them. No plan runs a command that
+/// prints text, so this is what a child gone wrong said, of any length.
+fn text(printed: &str) -> Value {
+    let printed = printed.trim();
+    let end = (0..=PAGE_BYTES.min(printed.len()))
+        .rev()
+        .find(|at| printed.is_char_boundary(*at))
+        .unwrap_or(0);
+    match printed.get(..end) {
+        Some(start) if end < printed.len() => json!({
+            "text": start,
+            "cut": "The command printed more text than fits one answer: this is its start",
+        }),
+        _ => json!({ "text": printed }),
     }
 }
 
@@ -488,7 +509,7 @@ fn past_the_end(total: usize, offset: usize, limit: Option<usize>) -> Option<Ans
     );
     Some(Answer {
         failed: true,
-        // Shaped as the server's other refusals of an argument (`mod.rs`,
+        // Shaped as the server's other refusals of an argument (`lib.rs`,
         // `refusal`): nothing ran, so there is no exit to report.
         body: cleaned(json!({
             "error": {
@@ -1069,6 +1090,20 @@ mod tests {
             }),
             ..plan(&[ExitCode::Ok])
         }
+    }
+
+    /// Text a child printed where JSON was expected is handed back within a
+    /// page's bytes, cut between two characters, and said to be cut.
+    #[test]
+    fn text_that_is_no_json_is_handed_back_within_a_pages_bytes() {
+        assert_eq!(text(" a sentence\n"), json!({ "text": "a sentence" }));
+        // Three bytes a character, so the cut has to find a boundary.
+        let long = "\u{2192}".repeat(PAGE_BYTES);
+        let told = text(&long);
+        let kept = told["text"].as_str().unwrap();
+        assert!(kept.len() <= PAGE_BYTES && kept.len() > PAGE_BYTES - 3);
+        assert!(kept.ends_with('\u{2192}'));
+        assert!(told["cut"].is_string());
     }
 
     /// A listing's small pictures leave its JSON as images, each with the

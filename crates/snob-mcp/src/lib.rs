@@ -146,7 +146,7 @@ pub struct Settings {
     /// `--allow-writes`.
     pub writes: bool,
     /// `--downloads-dir`: the directory a post's files are saved into,
-    /// absolute (`cli::downloads_dir`). `None`: no download is offered.
+    /// absolute (`args::downloads_dir`). `None`: no download is offered.
     pub downloads: Option<String>,
     /// `--confirm-in-chat`, which each transport resolves for itself when
     /// it was not given.
@@ -374,9 +374,6 @@ impl Consent {
     }
 }
 
-/// What the server's instructions say of the writes, and only when it was
-/// started with `--allow-writes`: a server that offers no write has no cap
-/// on writes to explain, and a sentence about one read as if it did.
 /// What the server's instructions say of acting as an account, and only
 /// when it was started with `--any-account`.
 const ACCOUNTS_SAID: &str = " Several accounts may be signed in here: snob_accounts lists \
@@ -395,6 +392,9 @@ const DOWNLOADS_SAID: &str = " snob_post_download saves a post's photos and vide
                               code, and one already there is not fetched again, so the \
                               directory itself says which posts you have.";
 
+/// What the server's instructions say of the writes, and only when it was
+/// started with `--allow-writes`: a server that offers no write has no cap
+/// on writes to explain.
 const WRITES_SAID: &str = " Follows and unfollows are capped at a few a day: one that came \
                            back mcp_write_cap sent nothing, and is not to be tried again \
                            before its retry_at (seconds since the epoch).";
@@ -510,10 +510,7 @@ impl ServerHandler for Server {
             // The name is the client's, and the message goes back to a model.
             Err(tools::Unplannable::NoSuchTool(name)) => {
                 return Err(McpError::invalid_params(
-                    format!(
-                        "there is no tool called {}",
-                        snob_core::model::printable(&name)
-                    ),
+                    format!("there is no tool called {}", tools::echoed(name)),
                     None,
                 ));
             }
@@ -562,8 +559,9 @@ impl ServerHandler for Server {
                 .into());
             }
         }
-        // Before the person is asked anything: a yes to a call that will not
-        // run is a question wasted.
+        // **Every refusal that costs nothing to know comes before the person is
+        // asked**, in this order: a yes to a call that will not run is a
+        // question wasted, and its ticket would be spent on nothing.
         if self.launch.upgraded() {
             return Ok(refusal(
                 "upgraded",
@@ -572,16 +570,10 @@ impl ServerHandler for Server {
             )
             .into());
         }
-        // Before the person is asked, too: a yes to a call then refused as busy
-        // is a question wasted, and the ticket it came back with would be spent
-        // on nothing.
         let _permits = match self.limits.take(plan.spends) {
             Ok(permits) => permits,
             Err(busy) => return Ok(refusal("busy", &busy.why()).into()),
         };
-        // Before the person is asked, too: what would refuse the call once
-        // it has its yes that this server's permits do not see, the
-        // account's jobs (`refused_ahead`).
         if plan.ask.is_some()
             && plan.spends != tools::Spends::Nothing
             && let Some(refused) = self.refused_ahead(&plan, &request.name, &context).await?
@@ -834,15 +826,8 @@ impl Server {
         stop: bool,
         context: &RequestContext<RoleServer>,
     ) -> Result<Value, McpError> {
-        let unknown = || {
-            McpError::invalid_params(
-                format!(
-                    "unknown task: {}",
-                    snob_core::model::printable(&id.chars().take(40).collect::<String>())
-                ),
-                None,
-            )
-        };
+        let unknown =
+            || McpError::invalid_params(format!("unknown task: {}", tools::echoed(id)), None);
         // Planned as the tool is, so the id is checked as a job's id
         // (`JobId::parse`) before it reaches a command line, and read
         // without waiting for the walk: a poll answers at once.
@@ -979,9 +964,9 @@ struct Asked<'a> {
 }
 
 impl Server {
-    /// Asks the person, in whichever way the client can be asked, in the
-    /// order the header gives: the token a yes in the chat came back with,
-    /// then a form, then the chat.
+    /// Asks the person, in whichever way the client can be asked, in this
+    /// order: the token a yes in the chat came back with, then a form, then
+    /// the chat.
     async fn consent(
         &self,
         asked: &Asked<'_>,
@@ -1137,9 +1122,13 @@ impl Server {
             Err(ServiceError::McpError(e)) if e.code == ErrorCode::METHOD_NOT_FOUND => {
                 return Ok(None);
             }
+            // The error is the client's own words, of any length.
             Err(e) => Consent::refused(
                 "not_confirmed",
-                format!("the confirmation could not be asked: {e}"),
+                format!(
+                    "the confirmation could not be asked: {}",
+                    tools::start_of(e, 200)
+                ),
             ),
         }))
     }

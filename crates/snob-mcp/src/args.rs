@@ -25,7 +25,7 @@ pub struct McpArgs {
     //
     // An `Option` rather than a default value, so that whoever reads it can
     // tell "not given" from "all": over HTTP the default is narrower
-    // (`commands::mcp::http`), and one value for both would hide that the
+    // (`http::serve`), and one value for both would hide that the
     // choice was never made.
     #[arg(long, value_enum, value_name = "WHAT")]
     pub confirm_in_chat: Option<ConfirmInChat>,
@@ -85,7 +85,7 @@ pub struct McpArgs {
 /// from a mistyped path would be files nobody finds, and making directories
 /// is not something a server started in the background should do. In UTF-8,
 /// since it becomes an argument of every download's command line
-/// (`commands::mcp::tools::download`).
+/// (`tools::download`).
 fn downloads_dir(value: &str) -> Result<String, String> {
     let path = std::path::Path::new(value);
     if !path.is_dir() {
@@ -98,7 +98,7 @@ fn downloads_dir(value: &str) -> Result<String, String> {
         .ok_or_else(|| "its path is not valid UTF-8".to_string())
 }
 
-/// What `snob mcp` takes a yes in the chat for (`commands::mcp`, `consent`).
+/// What `snob mcp` takes a yes in the chat for (`Server::consent`).
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfirmInChat {
     /// Nothing: a call that needs a yes needs a client that can show a form.
@@ -153,7 +153,7 @@ pub enum McpCommand {
     Key(McpKeyCommand),
 }
 
-/// `snob mcp key` (`commands::mcp::key`).
+/// `snob mcp key` (`key.rs`).
 #[cfg(feature = "http")]
 #[derive(Subcommand, Debug)]
 pub enum McpKeyCommand {
@@ -255,7 +255,9 @@ pub enum McpClient {
 }
 
 /// How the server obtained a yes, as the child is told it
-/// (`--confirmed-via`, which the command line parses).
+/// (`--confirmed-via`). **The command line has an enum of its own for the
+/// flag**, since it takes the flag in builds without this crate; a test in
+/// `tools.rs` holds the two to one vocabulary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfirmedVia {
     /// A form the client showed, answered in the call (2026-07-28 and later).
@@ -268,6 +270,8 @@ pub enum ConfirmedVia {
 }
 
 impl ConfirmedVia {
+    pub const ALL: [Self; 3] = [Self::Form, Self::Elicitation, Self::Chat];
+
     /// The token stored and printed, which is also the flag's value.
     pub fn as_str(self) -> &'static str {
         match self {

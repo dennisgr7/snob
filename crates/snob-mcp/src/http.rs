@@ -665,6 +665,10 @@ struct Front {
     /// When each session was last asked anything, and how many of its calls
     /// are being answered: what decides which session a new one closes.
     activity: Activity,
+    /// Held from the count of the sessions until the SDK has made the new
+    /// one, so that sessions are opened one at a time: of two opened at once
+    /// each saw room for itself, and [`MOST_SESSIONS`] was passed.
+    opening: tokio::sync::Mutex<()>,
 }
 
 impl Front {
@@ -682,6 +686,7 @@ impl Front {
             manager,
             answering: Arc::new(InFlight::default()),
             activity: Activity::default(),
+            opening: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -728,6 +733,13 @@ impl Front {
             Err(Unread::Broken) => return plain(StatusCode::BAD_REQUEST, "Bad Request", true),
         };
         let opens = opens_a_session(&parts.method, &parts.headers, &body);
+        // The SDK answers an `initialize` once the session is made and has
+        // said hello, which asks nobody anything: held for moments.
+        let _opening = if opens {
+            Some(self.opening.lock().await)
+        } else {
+            None
+        };
         if opens && !self.room_for_a_session().await {
             return plain(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1000,6 +1012,7 @@ impl Gate {
         crate::random::fill_random(&mut bytes)
             .context("the system would not hand out random bytes")?;
         let under = Secret::new(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes));
+        zeroize::Zeroize::zeroize(&mut bytes);
         Ok(Self {
             expected: sign::sign(key.expose(), &under),
             under,
@@ -1306,6 +1319,88 @@ mod tests {
         closing.cancel();
         serving.abort();
         let _ = front.manager.close_session(&Arc::from(session)).await;
+    }
+
+    /// Sessions opened at the same moment are still at most
+    /// [`MOST_SESSIONS`]: each one that finds no room closes the idlest
+    /// before it is made, and no two count the same room as theirs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn sessions_opened_at_once_do_not_pass_the_most_there_may_be() {
+        let key = key::Key::generate().unwrap();
+        let settings = Settings {
+            writes: false,
+            downloads: None,
+            any_account: false,
+            pinned: None,
+            in_chat: None,
+            writes_a_day: None,
+            max_wait: None,
+        };
+        // No tool is called, so the binary is never started.
+        let launch = child::Launch::new(std::path::PathBuf::from("snob"), Vec::new());
+        let closing = CancelToken::default();
+        let server = Server::new(launch, &settings, ConfirmInChat::Lists, closing.clone()).unwrap();
+        let front = Arc::new(Front::new(
+            server,
+            Gate::new(&key).unwrap(),
+            config(IpAddr::V4(Ipv4Addr::LOCALHOST), None),
+        ));
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let url = format!("http://{}{PATH}", listener.local_addr().unwrap());
+        let serving = {
+            let front = Arc::clone(&front);
+            let closing = closing.clone();
+            tokio::spawn(async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    tokio::spawn(connection(
+                        Box::new(stream),
+                        Arc::clone(&front),
+                        closing.clone(),
+                        Arc::new(Seen::default()),
+                    ));
+                }
+            })
+        };
+
+        let hello = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#;
+        for _ in 0..4 {
+            let mut opening = JoinSet::new();
+            for _ in 0..MOST_SESSIONS * 2 {
+                let (url, key) = (url.clone(), key.expose().to_string());
+                opening.spawn(async move {
+                    let response = reqwest::Client::new()
+                        .post(&url)
+                        .bearer_auth(key)
+                        .header("Content-Type", "application/json")
+                        .header("Accept", "application/json, text/event-stream")
+                        .body(hello)
+                        .send()
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status().as_u16(), 200);
+                    let _ = response.bytes().await;
+                });
+            }
+            while let Some(opened) = opening.join_next().await {
+                opened.unwrap();
+            }
+            let open = front.manager.sessions.read().await.len();
+            assert!(open <= MOST_SESSIONS, "{open} sessions are open");
+        }
+
+        closing.cancel();
+        serving.abort();
+        let open: Vec<Arc<str>> = front
+            .manager
+            .sessions
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect();
+        for id in open {
+            let _ = front.manager.close_session(&id).await;
+        }
     }
 
     /// A new session closes the one asked anything longest ago that has no

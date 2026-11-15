@@ -2,18 +2,15 @@
 //! once it has one, read as a call's own child is read, and otherwise how the
 //! job stands and how to ask again.
 //!
-//! **The server reads a job only through a `snob __job` child** (`tools.rs`,
-//! [`tools::Run`]), which prints one JSON document (`jobs::start`,
-//! `jobs::show`): the job's record, and the walk's answer under `finished`
-//! once it has ended. So the server still opens no store and no job's file
-//! (AGENTS.md, "The MCP server"), and a job of another account's is that
-//! child's "no such job", never this server's.
+//! **The server reads a job only through a `snob __job` child**
+//! ([`tools::Run`]), which prints one JSON document: the job's record, and
+//! the walk's answer under `finished` once it has ended. So the server opens
+//! no store and no job's file (AGENTS.md, "The MCP server"), and another
+//! account's job is that child's "no such job".
 //!
-//! **A finished job answers as the call would have** ([`finished_of`] and
-//! [`plan_of`]): the walk's exit, output and error line go through
-//! `answer::from` with the plan of the call that started it, rebuilt from the
-//! tool and the arguments the job recorded, so a walk handed back later reads
-//! the same as one answered inline, a page at a time.
+//! **A finished job answers as the call would have** ([`finished_of`],
+//! [`plan_of`]): through `answer::from`, with the plan rebuilt from the tool
+//! and the arguments the job recorded.
 
 use serde_json::{Value, json};
 

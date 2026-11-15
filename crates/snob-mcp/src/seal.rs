@@ -88,7 +88,9 @@ impl Sealer {
     pub fn new() -> anyhow::Result<Self> {
         let mut key = [0u8; 32];
         crate::random::fill_random(&mut key)?;
-        Ok(Self::with_key(&key))
+        let sealer = Self::with_key(&key);
+        zeroize::Zeroize::zeroize(&mut key);
+        Ok(sealer)
     }
 
     fn with_key(key: &[u8]) -> Self {
