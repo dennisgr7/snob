@@ -182,14 +182,28 @@ pub(crate) fn listed(sums: &str, name: &str) -> Option<String> {
     })
 }
 
+/// How far a download has come.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fetched {
+    pub read: u64,
+    /// The size the server declared, when it declared one.
+    pub of: Option<u64>,
+}
+
+/// Who is told how far a download has come, once at its start and after
+/// every chunk.
+pub type Told<'a> = &'a (dyn Fn(Fetched) + Send + Sync);
+
 /// Downloads `name` of the release of `version` to `to`, checking it against
-/// `expected` (lowercase hex) as it arrives.
+/// `expected` (lowercase hex) as it arrives, and telling `told` how far it
+/// has come.
 pub(crate) async fn download(
     origin: &Origin,
     version: Version,
     name: &str,
     expected: &str,
     to: &Path,
+    told: Told<'_>,
 ) -> anyhow::Result<()> {
     let mut response = origin
         .client()?
@@ -201,12 +215,14 @@ pub(crate) async fn download(
         "GitHub answered {} for {name}",
         response.status()
     );
-    if let Some(declared) = response.content_length() {
+    let of = response.content_length();
+    if let Some(declared) = of {
         anyhow::ensure!(
             declared <= MOST_BYTES,
             "{name} is {declared} bytes, more than allowed"
         );
     }
+    told(Fetched { read: 0, of });
     // Removed on any failure from here on, a stream that broke midway and a
     // download given up included; after the rename nothing is left at it.
     let part = crate::files::Part(to.with_extension("part"));
@@ -218,6 +234,7 @@ pub(crate) async fn download(
         anyhow::ensure!(read <= MOST_BYTES, "{name} is more than {MOST_BYTES} bytes");
         hash.update(&chunk);
         file.write_all(&chunk)?;
+        told(Fetched { read, of });
     }
     file.sync_all()?;
     drop(file);
@@ -370,7 +387,7 @@ mod tests {
 
         let wrong = "0".repeat(64);
         assert!(
-            download(&origin, version, "a.tar.gz", &wrong, &to)
+            download(&origin, version, "a.tar.gz", &wrong, &to, &|_| {})
                 .await
                 .is_err()
         );
@@ -378,11 +395,27 @@ mod tests {
         assert!(std::fs::read_dir(tmp.path()).unwrap().next().is_none());
 
         let right = hex(&Sha256::digest(b"the archive"));
-        download(&origin, version, "a.tar.gz", &right, &to)
-            .await
-            .unwrap();
+        let told = std::sync::Mutex::new(Vec::new());
+        download(&origin, version, "a.tar.gz", &right, &to, &|fetched| {
+            told.lock().unwrap().push(fetched);
+        })
+        .await
+        .unwrap();
         assert_eq!(std::fs::read(&to).unwrap(), b"the archive");
         assert_eq!(sha256_of(&to).unwrap(), right);
+
+        // From nothing to the whole of it, never backward.
+        let told = told.into_inner().unwrap();
+        let whole = Some("the archive".len() as u64);
+        assert_eq!(told.first(), Some(&Fetched { read: 0, of: whole }));
+        assert_eq!(
+            told.last(),
+            Some(&Fetched {
+                read: 11,
+                of: whole
+            })
+        );
+        assert!(told.windows(2).all(|pair| pair[0].read <= pair[1].read));
     }
 
     /// A download whose stream breaks before its end leaves no unfinished
@@ -411,7 +444,7 @@ mod tests {
         let sum = "0".repeat(64);
         let version = Version::parse("0.10.0").unwrap();
         assert!(
-            download(&origin, version, "a.tar.gz", &sum, &to)
+            download(&origin, version, "a.tar.gz", &sum, &to, &|_| {})
                 .await
                 .is_err()
         );

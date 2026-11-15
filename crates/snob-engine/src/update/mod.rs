@@ -433,6 +433,18 @@ pub async fn stage(
     version: Version,
     method: &Method,
 ) -> anyhow::Result<()> {
+    stage_telling(files, origin, version, method, &|_| {}).await
+}
+
+/// [`stage`], telling `told` how far the download has come, where there is
+/// one: a package manager's own fetch says nothing.
+pub async fn stage_telling(
+    files: &Files,
+    origin: &github::Origin,
+    version: Version,
+    method: &Method,
+    told: github::Told<'_>,
+) -> anyhow::Result<()> {
     let state = state::load(files);
     if state
         .staged
@@ -453,7 +465,7 @@ pub async fn stage(
             let expected = github::listed(&sums, &name)
                 .ok_or_else(|| anyhow::anyhow!("{name} is not listed in SHA256SUMS"))?;
             let archive = dir.join(&name);
-            github::download(origin, version, &name, &expected, &archive).await?;
+            github::download(origin, version, &name, &expected, &archive, told).await?;
             let binary = apply::unpack(&archive, &dir.join("x"), &top)?;
             let staged = dir.join(format!("{}.new", apply::EXE));
             std::fs::rename(&binary, &staged)?;
@@ -468,7 +480,7 @@ pub async fn stage(
             let expected = github::listed(&sums, &name)
                 .ok_or_else(|| anyhow::anyhow!("{name} is not listed in SHA256SUMS"))?;
             let deb = dir.join(&name);
-            github::download(origin, version, &name, &expected, &deb).await?;
+            github::download(origin, version, &name, &expected, &deb, told).await?;
             (Some(deb), Some(expected))
         }
         Applies::Manager => {
