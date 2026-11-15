@@ -44,10 +44,21 @@ cargo test
 | | |
 |---|---|
 | Builds on Windows x86-64 (static CRT, as `.cargo/config.toml` sets it) | yes |
-| Windows ARM64, Linux (glibc, X11 and Wayland), macOS | not built yet |
-| Crypto in the tree | the engine's own (rustls on `aws-lc-rs`); GPUI adds none on the three desktops |
+| Builds on Linux x86-64 (glibc), and opens its window under Xvfb on Mesa's CPU Vulkan (`tools/ci/desktop.Dockerfile`) | yes |
+| Windows ARM64, Linux ARM64, Wayland, macOS | not built yet: they need the branch on GitHub's runners |
+| Crypto in the tree | the engine's own (rustls on `aws-lc-rs`). `cargo tree -i` finds no OpenSSL, `ring` or `quinn` on any of the five triples, and `native-tls` on Windows ARM64 only (schannel, as the command line) |
+| Windows 11 Snap Layouts over caption buttons the app draws | yes, **when the drag area is a sibling of the buttons**: the first `window_control_area` under the pointer answers the hit test, and a parent's comes first |
+| What a screen reader on Windows is told (UI Automation) | the window, the caption buttons by name, a heading, a button and a status; a click asked for through UI Automation reaches `on_click` |
+| A live region announced by a screen reader | set through `a11y_synthetic_children`; not verified yet |
+| The window rendered to a picture (`Window::render_to_image`, feature `testing`) | Windows yes; Linux no ("not implemented for this platform"), where a test renders without a window instead |
+| The accessibility tree as JSON (`Window::debug_a11y_tree_json`) | only once an assistive technology has asked for the tree |
 | `cargo deny` for this workspace | not set up |
 | Packaging, signing, an installer, an update path | none |
+
+`Cargo.lock` holds a second GPUI, `gpui-fast`, that is never built: GPUI's
+test support names it as an optional dependency, and Cargo locks what a
+feature names whether or not it is enabled. Its exact pins are why `wgpu` is
+30.0.1 here.
 
 ## What comes next, in order
 

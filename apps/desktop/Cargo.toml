@@ -27,6 +27,11 @@ snob-engine = { path = "../../crates/snob-engine" }
 snob-store = { path = "../../crates/snob-store" }
 snob-core = { path = "../../crates/snob-core" }
 
+[features]
+# The test build: never part of a release. GPUI's own test support renders a
+# window to a picture and drives it without a display.
+testing = ["gpui-kit/test-support"]
+
 [lints.clippy]
 # The root workspace's rule, kept here by hand: this crate is outside it.
 undocumented_unsafe_blocks = "warn"
