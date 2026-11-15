@@ -5,112 +5,21 @@
 
 #![cfg(feature = "testing")]
 
-use std::rc::Rc;
-use std::sync::Arc;
+mod common;
+
 use std::time::Duration;
 
-use gpui_kit::test::{TestAppContextExt as _, TestQueryExt as _, TestWindowExt as _};
-use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, Role, TestAppContext, Window, px, size};
+use common::{App, disabled, open, open_with};
+use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
+use gpui_kit::{Role, TestAppContext, Window, px, size};
 use snob_desktop::backend::SignIn;
 use snob_desktop::backend::scripted::{Asked, Scripted, account};
 use snob_desktop::state::flow::{Method, Screen, Update, Updating};
 use snob_desktop::state::status::Status;
-use snob_desktop::system::simulated::Simulated;
 use snob_desktop::system::{Event, Settings};
 use snob_desktop::theme::tokens::{Palette, Scheme};
-use snob_desktop::ui;
 use snob_desktop::ui::look::Look;
-use snob_desktop::ui::shell::Shell;
 use snob_engine::login::Failure;
-
-/// How long a test waits for the window to get somewhere, on the test's own
-/// clock: longer than every wait the app makes by itself.
-const SOON: Duration = Duration::from_secs(20);
-
-struct App {
-    window: AnyWindowHandle,
-    shell: Entity<Shell>,
-    backend: Scripted,
-    system: Simulated,
-}
-
-fn open_with(cx: &mut TestAppContext, backend: Scripted, settings: Settings) -> App {
-    let system = Simulated::new(settings);
-    let (window, shell) = cx.update(|cx| {
-        ui::window::init(&system, true, cx);
-        ui::window::open(Arc::new(backend.clone()), Rc::new(system.clone()), None, cx)
-            .expect("the window opens")
-    });
-    App {
-        window,
-        shell,
-        backend,
-        system,
-    }
-}
-
-fn open(cx: &mut TestAppContext, backend: Scripted) -> App {
-    open_with(cx, backend, Settings::default())
-}
-
-impl App {
-    /// Waits until the screen shown is one `wanted` takes.
-    async fn until_screen(&self, cx: &mut TestAppContext, wanted: impl Fn(&Screen) -> bool) {
-        let shell = self.shell.clone();
-        cx.wait_for(self.window, SOON, move |_, cx| {
-            wanted(shell.read(cx).shown())
-        })
-        .await;
-    }
-
-    /// Waits until `wanted` holds of the window.
-    async fn until(
-        &self,
-        cx: &mut TestAppContext,
-        wanted: impl FnMut(&mut Window, &mut gpui_kit::App) -> bool,
-    ) {
-        cx.wait_for(self.window, SOON, wanted).await;
-    }
-
-    fn in_window<R>(
-        &self,
-        cx: &mut TestAppContext,
-        act: impl FnOnce(&mut Window, &mut gpui_kit::App) -> R,
-    ) -> R {
-        cx.update_window(self.window, |_, window, cx| {
-            window.render_frame(cx);
-            act(window, cx)
-        })
-        .expect("the window is open")
-    }
-
-    fn click(&self, cx: &mut TestAppContext, id: &'static str) {
-        self.in_window(cx, |window, cx| window.click(id, cx));
-    }
-
-    fn press(&self, cx: &mut TestAppContext, key: &'static str) {
-        self.in_window(cx, |window, cx| window.press(key, cx));
-    }
-
-    /// The title of the screen shown, as a screen reader is told it, and
-    /// whether focus is on it.
-    fn title(&self, cx: &mut TestAppContext) -> (String, bool) {
-        self.in_window(cx, |window, _| {
-            let title = window.find("title");
-            assert_eq!(title.role(), Some(Role::Heading));
-            (
-                title.label().unwrap_or_default().to_string(),
-                title.focused() == Some(true),
-            )
-        })
-    }
-
-    fn label_of(&self, cx: &mut TestAppContext, id: &'static str) -> String {
-        self.in_window(cx, |window, _| {
-            window.find(id).label().unwrap_or_default().to_string()
-        })
-    }
-}
 
 fn start() -> impl Fn(&Screen) -> bool {
     |screen| matches!(screen, Screen::Start { .. })
@@ -165,7 +74,7 @@ async fn an_account_signed_in_already_goes_straight_home_with_its_picture_in_the
 
     assert_eq!(app.title(cx), ("Home".to_string(), true));
     app.in_window(cx, |window, _| {
-        let picture = window.find("account");
+        let picture = window.find("account-photo");
         assert_eq!(picture.label(), Some("Profile picture of @me"));
         assert!(picture.visible());
     });
@@ -306,9 +215,7 @@ async fn the_theme_and_the_language_are_the_system_s_and_follow_it_at_once(
 async fn the_tab_key_walks_the_screen_in_the_order_it_is_drawn(cx: &mut TestAppContext) {
     let app = open(cx, Scripted::with(Vec::new()));
     app.until_screen(cx, start()).await;
-    let focused = |app: &App, cx: &mut TestAppContext, id: &'static str| {
-        app.in_window(cx, |window, _| window.find(id).focused() == Some(true))
-    };
+    let focused = common::focused;
 
     app.press(cx, "tab");
     assert!(focused(&app, cx, "start-browser"));
@@ -366,7 +273,7 @@ async fn signing_in_in_the_browser_window_is_welcomed_and_then_home(cx: &mut Tes
 
     // It moves on by itself.
     app.until_screen(cx, |screen| *screen == Screen::Home).await;
-    assert_eq!(app.label_of(cx, "account"), "Profile picture of @me");
+    assert_eq!(app.label_of(cx, "account-photo"), "Profile picture of @me");
 }
 
 #[gpui_kit::test]
@@ -533,10 +440,6 @@ async fn on_the_paste_screen(cx: &mut TestAppContext, backend: Scripted) -> App 
     app.until_screen(cx, |screen| *screen == Screen::Paste)
         .await;
     app
-}
-
-fn disabled(app: &App, cx: &mut TestAppContext, id: &'static str) -> bool {
-    app.in_window(cx, |window, _| window.find(id).disabled() == Some(true))
 }
 
 #[gpui_kit::test]

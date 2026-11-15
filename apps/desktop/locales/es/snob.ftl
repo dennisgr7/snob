@@ -32,6 +32,7 @@ account-add-another = Añadir otra cuenta
 account-more = +{ $count }
 account-settings = Configuración
 account-sign-out = Cerrar sesión
+account-switched = Ahora usas { $account }
 sign-out-title = ¿Cerrar la sesión de { $account }?
 sign-out-body = La sesión y el perfil de navegador de snob para esta cuenta se borran de este ordenador. La sesión sigue activa en Instagram hasta que la cierres allí.
 sign-out-confirm = Cerrar sesión
@@ -113,6 +114,7 @@ crash-body = Se ha guardado un informe en este ordenador. No se ha enviado nada 
 crash-view = Ver el informe
 crash-copy = Copiar el informe
 crash-dismiss = Descartar
+crash-copied = Informe copiado
 
 ## La paleta de comandos
 

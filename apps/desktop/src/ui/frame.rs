@@ -11,7 +11,7 @@
 //! the brand each get half of what the brand leaves, and the status is cut
 //! short with an ellipsis before it pushes anything.
 
-use gpui_kit::base::{ObservedElement, TestSupportExt as _};
+use gpui_kit::base::{Button, ObservedElement, TestSupportExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, Context, CursorStyle, Decorations, Div, FontWeight, MouseButton, ResizeEdge, Role,
@@ -28,7 +28,7 @@ use crate::theme::tokens::{Rgb, frame, shape};
 
 /// How wide each of the window's buttons is where the app draws them:
 /// Windows 11's own caption buttons.
-const CAPTION_WIDTH: f32 = 46.0;
+pub const CAPTION_WIDTH: f32 = 46.0;
 
 /// What macOS's own buttons take of the band's left.
 const TRAFFIC_LIGHTS: f32 = 78.0;
@@ -87,8 +87,12 @@ pub fn render(
             tree.parent_node().set_language(language);
         })
         .key_context("Snob")
-        .on_action(cx.listener(|_, _: &super::FocusNext, window, cx| window.focus_next(cx)))
-        .on_action(cx.listener(|_, _: &super::FocusPrevious, window, cx| window.focus_prev(cx)))
+        .on_action(cx.listener(|shell, _: &super::Dismiss, window, cx| {
+            shell.dismiss(window, cx);
+        }))
+        .on_action(cx.listener(|shell, _: &super::OpenSettings, window, cx| {
+            shell.open_settings(window, cx);
+        }))
         .relative()
         .size_full()
         .bg(color(palette.frame))
@@ -129,6 +133,8 @@ pub fn render(
                 ),
         )
         .child(band(shell, &look, window, cx))
+        .children(super::menu::render(shell, &look, window, cx))
+        .children(super::menu::sign_out_question(shell, &look, cx))
         // What a screen reader is told that no control says: a status that
         // changed, an error, the welcome. Not drawn.
         .child(
@@ -296,17 +302,20 @@ fn drag_area() -> Stateful<Div> {
     }
 }
 
-/// The account in use, once somebody is signed in: its picture, right of
-/// the brand.
-fn account(shell: &mut Shell, look: &Look, _cx: &mut Context<Shell>) -> Option<AnyElement> {
+/// The account in use, where its menu can be opened: its picture, right of
+/// the brand, which opens the menu.
+fn account(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    if !shell.has_a_menu() {
+        return None;
+    }
     let account = shell.active()?;
     let palette = look.palette;
+    let size = shape::MIN_TARGET + 6.;
     Some(
-        div()
-            .id("account")
-            .test_support()
-            .role(Role::Image)
-            .aria_label(parts::photo_label(account, look))
+        Button::new("account")
+            .accessibility_label(look.tr("account-menu"))
+            .aria_expanded(shell.menu.is_some())
+            .track_focus(&shell.account_button)
             .occlude()
             .flex_none()
             .mr(px(if cfg!(target_os = "macos") {
@@ -314,10 +323,19 @@ fn account(shell: &mut Shell, look: &Look, _cx: &mut Context<Shell>) -> Option<A
             } else {
                 10.
             }))
-            .size(px(shape::MIN_TARGET + 4.))
+            .size(px(size))
             .rounded_full()
+            .cursor_pointer()
             .focus_visible(parts::focus_ring(&palette))
-            .child(parts::avatar(account, shape::MIN_TARGET + 4., look))
+            .on_click(cx.listener(|shell, _, window, cx| shell.toggle_the_menu(window, cx)))
+            .child(
+                div()
+                    .id("account-photo")
+                    .test_support()
+                    .role(Role::Image)
+                    .aria_label(parts::photo_label(account, look))
+                    .child(parts::avatar(account, size, look)),
+            )
             .into_any_element(),
     )
 }

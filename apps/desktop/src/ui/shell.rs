@@ -24,7 +24,7 @@ use tokio::sync::watch;
 use super::look::Look;
 use super::{frame, screens};
 use crate::backend::{Account, Backend, Loaded, SignIn};
-use crate::state::flow::{Effect, Event, Flow, Found, Method, Screen, Update};
+use crate::state::flow::{Effect, Event, Flow, Found, Method, Named, Screen, Update};
 use crate::state::paste::{self, Field};
 use crate::state::status::{self, Band, Status};
 use crate::system::{self, System};
@@ -69,6 +69,22 @@ pub(crate) struct PasteForm {
     /// Whether the change under way is a paste, which is judged at once.
     pasting: bool,
     _watching: Subscription,
+}
+
+/// The account's menu, while it is open.
+pub(crate) struct AccountMenu {
+    /// What keeps focus inside it.
+    pub focus: FocusHandle,
+    /// Since when the other accounts are listed, once they are.
+    pub switching: Option<Instant>,
+}
+
+/// The question signing out asks first, while it is asked.
+pub(crate) struct SigningOut {
+    pub account: Named,
+    pub focus: FocusHandle,
+    /// The answer focus starts on: the one that changes nothing.
+    pub cancel: FocusHandle,
 }
 
 /// A screen as the log names it: which one, and nothing of what is on it.
@@ -142,6 +158,15 @@ pub struct Shell {
     /// The report of a crash nobody has been shown yet.
     pub(crate) crash: Option<String>,
     pub(crate) paste: Option<PasteForm>,
+    pub(crate) menu: Option<AccountMenu>,
+    /// What opens the menu, and where focus returns when it closes.
+    pub(crate) account_button: FocusHandle,
+    pub(crate) signing_out: Option<SigningOut>,
+    /// Whether the report of the last crash is unfolded.
+    pub(crate) crash_open: bool,
+    /// Whether the diagnostic report was copied on this visit to the
+    /// settings: said until the screen is left.
+    pub(crate) report_copied: bool,
 }
 
 impl Shell {
@@ -245,6 +270,11 @@ impl Shell {
             notice: None,
             crash: None,
             paste: None,
+            menu: None,
+            account_button: cx.focus_handle(),
+            signing_out: None,
+            crash_open: false,
+            report_copied: false,
         }
     }
 
@@ -266,6 +296,213 @@ impl Shell {
     /// What the band says.
     pub fn status(&self) -> Option<&Status> {
         self.band.shown()
+    }
+
+    pub(crate) fn backend(&self) -> &Arc<dyn Backend> {
+        &self.backend
+    }
+
+    /// Whether the account's menu can be opened now: on the screens of an
+    /// app somebody is signed in to, and not on the way to signing in.
+    pub(crate) fn has_a_menu(&self) -> bool {
+        matches!(self.shown, Screen::Home | Screen::Settings)
+            && matches!(self.flow.screen(), Screen::Home | Screen::Settings)
+    }
+
+    /// Opens the account's menu, or closes it.
+    pub(crate) fn toggle_the_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.is_some() {
+            self.close_the_menu(window, cx);
+            return;
+        }
+        if !self.has_a_menu() {
+            return;
+        }
+        tracing::info!(action = "open_account_menu", "action");
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        self.menu = Some(AccountMenu {
+            focus,
+            switching: None,
+        });
+        cx.notify();
+    }
+
+    /// Closes the menu and hands focus back to what opened it.
+    pub(crate) fn close_the_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            window.focus(&self.account_button, cx);
+            cx.notify();
+        }
+    }
+
+    /// Closes whatever is open over the screen: the question first, then
+    /// the menu.
+    pub(crate) fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.signing_out.is_some() {
+            self.keep_signed_in(window, cx);
+        } else {
+            self.close_the_menu(window, cx);
+        }
+    }
+
+    /// Lists the other accounts under "Switch account".
+    pub(crate) fn list_the_other_accounts(&mut self, cx: &mut Context<Self>) {
+        if let Some(menu) = &mut self.menu {
+            menu.switching = match menu.switching {
+                Some(_) => None,
+                None => Some(Instant::now()),
+            };
+            cx.notify();
+        }
+    }
+
+    /// Makes `pk` the account in use.
+    pub(crate) fn switch_to(&mut self, pk: Pk, window: &mut Window, cx: &mut Context<Self>) {
+        tracing::info!(action = "switch_account", "action");
+        self.close_the_menu(window, cx);
+        let switching = self.backend.switch_to(pk);
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(accounts) = switching.await else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                this.accounts = accounts;
+                // The pause is the account's: the band says the new one's.
+                this.quiet(Band::clear_pause, cx);
+                this.read_the_pause(window, cx);
+                if let Some(active) = this.active() {
+                    let said = Look::now(cx).tr_with(
+                        "account-switched",
+                        &[("account", &screens::handle(&active.named))],
+                    );
+                    this.announce(said, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// On to signing another account in.
+    pub(crate) fn add_an_account(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        tracing::info!(action = "add_account", "action");
+        self.close_the_menu(window, cx);
+        self.happened(Event::AddAccount, window, cx);
+    }
+
+    pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.has_a_menu() {
+            return;
+        }
+        tracing::info!(action = "open_settings", "action");
+        self.menu = None;
+        self.report_copied = false;
+        self.happened(Event::OpenSettings, window, cx);
+    }
+
+    /// Asks before signing the account in use out.
+    pub(crate) fn ask_to_sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(account) = self.active().map(|account| account.named.clone()) else {
+            return;
+        };
+        self.menu = None;
+        let (focus, cancel) = (cx.focus_handle(), cx.focus_handle());
+        window.focus(&cancel, cx);
+        self.signing_out = Some(SigningOut {
+            account,
+            focus,
+            cancel,
+        });
+        cx.notify();
+    }
+
+    /// The answer was no.
+    pub(crate) fn keep_signed_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.signing_out.take().is_some() {
+            window.focus(&self.account_button, cx);
+            cx.notify();
+        }
+    }
+
+    /// The answer was yes: the account in use is signed out of this
+    /// computer.
+    pub(crate) fn sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(asked) = self.signing_out.take() else {
+            return;
+        };
+        tracing::info!(action = "sign_out", "action");
+        let signing_out = self.backend.sign_out(asked.account.pk);
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(accounts) = signing_out.await else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                this.accounts = accounts;
+                this.quiet(Band::clear_pause, cx);
+                let next = this.active().map(|account| account.named.clone());
+                if next.is_some() {
+                    this.read_the_pause(window, cx);
+                }
+                this.happened(Event::SignedOut { next }, window, cx);
+                window.focus(&this.title, cx);
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Turns the log's detailed level on or off.
+    pub(crate) fn set_detailed(&mut self, on: bool, cx: &mut Context<Self>) {
+        tracing::info!(action = "set_detailed_logging", on, "action");
+        self.backend.set_detailed(on);
+        cx.notify();
+    }
+
+    pub(crate) fn open_the_logs(&mut self, cx: &mut Context<Self>) {
+        tracing::info!(action = "open_logs_folder", "action");
+        let folder = self.backend.logs_dir();
+        self.system.open_folder(&folder, cx);
+    }
+
+    /// Copies the diagnostic report, and says so.
+    pub(crate) fn copy_the_report(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        tracing::info!(action = "copy_diagnostic_report", "action");
+        let writing = self.backend.diagnostic_report();
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(report) = writing.await else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                this.system.copy(&report, cx);
+                this.report_copied = true;
+                let said = Look::now(cx).tr("settings-report-copied");
+                this.announce(said, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Copies the report of the last crash.
+    pub(crate) fn copy_the_crash(&mut self, cx: &mut Context<Self>) {
+        tracing::info!(action = "copy_crash_report", "action");
+        if let Some(report) = self.crash.clone() {
+            self.system.copy(&report, cx);
+            let said = Look::now(cx).tr("crash-copied");
+            self.announce(said, cx);
+        }
+    }
+
+    /// The crash was seen: it is not offered again.
+    pub(crate) fn dismiss_the_crash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        tracing::info!(action = "dismiss_crash_report", "action");
+        self.crash = None;
+        self.crash_open = false;
+        self.backend.crash_shown();
+        window.focus(&self.title, cx);
+        cx.notify();
     }
 
     fn loaded(&mut self, loaded: Loaded, window: &mut Window, cx: &mut Context<Self>) {
@@ -599,6 +836,8 @@ impl Shell {
             Screen::Paste => Some(self.paste_form(window, cx)),
             _ => None,
         };
+        self.menu = None;
+        self.signing_out = None;
 
         let look = Look::now(cx).clone();
         match &self.shown {

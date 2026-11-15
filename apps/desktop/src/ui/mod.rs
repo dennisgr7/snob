@@ -11,6 +11,7 @@ use gpui_kit::{App, KeyBinding, actions};
 pub mod assets;
 pub mod frame;
 pub mod look;
+pub mod menu;
 pub mod parts;
 pub mod screens;
 pub mod shell;
@@ -19,17 +20,26 @@ pub mod window;
 actions!(
     snob,
     [
-        /// Moves focus to the next control.
-        FocusNext,
-        /// Moves focus to the control before.
-        FocusPrevious
+        /// Closes the menu or the question that is open.
+        Dismiss,
+        /// Opens the settings.
+        OpenSettings
     ]
 );
 
-/// What the keys do everywhere in the window.
+/// The keys that open the settings: the system's own for it.
+pub const SETTINGS_KEYS: &str = if cfg!(target_os = "macos") {
+    "cmd-,"
+} else {
+    "ctrl-,"
+};
+
+/// What the keys do everywhere in the window, beside what the toolkit's
+/// root binds: Tab and Shift+Tab, which stay inside a menu or a dialog
+/// while one is open.
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("tab", FocusNext, Some("Snob")),
-        KeyBinding::new("shift-tab", FocusPrevious, Some("Snob")),
+        KeyBinding::new("escape", Dismiss, Some("Snob")),
+        KeyBinding::new(SETTINGS_KEYS, OpenSettings, Some("Snob")),
     ]);
 }

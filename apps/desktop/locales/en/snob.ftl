@@ -33,6 +33,7 @@ account-add-another = Add another account
 account-more = +{ $count }
 account-settings = Settings
 account-sign-out = Sign out
+account-switched = Now using { $account }
 sign-out-title = Sign out of { $account }?
 sign-out-body = The session and snob's browser profile for this account are removed from this computer. The session stays active on Instagram until you close it there.
 sign-out-confirm = Sign out
@@ -114,6 +115,7 @@ crash-body = A report was kept on this computer. Nothing was sent anywhere.
 crash-view = View the report
 crash-copy = Copy the report
 crash-dismiss = Dismiss
+crash-copied = Report copied
 
 ## The command palette
 
