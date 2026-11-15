@@ -11,7 +11,7 @@ use snob_core::{Epoch, Pk};
 use snob_ig::pace::CancelToken;
 use tokio::sync::{oneshot, watch};
 
-use super::{Account, Answer, Backend, Loaded, SignIn};
+use super::{Account, Answer, Backend, Loaded, SignIn, answered};
 use crate::state::flow::{Found, Method, Named, Update};
 use crate::state::prefs::Placement;
 
@@ -39,6 +39,10 @@ type Held = Box<dyn FnOnce() + Send>;
 struct State {
     accounts: Vec<Account>,
     expired: Option<Named>,
+    /// The account whose session the next check finds dead.
+    dies: Option<Named>,
+    /// How many times the session was asked about.
+    session_checks: usize,
     crash: Option<String>,
     /// The session ID a paste is expected to carry.
     session_id: String,
@@ -85,6 +89,8 @@ impl Scripted {
         Self(Arc::new(Mutex::new(State {
             accounts,
             expired: None,
+            dies: None,
+            session_checks: 0,
             crash: None,
             session_id: "42%3AAbCdEfGhIjKl%3A20".to_string(),
             sign_in: SignIn::Done(account(42, "me", true)),
@@ -104,6 +110,11 @@ impl Scripted {
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// How many times the session was asked about.
+    pub fn session_checks(&self) -> usize {
+        self.state().session_checks
     }
 
     /// Changes what the backend answers from now on.
@@ -188,6 +199,12 @@ impl Script<'_> {
     /// The account in use, as one whose session stopped working.
     pub fn expired(&mut self, account: Named) -> &mut Self {
         self.0.expired = Some(account);
+        self
+    }
+
+    /// The next check of the session finds this account's dead.
+    pub fn session_dies(&mut self, account: Named) -> &mut Self {
+        self.0.dies = Some(account);
         self
     }
 
@@ -301,6 +318,18 @@ impl Backend for Scripted {
 
     fn paused_until(&self) -> Answer<Option<Epoch>> {
         self.answer(Asked::PausedUntil, |state| state.paused_until)
+    }
+
+    // Not among what was asked: a view may ask it at any time, and a test
+    // counts it apart (`session_checks`).
+    fn expired_session(&self) -> Answer<Option<Named>> {
+        let mut state = self.state();
+        state.session_checks += 1;
+        let dead = state.dies.take();
+        if dead.is_some() {
+            state.expired = dead.clone();
+        }
+        answered(dead)
     }
 
     fn remember_method(&self, method: Option<Method>) {

@@ -122,3 +122,10 @@ crash-copied = Report copied
 palette-title = Command palette
 palette-placeholder = Type a command
 palette-empty = No command matches
+
+## Notifications: only for what happens while the window is not looked at.
+notify-expired-title = Your session has expired
+notify-expired-body = Sign in again as { $account } to keep using snob.
+notify-expired-body-unnamed = Sign in again to keep using snob.
+notify-update-title = A new version of snob is available
+notify-update-body = Update it the way you installed it.

@@ -82,7 +82,22 @@ pub struct Prefs {
     /// the next start, without asking Instagram a second time.
     #[serde(default)]
     pub expired: Option<snob_core::Pk>,
+    /// When each account's session was last found to work, by asking
+    /// Instagram or by signing in.
+    #[serde(default)]
+    pub checked: Vec<Checked>,
 }
+
+/// An account's session, found to work at a moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Checked {
+    pub pk: snob_core::Pk,
+    pub at: Epoch,
+}
+
+/// How long a session found to work is taken to: Instagram is asked about
+/// it once a day at most.
+pub const CHECKED_FOR_SECS: i64 = 24 * 60 * 60;
 
 fn file(paths: &AppPaths) -> PathBuf {
     paths.data_dir().join("desktop.json")
@@ -126,6 +141,20 @@ impl Prefs {
         }
     }
 
+    /// Whether the session of `pk` was found to work less than a day before
+    /// `now`. A moment ahead of `now` is a clock that was moved: not taken.
+    pub fn checked_lately(&self, pk: snob_core::Pk, now: Epoch) -> bool {
+        self.checked.iter().any(|checked| {
+            checked.pk == pk && (0..CHECKED_FOR_SECS).contains(&(now.get() - checked.at.get()))
+        })
+    }
+
+    /// Notes that the session of `pk` worked at `now`.
+    pub fn note_checked(&mut self, pk: snob_core::Pk, now: Epoch) {
+        self.checked.retain(|checked| checked.pk != pk);
+        self.checked.push(Checked { pk, at: now });
+    }
+
     /// The method to go straight back to at `now`, when one was chosen
     /// shortly before.
     pub fn resumed(&self, now: Epoch) -> Option<Method> {
@@ -152,6 +181,24 @@ mod tests {
     }
 
     #[test]
+    fn a_session_found_to_work_is_taken_to_for_a_day_and_no_longer() {
+        let (me, other) = (snob_core::Pk::new(42), snob_core::Pk::new(9001));
+        let mut prefs = Prefs::default();
+        let at = |secs: i64| Epoch::new(1_800_000_000 + secs);
+        assert!(!prefs.checked_lately(me, at(0)));
+
+        prefs.note_checked(me, at(0));
+        assert!(prefs.checked_lately(me, at(0)));
+        assert!(prefs.checked_lately(me, at(CHECKED_FOR_SECS - 1)));
+        assert!(!prefs.checked_lately(me, at(CHECKED_FOR_SECS)));
+        assert!(!prefs.checked_lately(other, at(0)), "each account its own");
+        assert!(!prefs.checked_lately(me, at(-60)), "a clock moved back");
+
+        prefs.note_checked(me, at(CHECKED_FOR_SECS));
+        assert_eq!(prefs.checked.len(), 1, "one moment an account");
+    }
+
+    #[test]
     fn what_is_remembered_is_read_back_and_a_damaged_file_is_nothing() {
         let root = tempfile::tempdir().unwrap();
         let paths = AppPaths::rooted_at(root.path());
@@ -165,6 +212,10 @@ mod tests {
                 at: Epoch::new(1_790_000_000),
             }),
             expired: Some(42.into()),
+            checked: vec![Checked {
+                pk: 42.into(),
+                at: Epoch::new(1_790_000_000),
+            }],
         };
         prefs.save(&paths);
         assert_eq!(Prefs::load(&paths), prefs);

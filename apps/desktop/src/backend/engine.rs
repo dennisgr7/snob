@@ -150,6 +150,8 @@ async fn done(paths: &AppPaths, secrets: &SecretStore, viewer: Viewer) -> SignIn
     }
     Prefs::change(paths, |prefs| {
         prefs.expired = prefs.expired.filter(|pk| *pk != viewer.pk);
+        // A login is a check that answered.
+        prefs.note_checked(viewer.pk, snob_core::clock::now());
     });
     SignIn::Done(account_of(paths, viewer.pk, viewer.username, true))
 }
@@ -311,6 +313,7 @@ impl Backend for Engine {
             }
             Prefs::change(&paths, |prefs| {
                 prefs.expired = prefs.expired.filter(|expired| *expired != pk);
+                prefs.checked.retain(|checked| checked.pk != pk);
             });
             signed_in(&paths)
         })
@@ -338,6 +341,63 @@ impl Backend for Engine {
         self.runtime.run(move || async move {
             let active = Registry::load(&paths).ok()?.active?;
             paused(&paths, active)
+        })
+    }
+
+    fn expired_session(&self) -> Answer<Option<Named>> {
+        let (paths, secrets) = (self.paths.clone(), self.secrets.clone());
+        self.runtime.run(move || async move {
+            let registry = Registry::load(&paths).ok()?;
+            let pk = registry.active?;
+            let account = paths.account(pk);
+            let now = snob_core::clock::now();
+            if !account.anybody_signed_in()
+                || Prefs::load(&paths).checked_lately(pk, now)
+                // Nothing is sent in a pause, this included.
+                || paused(&paths, pk).is_some()
+            {
+                return None;
+            }
+            let named = || Named {
+                pk,
+                username: registry
+                    .get(pk)
+                    .map(|account| snob_core::model::printable(&account.username))
+                    .filter(|name| !name.is_empty()),
+            };
+            let found_dead = || {
+                tracing::info!("the session no longer works");
+                Prefs::change(&paths, |prefs| prefs.expired = Some(pk));
+                Some(named())
+            };
+            let opened = snob_engine::app::App::open(
+                &secrets.session_of(&account),
+                &account,
+                host::Front::quiet,
+            );
+            let app = match opened {
+                Ok(Some(app)) => app,
+                // Signed in, and no session kept: as good as dead.
+                Ok(None) => return found_dead(),
+                Err(e) => {
+                    tracing::debug!(error = %e, "the session could not be asked about");
+                    return None;
+                }
+            };
+            tracing::info!("asking whether the session still works");
+            match app.client().validate().await {
+                Ok(()) => {
+                    Prefs::change(&paths, |prefs| prefs.note_checked(pk, now));
+                    None
+                }
+                Err(snob_ig::error::IgError::SessionExpired) => found_dead(),
+                // A push-back, no network, anything else: not known, and
+                // asked again another time.
+                Err(e) => {
+                    tracing::debug!(error = %e, "the session could not be asked about");
+                    None
+                }
+            }
         })
     }
 

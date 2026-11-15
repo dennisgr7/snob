@@ -91,6 +91,12 @@ pub trait Backend: Send + Sync + 'static {
     /// Read from its budget; nothing is sent.
     fn paused_until(&self) -> Answer<Option<Epoch>>;
 
+    /// The account in use, when Instagram no longer takes its session.
+    /// **Asked of Instagram once a day at most, and never during a pause**:
+    /// `None` is a session that works, one found to work lately, or one
+    /// that could not be asked about.
+    fn expired_session(&self) -> Answer<Option<Named>>;
+
     /// Remembers the method chosen before a restart for an update, or with
     /// `None` forgets it.
     fn remember_method(&self, method: Option<Method>);

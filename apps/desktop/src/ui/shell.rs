@@ -34,6 +34,10 @@ use crate::theme::motion;
 /// says it moved many times a second.
 const SETTLED_AFTER: Duration = Duration::from_millis(500);
 
+/// How often an app left open asks the backend about the session, which
+/// asks Instagram once a day at most (`prefs::CHECKED_FOR_SECS`).
+const SESSION_ASKED_EVERY: Duration = Duration::from_secs(60 * 60);
+
 /// Where the screen shown is in its coming and going.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Phase {
@@ -230,6 +234,19 @@ impl Shell {
         })
         .detach();
 
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(SESSION_ASKED_EVERY).await;
+                let asked = this.update_in(cx, |this, window, cx| {
+                    this.check_the_session(window, cx);
+                });
+                if asked.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         // Where the window is, remembered once it has stopped moving.
         cx.observe_window_bounds(window, |this, window, cx| {
             this.moved += 1;
@@ -314,6 +331,12 @@ impl Shell {
             && matches!(self.flow.screen(), Screen::Home | Screen::Settings)
     }
 
+    /// Whether the app is where somebody signed in is, whatever is still
+    /// drawn on the way there.
+    fn is_signed_in(&self) -> bool {
+        matches!(self.flow.screen(), Screen::Home | Screen::Settings)
+    }
+
     /// Opens the account's menu, or closes it.
     pub(crate) fn toggle_the_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.menu.is_some() {
@@ -376,6 +399,7 @@ impl Shell {
                 // The pause is the account's: the band says the new one's.
                 this.quiet(Band::clear_pause, cx);
                 this.read_the_pause(window, cx);
+                this.check_the_session(window, cx);
                 if let Some(active) = this.active() {
                     let said = Look::now(cx).tr_with(
                         "account-switched",
@@ -513,7 +537,8 @@ impl Shell {
     fn loaded(&mut self, loaded: Loaded, window: &mut Window, cx: &mut Context<Self>) {
         self.accounts = loaded.accounts;
         self.crash = loaded.crash;
-        if matches!(loaded.found, Found::SignedIn(_)) {
+        let signed_in = matches!(loaded.found, Found::SignedIn(_));
+        if signed_in {
             self.read_the_pause(window, cx);
         }
         self.happened(
@@ -524,6 +549,56 @@ impl Shell {
             window,
             cx,
         );
+        if signed_in {
+            self.check_the_session(window, cx);
+        }
+    }
+
+    /// Asks whether the session of the account in use still works, behind
+    /// what is shown: the backend asks Instagram once a day at most, and
+    /// here nothing is asked while the system says there is no network.
+    fn check_the_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_signed_in() || self.system.online() == Some(false) {
+            return;
+        }
+        let checking = self.backend.expired_session();
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Some(account)) = checking.await else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                this.session_expired(account, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The session of the account in use stopped working: it is asked back,
+    /// and somebody not looking at the window is told by the system.
+    fn session_expired(&mut self, account: Named, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_signed_in() {
+            return;
+        }
+        self.menu = None;
+        self.signing_out = None;
+        if !window.is_window_active() {
+            let look = Look::now(cx);
+            let body = match &account.username {
+                Some(_) => look.tr_with(
+                    "notify-expired-body",
+                    &[("account", &screens::handle(&account))],
+                ),
+                None => look.tr("notify-expired-body-unnamed"),
+            };
+            let notification = system::Notification {
+                about: system::Notice::SessionExpired,
+                title: look.tr("notify-expired-title"),
+                body,
+            };
+            self.system.notify(notification, cx);
+        }
+        self.happened(Event::Expired(account), window, cx);
     }
 
     /// Takes what happened: the flow decides what is shown, and what it asks
@@ -536,6 +611,15 @@ impl Shell {
         }
         if self.flow.update() != before && self.flow.update() == Update::ByItsManager {
             self.say(Status::UpdateAvailable, cx);
+            if !window.is_window_active() {
+                let look = Look::now(cx);
+                let notification = system::Notification {
+                    about: system::Notice::UpdateReady,
+                    title: look.tr("notify-update-title"),
+                    body: look.tr("notify-update-body"),
+                };
+                self.system.notify(notification, cx);
+            }
         }
         self.follow(window, cx);
     }
@@ -999,12 +1083,14 @@ impl Shell {
                 if self.active().is_some() {
                     self.read_the_pause(window, cx);
                 }
+                self.check_the_session(window, cx);
             }
             system::Event::ShuttingDown => tracing::info!("the session is ending"),
             system::Event::Online(online) => {
                 tracing::info!(online, "the network changed");
                 if online {
                     self.quiet(Band::clear_offline, cx);
+                    self.check_the_session(window, cx);
                 } else {
                     self.say(Status::Offline, cx);
                 }

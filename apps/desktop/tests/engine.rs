@@ -277,3 +277,35 @@ fn nothing_newer_is_offered_until_the_app_has_a_release() {
     );
     assert_eq!(engine.paused_until().blocking_recv().unwrap(), None);
 }
+
+#[test]
+fn a_session_is_asked_about_once_a_day_and_one_found_dead_is_asked_back() {
+    let Some((_root, sandbox, engine)) = backend() else {
+        return;
+    };
+    let id = session_id(world::ME, "dies");
+    let account = signed_in(&engine, &id);
+    let asked = || engine.expired_session().blocking_recv().unwrap();
+    assert_eq!(asked(), None, "it just signed in");
+
+    // Dead from now on, which nobody finds out within the day: nothing is
+    // sent to ask.
+    world().refuse(&id);
+    assert_eq!(asked(), None);
+    assert_eq!(
+        engine.load().blocking_recv().unwrap().found,
+        Found::SignedIn(account.named.clone())
+    );
+
+    // A day later it is asked about, and found dead.
+    Prefs::change(&sandbox.paths, |prefs| {
+        for checked in &mut prefs.checked {
+            checked.at = snob_core::Epoch::new(checked.at.get() - 25 * 60 * 60);
+        }
+    });
+    assert_eq!(asked(), Some(account.named.clone()));
+    assert_eq!(
+        engine.load().blocking_recv().unwrap().found,
+        Found::Expired(account.named)
+    );
+}

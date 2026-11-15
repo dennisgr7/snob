@@ -6,11 +6,15 @@
 
 mod common;
 
+use std::time::Duration;
+
 use common::{App, focused, open};
 use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
-use gpui_kit::{Role, TestAppContext};
+use gpui_kit::{Role, TestAppContext, VisualTestContext};
 use snob_desktop::backend::scripted::{Asked, Scripted, account};
-use snob_desktop::state::flow::Screen;
+use snob_desktop::state::flow::{Screen, Update};
+use snob_desktop::state::status::Status;
+use snob_desktop::system::{Event, Notice};
 
 async fn at_home(cx: &mut TestAppContext, backend: Scripted) -> App {
     let app = open(cx, backend);
@@ -322,4 +326,112 @@ async fn no_two_controls_of_a_screen_share_a_name(cx: &mut TestAppContext) {
     app.until_screen(cx, |screen| *screen == Screen::Settings)
         .await;
     unique(&app, cx, "settings");
+}
+
+fn woke() -> Event {
+    Event::Woke {
+        slept: Duration::from_secs(3600),
+    }
+}
+
+#[gpui_kit::test]
+async fn a_session_found_dead_while_the_app_is_open_asks_its_account_back(cx: &mut TestAppContext) {
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    let app = open(cx, backend.clone());
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    assert_eq!(backend.session_checks(), 1, "asked about once it is home");
+
+    backend.script(|script| {
+        script.session_dies(account(42, "me", true).named);
+    });
+    app.system.say(woke());
+    app.until_screen(cx, |screen| matches!(screen, Screen::Start { .. }))
+        .await;
+
+    assert_eq!(app.label_of(cx, "expired-photo"), "Profile picture of @me");
+    assert!(
+        app.system.notified().is_empty(),
+        "somebody looking at the window needs no notification"
+    );
+}
+
+#[gpui_kit::test]
+async fn somebody_not_looking_is_told_by_the_system_that_the_session_expired(
+    cx: &mut TestAppContext,
+) {
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    let app = open(cx, backend.clone());
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    VisualTestContext::from_window(app.window, cx).deactivate_window();
+
+    backend.script(|script| {
+        script.session_dies(account(42, "me", true).named);
+    });
+    app.system.say(woke());
+    app.until_screen(cx, |screen| matches!(screen, Screen::Start { .. }))
+        .await;
+
+    let notified = app.system.notified();
+    assert_eq!(notified.len(), 1, "{notified:?}");
+    assert_eq!(notified[0].about, Notice::SessionExpired);
+    assert_eq!(notified[0].title, "Your session has expired");
+    assert_eq!(notified[0].body, "Sign in again as @me to keep using snob.");
+}
+
+#[gpui_kit::test]
+async fn the_session_is_not_asked_about_without_a_network_or_before_anybody_signed_in(
+    cx: &mut TestAppContext,
+) {
+    let nobody = Scripted::with(Vec::new());
+    let app = open(cx, nobody.clone());
+    app.until_screen(cx, |screen| matches!(screen, Screen::Start { .. }))
+        .await;
+    app.system.say(woke());
+    cx.run_until_parked();
+    assert_eq!(
+        nobody.session_checks(),
+        0,
+        "there is no session to ask about"
+    );
+
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    let app = open(cx, backend.clone());
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    let before = backend.session_checks();
+    app.system.say(Event::Online(false));
+    app.system.say(woke());
+    cx.run_until_parked();
+    assert_eq!(backend.session_checks(), before, "nothing is sent offline");
+
+    app.system.say(Event::Online(true));
+    cx.run_until_parked();
+    assert_eq!(
+        backend.session_checks(),
+        before + 1,
+        "asked once it is back"
+    );
+}
+
+#[gpui_kit::test]
+async fn a_version_to_update_by_hand_is_said_by_the_system_to_somebody_not_looking(
+    cx: &mut TestAppContext,
+) {
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    backend.script(|script| {
+        script.update(Update::ByItsManager);
+    });
+    backend.hold();
+    let app = open(cx, backend.clone());
+    VisualTestContext::from_window(app.window, cx).deactivate_window();
+    backend.release();
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+
+    assert_eq!(
+        app.shell.read_with(cx, |shell, _| shell.status().cloned()),
+        Some(Status::UpdateAvailable)
+    );
+    let notified = app.system.notified();
+    assert_eq!(notified.len(), 1, "{notified:?}");
+    assert_eq!(notified[0].about, Notice::UpdateReady);
+    assert_eq!(notified[0].title, "A new version of snob is available");
 }
