@@ -398,9 +398,10 @@ compile; the session is an explicit header on the one client meant to carry it.
 
 - **The browser's DevTools protocol is on a pipe** (`pipe.rs`), never a port: a
   port hands the session to any local process.
-- The owner's socket admits the same user only (Unix: `0600` and `peer_cred`;
-  Windows: a named pipe with a DACL for this user), and a connection that does
-  not say who it is within 10 s is let go (`owner/server.rs`).
+- The owner's socket admits the same user only (`local_socket.rs`; Unix:
+  `0600` and `peer_cred`; Windows: a named pipe with a DACL for this user),
+  and a connection that does not say who it is within 10 s is let go
+  (`owner/server.rs`).
 - `login --remote`'s relay page gets JPEG frames and posts input, behind a
   one-visit token and a key in the URL fragment; the protocol never crosses the
   tunnel. It listens on a `0600` Unix socket, on a loopback port only where
@@ -828,7 +829,7 @@ Platform code compiles only on that OS's CI job:
 |---|---|---|
 | `pipe.rs` | handle list and job object | CDP pipe on fds 3 and 4, own process group |
 | `detach.rs` | own handle list, out of the job | `setsid` |
-| `owner/socket.rs` | named pipe, user DACL (`windows_user.rs`) | `0600` socket, `peer_cred` |
+| `local_socket.rs` | named pipe, user DACL (`windows_user.rs`) | `0600` socket, `peer_cred` |
 | `owner/end_of_session.rs` | hidden window hearing the session end | |
 | `parent.rs` | ToolHelp, `OpenProcess`, `WaitForSingleObject` | `pidfd` (Linux), `kqueue` (macOS), `getppid` |
 | `headless/` | | `kill(pid, 0)`, `gethostname`, refusing root |

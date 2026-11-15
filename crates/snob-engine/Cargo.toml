@@ -18,7 +18,7 @@ snob-core.workspace = true
 snob-store.workspace = true
 snob-ig.workspace = true
 # `net` and `io-util` for the loopback page `headless::identity` serves for
-# one question and for the owner's socket and named pipe (`owner::socket`);
+# one question and for the owner's socket and named pipe (`local_socket`);
 # both were already compiled in through reqwest. `sync` for the
 # channels `cdp::connection`'s dispatcher answers callers on -- also already
 # compiled in, through hyper, and named here because this crate uses it

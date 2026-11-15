@@ -1,6 +1,6 @@
 //! Who a Windows process runs as, and an ACL that lets that user alone in:
 //! the unsafe code under the data directory's DACL (`paths`) and the owner
-//! of the browsers' pipe (`snob-cli`'s `owner::socket`), written once.
+//! of the browsers' pipe (`snob-engine`'s `local_socket`), written once.
 
 use std::io;
 

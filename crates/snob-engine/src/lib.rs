@@ -20,6 +20,7 @@ pub mod headless;
 pub mod host;
 pub mod interrupt;
 pub mod jobs;
+pub mod local_socket;
 pub mod log;
 pub mod login;
 pub mod logout;
