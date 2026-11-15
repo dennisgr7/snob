@@ -1,0 +1,58 @@
+# Separate workspace so `libfuzzer-sys` and nightly sanitizer builds stay
+# outside the root `Cargo.lock` and `cargo deny` graph.
+
+[package]
+name = "snob-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+# Coverage-guided in-process fuzzer harness linked into every target binary by
+# `cargo fuzz`.
+libfuzzer-sys = "0.4"
+# The three parser-bearing crates, built without the `testing` feature so
+# fuzzing exercises the shipped surface only.
+snob-core = { path = "../crates/snob-core" }
+snob-ig = { path = "../crates/snob-ig" }
+snob-store = { path = "../crates/snob-store" }
+
+[[bin]]
+name = "classify"
+path = "fuzz_targets/classify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "page_values"
+path = "fuzz_targets/page_values.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shortcode"
+path = "fuzz_targets/shortcode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "printable"
+path = "fuzz_targets/printable.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "watch_config"
+path = "fuzz_targets/watch_config.rs"
+test = false
+doc = false
+bench = false

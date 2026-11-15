@@ -1,0 +1,138 @@
+name: Weekly
+
+# Actions are pinned to a commit; `.github/dependabot.yml` says why and moves them.
+# Weekly rather than in ci.yml: these checks burn CPU for minutes or check dozens
+# of combinations, which would stall pull requests when ci.yml covers push gating.
+on:
+  schedule:
+    # Weekly on Mondays at 06:47 UTC, half an hour after supply-chain.yml.
+    - cron: "47 6 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A failed build should not be followed by a slow one.
+  CARGO_INCREMENTAL: 0
+
+permissions:
+  contents: read
+
+jobs:
+  feature-powerset:
+    name: Feature powerset (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          # Released 2026-11-01.
+          tool: cargo-hack@0.6.46
+      - run: cargo hack check --workspace --feature-powerset --no-dev-deps --locked
+
+  fuzz:
+    name: Fuzz parsers
+    # Linux only: AddressSanitizer is first-class here (Windows lacks its runtime on PATH).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      # Nightly, pinned two weeks behind, for `-Z sanitizer=address`.
+      - name: Install pinned nightly for fuzzing
+        run: rustup toolchain install nightly-2026-11-01 --profile minimal --component llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          # Released 2026-06-09.
+          tool: cargo-fuzz@0.13.2
+      # Bounded (120 s each) without `testing` so only shipped parser code runs.
+      - name: Run fuzz targets
+        run: |
+          for target in classify page_values shortcode printable watch_config; do
+            cargo +nightly-2026-11-01 fuzz run "$target" -- -max_total_time=120
+          done
+      - name: Upload crashes
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore
+
+  mutants:
+    name: Mutation tests (shard ${{ matrix.shard }} of 8)
+    runs-on: ubuntu-latest
+    # About 2,400 mutants at some 20 s each: eight shards of two jobs each
+    # fit in under an hour apiece; one job would run for half a day.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          # Released 2026-10-26 and 2026-06-02.
+          tool: cargo-nextest@0.9.150, cargo-mutants@27.1.0
+      # Report-only: equivalents survive, so exits 2 (missed) and 3 (timeout) do not fail CI.
+      - name: Run mutation tests on pure crates
+        run: |
+          set +e
+          cargo mutants --test-tool=nextest -p snob-core -p snob-ig -C --locked --timeout 60 --minimum-test-timeout 20 --shard ${{ matrix.shard }}/8 --jobs 2
+          status=$?
+          set -e
+          for f in mutants.out/missed.txt mutants.out/timeout.txt; do
+            [ -f "$f" ] && { echo "### $f"; echo '```text'; cat "$f"; echo '```'; }
+          done >> "$GITHUB_STEP_SUMMARY"
+          case "$status" in 0|2|3) ;; *) exit "$status" ;; esac
+      - name: Upload mutation report
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutants-report-${{ matrix.shard }}
+          path: mutants.out
+          if-no-files-found: ignore
+
+  coverage:
+    name: Coverage
+    # Windows runs the full suite (headless browser included) without D-Bus/keyring/musl setup.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - name: Add LLVM coverage tools
+        run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          # Released 2026-10-26 and 2026-09-06.
+          tool: cargo-nextest@0.9.150, cargo-llvm-cov@0.9.1
+      # `NEXTEST_PROFILE` selects `[profile.ci]` (`--profile` on `cargo llvm-cov` is Cargo's).
+      - name: Run suite with LLVM coverage
+        shell: bash
+        env:
+          SNOB_TEST_REQUIRE_BROWSER: 1
+          NEXTEST_PROFILE: ci
+        run: |
+          cargo llvm-cov nextest --workspace --all-features --locked --lcov --output-path lcov.info
+          { echo "## Coverage summary"; echo '```text'; cargo llvm-cov report; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload LCOV report
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: error

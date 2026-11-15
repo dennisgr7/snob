@@ -114,8 +114,12 @@ dbus-run-session -- bash -c '
 - `supply-chain.yml` (pushes, pull requests, Mondays): `cargo deny check
   advisories sources licenses`, never a bare `cargo deny check` (`bans` is off
   on purpose). Every `ignore` in `deny.toml` says why and when it goes.
-- `features.yml` (Mondays, manual): `cargo hack check --workspace
-  --feature-powerset --no-dev-deps --locked` on Linux and Windows.
+- `weekly.yml` (Mondays, manual): `feature-powerset` (`cargo hack check
+  --workspace --feature-powerset --no-dev-deps --locked` on Linux and Windows),
+  `fuzz` (`cargo-fuzz` in `fuzz/` on Linux under pinned nightly), `mutants`
+  (`cargo-mutants` with `nextest` on `snob-core` and `snob-ig`, report-only), and
+  `coverage` (`cargo-llvm-cov` with `nextest` over `--workspace --all-features
+  --locked` on Windows).
 - Locally on Windows the lines above run as written; they skip `cfg(unix)`
   code. `bash tools/ci/run.sh` runs the Linux job in Docker; `tools/ci/ci.sh`
   stays in step with `ci.yml`.
@@ -174,6 +178,13 @@ dbus-run-session -- bash -c '
   agent or a webhook reads, the error object included. A changed `.snap` is a
   contract change ("Output contract"): regenerate with `INSTA_UPDATE=always`
   only on purpose, and read its diff. CI fails on a mismatch.
+- **Weekly deep checks** (`.github/workflows/weekly.yml`): `fuzz/` holds the
+  standalone `cargo-fuzz` workspace for outside-input parsers, built without
+  `testing` under a pinned nightly (`cargo +nightly-2026-11-01 fuzz run
+  <target>` on Linux/macOS); `cargo mutants --test-tool=nextest -p snob-core
+  -p snob-ig` measures suite sensitivity in the pure crates (report-only, so
+  surviving equivalents do not fail CI); `cargo llvm-cov nextest --workspace
+  --all-features --locked` measures coverage locally or exports LCOV.
 - Migrations: the `validate()` tests run the whole chain of both databases.
 - Hand-run: `cargo test -p snob-cli --features testing --test headless
   serve_the_fake_world -- --ignored --nocapture` serves the fake Instagram for
