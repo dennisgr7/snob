@@ -576,3 +576,75 @@ async fn the_arrows_walk_the_menu_around_its_ends(cx: &mut TestAppContext) {
     app.press(cx, "up");
     assert_eq!(on(&app, cx), Some("menu-sign-out"), "and back around it");
 }
+
+/// The window left for another and looked at again.
+fn look_away_and_back(app: &App, cx: &mut TestAppContext) {
+    VisualTestContext::from_window(app.window, cx).deactivate_window();
+    app.in_window(cx, |window, _| window.activate_window());
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+async fn what_the_command_line_did_meanwhile_is_found_when_the_window_is_looked_at_again(
+    cx: &mut TestAppContext,
+) {
+    let backend = Scripted::with(Vec::new());
+    let app = open(cx, backend.clone());
+    app.until_screen(cx, |screen| matches!(screen, Screen::Start { .. }))
+        .await;
+
+    // Somebody signs in with `snob login`.
+    backend.script(|script| {
+        script.accounts(vec![account(42, "me", true)]);
+    });
+    look_away_and_back(&app, cx);
+    app.until_screen(cx, |screen| matches!(screen, Screen::Welcome(_)))
+        .await;
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    assert_eq!(app.label_of(cx, "account-photo"), "Profile picture of @me");
+
+    // A second account is signed in there, and becomes the one in use.
+    backend.script(|script| {
+        script.accounts(vec![
+            account(9001, "someone", true),
+            account(42, "me", false),
+        ]);
+    });
+    look_away_and_back(&app, cx);
+    assert_eq!(
+        app.label_of(cx, "account-photo"),
+        "Profile picture of @someone"
+    );
+    assert_eq!(app.label_of(cx, "announcements"), "Now using @someone");
+    assert_eq!(
+        app.shell.read_with(cx, |shell, _| shell.shown().clone()),
+        Screen::Home
+    );
+
+    // And everybody is signed out.
+    backend.script(|script| {
+        script.accounts(Vec::new());
+    });
+    look_away_and_back(&app, cx);
+    app.until_screen(cx, |screen| matches!(screen, Screen::Start { .. }))
+        .await;
+    assert!(!shown(&app, cx, "account"));
+}
+
+#[gpui_kit::test]
+async fn looking_again_changes_nothing_while_an_account_is_being_added(cx: &mut TestAppContext) {
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    let app = at_home(cx, backend.clone()).await;
+    app.click(cx, "account");
+    app.click(cx, "menu-add");
+    app.until_screen(cx, |screen| matches!(screen, Screen::Start { .. }))
+        .await;
+    let before = backend.asked().len();
+
+    look_away_and_back(&app, cx);
+    assert_eq!(backend.asked().len(), before, "nothing is read again");
+    assert!(matches!(
+        app.shell.read_with(cx, |shell, _| shell.shown().clone()),
+        Screen::Start { back: true, .. }
+    ));
+}

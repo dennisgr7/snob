@@ -261,6 +261,15 @@ impl Shell {
         })
         .detach();
 
+        // Looked at again: the command line may have signed somebody in or
+        // out meanwhile.
+        cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.look_again(window, cx);
+            }
+        })
+        .detach();
+
         // Where the window is, remembered once it has stopped moving.
         cx.observe_window_bounds(window, |this, window, cx| {
             this.moved += 1;
@@ -713,6 +722,62 @@ impl Shell {
         );
         if signed_in {
             self.check_the_session(window, cx);
+        }
+    }
+
+    /// Reads again who is signed in on this computer, **from files alone**,
+    /// where the answer can change what is shown: at home, in the settings,
+    /// and where nobody is signed in yet.
+    fn look_again(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let waiting = matches!(self.flow.screen(), Screen::Start { back: false, .. });
+        let settled = name(&self.shown) == name(self.flow.screen());
+        if !settled || !(self.is_signed_in() || waiting) {
+            return;
+        }
+        let loading = self.backend.load();
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(loaded) = loading.await else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| this.found_again(loaded, window, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// What a second look found: another account in use, nobody left, or
+    /// somebody signed in from the command line.
+    fn found_again(&mut self, loaded: Loaded, window: &mut Window, cx: &mut Context<Self>) {
+        let waiting = matches!(self.flow.screen(), Screen::Start { back: false, .. });
+        match (self.is_signed_in(), loaded.found) {
+            (true, Found::SignedIn(now)) => {
+                let before = self.active().map(|account| account.named.pk);
+                self.accounts = loaded.accounts;
+                if before != Some(now.pk) {
+                    tracing::info!("the account in use was changed from outside the app");
+                    self.quiet(Band::clear_pause, cx);
+                    self.read_the_pause(window, cx);
+                    let said = Look::now(cx)
+                        .tr_with("account-switched", &[("account", &screens::handle(&now))]);
+                    self.announce(said, cx);
+                }
+                cx.notify();
+            }
+            (true, Found::Nobody) => {
+                tracing::info!("everybody was signed out from outside the app");
+                self.accounts = loaded.accounts;
+                (self.menu, self.signing_out, self.palette) = (None, None, None);
+                self.quiet(Band::clear_pause, cx);
+                self.happened(Event::SignedOut { next: None }, window, cx);
+            }
+            (true, Found::Expired(account)) => self.session_expired(account, window, cx),
+            (false, Found::SignedIn(now)) if waiting => {
+                tracing::info!("somebody signed in from outside the app");
+                self.accounts = loaded.accounts;
+                self.read_the_pause(window, cx);
+                self.happened(Event::SignedIn(now), window, cx);
+            }
+            _ => {}
         }
     }
 

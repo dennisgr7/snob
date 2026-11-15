@@ -304,6 +304,12 @@ impl Flow {
                 self.signed_in = true;
                 (Screen::Welcome(account), Vec::new())
             }
+            // Signed in from somewhere else while this screen waited: the
+            // command line did it.
+            (Screen::Start { back: false, .. }, Event::SignedIn(account)) => {
+                self.signed_in = true;
+                (Screen::Welcome(account), Vec::new())
+            }
             // A window closed or a login canceled is a change of mind, not a
             // failure: back to where the method was chosen.
             (Screen::Browser, Event::GaveUp | Event::Back) => {
@@ -527,6 +533,24 @@ mod tests {
         assert_eq!(effects, [Effect::SayUpdateFailed, Effect::ForgetResume]);
         // Not offered again in this run.
         assert_eq!(flow.update(), Update::None);
+    }
+
+    #[test]
+    fn a_sign_in_from_elsewhere_is_welcomed_unless_an_account_is_being_added() {
+        let (flow, effects) = after([loaded(Found::Nobody), Event::SignedIn(me())]);
+        assert_eq!(flow.screen(), &Screen::Welcome(me()));
+        assert!(effects.is_empty());
+
+        let (flow, _) = after([
+            loaded(Found::SignedIn(me())),
+            Event::AddAccount,
+            Event::SignedIn(me()),
+        ]);
+        assert!(
+            matches!(flow.screen(), Screen::Start { back: true, .. }),
+            "{:?}",
+            flow.screen()
+        );
     }
 
     #[test]
