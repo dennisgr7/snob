@@ -1,80 +1,119 @@
 # snob desktop
 
-A window on the engine the command line runs. **A skeleton**: it opens, lists
-the accounts snob knows on this computer (`accounts.toml`, a file read), and
-sends nothing. No view reads a session or starts a walk yet.
+A window on the engine the command line runs. It goes **from a cold start to
+somebody signed in and welcomed**: the frame and its band, signing in through
+snob's own browser window or with a pasted session ID, several accounts and
+changing between them, signing out, the settings of its log, a command
+palette. The home screen is a title: what a scan shows comes next.
 
 ```bash
 cd apps/desktop
-cargo run            # the engine and GPUI: a few minutes the first time
-cargo test
+cargo run                       # the engine and GPUI: a few minutes the first time
+cargo harness                   # every test of the app, from one place; asks which
+cargo harness quick             # what a pull request runs
+cargo harness demo              # the test build, by hand, on a fake Instagram
 ```
 
-## Decisions
+## How it is put together
 
 - **The engine is linked in process** (`snob-engine`), not driven through the
-  `snob` binary: a view calls what a command calls (`snob_engine::app::App`,
-  `engine::list`, `posts`, `media`), so every rule in the root `AGENTS.md`
-  (the two writes, the pace, the first push-back, consent) holds here through
-  the same code. Nothing in this crate builds an Instagram client or opens a
-  database on its own.
-- **The engine is handed what it needs** (`src/front.rs`, `snob_engine::host`):
-  where its notices go, once per process; and per run a `host::Front`, which
-  is who watches a walk (`Progress`) and who answers the consent question
-  (`Ask`). The command line hands its bars and its prompt; the app will hand a
-  view's model and a dialog.
+  `snob` binary: a view asks what a command asks, so every rule in the root
+  `AGENTS.md` (the two writes, the pace, the first push-back, consent) holds
+  here through the same code. Nothing in this crate builds an Instagram
+  client or opens a database on its own.
+- **A view never waits on the engine.** The engine runs on a tokio runtime of
+  two threads of the app's own (`runtime.rs`); a view asks through
+  `backend::Backend` and is answered on a channel. The trait has two
+  implementations: the engine (`backend/engine.rs`) and, in a test build, a
+  script (`backend/scripted.rs`).
+- **What is shown is decided apart from how it is drawn** (`state/`): the
+  screen and why (`flow.rs`), what the band says and which of several things
+  wins (`status.rs`), what a pasted ID is (`paste.rs`), what the palette
+  offers (`commands.rs`), what is remembered between runs (`prefs.rs`). No
+  window, clock or network in any of it.
+- **A view never calls an operating system** (`system/`): it reads `Settings`
+  and takes `Event`s from one trait, which GPUI and Windows answer
+  (`native.rs`, `windows.rs`) and a test speaks for (`simulated.rs`).
+- **The words are Fluent files** (`locales/en`, `locales/es`), chosen by the
+  system's language; a test holds the two to the same messages.
 - **The processes the engine starts are the command line's**
-  (`snob_engine::exe::start_as`): the owner of the browsers, a job's supervisor
-  and walk, the updater. The app has none of their hidden commands, so it
-  points the engine at the `snob` that ships beside it and says so when there
-  is none.
-- **The MCP server stays `snob mcp`**: the app offers it by starting and
-  configuring that command (`snob mcp config`), not by serving it itself.
-- **GPUI, through `gpui-kit` pinned exactly** (Longbridge's component library
-  on a published snapshot of Zed's GPUI, `gpui-pre`). Everything comes from
-  crates.io; nothing is a git dependency. The fallback, should GPUI stop
-  building on a target snob ships to, is egui.
-- **A workspace of its own.** GPUI brings some 500 crates and does not build
-  for musl. The root workspace's `Cargo.lock`, its `cargo deny` checks, its CI
-  lines and the five release targets of the command line do not change because
-  this directory exists.
+  (`snob_engine::exe::start_as`): the owner of the browsers, a job's
+  supervisor, the updater. The app points the engine at the `snob` beside it
+  and logs when there is none.
+- **GPUI, through `gpui-kit` pinned exactly**; everything from crates.io.
+  **A workspace of its own**: GPUI brings some 500 crates and does not build
+  for musl, and the command line's lockfile, `cargo deny` checks, CI lines
+  and five release targets do not change because this directory exists.
+
+## What it never does
+
+- **Nothing is sent to decide what to show at a start**: who is signed in is
+  read from files. The session of the account in use is asked about behind
+  the window, **once a day at most and never during a pause** Instagram asked
+  for (`Backend::expired_session`).
+- **Nothing is sent to see what the command line did meanwhile**: when the
+  window is looked at again, the files a start reads are read again.
+- **Nothing is sent to find out whether there is a network**: the app follows
+  what the system says, and where the system does not say, assumes one.
+- **No secret reaches the log, the diagnostic report or a file of the app's**
+  (the harness's privacy suite reads all three after a sign-in). The report
+  makes accounts anonymous, and is copied by the person, never sent.
+- **A release build has no test mode**: not among its dependencies, none of
+  its arguments in the binary, no control channel (same suite).
+
+## Tests
+
+`cargo harness` (`examples/harness/`, an example so that it links only
+dev-dependencies) owns the fake Instagram (`crates/snob-fake-ig`) and the app
+it starts, in a directory of its own with no real keyring, and writes
+`target/harness/report.html`.
+
+| Suite | What it checks | When |
+|---|---|---|
+| `logic` | `cargo test --features testing`: the state, the backend on the engine against the fake Instagram, the views in process | every change |
+| `behavior` | the real binary, driven through its control channel, from a first start to signing out with the keyboard alone | every change |
+| `visual` | a picture of every screen, light, dark, both with more contrast, at twice the text and at 800 by 600, against `tests/approved/<os>/` | every change |
+| `accessibility` | a name, a role and 24 by 24 on every control; one title a screen; every control reached with Tab | every change |
+| `privacy` | no secret in the log, the report or the files; no test mode in a build without the feature | every change |
+| `performance` | start, memory and processor at rest, size, against this machine's `tests/baseline/<os>.json` (not committed); fails on 10% worse | nightly |
+| `endurance` | 200 sleeps and 60 changes of account in one run, which must still answer and not have grown | nightly |
+
+`--approve` takes this run's pictures and numbers as the approved ones. The
+pictures are committed, a system each; **the numbers are a machine's own**, so
+a runner with no baseline records them and fails nothing. A scenario that
+fails leaves its last eight steps as pictures, one of the window
+when it failed, and the app's log.
+
+**The control channel** (`src/control.rs`, feature `testing` only): the local
+socket of the same user under the test root, one JSON request a line. It
+reads the window's accessibility nodes and acts on one by its id, as a screen
+reader would; it never reaches into a view.
+
+On Linux: `bash tools/ci/run-desktop.sh` runs the lints and the harness in
+Docker under Xvfb. `.github/workflows/desktop.yml` runs the same on the five
+runners of the command line.
 
 ## What is verified, and what is not
 
 | | |
 |---|---|
-| Builds on Windows x86-64 (static CRT, as `.cargo/config.toml` sets it) | yes |
-| Builds on Linux x86-64 (glibc), and opens its window under Xvfb on Mesa's CPU Vulkan (`tools/ci/desktop.Dockerfile`) | yes |
-| Windows ARM64, Linux ARM64, Wayland, macOS | not built yet: they need the branch on GitHub's runners |
-| Crypto in the tree | the engine's own (rustls on `aws-lc-rs`). `cargo tree -i` finds no OpenSSL, `ring` or `quinn` on any of the five triples, and `native-tls` on Windows ARM64 only (schannel, as the command line) |
-| Windows 11 Snap Layouts over caption buttons the app draws | yes, **when the drag area is a sibling of the buttons**: the first `window_control_area` under the pointer answers the hit test, and a parent's comes first |
-| What a screen reader on Windows is told (UI Automation) | the window, the caption buttons by name, a heading, a button and a status; a click asked for through UI Automation reaches `on_click` |
-| A live region announced by a screen reader | set through `a11y_synthetic_children`; not verified yet |
-| The window rendered to a picture (`Window::render_to_image`, feature `testing`) | Windows yes; Linux no ("not implemented for this platform"), where a test renders without a window instead |
-| The accessibility tree as JSON (`Window::debug_a11y_tree_json`) | only once an assistive technology has asked for the tree |
-| `cargo deny` for this workspace | not set up |
-| Packaging, signing, an installer, an update path | none |
+| Windows 11 x86-64: lints, the five suites of a change, the two nightly ones | yes |
+| Linux x86-64 (glibc) in Docker under Xvfb, on Mesa's CPU Vulkan | yes: lints, and the suites of a change but for the pictures |
+| Windows ARM64, Linux ARM64, Wayland, macOS, GitHub's runners | **not yet**: they need the branch on GitHub |
+| What Windows is set to (contrast theme, animations, transparency, battery saver, text size, network, session end) | read and followed; a change is tested by sending the window its message, not by changing the machine |
+| The same on macOS and Linux | **not asked yet**: the app behaves as on a system that set none, and follows only the theme |
+| A screen reader's own reading (Narrator, VoiceOver, Orca) | not verified: the tree is checked, by role and name, not a reader's speech |
+| A live region announced | set through AccessKit; not heard |
+| Windows 11 Snap Layouts over the caption buttons the app draws | yes |
+| The window drawn to a picture | Windows yes; Linux no ("not implemented for this platform"), where the visual suite says so and compares nothing |
+| Nothing drawn at rest | the app asks for no frame at rest, and holds about 80 MiB. **GPUI wakes every window on each refresh on Windows** (its `VSyncProvider` thread), which is the 1 to 2% of one processor a debug build measures there; a release build is not measured yet |
+| The app's own update | **none**: there is no package of the app to fetch. The screens for it are tested on the scripted backend |
+| System notifications | shown through GPUI; on macOS only from inside a bundle |
+| `cargo deny` for this workspace, packaging, signing, an installer | none |
 
 `Cargo.lock` holds a second GPUI, `gpui-fast`, that is never built: GPUI's
 test support names it as an optional dependency, and Cargo locks what a
-feature names whether or not it is enabled. Its exact pins are why `wgpu` is
-30.0.1 here.
-
-## What comes next, in order
-
-1. **One runtime for the engine.** The engine is `tokio` (two workers, as the
-   command line starts it); GPUI runs its own executor. The app owns one tokio
-   runtime on its own threads, a view sends it a request, and the answer comes
-   back to the view through a channel. No engine future is polled on GPUI's
-   main thread.
-2. **`host::Front` for a view**: `Progress` into a model the view draws,
-   `Ask` as a dialog that answers the engine's question, never a default yes.
-3. **The first real view**: status (`snob status` reads no network), then the
-   stored lists (`snapshots`, `changes`), which send nothing either. A walk
-   comes after both.
-4. Sign-in is the browser window snob already opens (`login`); the app starts
-   it and never sees a password.
-5. CI for this directory on the three desktops, `cargo deny`, then packaging.
+feature names whether or not it is enabled.
 
 The rules of the repository apply here unchanged: English, US spelling, few
 comments, no test that reaches Instagram or the real keyring.

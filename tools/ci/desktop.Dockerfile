@@ -10,10 +10,14 @@ FROM ${BASE}
 # What GPUI links on Linux (xkbcommon, Wayland, XCB, fontconfig), and a
 # display and a GPU that exist nowhere: Xvfb, and Mesa's Vulkan on the CPU
 # (lavapipe), which GPUI's renderer accepts as its last choice.
+#
+# And a browser: snob signs in as one that is installed, a pasted session
+# ID included, so without one every scenario past the first screen ends on
+# "snob needs Chrome, Edge, Brave or Chromium".
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
         libxcb1-dev libx11-xcb-dev libfontconfig1-dev libfreetype6-dev \
-        libvulkan1 mesa-vulkan-drivers xvfb xauth \
+        libvulkan1 mesa-vulkan-drivers xvfb xauth chromium \
     && rm -rf /var/lib/apt/lists/*
 
 # A target directory of its own: the app is glibc, the command line's job

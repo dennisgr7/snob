@@ -924,6 +924,47 @@ pnpm check && pnpm build && pnpm test   # Playwright against `wrangler dev` serv
 - `pnpm brand` regenerates `public/` images; `bash web/video/record.sh` then
   `pnpm video` re-film the hero (both committed) when a view it shows changes.
 
+## Desktop app
+
+`apps/desktop/`: a GPUI window on the engine, linked in process, from a cold
+start to somebody signed in. **A workspace of its own**, with its own
+`Cargo.lock`: build and test it from that directory; no line of `ci.yml`
+builds it, and `packaging/`, `Formula/`, `bucket/` and `release.yml` know
+nothing of it. Its `README.md` says how it is put together and what is
+verified on which system.
+
+- **Every rule of this file holds there through the engine.** It builds no
+  Instagram client and opens no database of its own: `backend/engine.rs`
+  calls what a command calls (`snob_engine::login`, `logout`, `app`,
+  `viewer`, `log`).
+- **A view draws what `state/` says, asks through `backend::Backend`, and
+  hears the system through `system::System`**: never the engine, an
+  operating system or a clock of its own. No engine future runs on the
+  window's thread (`runtime.rs`).
+- **Nothing is sent to decide what a start shows or to find a network**, and
+  the session of the account in use is asked about once a day at most, never
+  in a cooldown (`Backend::expired_session`).
+- **The test build is the feature `testing`**: `--test-root`, the simulated
+  system, the control channel (`src/control.rs`). A build without it has
+  none of them, which the harness's privacy suite reads off the binary.
+- **Every word is in `locales/en/snob.ftl` and `locales/es/snob.ftl`**, held
+  to the same messages by a test. Spanish belongs there; `language.rs` does
+  not scan `.ftl`.
+
+```bash
+cd apps/desktop
+cargo fmt --check
+cargo clippy --all-targets --features testing --locked -- -D warnings
+cargo clippy --all-targets --locked -- -D warnings
+cargo harness quick     # logic, behavior, visual, accessibility, privacy
+cargo harness all       # and performance and endurance, which run nightly
+```
+
+`.github/workflows/desktop.yml` runs those on the five runners of `ci.yml`;
+`bash tools/ci/run-desktop.sh` runs the Linux ones in Docker under Xvfb
+(`tools/ci/desktop.sh` stays in step with the workflow). The source-reading
+guards of `crates/snob-core/tests/` read `apps/desktop` too, from the root.
+
 ## Release and packaging
 
 1. Changes land on `dev` by pull request; Dependabot targets `dev` weekly
