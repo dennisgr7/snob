@@ -58,7 +58,7 @@ impl Bucket {
     fn of(state: &BucketState, now: EpochMs) -> Self {
         Self {
             left: state.left,
-            free_in_ms: u64::try_from(state.free_at.get() - now.get()).unwrap_or(0),
+            free_in_ms: u64::try_from(state.free_at - now).unwrap_or(0),
         }
     }
 }

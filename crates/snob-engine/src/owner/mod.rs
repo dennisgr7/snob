@@ -778,7 +778,10 @@ async fn handshake(mut stream: socket::Stream, build: &str) -> Result<Handshake>
             build: theirs,
             others,
         }),
-        Some(other) => bail!("it answered {other:?}"),
+        Some(other) => bail!(
+            "it answered with a message of another kind ({})",
+            other.kind()
+        ),
         None => bail!("it closed the connection"),
     }
 }
@@ -816,7 +819,10 @@ fn owner_said(said: Result<wire::FromOwner>) -> Result<wire::FromOwner, PageErro
 
 /// An answer of the owner's that is not the one asked for.
 fn unexpected(other: &wire::FromOwner) -> PageError {
-    PageError::Browser(format!("the owner of the browsers answered {other:?}"))
+    PageError::Browser(format!(
+        "the owner of the browsers answered with a message of another kind ({})",
+        other.kind()
+    ))
 }
 
 #[cfg(test)]

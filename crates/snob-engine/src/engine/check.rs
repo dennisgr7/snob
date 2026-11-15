@@ -251,8 +251,7 @@ pub async fn with_a_session(
     watched: &[super::watch::Watched],
     report: &mut CheckReport,
 ) {
-    // **Nothing is spent during a cooldown**, and this is the one request path
-    // in the tool that did not say so.
+    // **Nothing is spent during a cooldown.**
     match app.held() {
         Ok(Some(held)) => {
             report.checked.push(waiting_out(

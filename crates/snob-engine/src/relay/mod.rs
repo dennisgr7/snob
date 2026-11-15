@@ -222,15 +222,28 @@ fn tunnel_command(local_port: u16, far_end: &str, ssh: Option<&Ssh>) -> String {
         _ => String::new(),
     };
     let forward = format!("127.0.0.1:{local_port}:{far_end}");
-    let plain = forward
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "/._-:+@".contains(c));
-    let forward = if plain {
-        forward
-    } else {
-        format!("\"{forward}\"")
-    };
-    format!("ssh -N -o ExitOnForwardFailure=yes -L {forward} {user}{host}{port}")
+    let forward = as_one_word(&forward).unwrap_or_else(|| format!("\"{forward}\""));
+    // An account's name can hold a space (Windows), which splits the command
+    // where it is typed; one a shell would read into, or `ssh` take for an
+    // option, is left out, and `ssh` asks for it.
+    // Asked of the word before its quotes: `ssh` reads its first character.
+    let no_option = |word: &str| (!word.starts_with('-')).then(|| as_one_word(word))?;
+    let destination = no_option(&format!("{user}{host}"))
+        .or_else(|| no_option(host))
+        .unwrap_or_else(|| "this-machine".to_string());
+    format!("ssh -N -o ExitOnForwardFailure=yes -L {forward} {destination}{port}")
+}
+
+/// `word` as a shell takes it whole: as it is when plain, in double quotes
+/// otherwise, and `None` when a shell still reads something inside them
+/// (`$`, a backtick, a backslash, `!`) or they end at a quote of its own.
+fn as_one_word(word: &str) -> Option<String> {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "/._-:+@".contains(c);
+    if word.chars().all(plain) {
+        return Some(word.to_string());
+    }
+    let read_inside = |c: char| c.is_control() || matches!(c, '"' | '$' | '`' | '\\' | '!');
+    (!word.chars().any(read_inside)).then(|| format!("\"{word}\""))
 }
 
 /// The address of the entry the tab's history is at.
@@ -1165,6 +1178,40 @@ mod tests {
             tunnel_command(51234, "127.0.0.1:40000", None),
             "ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:51234:127.0.0.1:40000 this-machine"
         );
+    }
+
+    /// The account's name comes from the environment and goes into a command
+    /// the person types: a name with a space (Windows) is quoted with the
+    /// host, where it split the command before, and one a shell would read
+    /// into or `ssh` take for an option is left out.
+    #[test]
+    fn an_account_name_cannot_break_the_command_it_is_printed_in() {
+        let as_user = |user: &str| {
+            let ssh = Ssh {
+                server: Some(("192.168.1.50".to_string(), 2222)),
+                user: Some(user.to_string()),
+            };
+            tunnel_command(51234, "127.0.0.1:40000", Some(&ssh))
+        };
+        let start = "ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:51234:127.0.0.1:40000";
+        assert_eq!(
+            as_user("Some One"),
+            format!("{start} \"Some One@192.168.1.50\" -p 2222")
+        );
+        for hostile in [
+            "a$(id)",
+            "a`id`",
+            "a\"b",
+            "a\\b",
+            "-oProxyCommand=x",
+            "a\nb",
+        ] {
+            assert_eq!(
+                as_user(hostile),
+                format!("{start} 192.168.1.50 -p 2222"),
+                "{hostile:?}"
+            );
+        }
     }
 
     /// A socket left by a relay that is gone is removed when the next one

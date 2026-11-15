@@ -1,8 +1,6 @@
 //! How much of the processor the browser gets: the system's normal judgment, or
 //! the efficient end of it while nobody is waiting on the browser.
 //!
-//! **What a browser is doing when nobody waits on it.**
-//!
 //! **What each system is asked**, chosen for being reversible, since the same
 //! browser goes from one to the other as commands come and go:
 //!

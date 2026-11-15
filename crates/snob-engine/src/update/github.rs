@@ -207,8 +207,10 @@ pub(crate) async fn download(
             "{name} is {declared} bytes, more than allowed"
         );
     }
-    let part = to.with_extension("part");
-    let mut file = std::fs::File::create(&part)?;
+    // Removed on any failure from here on, a stream that broke midway and a
+    // download given up included; after the rename nothing is left at it.
+    let part = crate::files::Part(to.with_extension("part"));
+    let mut file = std::fs::File::create(&part.0)?;
     let mut hash = Sha256::new();
     let mut read: u64 = 0;
     while let Some(chunk) = response.chunk().await? {
@@ -220,11 +222,11 @@ pub(crate) async fn download(
     file.sync_all()?;
     drop(file);
     let got = hex(&hash.finalize());
-    if got != expected {
-        let _ = std::fs::remove_file(&part);
-        anyhow::bail!("{name} does not match SHA256SUMS: expected {expected}, got {got}");
-    }
-    std::fs::rename(&part, to)?;
+    anyhow::ensure!(
+        got == expected,
+        "{name} does not match SHA256SUMS: expected {expected}, got {got}"
+    );
+    std::fs::rename(&part.0, to)?;
     Ok(())
 }
 
@@ -381,6 +383,42 @@ mod tests {
             .unwrap();
         assert_eq!(std::fs::read(&to).unwrap(), b"the archive");
         assert_eq!(sha256_of(&to).unwrap(), right);
+    }
+
+    /// A download whose stream breaks before its end leaves no unfinished
+    /// file behind: the server here declares more bytes than it sends, then
+    /// closes.
+    #[tokio::test]
+    async fn a_download_that_breaks_midway_leaves_nothing() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut asked = [0u8; 4096];
+                let _ = socket.read(&mut asked).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\nhalf an archive")
+                    .await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        let origin = Origin::at(&Url::parse(&base).unwrap());
+        let tmp = tempfile::tempdir().unwrap();
+        let to = tmp.path().join("a.tar.gz");
+
+        let sum = "0".repeat(64);
+        let version = Version::parse("0.10.0").unwrap();
+        assert!(
+            download(&origin, version, "a.tar.gz", &sum, &to)
+                .await
+                .is_err()
+        );
+        assert!(
+            std::fs::read_dir(tmp.path()).unwrap().next().is_none(),
+            "the unfinished file was left"
+        );
     }
 
     /// A redirect is followed only to a host a release is served from.

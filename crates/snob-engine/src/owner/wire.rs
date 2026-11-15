@@ -145,6 +145,20 @@ impl FromOwner {
             Self::Welcome { .. } | Self::Heard { .. } => None,
         }
     }
+
+    /// Which message this is, for a sentence about one that was not
+    /// expected: never its contents, which may be a whole answer or the
+    /// browser's cookies.
+    pub(super) fn kind(&self) -> &'static str {
+        match self {
+            Self::Welcome { .. } => "welcome",
+            Self::Answer { .. } => "answer",
+            Self::Told { .. } => "told",
+            Self::Cookies { .. } => "cookies",
+            Self::Done { .. } => "done",
+            Self::Heard { .. } => "heard",
+        }
+    }
 }
 
 /// Counts what is written to it, to size a frame before it is built.

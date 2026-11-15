@@ -1,10 +1,12 @@
 //! Listening to the calls Instagram's own app makes on the page, for push-back.
 //!
-//! **Recorded exactly once, by the process holding the browser.**
+//! **A push-back is recorded exactly once, by the process holding the
+//! browser** ([`Latch`]).
 //!
-//! Each runs in a script named [`OWN_SCRIPT`], which is the initiator the browser
-//! reports for it — measured on Chromium 141, where the app's own `eval`'d code
-//! has an empty name, so an empty name alone would have taken those for snob's.
+//! snob's own requests are told from the app's by the script they run in,
+//! [`OWN_SCRIPT`], which the browser reports as their initiator: measured on
+//! Chromium 141, where the app's own `eval`'d code has an empty name, so an
+//! empty name alone would have taken those for snob's.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};

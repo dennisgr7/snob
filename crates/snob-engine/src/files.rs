@@ -18,11 +18,69 @@ pub fn default_path(in_dir: &Path, stem: &str, extension: &str) -> Result<PathBu
     usable_stem(stem)?;
     let name = format!("{stem}.{extension}");
     if in_dir.join(&name).exists() {
-        return Err(anyhow!(
-            "{name} already exists here. Use -o to say where the result should go"
-        ));
+        return Err(already_there(&name));
     }
     Ok(name.into())
+}
+
+/// A scratch file, removed when it is let go of: on a failure, and when the
+/// download writing it is given up. Made once the file is the holder's own.
+pub(crate) struct Part(pub(crate) PathBuf);
+
+impl Drop for Part {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn already_there(name: &str) -> anyhow::Error {
+    anyhow!("{name} already exists here. Use -o to say where the result should go")
+}
+
+/// `part`, a finished file, put into `dir` as `<stem>.<extension>`
+/// ([`default_path`]) and removed from where it was, whatever the outcome.
+///
+/// **Never over a file that is there, one made since the look included**: two
+/// runs saving the same name both pass [`default_path`], and a rename would
+/// put the later file over the earlier.
+pub(crate) fn place_new(part: &Path, dir: &Path, stem: &str, extension: &str) -> Result<PathBuf> {
+    let placed = default_path(dir, stem, extension).and_then(|name| {
+        let path = dir.join(&name);
+        match link_new(part, &path).or_else(|_| claim_and_rename(part, &path)) {
+            Ok(true) => Ok(path),
+            Ok(false) => Err(already_there(&name.to_string_lossy())),
+            Err(e) => Err(anyhow::Error::new(e)
+                .context(format!("could not move into place {}", path.display()))),
+        }
+    });
+    // Its other name after a link; nothing is left to remove after a rename.
+    let _ = std::fs::remove_file(part);
+    placed
+}
+
+/// `part` under the name `path` as well, unless something has it (`false`):
+/// a link is made whole or not at all, and never replaces (`EEXIST` from
+/// `linkat`, `ERROR_ALREADY_EXISTS` from `CreateHardLinkW`).
+fn link_new(part: &Path, path: &Path) -> std::io::Result<bool> {
+    match std::fs::hard_link(part, path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// [`link_new`] where the file system makes no links (FAT, exFAT, some
+/// shares): the name is taken with an empty file made new, which is what
+/// refuses a second writer, and `part` renamed over that file of its own.
+fn claim_and_rename(part: &Path, path: &Path) -> std::io::Result<bool> {
+    match create_new_private(path) {
+        Ok(claim) => drop(claim),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(e) => return Err(e),
+    }
+    std::fs::rename(part, path)
+        .map(|()| true)
+        .inspect_err(|_| drop(std::fs::remove_file(path)))
 }
 
 /// Refuses a stem that would not behave as a file name.
@@ -77,22 +135,20 @@ pub fn write_bytes(bytes: &[u8], destination: Option<&Path>) -> Result<()> {
 
 /// Opens a file that must not already exist, readable by this account only.
 pub fn create_new(path: &Path) -> Result<std::fs::File> {
-    use std::fs::OpenOptions;
+    create_new_private(path).with_context(|| format!("could not create {}", path.display()))
+}
 
-    let mut options = OpenOptions::new();
+fn create_new_private(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
-    // Everything else this tool writes is 0600 or 0700 -- the session, the
-    // database, the directories -- and an export is a list of real people's
-    // names, which the umask would usually leave world-readable on a shared
-    // machine.
+    // An export is a list of real people's names, which the umask would
+    // usually leave world-readable on a shared machine.
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options
-        .open(path)
-        .with_context(|| format!("could not create {}", path.display()))
+    options.open(path)
 }
 
 /// A download into a path the user named with `-o`, which replaces what is
@@ -398,6 +454,88 @@ mod tests {
             .to_string();
         assert!(!error.contains('\u{1b}'), "{error:?}");
         assert!(error.contains("gh[2K[A"), "{error:?}");
+    }
+
+    /// A finished download lands under its name, whole, and its scratch
+    /// file is gone.
+    #[test]
+    fn a_finished_file_is_put_under_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("someone-1.7.part");
+        std::fs::write(&part, b"the picture").unwrap();
+
+        let placed = place_new(&part, dir.path(), "someone-1", "jpg").unwrap();
+        assert_eq!(placed, dir.path().join("someone-1.jpg"));
+        assert_eq!(std::fs::read(&placed).unwrap(), b"the picture");
+        assert!(!part.exists());
+    }
+
+    /// A file that took the name after the look is not written over, by the
+    /// link or by the way taken where no link can be made: the name was
+    /// looked at, and then a rename replaced whatever had come since.
+    #[test]
+    fn a_name_taken_since_the_look_is_never_written_over() {
+        type Placing = fn(&Path, &Path) -> std::io::Result<bool>;
+        for (how, place) in [
+            ("a link", link_new as Placing),
+            ("a claim", claim_and_rename as Placing),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let part = dir.path().join("someone-1.7.part");
+            let path = dir.path().join("someone-1.jpg");
+            std::fs::write(&part, b"ours").unwrap();
+
+            std::fs::write(&path, b"theirs, made since").unwrap();
+            assert!(!place(&part, &path).unwrap(), "{how}");
+            assert_eq!(std::fs::read(&path).unwrap(), b"theirs, made since");
+            assert_eq!(std::fs::read(&part).unwrap(), b"ours", "{how}");
+
+            std::fs::remove_file(&path).unwrap();
+            assert!(place(&part, &path).unwrap(), "{how}");
+            assert_eq!(std::fs::read(&path).unwrap(), b"ours", "{how}");
+        }
+    }
+
+    /// Several runs that finish the same name at once leave one whole file,
+    /// the first one's, and every other is told the name is taken.
+    #[test]
+    fn of_several_writers_of_one_name_one_wins_and_none_is_written_over() {
+        const WRITERS: usize = 8;
+        let dir = tempfile::tempdir().unwrap();
+        let start = std::sync::Barrier::new(WRITERS);
+        let outcomes: Vec<(usize, Result<PathBuf>)> = std::thread::scope(|scope| {
+            let writers: Vec<_> = (0..WRITERS)
+                .map(|writer| {
+                    let (dir, start) = (dir.path(), &start);
+                    scope.spawn(move || {
+                        let part = dir.join(format!("someone-1.{writer}.part"));
+                        std::fs::write(&part, format!("writer {writer}")).unwrap();
+                        start.wait();
+                        (writer, place_new(&part, dir, "someone-1", "jpg"))
+                    })
+                })
+                .collect();
+            writers.into_iter().map(|w| w.join().unwrap()).collect()
+        });
+
+        let won: Vec<usize> = outcomes
+            .iter()
+            .filter_map(|(writer, placed)| placed.is_ok().then_some(*writer))
+            .collect();
+        assert_eq!(won.len(), 1, "{outcomes:?}");
+        for (_, placed) in outcomes.iter().filter(|(_, placed)| placed.is_err()) {
+            let error = placed.as_ref().unwrap_err().to_string();
+            assert!(error.contains("already exists"), "{error}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("someone-1.jpg")).unwrap(),
+            format!("writer {}", won[0])
+        );
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left.len(), 1, "scratch files were left: {left:?}");
     }
 
     /// Nothing here moves the process's working directory, which `cargo test`

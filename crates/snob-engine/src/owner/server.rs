@@ -63,6 +63,12 @@ impl Linger {
 /// one that started it may have died on the way.
 const FIRST_COMMAND: Duration = Duration::from_secs(30);
 
+/// How long a connection has to say who it is: as long as a command waits
+/// for an owner (`REACH`), and it speaks first, at once. One that says
+/// nothing counted as a command for as long as it stayed, and an owner
+/// leaves only when none is connected.
+const HELLO_WITHIN: Duration = Duration::from_secs(10);
+
 /// Whether `open` is to be closed now, `users` commands being connected that
 /// used it.
 fn due(open: &Open, users: usize, linger: &Linger, retiring: bool) -> bool {
@@ -292,7 +298,8 @@ where
     let mut attended = true;
     // Whatever the command is, it is told who this is and whom else this
     // serves; one of another build then asks this owner to leave, or goes.
-    if let Ok(Some(ToOwner::Hello { .. })) = wire::read::<ToOwner>(&mut from).await {
+    let hello = tokio::time::timeout(HELLO_WITHIN, wire::read::<ToOwner>(&mut from)).await;
+    if let Ok(Ok(Some(ToOwner::Hello { .. }))) = hello {
         let _ = outgoing.send(FromOwner::Welcome {
             build: state.build.clone(),
             others: state.connections.load(Ordering::SeqCst).saturating_sub(1),
@@ -566,6 +573,23 @@ mod tests {
         leave(&engine, &state, &people, &mut script, false).await;
         assert_eq!(engine.mode_of(pk), Mode::Eco, "lingering for nobody");
         assert_eq!(state.watched.lock().unwrap().get(&pk).copied(), Some(0));
+    }
+
+    /// A connection that never says who it is is let go of, and no longer
+    /// counted as a command: it kept the owner from ever leaving before.
+    #[tokio::test(start_paused = true)]
+    async fn a_connection_that_says_nothing_is_not_a_command_for_long() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = Headless::apart(&AppPaths::rooted_at(tmp.path()));
+        let state = Arc::new(state());
+        state.connections.store(1, Ordering::SeqCst);
+        // Kept open and silent for as long as the test runs.
+        let (_silent, served) = tokio::io::duplex(64);
+
+        let started = tokio::time::Instant::now();
+        connection(served, engine, Arc::clone(&state), Linger::for_people()).await;
+        assert_eq!(started.elapsed(), HELLO_WITHIN);
+        assert_eq!(state.connections.load(Ordering::SeqCst), 0);
     }
 
     /// The loop sleeps until the first thing that could need it, and never

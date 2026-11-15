@@ -317,7 +317,8 @@ impl RunTiming {
     /// Whether it began later than [`LATE_AFTER`] past its moment, beyond the
     /// jitter.
     pub fn late(&self) -> bool {
-        let allowed = (LATE_AFTER + self.allowed).as_secs() as i64;
+        let allowed = LATE_AFTER.saturating_add(self.allowed).as_secs();
+        let allowed = i64::try_from(allowed).unwrap_or(i64::MAX);
         self.late_by().is_some_and(|late| late > allowed)
     }
 }
@@ -565,10 +566,8 @@ fn refused_outcome(lists: &[TickList], posts: Option<PostsSkipped>) -> ExitCode 
         .iter()
         .find_map(|list| match list.skipped {
             Some(Skipped::NobodyLooked(Provenance::Cooldown)) => Some(ExitCode::RateLimited),
-            // What Instagram said beats what the store had to record, which
-            // is the rule `ListOutcome::stopped_by` exists for and the one
-            // `exit::from_stop_reason` names in its own doc: whichever of
-            // the two a command happens to read must not change the answer.
+            // What Instagram said beats what the store had to record
+            // (`ListOutcome::stopped_by`).
             Some(Skipped::Incomplete(reason, said)) => {
                 Some(said.unwrap_or_else(|| crate::exit::from_stop_reason(reason)))
             }
@@ -580,9 +579,9 @@ fn refused_outcome(lists: &[TickList], posts: Option<PostsSkipped>) -> ExitCode 
 
 /// Goes and looks, then reports what changed since the last time it did.
 ///
-/// 3. Refuse to conclude anything from a list this run did not verify, or one
-///    that came back short. **The mark does not move for a refused list**: what
-///    was never reported stays unreported, and the next run says it.
+/// Nothing is concluded from a list this run did not verify, or one that came
+/// back short. **The mark does not move for a refused list**: what was never
+/// reported stays unreported, and the next run says it.
 pub async fn tick(app: &mut App, watched: &Watched) -> Result<TickReport> {
     let args = watched.list_args();
     let before = app.client().pacer().spent();

@@ -1,10 +1,11 @@
 //! The process that started this one, and hearing when it is gone.
 //!
-//! **A parent dying sends its children nothing.**
+//! **A parent dying sends its children nothing**, so a run a program drives
+//! watches its parent and stops when it goes (AGENTS.md, "A run nobody is
+//! left to want stops"); not every snob is watched ([`worth_watching`]).
 //!
-//! **Not every snob is watched** ([`worth_watching`]).
-//!
-//! **Watched as a process, never as a thread.**
+//! **Watched as a process, never as a thread**: `PR_SET_PDEATHSIG` fires
+//! when the thread that started this process exits, its program still there.
 
 /// What [`worth_watching`] decides on, read once at the start
 /// ([`situation`]).

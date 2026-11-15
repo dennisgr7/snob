@@ -761,7 +761,7 @@ impl Headless {
                 "a navigation is asked as a document".into(),
             ));
         }
-        let origin = origin_of(&request.url).map_err(broken)?;
+        let origin = on_the_site(&request.url)?;
         self.on_ready_tab(session, &origin, async |live, world| {
             self.send_on(live, &request, world).await
         })
@@ -781,7 +781,13 @@ impl Headless {
             tracing::error!(request = %what, "refused a call snob may not send");
             return Err(PageError::NotAllowed(what));
         }
-        let origin = origin_of(&call.origin).map_err(broken)?;
+        let origin = on_the_site(&call.origin)?;
+        // The origin alone from here on: every address the call becomes is
+        // made from it, and a path or a query handed in with it is dropped.
+        let call = Call {
+            origin: origin.clone(),
+            ..call
+        };
         self.on_ready_tab(session, &origin, async |live, _| {
             let told = answer_on(live, session, &call).await;
             // Whatever failed once a push-back was heard, the push-back is
@@ -1667,6 +1673,40 @@ fn origin_of(url: &str) -> Result<String> {
     Ok(parsed.origin().ascii_serialization())
 }
 
+/// The origin of `url`, when it is the site's own (`snob_ig::client::site`).
+///
+/// **The account's tab is never taken to another site**, whatever handed the
+/// request over, the owner's socket included: the allowlist judges a method
+/// and a path, never a host, and the tab goes to the origin it is told.
+fn on_the_site(url: &str) -> Result<String, PageError> {
+    let site = snob_ig::client::site().origin().ascii_serialization();
+    match origin_of(url) {
+        Ok(origin) if origin == site || a_tests_own_server(&origin) => Ok(origin),
+        _ => {
+            let what = "a request to another site";
+            tracing::error!(request = what, "refused a call snob may not send");
+            Err(PageError::NotAllowed(what.into()))
+        }
+    }
+}
+
+/// A fake Instagram on a loopback port, in a test or a `testing` build, never
+/// a release: the tests of one binary cannot share the one `site()` of a
+/// process, and the owner of a sandbox's browsers is not told its site (it is
+/// started with the sandbox's root alone).
+#[cfg(any(test, feature = "testing"))]
+fn a_tests_own_server(origin: &str) -> bool {
+    url::Url::parse(origin).is_ok_and(|url| {
+        url.scheme() == "http"
+            && matches!(url.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())
+    })
+}
+
+#[cfg(not(any(test, feature = "testing")))]
+fn a_tests_own_server(_: &str) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1752,6 +1792,59 @@ mod tests {
         );
         assert!(headless.account(Pk::new(42)).live.lock().await.is_none());
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    /// A request or a call that names another site than snob's is refused
+    /// before a browser is started for it, however well its method and path
+    /// read to the allowlist: the tab would have gone there to send it.
+    #[tokio::test]
+    async fn a_request_to_another_site_starts_no_browser() {
+        let root = tempfile::tempdir().unwrap();
+        let headless = Headless::new(never_signed_out(root.path()));
+        let session = made("42%3Aelsewhere%3A1", 1_000);
+        let refused = |error: PageError| {
+            assert!(
+                matches!(&error, PageError::NotAllowed(what) if what == "a request to another site"),
+                "{error:?}"
+            );
+        };
+        for elsewhere in [
+            "https://example.com",
+            "https://www.instagram.com.example.com",
+            "https://www.instagram.com:8443",
+            "http://www.instagram.com",
+            "https://instagram.com",
+            "https://127.0.0.1:9",
+            "http://[::1]:9",
+            "data:text/html,x",
+            "not an address",
+        ] {
+            let request = PageRequest {
+                method: Method::Get,
+                url: format!("{elsewhere}/api/v1/friendships/42/following/"),
+                headers: Vec::new(),
+                referrer: "https://www.instagram.com/".into(),
+                body: None,
+                navigate: false,
+                cap: 1024,
+                timeout_ms: 1_000,
+            };
+            refused(headless.send_as(&session, request).await.unwrap_err());
+            let call = Call {
+                ask: Ask::Viewer,
+                origin: elsewhere.to_string(),
+                referrer: "/".into(),
+                claim: "0".into(),
+                cap: 1024,
+                timeout_ms: 1_000,
+            };
+            refused(headless.ask_as(&session, call).await.unwrap_err());
+        }
+        assert!(headless.account(Pk::new(42)).live.lock().await.is_none());
+        assert_eq!(
+            on_the_site("https://www.instagram.com/api/v1/x/").unwrap(),
+            "https://www.instagram.com"
+        );
     }
 
     /// A session its account was signed out of is refused by the browsers'

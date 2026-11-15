@@ -95,9 +95,8 @@ pub fn merged(stored: &Session, handed: &str, jar: &BrowserCookies) -> Option<Se
             *kept = Some(value.clone());
         }
     }
-    let secret = |s: &Option<snob_core::secret::Secret>| s.as_ref().map(|t| t.expose().to_string());
-    let same = fresh.sessionid.expose() == stored.sessionid.expose()
-        && secret(&fresh.csrftoken) == secret(&stored.csrftoken)
+    let same = fresh.sessionid == stored.sessionid
+        && fresh.csrftoken == stored.csrftoken
         && fresh.mid == stored.mid
         && fresh.ig_did == stored.ig_did
         && fresh.datr == stored.datr;

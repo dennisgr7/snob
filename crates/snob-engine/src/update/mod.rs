@@ -186,7 +186,7 @@ pub fn at_start(paths: &AppPaths, sandboxed: bool, role: Role, globals: &[OsStri
 fn due(state: &State) -> bool {
     state
         .last_check
-        .is_none_or(|at| state::now() - at >= CHECK_EVERY_SECS || at > state::now())
+        .is_none_or(|at| state::now().saturating_sub(at) >= CHECK_EVERY_SECS || at > state::now())
 }
 
 /// Starts `snob __update <what...>` detached, its errors appended to the

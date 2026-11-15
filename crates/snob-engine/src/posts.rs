@@ -377,15 +377,17 @@ impl Post {
             .collect()
     }
 
-    /// Item `index` (zero-based) as a file to download.
+    /// Item `index` (zero-based) as a file to download; an index past the
+    /// post's items is a file with nothing to fetch, which a save refuses.
     pub fn file(&self, index: usize) -> Named {
+        let item = self.items.get(index);
         Named {
             number: index + 1,
             stem: self.stem(index),
-            url: self.items[index].url.clone(),
+            url: item.and_then(|item| item.url.clone()),
             what: format!("item {}", index + 1),
             cap: MAX_POST_BYTES,
-            best: self.items[index].best.clone(),
+            best: item.and_then(|item| item.best.clone()),
             ffmpeg: None,
         }
     }
@@ -1162,6 +1164,11 @@ pub(crate) async fn save_item(
 /// Item `index` of `post` as the view keeps one: at its best when ffmpeg
 /// is found ([`Videos::for_the_view`]).
 fn kept_file(post: &Post, index: usize) -> Result<Named> {
+    anyhow::ensure!(
+        index < post.items.len(),
+        "item {} is not in the post",
+        index + 1
+    );
     Videos::for_the_view()
         .prepare(vec![post.file(index)])
         .into_iter()
