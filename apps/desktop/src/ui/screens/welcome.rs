@@ -8,7 +8,6 @@ use gpui_kit::{AnyElement, Context, FontWeight, Role, div, px};
 
 use super::{column, handle};
 use crate::state::flow::Named;
-use crate::theme::fonts::MONO;
 use crate::ui::look::{Look, color, sp};
 use crate::ui::parts;
 use crate::ui::shell::{Phase, Shell};
@@ -68,7 +67,6 @@ pub fn render(
                 .flex()
                 .flex_wrap()
                 .justify_center()
-                .font_family(MONO)
                 .font_weight(FontWeight::MEDIUM)
                 .text_size(sp(22.))
                 .line_height(sp(30.))

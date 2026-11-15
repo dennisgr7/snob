@@ -9,7 +9,6 @@ use gpui_kit::{AnyElement, Context, FontWeight, Role, div};
 use super::{column, handle};
 use crate::backend::Account;
 use crate::state::flow::{Event, Method, Named};
-use crate::theme::fonts::MONO;
 use crate::ui::look::{Look, color, sp};
 use crate::ui::parts::{self, Kind};
 use crate::ui::shell::{Phase, Shell};
@@ -54,7 +53,6 @@ pub fn render(
             )
             .child(
                 div()
-                    .font_family(MONO)
                     .font_weight(FontWeight::MEDIUM)
                     .text_size(sp(16.))
                     .text_color(color(palette.text))

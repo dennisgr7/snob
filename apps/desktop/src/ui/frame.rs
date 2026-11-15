@@ -253,7 +253,6 @@ fn band(
                     .rounded(px(4.))
                     .border_1()
                     .border_color(color(palette.control_line))
-                    .font_family(MONO)
                     .font_weight(FontWeight::BOLD)
                     .text_size(px(11.))
                     .text_color(color(palette.text))

@@ -1,21 +1,36 @@
 # Fonts
 
-IBM Plex Mono and IBM Plex Sans, built into the app (`src/theme/fonts.rs`) so
-it looks the same on a machine that has neither installed. Licensed under the
-SIL Open Font License 1.1 (`OFL.txt`, IBM's own copy of it).
+Inter for every word that is read, titles and buttons included, and IBM Plex
+Mono for the brand and for what is code: the session ID field, a failure's
+code, a crash report. Both are built into the app (`src/theme/fonts.rs`) so
+it looks the same on a machine that has neither installed, and both are
+licensed under the SIL Open Font License 1.1: `Inter-OFL.txt` is the Inter
+project's copy of it, `OFL.txt` IBM's.
 
-Taken unchanged from <https://github.com/IBM/plex> at commit
-`bc6a7e4b37634eb79785d59781893db63ee3edcb`, `packages/plex-mono` and
-`packages/plex-sans`, `fonts/complete/ttf/`. Only the weights the app draws
-with are here.
+**Why Inter**: it was drawn for interfaces on screens, with plain, even
+shapes at the sizes a window uses (12 to 30 pixels), hinting that holds up
+on Windows, and every letter Spanish needs. IBM Plex Sans, which it
+replaces, reads as Plex Mono's sibling, and with titles and buttons in Plex
+Mono the app looked like code.
+
+Taken unchanged:
+
+- Inter 4.1, `Inter-4.1.zip` from
+  <https://github.com/rsms/inter/releases/tag/v4.1> (SHA-256
+  `9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e`):
+  `extras/ttf/` and `LICENSE.txt`, kept as `Inter-OFL.txt`.
+- IBM Plex Mono from <https://github.com/IBM/plex> at commit
+  `bc6a7e4b37634eb79785d59781893db63ee3edcb`, `packages/plex-mono`,
+  `fonts/complete/ttf/`.
+
+Only the weights the app draws with are here.
 
 | File | SHA-256 |
 |---|---|
+| `Inter-Regular.ttf` | `40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82` |
+| `Inter-Medium.ttf` | `97ad806f526e41546d46365bb3a393145f75b7b1568913db74549ad8b8dba872` |
+| `Inter-SemiBold.ttf` | `78a843fade9d4612a5567302fb595b56976eb5fcebf4fea5a5912d638bafcde3` |
+| `Inter-Bold.ttf` | `288316099b1e0a47a4716d159098005eef7c0066921f34e3200393dbdb01947f` |
+| `Inter-OFL.txt` | `262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a` |
 | `IBMPlexMono-Regular.ttf` | `7c6fbddca4b700be918f5f6183d9bd4464fa427fe435f0b480d77fe2bb8c5a43` |
-| `IBMPlexMono-Medium.ttf` | `98fbd727aae340b236955879dabed4d991aac9e8e90b3b2a67ce4a59221cc97c` |
-| `IBMPlexMono-Bold.ttf` | `74e5eedcfa4596497d34e19023cabdabd3a8c852b903007a5654a59591a72ffb` |
 | `IBMPlexMono-BoldItalic.ttf` | `c8b00068fd2fd69bbcf62059148623f09d19e9ada8bf9e8caf1aedd01347046a` |
-| `IBMPlexSans-Regular.ttf` | `b47ebd72b5ce53b60f909033ff84d6fc12358cc147e2981f8c321ad3f36246b6` |
-| `IBMPlexSans-Medium.ttf` | `a494d5a69fa094f7071a9ffbc98e86c85337d1a29f3fc1ff7c2e1c46161ddf27` |
-| `IBMPlexSans-SemiBold.ttf` | `c51119b25f4a296da2b66edf3201b9aa1735091ed7efc1fca0313346f3851a4d` |
-| `IBMPlexSans-Bold.ttf` | `22f59d358e8b9b9fb38ac6ee26a7ea7263ffa1c89a9056c101acff5add91f5d6` |

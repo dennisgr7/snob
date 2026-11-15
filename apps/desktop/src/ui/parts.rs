@@ -17,7 +17,7 @@ use gpui_kit::{
 
 use super::look::{Look, color, color_at, sp};
 use crate::backend::Account;
-use crate::theme::fonts::{MONO, SANS};
+use crate::theme::fonts::SANS;
 use crate::theme::motion::RING_TURN;
 use crate::theme::tokens::{Palette, shape};
 
@@ -60,7 +60,6 @@ pub fn title(
         .aria_level(1)
         .aria_label(text.clone())
         .track_focus(focus)
-        .font_family(MONO)
         .font_weight(FontWeight::BOLD)
         .text_size(sp(30.))
         .line_height(sp(38.))
@@ -144,7 +143,6 @@ fn plain_button(
         .px(sp(20.))
         .gap(sp(8.))
         .rounded(px(shape::CONTROL_RADIUS))
-        .font_family(MONO)
         .font_weight(FontWeight::MEDIUM)
         .text_size(sp(14.))
         .border_1()
@@ -286,7 +284,6 @@ pub fn avatar(account: &Account, size: f32, look: &Look) -> Div {
             .flex()
             .items_center()
             .justify_center()
-            .font_family(MONO)
             .font_weight(FontWeight::BOLD)
             .text_size(px(size * 0.45))
             .text_color(color(palette.on_accent))
