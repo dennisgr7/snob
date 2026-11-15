@@ -92,7 +92,7 @@ pub async fn resolve(app: &mut App, args: &ListQuery) -> Result<Target> {
         return Ok(Target {
             pk: viewer.pk,
             // `None` when it was never learned, rather than the numeric id
-            // standing in for it. See the field.
+            // standing in for it.
             username: resolved.clone(),
             is_self: true,
             counters: match resolved {

@@ -326,7 +326,6 @@ pub async fn ask_consent_with(
         return Ok(());
     }
 
-    // Compared raw, deliberately.
     let is_own_name = app
         .viewer()
         .username
@@ -336,19 +335,12 @@ pub async fn ask_consent_with(
         return Ok(());
     }
 
-    // How an account is named on screen is `target::label`'s question, and it is
-    // the same question here: `args.target` is `Some` at this point, so `label`
-    // returns exactly the at sign and the filtered name the sentences in
-    // `report` want.
     let shown = target::label(app, args.target.as_deref());
 
     // Being unable to ask and being told no are two different events: `confirm`
     // answers with its default the moment nobody can answer, which would blame
     // the user for a "no" nobody gave.
     if !someone_is_there {
-        // Which way to answer in advance is the *caller's* fact, not this
-        // function's, and it is the one thing this hands over: the sentence
-        // itself is `report`'s, like every other sentence the tool prints.
         return Err(crate::sentences::refuse_unconsented(
             &shown,
             app.consent_in_advance(),
@@ -362,7 +354,6 @@ pub async fn ask_consent_with(
     {
         return Err(crate::sentences::refuse_declined(&shown));
     }
-    // Asked and answered.
     app.record_consent(name);
     Ok(())
 }

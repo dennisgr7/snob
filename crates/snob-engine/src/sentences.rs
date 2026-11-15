@@ -103,10 +103,6 @@ where
 
 /// Two stored lists too far apart to be crossed.
 ///
-/// The wording and the code live here rather than in `engine` because that is
-/// what AGENTS.md says: engine returns data and where the data came from, and
-/// never decides how anything looks.
-///
 /// - A **cooldown** is waited out, so "run it again later" is true and the
 ///   throttling code is right.
 /// - **`--offline`** is the user's own doing, and dropping it is the fix.
