@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use snob_core::Epoch;
 use snob_core::model::{ListKind, StopReason};
+use snob_ig::pace::CancelToken;
 use snob_ig::pager::Event;
 
 /// What a wait the engine announces is for.
@@ -76,11 +77,15 @@ pub trait Ask: Send + Sync {
     fn confirm(&self, question: &str) -> anyhow::Result<bool>;
 }
 
-/// What a run reports to and asks through.
+/// What a run reports to and asks through, and what stops it.
 #[derive(Clone)]
 pub struct Front {
     pub progress: Arc<dyn Progress>,
     pub ask: Arc<dyn Ask>,
+    /// What stops this run and no other: a child of the process's token
+    /// (`interrupt::install().child()`), for a program that outlives its
+    /// runs. `None` is the process's own, which a command line wants.
+    pub cancel: Option<CancelToken>,
 }
 
 impl Front {
@@ -89,6 +94,7 @@ impl Front {
         Self {
             progress: Arc::new(Unwatched),
             ask: Arc::new(NobodyToAsk),
+            cancel: None,
         }
     }
 }

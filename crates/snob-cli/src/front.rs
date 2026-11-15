@@ -21,6 +21,8 @@ pub fn front(with_progress: bool) -> Front {
             progress: Arc::clone(&progress),
         }),
         progress,
+        // One run a process: Ctrl+C stops it.
+        cancel: None,
     }
 }
 

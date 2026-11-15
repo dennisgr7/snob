@@ -595,32 +595,75 @@ impl Pacer {
 }
 
 /// Shared cancellation token.
+///
+/// **A token made by [`child`](Self::child) is canceled by its own
+/// `cancel` or by any token above it, and cancels nothing above itself**:
+/// one run of a process that lives on is stopped without stopping the next.
 #[derive(Clone, Default)]
 pub struct CancelToken {
-    flag: Arc<AtomicBool>,
-    notify: Arc<tokio::sync::Notify>,
+    own: Arc<Asked>,
+    /// The tokens above this one, nearest first.
+    above: Arc<[Arc<Asked>]>,
+}
+
+/// One request to stop, and who waits for it.
+#[derive(Default)]
+struct Asked {
+    flag: AtomicBool,
+    notify: tokio::sync::Notify,
 }
 
 impl CancelToken {
     pub fn cancel(&self) {
-        self.flag.store(true, Ordering::Release);
-        self.notify.notify_waiters();
+        self.own.flag.store(true, Ordering::Release);
+        self.own.notify.notify_waiters();
+    }
+
+    /// A token for one run under this one.
+    #[must_use]
+    pub fn child(&self) -> Self {
+        Self {
+            own: Arc::default(),
+            above: std::iter::once(&self.own)
+                .chain(self.above.iter())
+                .cloned()
+                .collect(),
+        }
+    }
+
+    fn asked(&self) -> impl Iterator<Item = &Arc<Asked>> {
+        std::iter::once(&self.own).chain(self.above.iter())
     }
 
     pub fn is_canceled(&self) -> bool {
-        self.flag.load(Ordering::Acquire)
+        self.asked().any(|asked| asked.flag.load(Ordering::Acquire))
     }
 
     /// Resolves when the run is canceled, and never otherwise.
     pub async fn canceled(&self) {
         loop {
-            // Register before checking the flag, or a notification arriving
-            // between the two is lost.
-            let pending = self.notify.notified();
+            // Registered before the flags are checked, or a notification
+            // arriving between the two is lost.
+            let mut pending: Vec<_> = self
+                .asked()
+                .map(|asked| Box::pin(asked.notify.notified()))
+                .collect();
             if self.is_canceled() {
                 return;
             }
-            pending.await;
+            std::future::poll_fn(|cx| {
+                let mut woken = false;
+                // Every one is polled: each registers its own waker.
+                for notified in &mut pending {
+                    woken |= notified.as_mut().poll(cx).is_ready();
+                }
+                if woken {
+                    std::task::Poll::Ready(())
+                } else {
+                    std::task::Poll::Pending
+                }
+            })
+            .await;
         }
     }
 
@@ -1085,6 +1128,42 @@ mod tests {
         let c = CancelToken::default();
         c.cancel();
         assert!(c.sleep_or_cancel(Duration::from_secs(30)).await);
+    }
+
+    #[tokio::test]
+    async fn canceling_one_run_leaves_the_next_and_the_process_running() {
+        let process = CancelToken::default();
+        let first = process.child();
+        let second = process.child();
+
+        first.cancel();
+
+        assert!(first.is_canceled());
+        assert!(first.sleep_or_cancel(Duration::from_secs(30)).await);
+        assert!(!second.is_canceled());
+        assert!(!process.is_canceled());
+        assert!(!second.sleep_or_cancel(Duration::from_millis(1)).await);
+    }
+
+    #[tokio::test]
+    async fn the_process_stopping_interrupts_every_run_under_it() {
+        let process = CancelToken::default();
+        let run = process.child();
+        // A run of a run, as a step that can be stopped on its own.
+        let step = run.child();
+        let copy = process.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            copy.cancel();
+        });
+
+        let start = std::time::Instant::now();
+        assert!(step.sleep_or_cancel(Duration::from_secs(30)).await);
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the wait was not interrupted"
+        );
+        assert!(run.is_canceled());
     }
 
     /// A canceled run is never cleared to send, even with nothing owed.

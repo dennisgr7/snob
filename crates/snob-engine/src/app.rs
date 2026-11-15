@@ -64,12 +64,13 @@ pub fn target_label(target: Option<&str>) -> String {
 fn pacer(
     paths: &AccountPaths,
     announce: Arc<dyn Fn(std::time::Duration) + Send + Sync>,
+    cancel: CancelToken,
 ) -> Result<Pacer> {
     // The store goes first: it is what creates the schema, and the budget opens
     // its own connection to a file that has to have tables already.
     Store::open(paths)?;
     Ok(Pacer::new(Arc::new(SqliteRateBudget::open(paths)?))
-        .with_cancel(interrupt::install())
+        .with_cancel(cancel)
         .waiting_at_most(MAX_WAIT.get().copied().flatten())
         .announcing(announce))
 }
@@ -135,6 +136,7 @@ pub fn pacer_saying_a_line(paths: &AccountPaths) -> Result<Pacer> {
                 snob_core::duration::format(waited)
             ));
         }),
+        interrupt::install(),
     )
 }
 
@@ -285,20 +287,28 @@ impl App {
         let db = Store::open(paths)?;
         // Retention, for the commands that are not the monitor.
         crate::engine::watch::settle_daily(&db);
-        let Front { progress, ask } = front();
+        let Front {
+            progress,
+            ask,
+            cancel,
+        } = front();
         // Armed before the pacer opens the store and the budget, so a Ctrl+C
         // during those opens stops the run in order rather than killing it.
-        interrupt::install();
+        let process = interrupt::install();
 
-        let pacer = pacer(paths, {
-            let progress = Arc::clone(&progress);
-            // `waiting` rather than `note`: the number counts down on the bar
-            // instead of being frozen into the message at the moment the wait
-            // began.
-            Arc::new(move |waited: std::time::Duration| {
-                progress.waiting(Wait::Budget, waited);
-            })
-        })?;
+        let pacer = pacer(
+            paths,
+            {
+                let progress = Arc::clone(&progress);
+                // `waiting` rather than `note`: the number counts down on the
+                // bar instead of being frozen into the message at the moment
+                // the wait began.
+                Arc::new(move |waited: std::time::Duration| {
+                    progress.waiting(Wait::Budget, waited);
+                })
+            },
+            cancel.unwrap_or(process),
+        )?;
 
         Ok(Some(Self {
             client: Arc::new(IgClient::new(session, pacer)?),
@@ -318,7 +328,7 @@ impl App {
     /// An app wired by hand, so the engine can be driven against a mock server.
     #[doc(hidden)]
     pub fn for_test(client: IgClient, db: Store, viewer: Viewer) -> Self {
-        let Front { progress, ask } = Front::quiet();
+        let Front { progress, ask, .. } = Front::quiet();
         Self {
             client: Arc::new(client),
             db,
@@ -607,6 +617,45 @@ mod tests {
             "{refused}"
         );
         assert!(!account.db_file().exists(), "nothing was opened");
+        store.delete().unwrap();
+    }
+
+    /// A program that outlives its runs hands each a token of its own
+    /// (`Front::cancel`): stopping one run leaves the next one running.
+    #[tokio::test]
+    async fn a_run_handed_its_own_token_is_stopped_alone() {
+        use crate::host::Front;
+        use snob_core::session::{Session, SessionOrigin};
+        use snob_ig::pace::CancelToken;
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = snob_store::paths::AppPaths::rooted_at(tmp.path());
+        let secrets = snob_store::secrets::SecretStore::new(paths.clone(), true)
+            .with_service(&format!("snob-ig-test-app-cancel-{}", std::process::id()));
+        let account = paths.account(Pk::new(42));
+        let store = secrets.session_of(&account);
+        let session =
+            Session::from_sessionid("42%3Aabc%3A1", "Mozilla/5.0", SessionOrigin::Paste).unwrap();
+        account.admit_session(session.created_at).unwrap();
+        store.save(&session).unwrap();
+
+        // Not the process's token: another test of this binary cancels it.
+        let above = CancelToken::default();
+        let open = |cancel: CancelToken| {
+            App::open(&store, &account, || Front {
+                cancel: Some(cancel),
+                ..Front::quiet()
+            })
+            .unwrap()
+            .expect("a session is stored")
+        };
+        let (first, second) = (open(above.child()), open(above.child()));
+
+        first.cancel().cancel();
+        assert!(first.cancel().is_canceled());
+        assert!(!second.cancel().is_canceled());
+
+        above.cancel();
+        assert!(second.cancel().is_canceled());
         store.delete().unwrap();
     }
 
