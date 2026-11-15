@@ -4,18 +4,19 @@ name: CI
 # why, and is what moves the pins.
 
 # No schedule: `on:` is a property of the workflow rather than of a job, so a
-# cron in this file would start every job in it. The advisory check, the one
-# thing that wants a timer, runs from supply-chain.yml.
+# cron in this file would start every job in it. What wants a timer runs from
+# supply-chain.yml and weekly.yml.
 on:
   push:
     branches: [main, dev]
   pull_request:
   workflow_dispatch:
 
-# A new push to a pull request supersedes the run before it; a push to main or
-# dev is a landed commit whose build and test record should finish.
+# A new push to a pull request supersedes the run before it. A push to main or
+# dev is a landed commit whose record should finish: its group is its own
+# commit, since a group also drops a pending run when a newer one queues.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -58,14 +59,16 @@ jobs:
           if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
             rust=true
           else
-            changed="$(git diff --name-only "$base" HEAD)"
+            changed="$(git diff --name-only --no-renames "$base" HEAD)"
             if [ -z "$changed" ]; then
               rust=true
             fi
             while IFS= read -r path; do
               [ -z "$path" ] && continue
               case "$path" in
-                AGENTS.md) rust=true ;;
+                # AGENTS.md is cited by the code; README.md is read by a test
+                # (the monitor's payload it publishes).
+                AGENTS.md|README.md) rust=true ;;
                 docs/*|web/*|.agents/*|skills-lock.json|LICENSE|.gitignore|.gitattributes|*.md) ;;
                 *) rust=true ;;
               esac
@@ -178,8 +181,8 @@ jobs:
           sudo apt-get install -y gnome-keyring dbus-x11
       # The lint job runs on Linux, which never compiles the `cfg(windows)`
       # code -- the owner's pipe and who may reach it, the browser's handles
-      # and its job -- nor what only macOS builds. `cargo test` does, but a
-      # warning there fails nothing.
+      # and its job -- nor what only macOS builds. The tests do, but a warning
+      # there fails nothing.
       - name: Lints on this platform
         if: runner.os != 'Linux'
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -188,10 +191,15 @@ jobs:
       # Chrome, or a launch flag that breaks it, fails them rather than
       # turning the only end-to-end check of the engine into green no-ops.
       #
-      # `--all-features` turns on the `testing` seam across the workspace so one
-      # run covers the library tests, the binary's unit tests, and the sandbox
-      # integration tests together; `lint` above checks `--no-default-features`.
-      - name: Test
+      # Twice: as it ships (default features, no `testing` seam), and with
+      # `--all-features`, which builds the seam in and adds the binary-level
+      # tests. A test can pass only because the seam is there.
+      - name: Test as it ships
+        if: runner.os != 'Linux'
+        env:
+          SNOB_TEST_REQUIRE_BROWSER: 1
+        run: cargo nextest run --profile ci --workspace --locked
+      - name: Test with the testing seam
         if: runner.os != 'Linux'
         env:
           SNOB_TEST_REQUIRE_BROWSER: 1
@@ -214,6 +222,7 @@ jobs:
           dbus-run-session -- bash -c '
             set -euo pipefail
             echo "" | gnome-keyring-daemon --unlock --components=secrets
+            cargo nextest run --profile ci --workspace --locked --target '"$target"'
             cargo nextest run --profile ci --workspace --all-features --locked --target '"$target"'
           '
 

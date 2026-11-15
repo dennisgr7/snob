@@ -34,7 +34,10 @@ jobs:
         with:
           # Released 2026-11-01.
           tool: cargo-hack@0.6.46
-      - run: cargo hack check --workspace --feature-powerset --no-dev-deps --locked
+      # No `--locked`: `--no-dev-deps` drops the dev-dependencies from the
+      # manifests for the run, which prunes the lockfile, and `--locked`
+      # refuses that (taiki-e/cargo-hack#274).
+      - run: cargo hack check --workspace --feature-powerset --no-dev-deps
 
   fuzz:
     name: Fuzz parsers
@@ -90,7 +93,7 @@ jobs:
       - name: Run mutation tests on pure crates
         run: |
           set +e
-          cargo mutants --test-tool=nextest -p snob-core -p snob-ig -C --locked --timeout 60 --minimum-test-timeout 20 --shard ${{ matrix.shard }}/8 --jobs 2
+          cargo mutants --test-tool=nextest -p snob-core -p snob-ig -C --locked --timeout 60 --shard ${{ matrix.shard }}/8 --jobs 2
           status=$?
           set -e
           for f in mutants.out/missed.txt mutants.out/timeout.txt; do

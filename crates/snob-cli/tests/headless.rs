@@ -44,8 +44,9 @@ const SERVED_CSRF: &str = ig::CSRF;
 
 /// Whether a browser will start headless on this machine at all.
 ///
-/// Asked once for the whole file, on a runtime of its own: every test starting
-/// a probe browser beside its own doubled the browsers starting at once.
+/// Asked once per process, on a runtime of its own. Under `cargo test` that is
+/// once for the whole file; under nextest, where each test is its own process,
+/// it is once per test.
 fn a_browser_starts() -> bool {
     static STARTS: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
     let answer = STARTS.get_or_init(|| {
@@ -73,9 +74,11 @@ fn a_browser_starts() -> bool {
 /// The browser to this test alone, while the guard lives, or `None` where no
 /// browser starts.
 ///
-/// The tests run one at a time: several browsers starting and closing at once
-/// on a loaded machine hold their profiles past the patience the tests give
-/// them.
+/// Under `cargo test` the tests in this file run one at a time: several
+/// browsers starting and closing at once on a loaded machine held their
+/// profiles past the patience the tests give them. Under nextest each test is
+/// a process of its own and this lock holds nothing back; the `ci` profile
+/// retries these instead (`.config/nextest.toml`).
 async fn a_browser_alone() -> Option<tokio::sync::MutexGuard<'static, ()>> {
     static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let alone = ONE_AT_A_TIME.lock().await;

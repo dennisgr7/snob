@@ -3,6 +3,8 @@
 /fuzz/corpus/
 /fuzz/artifacts/
 /mutants.out*/
+*.snap.new
+/lcov.info
 **/*.rs.bk
 *.pdb
 

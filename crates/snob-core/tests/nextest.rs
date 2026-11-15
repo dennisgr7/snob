@@ -2,7 +2,9 @@
 //!
 //! A rename would silently drop a test from `keyring` or `agent`, so this
 //! checks every `test(=name)` and `binary(name)` in `.config/nextest.toml`
-//! against `crates/`.
+//! against `crates/`. **Only the last segment of a name is checked**: a test
+//! moved to another module under the same name still passes here, and drops
+//! out of its group.
 
 mod common;
 use common::{relative, repo_root, source_files};

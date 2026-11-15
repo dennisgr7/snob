@@ -1,8 +1,9 @@
-# Serialized across processes: the credential store (Windows Credential Manager,
-# macOS Keychain, Linux Secret Service over D-Bus) is one service per machine,
-# and an in-process mutex (`keyring_lock` in `secrets.rs`, `LOCK` in
-# `tests/layout.rs`) cannot serialize tests that nextest runs in separate
-# processes.
+# The tests that write to or delete from the credential store (Windows
+# Credential Manager, macOS Keychain, Linux Secret Service over D-Bus), one at a
+# time: it is one service per machine, and an in-process mutex (`keyring_lock`
+# in `secrets.rs`, `LOCK` in `tests/layout.rs`) cannot serialize separate
+# processes. Every sandboxed run also reads it (`secrets.rs` tries the keyring
+# first), so readers still meet writers: the `ci` profile retries those.
 [test-groups.keyring]
 max-threads = 1
 
@@ -32,6 +33,7 @@ filter = """
     | test(=commands::purge::tests::a_plan_with_no_session_and_no_directories_removes_nothing)
     | test(commands::common::tests)
     | test(=commands::watch::run::tests::a_run_with_no_session_still_settles_the_queue)
+    | test(=commands::watch::once::tests::a_webhook_the_run_refuses_still_lets_the_queue_settle)
     | (binary(web) & (
       test(=watch_check_reads_each_account_by_its_profile)
       | test(=watch_check_reads_the_own_account_as_its_profile_opens)
@@ -60,6 +62,7 @@ filter = """
       | test(=an_agent_signs_an_account_out_only_after_a_yes_that_names_it)
       | test(=purge_lists_then_stops_running_jobs_before_removing_everything)
       | test(=a_jobs_directory_that_cannot_be_made_keeps_no_session)
+      | test(=a_login_is_for_the_account_named_or_for_a_new_one)
       | test(=logout_stops_running_jobs)
       | test(=mcp_key_revoke_warns_when_the_environment_holds_the_key)
     ))
@@ -67,9 +70,11 @@ filter = """
 """
 test-group = "keyring"
 
-[profile.ci]
-# Two retries surface a transient runner or D-Bus flake as FLAKY in the summary
-# instead of failing the run or hiding it without a trace.
+# Retried only where a flake comes from outside the code, a browser or the
+# credential store, and shows as FLAKY. A property test draws a new seed on a
+# retry, so a retry there would turn a found panic green.
+[[profile.ci.overrides]]
+filter = "binary(headless) | binary(web) | binary(browser_pipe) | binary(sandbox) | binary(watch_tick) | (package(snob-engine) & test(/^(headless|owner)::/)) | (package(snob-store) & test(secrets::tests))"
 retries = 2
 
 # Quick local loop skipping the browser-driven tests; run the default profile

@@ -402,11 +402,9 @@ impl Pacer {
         self
     }
 
-    /// Sets whether owed budget waits are slept out. Decided from the client's
-    /// base URL (`IgClient::is_live`), never by a caller (`AGENTS.md`, "Tests"):
-    /// against a non-Instagram address, `--max-wait` is still checked, the
-    /// budget is still charged, and the wait is still announced, without
-    /// sleeping.
+    /// Set from the client's base URL, never by a caller (`AGENTS.md`,
+    /// "Tests"): against a test server the wait is still checked against
+    /// `--max-wait`, charged and announced, not slept.
     #[must_use]
     pub(crate) fn with_sleeps(mut self, sleeps: bool) -> Self {
         self.sleeps = sleeps;

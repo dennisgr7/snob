@@ -98,11 +98,13 @@ bash packaging/render.sh <version> SHA256SUMS   # then git diff --exit-code on F
 # test: ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest
 # Windows and macOS (Linux never compiles their cfg code):
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+SNOB_TEST_REQUIRE_BROWSER=1 cargo nextest run --profile ci --workspace --locked
 SNOB_TEST_REQUIRE_BROWSER=1 cargo nextest run --profile ci --workspace --all-features --locked
 # Linux, against musl, in a session bus with gnome-keyring unlocked:
 dbus-run-session -- bash -c '
   set -euo pipefail
   echo "" | gnome-keyring-daemon --unlock --components=secrets
+  cargo nextest run --profile ci --workspace --locked --target "$(uname -m)-unknown-linux-musl"
   cargo nextest run --profile ci --workspace --all-features --locked --target "$(uname -m)-unknown-linux-musl"'
 ```
 
@@ -115,7 +117,8 @@ dbus-run-session -- bash -c '
   advisories sources licenses`, never a bare `cargo deny check` (`bans` is off
   on purpose). Every `ignore` in `deny.toml` says why and when it goes.
 - `weekly.yml` (Mondays, manual): `feature-powerset` (`cargo hack check
-  --workspace --feature-powerset --no-dev-deps --locked` on Linux and Windows),
+  --workspace --feature-powerset --no-dev-deps` on Linux and Windows, without
+  `--locked`, which refuses the lockfile `--no-dev-deps` prunes),
   `fuzz` (`cargo-fuzz` in `fuzz/` on Linux under pinned nightly), `mutants`
   (`cargo-mutants` with `nextest` on `snob-core` and `snob-ig`, report-only), and
   `coverage` (`cargo-llvm-cov` with `nextest` over `--workspace --all-features
@@ -123,8 +126,10 @@ dbus-run-session -- bash -c '
 - Locally on Windows the lines above run as written; they skip `cfg(unix)`
   code. `bash tools/ci/run.sh` runs the Linux job in Docker; `tools/ci/ci.sh`
   stays in step with `ci.yml`.
-- The test lines need `cargo-nextest` (`cargo install --locked cargo-nextest`):
-  `cargo xtask affected -- --profile agent` is the quick local loop, and the
+- The test lines need `cargo-nextest` (`cargo install --locked
+  cargo-nextest@0.9.150`, the version CI pins). Of each pair, the first runs
+  snob as it ships and the second adds the `testing` seam and the binary-level
+  tests. `cargo xtask affected -- --profile agent` is the quick local loop, and the
   full default profile runs before a pull request (CI keeps running everything).
 - **Never export `RUSTFLAGS`**: it replaces `.cargo/config.toml` instead of
   merging, silently dropping `+crt-static` and `/Brepro` on Windows. Add a flag
@@ -159,8 +164,10 @@ dbus-run-session -- bash -c '
 - **A test that starts a job stops it and waits for its lock before its
   `TempDir` drops**, a panic included.
 - **Browser tests** skip when no browser starts, fail under
-  `SNOB_TEST_REQUIRE_BROWSER=1`, and never run as root; `.config/nextest.toml`
-  serializes the `keyring` group.
+  `SNOB_TEST_REQUIRE_BROWSER=1`, and never run as root. Under nextest each
+  test is a process of its own, so they run in parallel (measured on 16 and 4
+  cores) and the `ci` profile retries them; `.config/nextest.toml` serializes
+  the `keyring` group. Under `cargo test`, give them `--test-threads=1`.
 - **Source-reading guards** in `crates/snob-core/tests/`: `no_seen.rs`,
   `keyring.rs`, `sandbox.rs`, `nextest.rs`, `layers.rs` (which crate may depend
   on which, from the manifests), and `language.rs`, which scans
@@ -174,8 +181,12 @@ dbus-run-session -- bash -c '
   (the release profile aborts), with the rules its documentation states. A new
   parser of outside input gets one.
 - **Contract snapshots** (`insta`, `.snap` files in `snapshots/` beside the
-  test): one fully populated value of each JSON shape a person, a script, an
-  agent or a webhook reads, the error object included. A changed `.snap` is a
+  test): one fully populated value of each main JSON shape a person, a
+  script, an agent or a webhook reads: an account, a post, its comments,
+  replies and likers, a grid, stories, a profile, `status`, the webhook's
+  payload, an MCP list page and the error object. Not pinned yet: `snapshots`,
+  `changes`, `account list`, `watch status`, `highlights`, `update`, the
+  monitor's printed report (`PRINTED_SCHEMA`) and `status`'s `update` key. A changed `.snap` is a
   contract change ("Output contract"): regenerate with `INSTA_UPDATE=always`
   only on purpose, and read its diff. CI fails on a mismatch.
 - **Weekly deep checks** (`.github/workflows/weekly.yml`): `fuzz/` holds the
