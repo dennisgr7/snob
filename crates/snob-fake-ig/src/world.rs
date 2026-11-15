@@ -1140,6 +1140,7 @@ pub struct WorldPage {
 
 impl WorldPage {
     /// Without the world's device cookie.
+    #[must_use]
     pub fn without_a_device(mut self) -> Self {
         self.device = false;
         self

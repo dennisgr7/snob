@@ -7,6 +7,11 @@
 //! `snob-cli`; and `snob-ig` does not depend on `snob-store`. A dependency is
 //! one of `[dependencies]`, `[build-dependencies]` or a target's, and a
 //! dev-dependency is held to the same: no test points up either.
+//!
+//! **And the fake Instagram stays out of what ships**: `snob-fake-ig` depends
+//! on nothing above `snob-ig`, and every crate that names it does so under
+//! `[dev-dependencies]`. The desktop app (`apps/desktop`, a workspace of its
+//! own) is held to the engine's rule and to that one.
 
 mod common;
 use common::repo_root;
@@ -124,6 +129,101 @@ fn the_crates_depend_on_each_other_one_way() {
         &manifest_of(&root, "snob-ig"),
     );
     assert!(broken.is_empty(), "{}", broken.join("\n"));
+}
+
+const FAKE: &str = "snob-fake-ig";
+
+/// The crates of snob above `snob-ig`: what the fake may not depend on.
+const ABOVE_IG: [&str; 4] = ["snob-store", "snob-engine", "snob-mcp", "snob-cli"];
+
+/// What the fake's own manifest breaks, and what a crate naming it breaks.
+fn fake_broken(fake: &Named, others: &[(&str, &Named)]) -> Vec<String> {
+    let mut broken = Vec::new();
+    for name in fake.build.iter().chain(&fake.dev) {
+        if ABOVE_IG.contains(&name.as_str()) {
+            broken.push(format!("{FAKE} depends on {name}"));
+        }
+    }
+    for (krate, named) in others {
+        if named.build.iter().any(|name| name == FAKE) {
+            broken.push(format!("{krate} links {FAKE} outside its tests"));
+        }
+    }
+    broken
+}
+
+/// What the desktop app's manifest breaks: the engine's rule, and no
+/// `snob-mcp` or `snob-cli`, which it starts as a program instead.
+fn app_broken(app: &Named) -> Vec<String> {
+    let mut broken = Vec::new();
+    for name in app.build.iter().chain(&app.dev) {
+        if TERMINAL.contains(&name.as_str()) {
+            broken.push(format!(
+                "the desktop app depends on {name}, a terminal crate"
+            ));
+        }
+        if name == "snob-mcp" || name == "snob-cli" {
+            broken.push(format!("the desktop app depends on {name}"));
+        }
+    }
+    broken
+}
+
+#[test]
+fn the_fake_instagram_is_linked_by_tests_only() {
+    let Some(root) = repo_root() else {
+        return; // packaged build, nothing to read
+    };
+    let crates = [
+        "snob-core",
+        "snob-ig",
+        "snob-store",
+        "snob-engine",
+        "snob-mcp",
+        "snob-cli",
+    ];
+    let named: Vec<Named> = crates.iter().map(|k| manifest_of(&root, k)).collect();
+    let mut others: Vec<(&str, &Named)> = crates.iter().copied().zip(&named).collect();
+    let app = std::fs::read_to_string(root.join("apps/desktop/Cargo.toml"))
+        .ok()
+        .map(|text| named_in(&text));
+    let mut broken = Vec::new();
+    if let Some(app) = &app {
+        others.push(("the desktop app", app));
+        broken.extend(app_broken(app));
+    }
+    broken.extend(fake_broken(&manifest_of(&root, FAKE), &others));
+    assert!(broken.is_empty(), "{}", broken.join("\n"));
+}
+
+#[test]
+fn a_fake_linked_into_a_build_is_caught() {
+    let of = |build: &[&str], dev: &[&str]| Named {
+        build: build.iter().map(|s| s.to_string()).collect(),
+        dev: dev.iter().map(|s| s.to_string()).collect(),
+    };
+    let fake = of(&["snob-core", "snob-ig", "wiremock"], &[]);
+    let tested = of(&["snob-ig"], &[FAKE]);
+    assert!(fake_broken(&fake, &[("snob-cli", &tested)]).is_empty());
+
+    let linked = of(&[FAKE], &[]);
+    assert_eq!(
+        fake_broken(&fake, &[("snob-cli", &linked)]),
+        ["snob-cli links snob-fake-ig outside its tests"]
+    );
+    assert_eq!(
+        fake_broken(&of(&["snob-store"], &[]), &[]),
+        ["snob-fake-ig depends on snob-store"]
+    );
+
+    assert!(app_broken(&of(&["snob-engine", "gpui-kit"], &[FAKE])).is_empty());
+    assert_eq!(
+        app_broken(&of(&["snob-cli"], &["ratatui"])),
+        [
+            "the desktop app depends on snob-cli",
+            "the desktop app depends on ratatui, a terminal crate"
+        ]
+    );
 }
 
 /// The reading finds a dependency in every spelling a manifest has, in every

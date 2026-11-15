@@ -1,4 +1,4 @@
-//! A tab with no browser behind it, on the fake Instagram of [`super::ig`].
+//! A tab with no browser behind it, on the fake Instagram of [`crate::world`].
 //!
 //! It does what the headless tab does, the browser aside: a request is sent
 //! over `reqwest` with the session's cookies, `X-CSRFToken` written in from
@@ -26,7 +26,7 @@ use snob_ig::model::web::{RouteAnswer, document_pk, route_answer, tray_ids};
 use snob_ig::page_values::PageValues;
 use snob_ig::web::{AppCalls, Ask, Call, Seen, Told, build_call, made_from};
 
-use super::ig::{CSRF, World};
+use crate::world::{CSRF, World};
 
 /// The document the tab is on.
 struct Document {

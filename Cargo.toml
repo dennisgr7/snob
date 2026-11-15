@@ -7,6 +7,7 @@ members = [
     "crates/snob-engine",
     "crates/snob-mcp",
     "crates/snob-cli",
+    "crates/snob-fake-ig",
 ]
 
 [workspace.package]
@@ -25,6 +26,9 @@ snob-store = { path = "crates/snob-store" }
 snob-ig = { path = "crates/snob-ig" }
 snob-engine = { path = "crates/snob-engine" }
 snob-mcp = { path = "crates/snob-mcp" }
+# The fake Instagram the tests talk to: a dev-dependency only, wherever it
+# is named.
+snob-fake-ig = { path = "crates/snob-fake-ig" }
 
 anyhow = "1"
 thiserror = "2"

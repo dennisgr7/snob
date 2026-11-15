@@ -1,0 +1,30 @@
+[package]
+name = "snob-fake-ig"
+description = "The fake Instagram snob's tests talk to: invented people, served in the web app's shapes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# **Never linked into a binary that ships**: a dev-dependency of the crates
+# whose tests use it, and of the desktop app's test harness
+# (`crates/snob-core/tests/layers.rs` reads the manifests).
+publish = false
+
+[dependencies]
+snob-core.workspace = true
+# The shapes the fake answers in and the page a tab is: `allowlist`,
+# `client::page`, `web`. No feature of it is needed.
+snob-ig.workspace = true
+serde_json.workspace = true
+# The server every face of the world is mounted on.
+wiremock.workspace = true
+# What the tab with no browser sends with, to the fake on loopback only: the
+# one client outside `snob_ig::http`, because it is the other side.
+reqwest.workspace = true
+base64.workspace = true
+# The forms the app posts, read as the server reads them.
+url.workspace = true
+
+[lints]
+workspace = true

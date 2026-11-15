@@ -12,13 +12,11 @@
 #![allow(dead_code)]
 
 /// The fake Instagram in the web app's shapes, and a tab on it with no
-/// browser. Only a `testing` build can hand a client a page of its own
-/// (`IgClient::with_page`), and most of the binaries that compile this file
-/// are not one.
+/// browser (`snob-fake-ig`). Only a `testing` build can hand a client a page
+/// of its own (`IgClient::with_page`), and most of the binaries that compile
+/// this file are not one.
 #[cfg(feature = "testing")]
-pub mod ig;
-#[cfg(feature = "testing")]
-pub mod tab;
+pub use snob_fake_ig::{tab, world as ig};
 
 use std::path::Path;
 use std::sync::Arc;

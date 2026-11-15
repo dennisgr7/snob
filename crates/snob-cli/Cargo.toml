@@ -112,8 +112,10 @@ base64.workspace = true
 # engine.
 tokio = { workspace = true, features = ["net", "io-util"] }
 wiremock.workspace = true
-# What `tests/common/tab.rs` sends with: a tab with no browser behind it, on
-# the fake Instagram. Already in the tree through snob-ig.
+# The fake Instagram, and a tab on it with no browser (`tests/common`).
+snob-fake-ig.workspace = true
+# The requests a test sends itself, to a mock server or the fake. Already in
+# the tree through snob-ig.
 reqwest.workspace = true
 tempfile.workspace = true
 # Only so the test for `--tls-extra-root` can check its predicate against a real

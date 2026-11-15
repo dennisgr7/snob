@@ -3044,6 +3044,7 @@ dependencies = [
  "sha2",
  "snob-core",
  "snob-engine",
+ "snob-fake-ig",
  "snob-ig",
  "snob-mcp",
  "snob-store",
@@ -3098,6 +3099,19 @@ dependencies = [
  "wiremock",
  "zbus",
  "zeroize",
+]
+
+[[package]]
+name = "snob-fake-ig"
+version = "0.9.0"
+dependencies = [
+ "base64 0.23.1",
+ "reqwest",
+ "serde_json",
+ "snob-core",
+ "snob-ig",
+ "url",
+ "wiremock",
 ]
 
 [[package]]
