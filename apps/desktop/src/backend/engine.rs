@@ -169,7 +169,18 @@ async fn done(paths: &AppPaths, secrets: &SecretStore, viewer: Viewer) -> SignIn
         // A login is a check that answered.
         prefs.note_checked(viewer.pk, snob_core::clock::now());
     });
-    SignIn::Done(account_of(paths, viewer.pk, viewer.username, true))
+    // **The name the list of accounts keeps when the login's check did not
+    // read one** (a push-back on it, a check skipped in a pause): what a
+    // start would show, shown from the welcome on rather than once the
+    // files are read again.
+    let username = viewer.username.filter(|name| !name.is_empty()).or_else(|| {
+        Registry::load(paths)
+            .ok()?
+            .get(viewer.pk)
+            .map(|account| account.username.clone())
+            .filter(|name| !name.is_empty())
+    });
+    SignIn::Done(account_of(paths, viewer.pk, username, true))
 }
 
 /// The store a login writes to: the keyring, or a private file where there
