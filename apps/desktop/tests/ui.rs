@@ -151,6 +151,41 @@ async fn the_brand_stays_in_the_middle_whatever_the_band_says(cx: &mut TestAppCo
 }
 
 #[gpui_kit::test]
+async fn the_status_starts_at_the_left_edge_of_the_band_away_from_the_brand(
+    cx: &mut TestAppContext,
+) {
+    let app = open(cx, Scripted::with(Vec::new()));
+    app.until_screen(cx, start()).await;
+    cx.simulate_window_resize(app.window, size(px(1100.), px(760.)));
+    app.system.say(Event::Online(false));
+    let shell = app.shell.clone();
+    app.until(cx, move |_, cx| {
+        shell.read(cx).status() == Some(&Status::Offline)
+    })
+    .await;
+
+    app.in_window(cx, |window, _| {
+        let band = window.find("band").bounds();
+        let status = window.find("status").bounds();
+        let brand = window.find("brand").bounds();
+        let edge = if cfg!(target_os = "macos") {
+            78.
+        } else {
+            snob_desktop::theme::tokens::frame::SIDE
+        };
+        let from_the_edge = f32::from(status.left() - band.left());
+        assert!(
+            (from_the_edge - edge).abs() <= 1.0,
+            "the status starts {from_the_edge} px from the band's left edge"
+        );
+        assert!(
+            status.right() + px(100.) < brand.left(),
+            "a short status is not drawn against the brand"
+        );
+    });
+}
+
+#[gpui_kit::test]
 async fn what_the_band_says_is_said_to_a_screen_reader_too(cx: &mut TestAppContext) {
     let app = open(cx, Scripted::with(Vec::new()));
     app.until_screen(cx, start()).await;

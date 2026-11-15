@@ -8,8 +8,9 @@
 //! transparency.
 //!
 //! **The brand never leaves the middle**: the status and what is right of
-//! the brand each get half of what the brand leaves, and the status is cut
-//! short with an ellipsis before it pushes anything.
+//! the brand each get half of what the brand leaves. The status sits at the
+//! band's left edge, and is cut short with an ellipsis before it pushes
+//! anything.
 
 use gpui_kit::base::{Button, ObservedElement, TestSupportExt as _};
 use gpui_kit::prelude::*;
@@ -219,9 +220,9 @@ fn band(
             .overflow_hidden()
             .flex()
             .items_center()
-            .justify_end()
     };
-    let left = side().child(
+    // The status starts at the band's left edge, wherever the brand is.
+    let left = side().justify_start().child(
         div()
             .min_w_0()
             .flex()
@@ -236,6 +237,7 @@ fn band(
     );
 
     let right = side()
+        .justify_end()
         .when(look.testing, |right| {
             right.child(
                 div()
