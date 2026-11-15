@@ -164,9 +164,7 @@ fn no_session(
     paths: &AppPaths,
     sandboxed: bool,
 ) -> Result<ExitCode> {
-    let mut said = format!("{why}.");
-    said[..1].make_ascii_uppercase();
-    eprintln!("{said} Run \"snob login\".");
+    eprintln!("{}. Run \"snob login\".", report::opening(why));
     if args.output.json {
         let mut out = serde_json::Map::new();
         for key in args.sections().names() {
@@ -535,12 +533,11 @@ impl Found<'_> {
             let mut lines = vec!["Cooldown".to_string()];
             match self.held {
                 Some(until) => {
-                    let mut said = report::held_until(&crate::app::Held {
+                    let said = report::held_until(&crate::app::Held {
                         until_ms: until,
                         braked: self.braked.to_vec(),
                     });
-                    said[..1].make_ascii_uppercase();
-                    lines.push(format!("  {said}"));
+                    lines.push(format!("  {}", report::opening(&said)));
                 }
                 None => lines.push("  None; requests may go out".to_string()),
             }

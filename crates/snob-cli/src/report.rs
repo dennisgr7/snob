@@ -171,6 +171,19 @@ fn filtered(text: &str, join: &str) -> String {
         .join(join)
 }
 
+/// `sentence` with its first letter raised, to open a line with. By
+/// character: cut by bytes, a sentence opening on anything past ASCII is a
+/// panic.
+pub(crate) fn opening(sentence: &str) -> String {
+    let mut rest = sentence.chars();
+    match rest.next() {
+        Some(first) => std::iter::once(first.to_ascii_uppercase())
+            .chain(rest)
+            .collect(),
+        None => String::new(),
+    }
+}
+
 /// The requests half of a summary line: what was spent, or the promise that
 /// nothing was.
 pub fn spent(n: u32) -> String {

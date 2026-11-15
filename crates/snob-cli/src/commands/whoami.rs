@@ -78,9 +78,10 @@ pub async fn run(
             "url": serde_json::Value::Null,
             "message": report::SIGNED_OUT_HERE,
         }));
-        let mut said = report::SIGNED_OUT_HERE.to_string();
-        said[..1].make_ascii_uppercase();
-        eprintln!("{said}. Run \"snob login\".");
+        eprintln!(
+            "{}. Run \"snob login\".",
+            report::opening(report::SIGNED_OUT_HERE)
+        );
     } else if !args.offline {
         // Through `app::pacer_saying_a_line`, so Ctrl+C reaches the request
         // and a wait the budget imposes is announced.
@@ -91,9 +92,10 @@ pub async fn run(
         if let Some(held) = crate::app::held(&pacer, Some(paths))? {
             // Seconds, like `created_at` and `validated_at` in the same object.
             cooldown_until = Some(held.until_ms.to_epoch());
-            let mut said = report::held_until(&held);
-            said[..1].make_ascii_uppercase();
-            eprintln!("{said}, so the session was not checked.");
+            eprintln!(
+                "{}, so the session was not checked.",
+                report::opening(&report::held_until(&held))
+            );
         } else {
             let client = IgClient::new(session.clone(), pacer)?;
             match client.whoami().await {
