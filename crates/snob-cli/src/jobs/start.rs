@@ -3,7 +3,7 @@
 //!
 //! - under the account's jobs lock, so two starts at once make one job:
 //!   checks the session again (a purge or a logout deletes it holding that
-//!   lock, so a start that waited makes nothing); sweeps (`jobs::sweep`);
+//!   lock, so a start that waited makes nothing); sweeps (`snob_engine::jobs::sweep`);
 //!   answers with the job already running when it runs the same command
 //!   (`reused`), and refuses when it runs another
 //!   (`too_many_jobs`: one at a time per account), or when it was asked to
@@ -26,15 +26,13 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::{Value, json};
+use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::jobs::{COMMAND, Detached, Job, SCHEMA, SUPERVISOR_WITHIN, Status, show};
 use snob_store::paths::{self, AccountPaths, JobId};
 use snob_store::secrets::SecretStore;
 
-use super::{Detached, Job, SCHEMA, Status, argv, show};
+use super::argv;
 use crate::cli::{Cli, JobStartArgs};
-use crate::exit::{ExitCode, ExitError};
-use crate::report;
-
-pub use super::{COMMAND, SUPERVISOR_WITHIN};
 
 /// How long the start waits for the job it asks to stop to have stopped,
 /// before it exits anyway; the job stops on its own either way.
@@ -92,7 +90,7 @@ pub async fn start(
     };
     let secrets = store.session_of(account);
     match secrets.load()? {
-        None => return Err(crate::commands::common::no_session()),
+        None => return Err(snob_engine::sentences::no_session()),
         Some(session) if session.ds_user_id != account.pk() => anyhow::bail!(
             "the session stored for account {} is account {}'s; log in again with \
              \"snob login\"",
@@ -101,8 +99,8 @@ pub async fn start(
         ),
         // Refused as the walk would refuse it at its start (`App::open`),
         // the check ahead of an agent's question included.
-        Some(session) if crate::owner::signed_out(account, &session) => {
-            return Err(crate::commands::common::signed_out_here());
+        Some(session) if snob_engine::owner::signed_out(account, &session) => {
+            return Err(snob_engine::sentences::signed_out_here());
         }
         Some(_) => {}
     }
@@ -110,7 +108,11 @@ pub async fn start(
         let account = account.clone();
         let found = tokio::task::spawn_blocking(move || {
             let now = snob_core::clock::now_ms();
-            let found = vet(&super::all(&account, now.get())?, &checked, now.get())?;
+            let found = vet(
+                &snob_engine::jobs::all(&account, now.get())?,
+                &checked,
+                now.get(),
+            )?;
             refused_in_cooldown(&account, &checked, now)?;
             Ok::<_, anyhow::Error>(found)
         })
@@ -154,7 +156,7 @@ pub async fn start(
         started_by: args
             .started_by
             .as_deref()
-            .and_then(|by| crate::commands::common::client_label(by, "")),
+            .and_then(|by| snob_engine::app::client_label(by, "")),
         max_wait_seconds: cli.max_wait.map(|wait| wait.as_secs()),
     };
     let supervisor = argv::supervisor(cli, account.pk())?;
@@ -168,9 +170,9 @@ pub async fn start(
         Made::Reused(id) => (id, false),
     };
 
-    let token = crate::interrupt::install();
-    let look = || -> Result<super::Seen> {
-        super::look(account, &id, snob_core::clock::now_ms().get())?
+    let token = snob_engine::interrupt::install();
+    let look = || -> Result<snob_engine::jobs::Seen> {
+        snob_engine::jobs::look(account, &id, snob_core::clock::now_ms().get())?
             .ok_or_else(|| show::no_such_job(id.as_str()))
     };
     let mut seen = look()?;
@@ -183,7 +185,7 @@ pub async fn start(
             if token.sleep_or_cancel(pause).await {
                 if ours {
                     // Not handed over yet: nobody would ever ask for it.
-                    super::ask_to_stop(&seen)?;
+                    snob_engine::jobs::ask_to_stop(&seen)?;
                     // Waited for without the token, which is canceled now
                     // and would end every wait at once.
                     let until = tokio::time::Instant::now() + STOPPED_WITHIN;
@@ -207,7 +209,7 @@ pub async fn start(
 /// `now`: the job already running it, to reuse; or a refusal, for another job
 /// running, one asked to stop that has not stopped yet, or a lost job's claim
 /// on a list it walks.
-fn vet(jobs: &[super::Seen], checked: &argv::Checked, now: i64) -> Result<Found> {
+fn vet(jobs: &[snob_engine::jobs::Seen], checked: &argv::Checked, now: i64) -> Result<Found> {
     if let Some(running) = jobs.iter().find(|seen| !seen.status.is_over()) {
         // On its way out: reused, it would hand this start a walk about to
         // end `canceled`, and another may not start beside it.
@@ -267,7 +269,7 @@ fn vet(jobs: &[super::Seen], checked: &argv::Checked, now: i64) -> Result<Found>
                  {}; nothing was started",
                 lost.id,
                 show::walks(lost, argv::walk_of),
-                report::stored_on(frees)
+                snob_engine::sentences::stored_on(frees)
             ),
         )
         .with_reason("walked_elsewhere")
@@ -289,13 +291,13 @@ fn refused_in_cooldown(
     checked: &argv::Checked,
     now: snob_core::EpochMs,
 ) -> Result<()> {
-    let (store, budget) = crate::commands::common::standing(account, now)?;
-    let Some(held) = crate::commands::common::held_in(&budget, account, now) else {
+    let (store, budget) = snob_engine::app::standing(account, now)?;
+    let Some(held) = snob_engine::app::held_in(&budget, account, now) else {
         return Ok(());
     };
     let query = crate::commands::common::query(&checked.list.target, &checked.list.walk);
     for &kind in checked.kinds {
-        crate::engine::cooldown::stored(&store, account.pk(), &query, kind, &held)?;
+        snob_engine::engine::cooldown::stored(&store, account.pk(), &query, kind, &held)?;
     }
     Ok(())
 }
@@ -326,7 +328,7 @@ fn same_walk(one: &[String], other: &[String]) -> bool {
 /// refuse ([`vet`]), or makes the job and starts its supervisor.
 ///
 /// **The session is asked about again under the lock**, which a purge or a
-/// logout holds while it deletes the session (`jobs::Stopping`): a start that
+/// logout holds while it deletes the session (`snob_engine::jobs::Stopping`): a start that
 /// passed the first check and then waited on the lock finds the session gone
 /// and makes nothing (exit 3), rather than a job in what is being removed.
 fn make(
@@ -336,50 +338,55 @@ fn make(
     checked: &argv::Checked,
     supervisor_globals: Vec<OsString>,
 ) -> Result<Made> {
-    let Some(_lock) = super::lock_jobs(account)? else {
-        return Err(crate::commands::common::no_session());
+    let Some(_lock) = snob_engine::jobs::lock_jobs(account)? else {
+        return Err(snob_engine::sentences::no_session());
     };
     let Some(session) = secrets
         .load()?
         .filter(|session| session.ds_user_id == account.pk())
     else {
-        return Err(crate::commands::common::no_session());
+        return Err(snob_engine::sentences::no_session());
     };
     // Asked again under the lock, as the session is: a logout may have
     // signed it out while this waited on it.
-    if crate::owner::signed_out(account, &session) {
-        return Err(crate::commands::common::signed_out_here());
+    if snob_engine::owner::signed_out(account, &session) {
+        return Err(snob_engine::sentences::signed_out_here());
     }
     let now = snob_core::clock::now_ms().get();
-    super::sweep(account, now);
-    if let Found::Reuse(id) = vet(&super::all(account, now)?, checked, now)? {
+    snob_engine::jobs::sweep(account, now);
+    if let Found::Reuse(id) = vet(&snob_engine::jobs::all(account, now)?, checked, now)? {
         return Ok(Made::Reused(id));
     }
 
-    let id = super::id::new(u64::try_from(now).unwrap_or(0))?;
+    let id = snob_engine::jobs::id::new(u64::try_from(now).unwrap_or(0))?;
     let dir = account.job_dir(&id);
     paths::create_private_dir(&dir)?;
     // The lock the supervisor holds, there before it is: a job whose lock
     // file is missing reads as nobody running it.
-    super::private_marker(&super::file(&dir, "lock"))?;
+    snob_engine::jobs::private_marker(&snob_engine::jobs::file(&dir, "lock"))?;
     job.id = id.to_string();
-    super::write(&dir, "job.json", &job)?;
+    snob_engine::jobs::write(&dir, "job.json", &job)?;
 
     let mut args = supervisor_globals;
     args.extend([COMMAND.into(), "run".into(), id.as_str().into()]);
     // The program is this one, never a path read from anywhere (AGENTS.md,
     // "The MCP server": a supervisor runs itself).
-    let exe = crate::exe::program()?;
-    let started = crate::detach::spawn(&exe, &args, None, &super::file(&dir, "supervisor.log"));
+    let exe = snob_engine::exe::program()?;
+    let started = snob_engine::detach::spawn(
+        &exe,
+        &args,
+        None,
+        &snob_engine::jobs::file(&dir, "supervisor.log"),
+    );
     let started = match started {
         Ok(started) => started,
         Err(e) => {
             // Nobody will run it, so its ending is written here: the one
             // state.json no supervisor writes.
-            let _ = super::write(
+            let _ = snob_engine::jobs::write(
                 &dir,
                 "state.json",
-                &super::State {
+                &snob_engine::jobs::State {
                     status: Status::Failed,
                     started_at: now,
                     updated_at: now,
@@ -399,7 +406,7 @@ fn make(
     } else {
         Detached::InClientJob
     });
-    super::write(&dir, "job.json", &job)?;
+    snob_engine::jobs::write(&dir, "job.json", &job)?;
     Ok(Made::New(id))
 }
 
@@ -415,9 +422,9 @@ mod tests {
     }
 
     /// A job of the account, read as `status`, running `line`.
-    fn seen(status: Status, stop_asked: bool, line: &[&str]) -> super::super::Seen {
-        let id = super::super::id::new(1).unwrap();
-        super::super::Seen {
+    fn seen(status: Status, stop_asked: bool, line: &[&str]) -> snob_engine::jobs::Seen {
+        let id = snob_engine::jobs::id::new(1).unwrap();
+        snob_engine::jobs::Seen {
             id: id.clone(),
             dir: std::path::PathBuf::new(),
             job: Some(Job {
@@ -521,7 +528,7 @@ mod tests {
     /// than refused for the claim's 45 minutes over a walk that never was.
     #[test]
     fn a_lost_job_that_never_walked_holds_no_list() {
-        let state = |child_pid| super::super::State {
+        let state = |child_pid| snob_engine::jobs::State {
             status: Status::Lost,
             started_at: 1,
             updated_at: 1,

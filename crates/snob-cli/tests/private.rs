@@ -10,7 +10,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use snob_cli::cli::ListArgs;
-use snob_cli::engine::{self, ListOutcome};
+use snob_engine::engine::{self, ListOutcome};
 
 mod common;
 use common::requests;

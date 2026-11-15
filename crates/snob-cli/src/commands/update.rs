@@ -1,15 +1,17 @@
 //! `snob update`: the latest release, now, the way snob was installed.
 
 use anyhow::Result;
+use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::update::how::{self, Applies, Method};
+use snob_engine::update::state::{self, Auto, Files};
+use snob_engine::update::version::Version;
+use snob_engine::update::{self};
+use snob_engine::update::{
+    check, note_applied, note_failure, origin, put_in_place, stage, this_exe,
+};
 use snob_store::paths::AppPaths;
 
 use crate::cli::{AutoUpdate, UpdateArgs};
-use crate::exit::{ExitCode, ExitError};
-use crate::update::how::{self, Applies, Method};
-use crate::update::state::{self, Auto, Files};
-use crate::update::version::Version;
-use crate::update::{self};
-use crate::update::{check, note_applied, note_failure, origin, put_in_place, stage, this_exe};
 
 pub async fn run(args: UpdateArgs, paths: &AppPaths, sandboxed: bool) -> Result<ExitCode> {
     let files = Files::of(paths);
@@ -98,14 +100,14 @@ pub async fn run(args: UpdateArgs, paths: &AppPaths, sandboxed: bool) -> Result<
     let shown = format!("updating snob from {current} to {newer}{how}");
     if !args.consent.yes {
         if !crate::ui::can_be_asked() {
-            return Err(crate::report::refuse_unattended(
+            return Err(snob_engine::sentences::refuse_unattended(
                 format!("{shown} needs confirmation"),
                 "Pass -y to confirm in advance.".to_string(),
             ));
         }
         let question = format!("Update snob from {current} to {newer}{how}?");
         if !crate::ui::confirm(&question, true)? {
-            return Err(crate::report::refuse_declined(&shown));
+            return Err(snob_engine::sentences::refuse_declined(&shown));
         }
     }
 
@@ -164,7 +166,10 @@ async fn apply_now(files: &Files, method: &Method, newer: Version) -> Result<Don
             let mut steps = method.prefetch();
             steps.extend(method.apply(&newer.to_string()));
             tokio::task::spawn_blocking(move || {
-                crate::update::apply::run_steps(&steps, &crate::update::apply::Output::Shown)
+                snob_engine::update::apply::run_steps(
+                    &steps,
+                    &snob_engine::update::apply::Output::Shown,
+                )
             })
             .await??;
             Ok(Done::Applied)
@@ -188,7 +193,10 @@ async fn apply_now(files: &Files, method: &Method, newer: Version) -> Result<Don
                 env: Vec::new(),
             };
             tokio::task::spawn_blocking(move || {
-                crate::update::apply::run_steps(&[step], &crate::update::apply::Output::Shown)
+                snob_engine::update::apply::run_steps(
+                    &[step],
+                    &snob_engine::update::apply::Output::Shown,
+                )
             })
             .await??;
             Ok(Done::Applied)

@@ -4,14 +4,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use snob_core::Pk;
+use snob_engine::app::Viewer;
+use snob_engine::exit::{ExitCode, ExitError};
 use snob_store::paths::{self, AccountPaths, AppPaths, JobId};
 use snob_store::registry::Registry;
 use snob_store::secrets::{Kind, SecretStore};
 use snob_store::store::shared::Shared;
 
-use crate::app::Viewer;
 use crate::cli::PurgeArgs;
-use crate::exit::{ExitCode, ExitError};
 use crate::ui;
 
 /// What a purge would remove, worked out before anything is deleted.
@@ -135,7 +135,7 @@ pub fn survey(store: &SecretStore, app_paths: &AppPaths) -> Plan {
 /// The jobs of `account`'s not over yet, read without writing anything.
 fn running_jobs(account: &AccountPaths) -> Vec<JobId> {
     let now = snob_core::clock::now_ms().get();
-    crate::jobs::all(account, now)
+    snob_engine::jobs::all(account, now)
         .unwrap_or_default()
         .into_iter()
         .filter(|seen| !seen.status.is_over())
@@ -302,8 +302,8 @@ pub async fn run_for_account(
     app_paths: &AppPaths,
     name: &str,
 ) -> Result<ExitCode> {
-    let account = crate::account::named(name, &Registry::load(app_paths)?)
-        .map_err(crate::account::Unresolved::into_error)?;
+    let account = snob_engine::account::named(name, &Registry::load(app_paths)?)
+        .map_err(snob_engine::account::Unresolved::into_error)?;
     warn_about_watched(app_paths, &account);
     let pk = account.pk;
     let plan = survey_account(&store, app_paths, account);
@@ -317,9 +317,9 @@ pub async fn run_for_account(
     // And every other process running as it is refused its next request
     // (`owner::sign_out`), so none starts the browser again on what goes,
     // and none sends again once a login has made the directory again.
-    crate::owner::sign_out(app_paths, &[pk]);
-    crate::owner::release(app_paths, Some(pk)).await;
-    crate::owner::let_go_of(&[app_paths.browser_profile_for(pk)]).await;
+    snob_engine::owner::sign_out(app_paths, &[pk]);
+    snob_engine::owner::release(app_paths, Some(pk)).await;
+    snob_engine::owner::let_go_of(&[app_paths.browser_profile_for(pk)]).await;
     // **The session goes while the jobs lock is held**, and the lock is let
     // go of before the removal, which Windows refuses while a file in it is
     // open: a start waiting on the lock then finds no session and makes
@@ -345,12 +345,12 @@ pub async fn run_everything(
     // Every other process running as one of them is refused its next request
     // (`owner::sign_out`), and once the directory is gone, by that alone,
     // until a login lets in a session of its own.
-    crate::owner::sign_out(app_paths, &pks);
+    snob_engine::owner::sign_out(app_paths, &pks);
     // The whole data directory goes, the owner's log with it, so the owner is
     // asked to leave, not only to close its browsers; after the jobs, which
     // would start it again.
-    crate::owner::quit(app_paths).await;
-    crate::owner::let_go_of(&crate::headless::profile::every_profile(app_paths)).await;
+    snob_engine::owner::quit(app_paths).await;
+    snob_engine::owner::let_go_of(&snob_engine::headless::profile::every_profile(app_paths)).await;
     // The sessions go while the jobs locks are held (see `run_for_account`).
     finish(&plan, &store, app_paths, || drop(stopping))
 }
@@ -413,7 +413,7 @@ fn ask(args: &PurgeArgs, plan: &Plan, someone_is_there: bool) -> Result<Option<E
     if !args.consent.yes && !someone_is_there {
         // The shared refusal, which is where the exit code and the "advice in
         // the message, never on a hint" rule live.
-        return Err(crate::report::refuse_unattended(
+        return Err(snob_engine::sentences::refuse_unattended(
             "nothing was deleted: it needs confirmation".to_string(),
             match &plan.only {
                 Some(account) => format!(
@@ -498,7 +498,7 @@ fn finish(
 
 /// Says where the executable is, since this command deliberately leaves it.
 fn report_the_binary() {
-    let location = match crate::exe::program() {
+    let location = match snob_engine::exe::program() {
         Ok(path) => format!(
             "\nThe binary itself is still installed, at {}.",
             path.display()

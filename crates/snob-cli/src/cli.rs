@@ -1,3 +1,9 @@
+//! The command line as clap reads it: every command, flag and value, and the
+//! parsers that refuse a value before anything is asked or spent (exit 2).
+//!
+//! **The `///` on an argument is its help**, shown to people; what a reader
+//! of the code needs is in `//` beside it.
+
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -69,7 +75,7 @@ pub struct Cli {
     /// Say how a walk goes as one JSON line on standard error per page and
     /// per wait, instead of drawing a bar
     // Hidden: plumbing for a job's supervisor (`jobs/supervise.rs`), which
-    // reads the walk's progress back from its log (`jobs::show`).
+    // reads the walk's progress back from its log (`snob_engine::jobs::show`).
     #[arg(long, global = true, hide = true)]
     pub progress_json: bool,
 
@@ -266,7 +272,7 @@ pub(crate) fn username(value: &str) -> Result<String, String> {
 }
 
 /// The line of [`EXAMPLES`] that announces `SNOB_MCP_KEY`, in a build that
-/// reads it (`commands::mcp::key`, feature `mcp-http`) and in no other: a
+/// reads it (`snob_mcp::key`, feature `mcp-http`) and in no other: a
 /// build without the HTTP half has no key to read.
 #[cfg(feature = "mcp-http")]
 macro_rules! mcp_key_variable {
@@ -742,17 +748,17 @@ pub enum Command {
 
     /// The process that runs the browsers for every command (`owner`).
     /// Started by the commands themselves; nobody types it.
-    #[command(name = crate::owner::COMMAND, hide = true)]
+    #[command(name = snob_engine::owner::COMMAND, hide = true)]
     BrowserOwner,
 
     /// The updater's own processes (`update`): started by the commands;
     /// nobody types them.
-    #[command(name = crate::update::COMMAND, hide = true, subcommand)]
+    #[command(name = snob_engine::update::COMMAND, hide = true, subcommand)]
     Updater(UpdaterCommand),
 
     /// A job's own processes (`jobs`): started by the commands and by
     /// `snob mcp`; nobody types them.
-    #[command(name = crate::jobs::start::COMMAND, hide = true, subcommand)]
+    #[command(name = snob_engine::jobs::COMMAND, hide = true, subcommand)]
     Job(JobCommand),
 }
 
@@ -1547,7 +1553,7 @@ impl Default for WalkArgs {
         Self {
             refresh: false,
             offline: false,
-            max_age: crate::engine::DEFAULT_MAX_AGE,
+            max_age: snob_engine::engine::DEFAULT_MAX_AGE,
             no_resume: false,
             max_pages: None,
             same_day: false,
@@ -2121,12 +2127,12 @@ impl MediaActionArgs {
             .then_some(self.output.as_deref())
             .flatten()
             // `-o -` is standard output, where a listing goes anyway.
-            .filter(|path| !crate::output::is_stdout(path))
+            .filter(|path| !snob_engine::files::is_stdout(path))
     }
 
     /// How many files `-d` names, at least, before the listing is read: the
     /// count of the numbers given, or `None` for `all` or no `-d`. What
-    /// `output::stdout_download_ahead` refuses `-o -` on before a request.
+    /// `snob_engine::files::stdout_download_ahead` refuses `-o -` on before a request.
     pub fn files_named(&self) -> Option<usize> {
         match self.selection()? {
             DownloadSelection::These(numbers) => Some(numbers.len()),
@@ -2142,7 +2148,7 @@ impl MediaActionArgs {
         if self.selection().is_none() {
             return Ok(());
         }
-        crate::output::stdout_download_ahead(self.output.as_deref(), self.files_named())
+        snob_engine::files::stdout_download_ahead(self.output.as_deref(), self.files_named())
     }
 
     /// Whether this run takes the terminal over. The order is
@@ -2382,13 +2388,13 @@ pub struct PostArgs {
 
     /// Start no further file once this many bytes were fetched
     // Hidden: plumbing for `snob mcp`, which bounds what one call of an agent's
-    // may fetch (`commands::mcp::tools::SAVE_AT_MOST`).
+    // may fetch (`snob_mcp::tools::SAVE_AT_MOST`).
     #[arg(long, hide = true, requires = "json", value_name = "BYTES")]
     pub save_at_most: Option<u64>,
 
     /// Start no further file once the downloads have taken this long
     // Hidden: plumbing for `snob mcp`, as `--save-at-most`
-    // (`commands::mcp::tools::SAVE_WITHIN`).
+    // (`snob_mcp::tools::SAVE_WITHIN`).
     #[arg(
         long,
         hide = true,
@@ -2516,7 +2522,7 @@ pub struct FollowArgs {
 ///
 /// **Hidden: plumbing for `snob mcp`**, which adds them to a child's command
 /// line after the yes it obtained, and after what the yes is bound to was
-/// taken (`commands::mcp::tools::Plan::command_line`). A command a person
+/// taken (`snob_mcp::tools::Plan::command_line`). A command a person
 /// types records nothing and counts toward no cap.
 #[derive(Args, Debug, Clone, Default)]
 pub struct AgentArgs {
@@ -2531,7 +2537,7 @@ pub struct AgentArgs {
     pub confirmed_for: Option<String>,
 }
 
-/// How `snob mcp` obtained a yes (`commands::mcp`, `consent`).
+/// How `snob mcp` obtained a yes (`snob_mcp`, `consent`).
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfirmedVia {
     /// A form the client showed, answered in the call (2026-07-28 and later).
@@ -2927,8 +2933,11 @@ mod tests {
         let Command::Followers(args) = cli.command else {
             panic!("followers");
         };
-        assert_eq!(args.walk.max_age, crate::engine::DEFAULT_MAX_AGE);
-        assert_eq!(WalkArgs::default().max_age, crate::engine::DEFAULT_MAX_AGE);
+        assert_eq!(args.walk.max_age, snob_engine::engine::DEFAULT_MAX_AGE);
+        assert_eq!(
+            WalkArgs::default().max_age,
+            snob_engine::engine::DEFAULT_MAX_AGE
+        );
     }
 
     /// `--cache` is the earlier spelling; a script written against it still

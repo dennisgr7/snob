@@ -2,23 +2,25 @@
 //!
 //! **Downloading a story does not mark it as seen.**
 //!
-//! **It does not ask for consent, and that is deliberate.**
+//! **It asks no consent** (AGENTS.md, "Consent"): the question covers walking
+//! somebody's followers and following, and a story is what its account
+//! shows whoever opens the profile.
 
 use std::path::Path;
 
 use anyhow::{Result, anyhow};
 use comfy_table::Cell;
 use snob_core::model::printable;
+use snob_engine::app::{App, Viewer};
+use snob_engine::exit::ExitCode;
+use snob_engine::media::{self, Kind, Stories, Story, left_of, posted_of};
 use snob_ig::client::IgClient;
 use snob_ig::model::{ReelItem, largest};
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::{App, Viewer};
 use crate::cli::{Format, StoriesArgs, StoryFormat};
 use crate::commands::common;
-use crate::exit::ExitCode;
-use crate::media::{self, Kind, Stories, Story, left_of, posted_of};
 use crate::output::Presentation;
 use crate::output::media::empty_document;
 use crate::ui;
@@ -28,7 +30,7 @@ pub async fn run(args: StoriesArgs, store: SecretStore, paths: &AccountPaths) ->
     let app = common::reader(&store, paths, args.action.interactive, false)?;
     let typed = common::target_or_own(&app, args.target.as_deref()).await?;
 
-    let known = crate::engine::target::known_pk_of(&app, args.target.as_deref(), &typed)?;
+    let known = snob_engine::engine::target::known_pk_of(&app, args.target.as_deref(), &typed)?;
     let stories = fetch(app.client(), &typed, known).await?;
 
     if app.cancel().is_canceled() {
@@ -115,7 +117,7 @@ async fn browse(
                 &to,
                 false,
                 async |app: &mut App| {
-                    let known = crate::engine::target::known_pk(app, &name)?;
+                    let known = snob_engine::engine::target::known_pk(app, &name)?;
                     let stories = fetch(app.client(), &name, known).await?;
                     if stories.items.is_empty() {
                         anyhow::bail!("@{} has no stories up for it", printable(&stories.username));
@@ -143,15 +145,14 @@ fn no_such_story(stories: &Stories, number: usize) -> anyhow::Error {
 }
 
 /// The network half: the profile and the reel, each paid for inside the client,
-/// for the reason `pfp`'s fetch gives, kept apart from the session and the
-/// filesystem so a test can drive it.
+/// kept apart from the session and the filesystem so a test can drive it.
 pub async fn fetch(
     client: &IgClient,
     typed: &str,
     known: Option<snob_core::Pk>,
 ) -> Result<Stories> {
     let profile = client
-        .profile_named(crate::engine::target::clean(typed), known)
+        .profile_named(snob_engine::engine::target::clean(typed), known)
         .await?;
 
     let Some(reel) = client.stories(profile.id, &profile.username).await? else {
@@ -261,7 +262,6 @@ fn as_json(stories: &Stories, format: Format) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::report;
     use snob_core::Epoch;
     use snob_ig::model::{Candidates, PictureVersion};
 
@@ -386,7 +386,7 @@ mod tests {
 
     #[test]
     fn the_table_draws_what_the_listing_numbers() {
-        let posted = report::stored_on(Epoch::new(1_773_576_000));
+        let posted = snob_engine::sentences::stored_on(Epoch::new(1_773_576_000));
         assert_eq!(
             as_table(&two_stories(), plain()),
             [

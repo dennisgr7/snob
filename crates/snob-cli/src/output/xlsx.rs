@@ -11,6 +11,10 @@ use crate::output::USER_COLUMNS as HEADER;
 /// Excel refuses a string longer than this.
 const MAX_TEXT: usize = 32_767;
 
+/// The writer refuses an address longer than Excel's 2,080 characters; one
+/// past this, which no profile's is, goes in as its text alone.
+const MAX_URL: usize = 2_000;
+
 /// Excel stores at most this many hyperlinks in one worksheet.
 const MAX_URLS: usize = 65_530;
 
@@ -100,12 +104,22 @@ fn flag(value: Option<bool>) -> Cell {
     }
 }
 
-/// Cuts on a character boundary.
+/// Cuts on a character boundary, to what the writer takes: it counts UTF-16
+/// units, two for a character outside the basic plane, and refuses the whole
+/// workbook over one string too long.
 fn truncate(value: &str) -> String {
+    // No string this short in bytes is longer in UTF-16 units.
     if value.len() <= MAX_TEXT {
         return value.to_string();
     }
-    value.chars().take(MAX_TEXT).collect()
+    let mut units = 0;
+    value
+        .chars()
+        .take_while(|c| {
+            units += c.len_utf16();
+            units <= MAX_TEXT
+        })
+        .collect()
 }
 
 /// The finished workbook, as the bytes of a zip archive.
@@ -167,11 +181,14 @@ fn datetime(at: Epoch) -> Option<ExcelDateTime> {
 fn write_cell(sheet: &mut Worksheet, row: u32, column: u16, cell: &Cell) -> Result<()> {
     match cell {
         Cell::Number(value) => sheet.write_number(row, column, *value).map(|_| ()),
-        Cell::Text(value) => sheet.write_string(row, column, value).map(|_| ()),
+        // Cut here whoever made the cell: one string too long refuses the
+        // whole workbook, after the walk that filled it was paid for.
+        Cell::Text(value) => sheet.write_string(row, column, truncate(value)).map(|_| ()),
         Cell::Bool(value) => sheet.write_boolean(row, column, *value).map(|_| ()),
-        Cell::Link { url, text } => sheet
-            .write_url_with_text(row, column, url.as_str(), text.as_str())
+        Cell::Link { url, text } if url.len() <= MAX_URL => sheet
+            .write_url_with_text(row, column, url.as_str(), truncate(text))
             .map(|_| ()),
+        Cell::Link { text, .. } => sheet.write_string(row, column, truncate(text)).map(|_| ()),
         // A timestamp outside what a spreadsheet can hold is written as the
         // number it is rather than dropped: wrong-looking beats absent, and
         // nothing else in this file invents a value.
@@ -309,6 +326,22 @@ mod tests {
             Cell::Text(value) => assert!(value.chars().count() <= MAX_TEXT),
             other => panic!("expected text, got {other:?}"),
         }
+    }
+
+    /// The writer counts UTF-16 units, and refuses the workbook over one
+    /// string past its limit: a name of characters that take two is cut to
+    /// half as many, and a name too long to be an address is still written.
+    #[test]
+    fn no_name_however_long_refuses_the_workbook() {
+        let wide = "\u{1F600}".repeat(20_000);
+        assert_eq!(truncate(&wide).chars().count(), MAX_TEXT / 2);
+        let user = User {
+            username: "x".repeat(40_000),
+            full_name: Some(wide.clone()),
+            ..users()[0].clone()
+        };
+        workbook(&[user]).expect("a long name is cut, not refused");
+        many_rows_workbook(&["name"], &[vec![Cell::Text(wide)]]).expect("whoever made the cell");
     }
 
     #[test]

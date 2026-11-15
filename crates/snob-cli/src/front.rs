@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use snob_core::Epoch;
 use snob_core::model::{ListKind, StopReason};
+use snob_engine::host::{self, Front, Wait};
 use snob_ig::pager::Event;
 
-use crate::host::{self, Front, Wait};
 use crate::progress::Progress;
 
 /// A run's front: the bars (`with_progress` says whether they draw), and a
@@ -27,7 +27,7 @@ pub fn front(with_progress: bool) -> Front {
 /// Hands the engine this process's notices and its terminal's restoring.
 pub fn install() {
     host::tell_notices_to(Box::new(Lines));
-    crate::interrupt::before_a_forced_exit(crate::ui::restore_terminal);
+    snob_engine::interrupt::before_a_forced_exit(crate::ui::restore_terminal);
 }
 
 impl host::Progress for Progress {

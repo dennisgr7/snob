@@ -6,20 +6,21 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::{Value, json};
+use snob_engine::exit::ExitCode;
+use snob_engine::jobs::show::{ended, find, finished, line, row, settle, whole};
+use snob_engine::jobs::{Seen, Stopping, supervise, sweep_if_free};
 use snob_store::paths::{self, AccountPaths};
 
-use super::show::{ended, find, finished, line, row, settle, whole};
-use super::{Seen, Stopping, argv, start, supervise, sweep_if_free};
-use crate::exit::ExitCode;
+use super::{argv, start};
 
 fn now() -> i64 {
     snob_core::clock::now_ms().get()
 }
 
-/// [`super::stop_every_job`], saying how many were stopped when there were
+/// [`snob_engine::jobs::stop_every_job`], saying how many were stopped when there were
 /// any, and warning when one did not stop in time.
 pub async fn stop_before_leaving(accounts: Vec<AccountPaths>) -> Result<Vec<Stopping>> {
-    let (stopping, settled) = super::stop_every_job(accounts).await?;
+    let (stopping, settled) = snob_engine::jobs::stop_every_job(accounts).await?;
     let count: usize = stopping.iter().map(|jobs| jobs.ids.len()).sum();
     if count > 0 {
         crate::ui::say!(
@@ -39,14 +40,15 @@ pub async fn dispatch(
     cli: &crate::cli::Cli,
     store: &snob_store::secrets::SecretStore,
     app: &paths::AppPaths,
-) -> anyhow::Result<crate::exit::ExitCode> {
+) -> anyhow::Result<snob_engine::exit::ExitCode> {
     use crate::cli::{Command, JobCommand, JobsArgs, JobsCommand};
 
     let env = std::env::var("SNOB_ACCOUNT").ok();
     let registry = snob_store::registry::Registry::load(app)?;
-    let viewer = crate::account::resolve_if_any(cli.account.as_deref(), env.as_deref(), &registry)?
-        .ok_or_else(crate::commands::common::no_session)?;
-    crate::sentences::act_as(viewer.clone());
+    let viewer =
+        snob_engine::account::resolve_if_any(cli.account.as_deref(), env.as_deref(), &registry)?
+            .ok_or_else(snob_engine::sentences::no_session)?;
+    snob_engine::sentences::act_as(viewer.clone());
     let account = app.account(viewer.pk);
     // What reads the jobs sweeps what is past its keeping first, when the
     // lock is free: a start sweeps under it, and a supervisor touches only
@@ -113,7 +115,7 @@ pub async fn show(
 /// `list`: the jobs not yet finished, or every one kept with `all`.
 pub fn list(account: &AccountPaths, all: bool, json: bool) -> Result<ExitCode> {
     let now = now();
-    let jobs: Vec<Seen> = super::all(account, now)?
+    let jobs: Vec<Seen> = snob_engine::jobs::all(account, now)?
         .into_iter()
         .filter(|seen| all || !seen.status.finished())
         .collect();
@@ -151,7 +153,7 @@ pub async fn cancel(
     let seen = find(account, id)?;
     let asked = !seen.status.is_over();
     if asked {
-        super::ask_to_stop(&seen)?;
+        snob_engine::jobs::ask_to_stop(&seen)?;
     }
     let seen = settle(account, seen, wait).await?;
     let now = now();

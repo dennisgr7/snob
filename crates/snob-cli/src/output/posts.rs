@@ -4,12 +4,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
+use snob_engine::exit::ExitCode;
+use snob_engine::media::{Named, Saved, download_named, save_file, save_file_to};
+use snob_engine::posts::{Opened, Post, fetched_item};
 use snob_ig::client::IgClient;
 
-use crate::exit::ExitCode;
-use crate::media::{Named, Saved, download_named, save_file, save_file_to};
-use crate::output;
-use crate::posts::{Opened, Post, fetched_item};
 use crate::ui;
 
 /// Downloads `files` the way `-d` does: one file and `-o` names it; several,
@@ -20,14 +19,14 @@ pub(crate) async fn download(
     files: Vec<Named>,
     destination: Option<&Path>,
 ) -> Result<ExitCode> {
-    if destination.is_some_and(output::is_stdout) {
-        output::one_file_to_stdout(files.len())?;
+    if destination.is_some_and(snob_engine::files::is_stdout) {
+        snob_engine::files::one_file_to_stdout(files.len())?;
         let file = &files[0];
         let url = file
             .url
             .as_deref()
             .ok_or_else(|| anyhow!("{} has no downloadable version", file.what))?;
-        let mut sink = output::StdoutSink::default();
+        let mut sink = snob_engine::files::StdoutSink::default();
         let streamed = client.download_to(url, file.cap, &mut sink).await;
         sink.finish(streamed)?;
         return Ok(ExitCode::Ok);

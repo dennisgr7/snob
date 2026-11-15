@@ -14,16 +14,16 @@
 
 use anyhow::Result;
 use snob_core::model::post::{Liker, Likers};
+use snob_engine::app::App;
+use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::posts::{self, Post};
 use snob_ig::shortcode::Shortcode;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::App;
 use crate::cli::{Format, LikersArgs};
 use crate::commands::common;
-use crate::exit::{ExitCode, ExitError};
 use crate::output::Rendered;
-use crate::posts::{self, Post};
 use crate::ui;
 
 /// The most accounts one answer was seen to hold, with a margin: what the
@@ -118,8 +118,8 @@ fn refuse_short_day(left: u64) -> Result<()> {
 fn check_ahead(store: &SecretStore, paths: &AccountPaths) -> Result<ExitCode> {
     let now = snob_core::clock::now_ms();
     common::alone_ahead(&store.session_of(paths), paths, now)?;
-    let (_store, budget) = common::standing(paths, now)?;
-    if let Some(held) = common::held_in(&budget, paths, now) {
+    let (_store, budget) = snob_engine::app::standing(paths, now)?;
+    if let Some(held) = snob_engine::app::held_in(&budget, paths, now) {
         return Err(common::in_cooldown(&held, "nothing can be sent"));
     }
     refuse_short_day(budget.accounts_left())?;
@@ -134,7 +134,7 @@ async fn ask(app: &App, yes: bool, someone_is_there: bool, code: &str) -> Result
         return Ok(());
     }
     if !someone_is_there {
-        return Err(crate::report::refuse_unattended(
+        return Err(snob_engine::sentences::refuse_unattended(
             format!("reading the likers of {code} needs confirmation"),
             "Pass -y to confirm in advance.".to_string(),
         ));
@@ -151,6 +151,9 @@ async fn ask(app: &App, yes: bool, someone_is_there: bool, code: &str) -> Result
             ExitCode::Interrupted,
             format!("nothing was read: the likers of {code} were not confirmed"),
         )
+        // As a list's question answered no (`sentences::refuse_declined`),
+        // so a script tells it from a Ctrl+C, which shares the exit code.
+        .with_reason("declined")
         .into());
     }
     Ok(())

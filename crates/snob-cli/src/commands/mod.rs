@@ -1,3 +1,7 @@
+//! The commands, one module each: they take an `App` and orchestrate, and
+//! the wording and exit codes of what the engine returns live here and in
+//! `report`. `snob mcp` is `snob_mcp`'s, and `snob jobs` is `crate::jobs`'.
+
 pub mod account;
 pub mod background;
 pub mod changes;
@@ -11,8 +15,6 @@ pub mod likers;
 pub mod lists;
 pub mod login;
 pub mod logout;
-#[cfg(feature = "mcp")]
-pub use snob_mcp as mcp;
 pub mod pfp;
 pub mod post;
 pub mod posts;

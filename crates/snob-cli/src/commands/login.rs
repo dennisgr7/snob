@@ -7,19 +7,18 @@
 
 use anyhow::{Context, Result, bail};
 use snob_core::session::Session;
+use snob_engine::app::Viewer;
+use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::{browser, cdp, interrupt};
 use snob_ig::login::{self, ValidationOutcome};
 use snob_ig::pace::CancelToken;
 use snob_store::paths::{self, AccountPaths, AppPaths};
 use snob_store::registry::Registry;
 use snob_store::secrets::{Backend, SecretStore};
 
-use crate::app::Viewer;
 use crate::cli::LoginArgs;
-use crate::exit::{ExitCode, ExitError};
 use crate::progress::Progress;
-use crate::report;
 use crate::ui::{self, LoginMethod};
-use crate::{browser, cdp, interrupt};
 
 /// Logs in again as `renewing`, the account resolved for this run, or as
 /// another account.
@@ -96,7 +95,7 @@ pub async fn run(
 /// does, for the interactive views' account picker, which has no command line
 /// to take the flags from.
 pub async fn add_by_browser(store: SecretStore, paths: &AppPaths) -> Result<ExitCode> {
-    let remote = crate::seat::Seat::here().prefers_remote();
+    let remote = snob_engine::seat::Seat::here().prefers_remote();
     let args = LoginArgs {
         paste: false,
         browser: !remote,
@@ -152,10 +151,13 @@ fn writable(paths: &AppPaths) -> Result<()> {
 /// Works out the method: whatever the flags say, or whatever the user picks
 /// from the menu.
 fn choose_method(args: &LoginArgs) -> Result<Option<LoginMethod>> {
-    choose_method_at(args, crate::seat::Seat::here())
+    choose_method_at(args, snob_engine::seat::Seat::here())
 }
 
-fn choose_method_at(args: &LoginArgs, seat: &crate::seat::Seat) -> Result<Option<LoginMethod>> {
+fn choose_method_at(
+    args: &LoginArgs,
+    seat: &snob_engine::seat::Seat,
+) -> Result<Option<LoginMethod>> {
     if args.paste {
         return Ok(Some(LoginMethod::Paste));
     }
@@ -165,7 +167,7 @@ fn choose_method_at(args: &LoginArgs, seat: &crate::seat::Seat) -> Result<Option
     if args.browser {
         // Said outright, and taken as said — except where a window cannot
         // open at all, which Chromium would only report as exiting with 1.
-        if seat.window == crate::seat::Window::Nowhere {
+        if seat.window == snob_engine::seat::Window::Nowhere {
             bail!("{}", no_window_here(seat));
         }
         return Ok(Some(LoginMethod::Browser));
@@ -185,7 +187,7 @@ fn choose_method_at(args: &LoginArgs, seat: &crate::seat::Seat) -> Result<Option
 }
 
 /// Why `--browser` cannot work at `seat`, and what does.
-fn no_window_here(seat: &crate::seat::Seat) -> String {
+fn no_window_here(seat: &snob_engine::seat::Seat) -> String {
     let why = if seat.ssh.is_some() {
         "this is an SSH session to a machine with no display"
     } else {
@@ -222,7 +224,7 @@ fn choose_browser(
         Ok(None) => {
             Err(ExitError::new(ExitCode::Interrupted, "no browser was chosen".to_string()).into())
         }
-        Err(e) if crate::exit::from_chain(&e) == Some(ExitCode::Interrupted) => Err(e),
+        Err(e) if snob_engine::exit::from_chain(&e) == Some(ExitCode::Interrupted) => Err(e),
         // The menu failing to draw: the preferred one still beats refusing to
         // continue.
         Err(_) => Ok(installed.first().cloned()),
@@ -238,8 +240,8 @@ async fn by_browser(
     method: LoginMethod,
 ) -> Result<ExitCode> {
     let remote = method == LoginMethod::Remote;
-    let seat = crate::seat::Seat::here();
-    if !remote && seat.window == crate::seat::Window::Elsewhere {
+    let seat = snob_engine::seat::Seat::here();
+    if !remote && seat.window == snob_engine::seat::Window::Elsewhere {
         ui::info(
             "This is an SSH session: the browser window opens on this machine's own screen, \
              not on the computer you are at. \"snob login --remote\" shows it there instead.",
@@ -262,10 +264,10 @@ async fn by_browser(
     // The profile the login happens in.
     let (profile, existed) = match &renewing {
         Some(previous) => {
-            crate::owner::release(paths, Some(previous.pk)).await;
-            crate::headless::profile::for_account(paths, previous.pk)?
+            snob_engine::owner::release(paths, Some(previous.pk)).await;
+            snob_engine::headless::profile::for_account(paths, previous.pk)?
         }
-        None => (crate::headless::profile::for_a_login(paths)?, false),
+        None => (snob_engine::headless::profile::for_a_login(paths)?, false),
     };
     let cancel = interrupt::install();
 
@@ -344,36 +346,39 @@ async fn by_browser(
 
     // A browser the owner started on the account's profile since this command
     // began, for another command, is closed before the profile is replaced.
-    crate::owner::release(paths, Some(session.ds_user_id)).await;
+    snob_engine::owner::release(paths, Some(session.ds_user_id)).await;
     if let Some(previous) = &renewing
         && previous.pk != session.ds_user_id
     {
-        crate::owner::release(paths, Some(previous.pk)).await;
+        snob_engine::owner::release(paths, Some(previous.pk)).await;
     }
 
     // The login happened in this profile, so it is the device Instagram just
     // saw sign in, and it becomes the account's before anything is sent: the
     // check below goes out from the account's profile.
-    let swap =
-        match crate::headless::profile::ProfileSwap::replace(paths, &profile, session.ds_user_id) {
-            Ok(swap) => Some(swap),
-            Err(e) => {
-                ui::warn(&format!(
-                    "{e:#}\n\
+    let swap = match snob_engine::headless::profile::ProfileSwap::replace(
+        paths,
+        &profile,
+        session.ds_user_id,
+    ) {
+        Ok(swap) => Some(swap),
+        Err(e) => {
+            ui::warn(&format!(
+                "{e:#}\n\
                      The profile the login happened in stays at {}, holding the session, \
                      and the account's requests go out from another; \"snob logout\" \
                      removes it.",
-                    profile.display()
-                ));
-                None
-            }
-        };
+                profile.display()
+            ));
+            None
+        }
+    };
     let made_it = swap
         .as_ref()
         .map_or(profile.as_path(), |s| s.profile.as_path());
     // The profile made this session, and is the browser's to keep current from
     // now on: the next run must not write the stored copy back over it.
-    crate::headless::ProfileMark::after_login(made_it, &found, &session);
+    snob_engine::headless::ProfileMark::after_login(made_it, &found, &session);
     let finished = finish(session, store, method, paths, renewing.as_ref()).await;
     if let Some(swap) = swap {
         match &finished {
@@ -468,7 +473,7 @@ async fn collect(
 
 /// [`capture`], for a login watched from another machine: the browser runs here
 /// without a window, and its tab is relayed through a tunnel to a page in the
-/// person's own browser (`crate::relay`), until the session is in it.
+/// person's own browser (`snob_engine::relay`), until the session is in it.
 async fn capture_remotely(
     found: &browser::Browser,
     requested_user_agent: Option<String>,
@@ -476,12 +481,12 @@ async fn capture_remotely(
     paths: &AppPaths,
     cancel: &CancelToken,
 ) -> Result<(login::BrowserCookies, String)> {
-    let relay = crate::relay::Relay::bind(paths)?;
-    let crate::headless::RemoteLogin {
+    let relay = snob_engine::relay::Relay::bind(paths)?;
+    let snob_engine::headless::RemoteLogin {
         cdp,
         tab,
         user_agent,
-    } = crate::headless::for_a_remote_login(found, profile, paths, cancel).await?;
+    } = snob_engine::headless::for_a_remote_login(found, profile, paths, cancel).await?;
     // An explicit --user-agent still wins, as in a windowed login.
     let user_agent = requested_user_agent.unwrap_or(user_agent);
     let outcome = relayed(&cdp, &tab, relay, cancel).await;
@@ -492,7 +497,7 @@ async fn capture_remotely(
 async fn relayed(
     cdp: &cdp::Cdp,
     tab: &str,
-    relay: crate::relay::Relay,
+    relay: snob_engine::relay::Relay,
     cancel: &CancelToken,
 ) -> Result<login::BrowserCookies> {
     // As in a windowed login: a profile still signed in is taken as it is.
@@ -516,7 +521,7 @@ async fn relayed(
     .await?;
     ui::info(&remote_instructions(
         &relay,
-        crate::seat::Seat::here().ssh.as_ref(),
+        snob_engine::seat::Seat::here().ssh.as_ref(),
     ));
     // As in `collect`: one bar, started once nothing else is printed.
     let progress = Progress::new(true);
@@ -526,7 +531,10 @@ async fn relayed(
 }
 
 /// What to do on the computer the person is at, for `relay`.
-fn remote_instructions(relay: &crate::relay::Relay, ssh: Option<&crate::seat::Ssh>) -> String {
+fn remote_instructions(
+    relay: &snob_engine::relay::Relay,
+    ssh: Option<&snob_engine::seat::Ssh>,
+) -> String {
     let named = ssh.and_then(|s| s.server.as_ref()).is_some();
     let host_note = if named {
         "(or with the name you usually give ssh for this machine)"
@@ -574,9 +582,9 @@ async fn by_paste(args: LoginArgs, store: SecretStore, paths: &AppPaths) -> Resu
     // The requests go out from the browser that made the account's profile,
     // while it is installed (`ProfileMark`), whichever one was named here.
     if let Some(named) = &session.browser
-        && !crate::headless::env_flag("SNOB_NO_BROWSER")
+        && !snob_engine::headless::env_flag("SNOB_NO_BROWSER")
         && let Some(maker) =
-            crate::headless::ProfileMark::read(&paths.browser_profile_for(session.ds_user_id))
+            snob_engine::headless::ProfileMark::read(&paths.browser_profile_for(session.ds_user_id))
                 .browser
         && maker.is_file()
         && browser::detect_named(named).is_some_and(|b| b.path != maker)
@@ -600,8 +608,10 @@ async fn by_paste(args: LoginArgs, store: SecretStore, paths: &AppPaths) -> Resu
         .map(Into::into);
     // The check goes out from a browser that takes this session, whatever the
     // clock said when the one it held was made (`headless::newer_login`).
-    crate::owner::release(paths, Some(session.ds_user_id)).await;
-    crate::headless::ProfileMark::forget_session(&paths.browser_profile_for(session.ds_user_id));
+    snob_engine::owner::release(paths, Some(session.ds_user_id)).await;
+    snob_engine::headless::ProfileMark::forget_session(
+        &paths.browser_profile_for(session.ds_user_id),
+    );
     finish(session, store, LoginMethod::Paste, paths, None).await
 }
 
@@ -647,7 +657,7 @@ async fn finish(
 
     // Checking a session is a request like any other, charged to the budget
     // of the account that signed in: repeated logins spend.
-    let pacer = crate::app::pacer_saying_a_line(&account)?;
+    let pacer = snob_engine::app::pacer_saying_a_line(&account)?;
     // Let in before the check, which goes out as any request does: a logout or
     // purge of the account signed out every session it had then, and this one
     // is a login's own (`owner::signed_out`).
@@ -688,8 +698,8 @@ async fn finish(
             // the account's newest, and would go on sending it in place of the
             // one still stored; and a browser login's profile is about to be
             // put back under it.
-            crate::owner::release(paths, Some(pk)).await;
-            crate::headless::ProfileMark::forget_session(&paths.browser_profile_for(pk));
+            snob_engine::owner::release(paths, Some(pk)).await;
+            snob_engine::headless::ProfileMark::forget_session(&paths.browser_profile_for(pk));
             forget_the_attempt(&account, adopted, !existed && rejected);
             return Err(e);
         }
@@ -705,7 +715,9 @@ async fn finish(
     let username = session.username.clone();
     let mut previous = None;
     let registry = Registry::update(paths, |registry| {
-        previous = registry.active_account().map(crate::app::Viewer::from);
+        previous = registry
+            .active_account()
+            .map(snob_engine::app::Viewer::from);
         let name = username
             .or_else(|| registry.get(pk).map(|a| a.username.clone()))
             .unwrap_or_default();
@@ -734,11 +746,11 @@ async fn finish(
             crate::ui::say!("Session stored in the {}.", store.describe());
             // Asked again, as the check's pacer is spent: what held it may be
             // the brake on every account rather than a cooldown of its own.
-            let held = crate::app::pacer_saying_a_line(&account)
-                .and_then(|pacer| crate::app::held(&pacer, Some(paths)))
+            let held = snob_engine::app::pacer_saying_a_line(&account)
+                .and_then(|pacer| snob_engine::app::held(&pacer, Some(paths)))
                 .ok()
                 .flatten()
-                .unwrap_or(crate::app::Held {
+                .unwrap_or(snob_engine::app::Held {
                     until_ms,
                     braked: Vec::new(),
                 });
@@ -746,7 +758,7 @@ async fn finish(
                 "it was not checked: {}. Nothing is spent until then — not even the \
                  single request this would cost. Check it with \"snob whoami\" once it \
                  lifts.",
-                report::held_until(&held)
+                snob_engine::sentences::held_until(&held)
             ));
         }
     }
@@ -900,7 +912,7 @@ fn prompt_user_agent() -> Result<ChosenAgent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::seat::{Seat, Ssh, Window};
+    use snob_engine::seat::{Seat, Ssh, Window};
 
     fn args(paste: bool, browser: bool, remote: bool) -> LoginArgs {
         LoginArgs {
@@ -954,7 +966,7 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let paths = AppPaths::rooted_at(temporary.path());
         paths.ensure_dirs().unwrap();
-        let relay = crate::relay::Relay::bind(&paths).unwrap();
+        let relay = snob_engine::relay::Relay::bind(&paths).unwrap();
         let ssh = over_ssh(Window::Nowhere).ssh;
         let said = remote_instructions(&relay, ssh.as_ref());
         let tunnel = format!("    {}", relay.tunnel(ssh.as_ref()));

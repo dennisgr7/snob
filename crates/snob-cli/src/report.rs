@@ -2,13 +2,12 @@
 //! sentences the engine returns are its own (`sentences`), named here too.
 
 use snob_core::model::{ListKind, StopReason, User, printable};
+use snob_engine::app::Viewer;
+use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::sentences::{acting_as, advice_for, and_list, cooldown_ends_at, stored_on};
 use snob_ig::pager::Warning;
 
-use crate::app::Viewer;
-use crate::exit::{ExitCode, ExitError};
 use crate::ui::theme::Role;
-
-pub use crate::sentences::*;
 
 /// What a machine with no `watch.toml` is told, by both things that look: `snob
 /// watch check`, through `commands::watch::say::problem_line`, and
@@ -43,7 +42,7 @@ pub enum Wording {
 
 /// The failure as one JSON object, for a caller that asked for JSON.
 fn error_json_for(error: &anyhow::Error, viewer: Option<&Viewer>) -> serde_json::Value {
-    let code = crate::exit::exit_code_for(error);
+    let code = snob_engine::exit::exit_code_for(error);
     let mut chain = error
         .chain()
         .map(|cause| filtered(&cause.to_string(), "\n"));
@@ -77,7 +76,7 @@ fn error_json_for(error: &anyhow::Error, viewer: Option<&Viewer>) -> serde_json:
         "viewer": viewer.map(Viewer::json),
         "error": {
             "code": code.as_str(),
-            "exit": crate::exit::code(code),
+            "exit": snob_engine::exit::code(code),
             "message": message,
             "causes": causes,
             "hint": hint,
@@ -100,7 +99,7 @@ fn hint_label() -> console::StyledObject<&'static str> {
 /// The block `print_error` writes, built rather than printed, so a test can
 /// assert on every branch of it, the filter included, from inside the process.
 fn rendered(error: &anyhow::Error) -> String {
-    let code = crate::exit::from_chain(error);
+    let code = snob_engine::exit::from_chain(error);
     if code == Some(ExitCode::Interrupted) {
         // No label, so nothing to indent under — but the filter is not the
         // label's business.
@@ -171,6 +170,19 @@ fn filtered(text: &str, join: &str) -> String {
         .join(join)
 }
 
+/// `sentence` with its first letter raised, to open a line with. By
+/// character: cut by bytes, a sentence opening on anything past ASCII is a
+/// panic.
+pub(crate) fn opening(sentence: &str) -> String {
+    let mut rest = sentence.chars();
+    match rest.next() {
+        Some(first) => std::iter::once(first.to_ascii_uppercase())
+            .chain(rest)
+            .collect(),
+        None => String::new(),
+    }
+}
+
 /// The requests half of a summary line: what was spent, or the promise that
 /// nothing was.
 pub fn spent(n: u32) -> String {
@@ -190,7 +202,7 @@ pub fn stored_on_the_older_of(a: snob_core::Epoch, b: snob_core::Epoch) -> Strin
 /// The refusal shared by the crossings and the summary.
 pub fn refuse_incomplete(
     list: ListKind,
-    outcome: &crate::engine::ListOutcome,
+    outcome: &snob_engine::engine::ListOutcome,
     misreading: &str,
 ) -> anyhow::Error {
     ExitError::new(
@@ -229,8 +241,8 @@ pub fn paused_for_the_day(wait: std::time::Duration) -> String {
 pub fn sent_to(name: &str, destination: &str) -> String {
     format!(
         "What changes in @{}'s lists is sent to {}.",
-        printable(crate::engine::target::clean(name)),
-        crate::watch::webhook::shown_str(destination)
+        printable(snob_engine::engine::target::clean(name)),
+        snob_engine::watch::webhook::shown_str(destination)
     )
 }
 
@@ -445,10 +457,14 @@ pub fn jitter_sentence(jitter: std::time::Duration) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::Held;
-    use crate::engine::{ListOutcome, Provenance};
     use snob_core::Pk;
     use snob_core::{Epoch, EpochMs};
+    use snob_engine::app::Held;
+    use snob_engine::engine::{ListOutcome, Provenance};
+    use snob_engine::sentences::{
+        Blocked, refuse_cooldown_mid_walk, refuse_different_moments, refuse_in_cooldown,
+        refuse_nothing_stored, what_instagram_said,
+    };
 
     /// What `watch once <name> --webhook` says before its question names the
     /// account and where its changes go, the secret path of a Slack webhook
@@ -763,7 +779,10 @@ mod tests {
         // `a_refusal_keeps_its_advice_apart_from_what_happened`.
         assert!(hint_of(&error).unwrap().contains("starts over"));
 
-        assert_eq!(crate::exit::from_chain(&error), Some(ExitCode::RateLimited));
+        assert_eq!(
+            snob_engine::exit::from_chain(&error),
+            Some(ExitCode::RateLimited)
+        );
     }
 
     #[test]
@@ -778,7 +797,7 @@ mod tests {
             // the reason — which is `ListOutcome::exit_code`'s fallback.
             let error = refuse_incomplete(ListKind::Following, &stopped(reason, None), "whatever");
             assert_eq!(
-                crate::exit::from_chain(&error),
+                snob_engine::exit::from_chain(&error),
                 Some(expected),
                 "{reason:?}"
             );
@@ -795,7 +814,10 @@ mod tests {
             &stopped(StopReason::SessionInvalid, Some(ExitCode::Challenge)),
             "whatever",
         );
-        assert_eq!(crate::exit::from_chain(&error), Some(ExitCode::Challenge));
+        assert_eq!(
+            snob_engine::exit::from_chain(&error),
+            Some(ExitCode::Challenge)
+        );
     }
 
     /// Against an account Instagram has just flagged, "run it again" is the
@@ -849,7 +871,7 @@ mod tests {
         );
         assert!(hint_of(&throttled).unwrap().contains("cooldown lifts"));
         assert_eq!(
-            crate::exit::from_chain(&throttled),
+            snob_engine::exit::from_chain(&throttled),
             Some(ExitCode::RateLimited)
         );
 
@@ -862,7 +884,10 @@ mod tests {
         let hint = hint_of(&asked_for).unwrap();
         assert!(hint.contains("--offline"), "{hint}");
         assert!(!hint.contains("cooldown"), "{hint}");
-        assert_eq!(crate::exit::from_chain(&asked_for), Some(ExitCode::Error));
+        assert_eq!(
+            snob_engine::exit::from_chain(&asked_for),
+            Some(ExitCode::Error)
+        );
         // A reason of its own, so an agent, whose server passed the flag, is
         // told something it can do instead.
         let reason = |error: &anyhow::Error| {
@@ -887,7 +912,7 @@ mod tests {
         assert!(!hint.contains("--offline"), "{hint}");
         assert!(!hint.contains("cooldown"), "{hint}");
         assert_eq!(
-            crate::exit::from_chain(&nobody_could_check),
+            snob_engine::exit::from_chain(&nobody_could_check),
             Some(ExitCode::Error)
         );
 
@@ -912,7 +937,10 @@ mod tests {
             let text = error.to_string();
             assert!(text.contains(expected), "{text}");
             assert!(text.contains("in cooldown until"), "{text}");
-            assert_eq!(crate::exit::from_chain(&error), Some(ExitCode::RateLimited));
+            assert_eq!(
+                snob_engine::exit::from_chain(&error),
+                Some(ExitCode::RateLimited)
+            );
         }
     }
 

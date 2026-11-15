@@ -101,7 +101,7 @@ pub enum Raw {
 ///
 /// **A stop the system asked for arrives as a Ctrl+C.**
 pub fn read(timeout: Duration) -> std::io::Result<Raw> {
-    if crate::interrupt::asked_by_the_system() {
+    if snob_engine::interrupt::asked_by_the_system() {
         return Ok(Raw::Key(system_stop()));
     }
     if !event::poll(timeout)? {
@@ -113,12 +113,12 @@ pub fn read(timeout: Duration) -> std::io::Result<Raw> {
         // while nobody looked is put on screen as they come back.
         Event::FocusGained => {
             FOCUSED.store(true, Ordering::Relaxed);
-            crate::owner::attended(true);
+            snob_engine::owner::attended(true);
             Raw::Resized
         }
         Event::FocusLost => {
             FOCUSED.store(false, Ordering::Relaxed);
-            crate::owner::attended(false);
+            snob_engine::owner::attended(false);
             Raw::Tick
         }
         Event::Paste(text) => Raw::Paste(text),
@@ -153,8 +153,8 @@ pub fn bound(raw: Raw) -> Option<Action> {
 
 /// The error a view leaves with when the keyboard cannot be read.
 pub fn unreadable(e: std::io::Error) -> anyhow::Error {
-    crate::exit::ExitError::new(
-        crate::exit::ExitCode::Error,
+    snob_engine::exit::ExitError::new(
+        snob_engine::exit::ExitCode::Error,
         format!("the keyboard could not be read: {e}"),
     )
     .into()
@@ -203,11 +203,11 @@ pub enum Stopped {
 
 impl Stopped {
     /// The way out of the browser loop, when this asks for one.
-    pub fn leave(self) -> Option<crate::exit::ExitCode> {
+    pub fn leave(self) -> Option<snob_engine::exit::ExitCode> {
         match self {
             Stopped::No => None,
-            Stopped::Quit => Some(crate::exit::ExitCode::Ok),
-            Stopped::Interrupt => Some(crate::exit::ExitCode::Interrupted),
+            Stopped::Quit => Some(snob_engine::exit::ExitCode::Ok),
+            Stopped::Interrupt => Some(snob_engine::exit::ExitCode::Interrupted),
         }
     }
 }
@@ -437,9 +437,9 @@ mod tests {
     fn an_unreadable_keyboard_is_an_error_exit() {
         let error = unreadable(std::io::Error::other("x"));
         let exit = error
-            .downcast_ref::<crate::exit::ExitError>()
+            .downcast_ref::<snob_engine::exit::ExitError>()
             .expect("an ExitError");
-        assert_eq!(exit.code, crate::exit::ExitCode::Error);
+        assert_eq!(exit.code, snob_engine::exit::ExitCode::Error);
         assert_eq!(error.to_string(), "the keyboard could not be read: x");
     }
 

@@ -4,14 +4,14 @@ use anyhow::Result;
 use snob_core::filters::Filter;
 use snob_core::model::{ListKind, User};
 use snob_core::sets;
+use snob_engine::app::{App, Viewer};
+use snob_engine::engine::{self, ListOutcome};
+use snob_engine::exit::ExitCode;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::{App, Viewer};
 use crate::cli::ListArgs;
 use crate::commands::common;
-use crate::engine::{self, ListOutcome};
-use crate::exit::ExitCode;
 use crate::report;
 use crate::ui;
 use crate::ui::accounts::Browsed;
@@ -389,7 +389,7 @@ mod tests {
         );
 
         assert!(
-            line.contains(&report::stored_on(older)),
+            line.contains(&snob_engine::sentences::stored_on(older)),
             "a crossing is only as recent as its staler half: {line}"
         );
         assert!(

@@ -33,8 +33,8 @@ use ratatui::widgets::{
     ScrollbarOrientation, ScrollbarState, Table,
 };
 use ratatui::{Terminal, TerminalOptions, Viewport};
+use snob_engine::app::Viewer;
 
-use crate::app::Viewer;
 use crate::ui::graphics;
 use crate::ui::theme::Role;
 
@@ -220,7 +220,7 @@ impl Tui {
         let raw = disable_raw_mode();
         // Back to a command in a terminal, which somebody waits on, whatever
         // the view's focus last said (`owner::attended`).
-        crate::owner::attended(true);
+        snob_engine::owner::attended(true);
         crate::ui::browser::input::focus_unknown();
         modes.and(raw)?;
         self.active = false;
@@ -267,7 +267,7 @@ impl Drop for Tui {
 /// each refusal carrying the view's own hint about the flags that work without
 /// one.
 pub fn claim_fullscreen(hint: &str) -> anyhow::Result<Tui> {
-    use crate::exit::{ExitCode, ExitError};
+    use snob_engine::exit::{ExitCode, ExitError};
 
     if !console::Term::stderr().is_term() {
         return Err(

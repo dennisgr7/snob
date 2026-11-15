@@ -1,11 +1,19 @@
+//! `snob whoami`: whose session is stored here, and whether Instagram still
+//! takes it.
+//!
+//! **It builds its own client, with no `App`** (AGENTS.md, "Workspace map"):
+//! the one request it sends is the check of the session, none in a cooldown,
+//! and a session signed out on this computer is its answer, where
+//! `App::open` refuses the run.
+
 use anyhow::Result;
 use snob_core::Epoch;
+use snob_engine::exit::ExitCode;
 use snob_ig::client::IgClient;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
 use crate::cli::WhoamiArgs;
-use crate::exit::ExitCode;
 use crate::report;
 use crate::ui;
 
@@ -18,7 +26,7 @@ pub async fn run(
 ) -> Result<ExitCode> {
     let store = account.as_ref().map(|paths| secrets.session_of(paths));
     // The account asked about, whether or not it has a session to report on.
-    let viewer = crate::report::acting_as().map(|viewer| viewer.json());
+    let viewer = snob_engine::sentences::acting_as().map(|viewer| viewer.json());
     // Where the session was found, which is where it is written back and
     // what is reported: on a machine with no keyring, `login` fell back to
     // the file, and this run's store would still say the keyring.
@@ -69,31 +77,33 @@ pub async fn run(
     // not checked with Instagram, `--offline` or not: it is said as what it
     // is, with the code of having none, which every command refuses it with
     // at its start (`App::open`).
-    let signed_out = crate::owner::signed_out(paths, &session);
+    let signed_out = snob_engine::owner::signed_out(paths, &session);
     if signed_out {
         alive = Some(false);
         code = ExitCode::NoSession;
         failure = Some(serde_json::json!({
             "code": code.as_str(),
             "url": serde_json::Value::Null,
-            "message": report::SIGNED_OUT_HERE,
+            "message": snob_engine::sentences::SIGNED_OUT_HERE,
         }));
-        let mut said = report::SIGNED_OUT_HERE.to_string();
-        said[..1].make_ascii_uppercase();
-        eprintln!("{said}. Run \"snob login\".");
+        eprintln!(
+            "{}. Run \"snob login\".",
+            report::opening(snob_engine::sentences::SIGNED_OUT_HERE)
+        );
     } else if !args.offline {
         // Through `app::pacer_saying_a_line`, so Ctrl+C reaches the request
         // and a wait the budget imposes is announced.
-        let pacer = crate::app::pacer_saying_a_line(paths)?;
+        let pacer = snob_engine::app::pacer_saying_a_line(paths)?;
 
         // A cooldown means nothing is spent, and checking a session is a
         // request like any other.
-        if let Some(held) = crate::app::held(&pacer, Some(paths))? {
+        if let Some(held) = snob_engine::app::held(&pacer, Some(paths))? {
             // Seconds, like `created_at` and `validated_at` in the same object.
             cooldown_until = Some(held.until_ms.to_epoch());
-            let mut said = report::held_until(&held);
-            said[..1].make_ascii_uppercase();
-            eprintln!("{said}, so the session was not checked.");
+            eprintln!(
+                "{}, so the session was not checked.",
+                report::opening(&snob_engine::sentences::held_until(&held))
+            );
         } else {
             let client = IgClient::new(session.clone(), pacer)?;
             match client.whoami().await {
@@ -119,12 +129,12 @@ pub async fn run(
                 }
                 Err(e) => {
                     alive = Some(false);
-                    code = crate::exit::from_ig_error(&e);
+                    code = snob_engine::exit::from_ig_error(&e);
                     // Through `report`, in both shapes: the advice naming a
                     // `snob` subcommand lives there, and a dead session, which
                     // is the whole reason somebody runs this command, is one
                     // of the failures that carries it.
-                    let said = report::what_instagram_said(&e);
+                    let said = snob_engine::sentences::what_instagram_said(&e);
                     failure = Some(serde_json::json!({
                         "code": code.as_str(),
                         // Validated against instagram.com before it ever reached

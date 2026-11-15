@@ -38,8 +38,8 @@ use ratatui::layout::{Constraint, Rect};
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
+use snob_engine::media::Kind;
 
-use crate::media::Kind;
 use crate::ui::browser::input::{self, Raw};
 use crate::ui::graphics;
 use crate::ui::help;
@@ -375,7 +375,7 @@ pub fn show_file(
 
 /// What the bytes are, for the sentence that says they are no JPEG.
 fn named(bytes: &[u8]) -> &'static str {
-    match crate::media::extension_of(bytes) {
+    match snob_engine::media::extension_of(bytes) {
         "mp4" => "a video",
         "webp" => "a WebP",
         "png" => "a PNG",

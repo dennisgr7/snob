@@ -19,8 +19,8 @@ use snob_store::store::Store;
 use wiremock::MockServer;
 
 use snob_cli::cli::ListArgs;
-use snob_cli::engine::{self, ListQuery};
-use snob_cli::exit::ExitCode;
+use snob_engine::engine::{self, ListQuery};
+use snob_engine::exit::ExitCode;
 
 mod common;
 use common::args_for;
@@ -80,7 +80,7 @@ async fn with_nobody_to_ask_a_named_account_is_refused_before_anything_is_spent(
 
     let error = result.expect_err("an unanswerable question is not a yes");
     assert_eq!(
-        snob_cli::exit::from_chain(&error),
+        snob_engine::exit::from_chain(&error),
         Some(ExitCode::Interrupted)
     );
     assert!(
@@ -104,7 +104,7 @@ async fn the_monitor_is_pointed_at_the_answer_it_can_actually_take() {
     let error = result.expect_err("an unanswerable question is not a yes");
     let message = error.to_string();
     assert_eq!(
-        snob_cli::exit::from_chain(&error),
+        snob_engine::exit::from_chain(&error),
         Some(ExitCode::Interrupted)
     );
     assert!(
@@ -257,7 +257,7 @@ async fn an_answer_about_one_account_does_not_cover_another() {
         .await
         .expect_err("an answer about alice says nothing about bob");
     assert_eq!(
-        snob_cli::exit::from_chain(&error),
+        snob_engine::exit::from_chain(&error),
         Some(ExitCode::Interrupted)
     );
 

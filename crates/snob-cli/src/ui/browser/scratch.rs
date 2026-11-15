@@ -4,8 +4,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-pub use crate::files::ABANDONED_AFTER;
-
 /// The scratch directory, removed when the browsing session ends.
 ///
 /// **What it can and cannot promise, measured on Windows 11 in August 2026

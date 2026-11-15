@@ -9,8 +9,8 @@ use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use snob_cli::cli::ListArgs;
-use snob_cli::engine::cooldown::check_same_moment;
-use snob_cli::engine::{self, ListOutcome, ListQuery, Provenance};
+use snob_engine::engine::cooldown::check_same_moment;
+use snob_engine::engine::{self, ListOutcome, ListQuery, Provenance};
 
 mod common;
 use common::{app, args, args_for, open_db, requests};
@@ -414,8 +414,8 @@ async fn cache_with_an_unknown_target_fails_without_the_network() {
         "{error}"
     );
     assert_eq!(
-        snob_cli::exit::from_chain(&error),
-        Some(snob_cli::exit::ExitCode::Error),
+        snob_engine::exit::from_chain(&error),
+        Some(snob_engine::exit::ExitCode::Error),
         "and it carries the code and the advice its four siblings carry"
     );
     assert_eq!(requests(&server).await, 0);

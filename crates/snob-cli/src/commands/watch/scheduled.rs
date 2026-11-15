@@ -4,13 +4,13 @@ use anyhow::Result;
 use snob_core::model::printable;
 use snob_core::watch::schedule::{self, Due, Schedule};
 use snob_core::{Epoch, Pk};
+use snob_engine::exit::{ExitCode, ExitError};
 use snob_store::config;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 use snob_store::store::shared::Shared;
 
 use crate::cli::WatchRunArgs;
-use crate::exit::{ExitCode, ExitError};
 use crate::report;
 use crate::ui;
 
@@ -54,7 +54,7 @@ pub(super) async fn scheduled(
 
     // Installed once for the process, which is what lets this open an `App` per
     // run without leaving a signal listener behind on each one.
-    let cancel = crate::interrupt::install();
+    let cancel = snob_engine::interrupt::install();
     let printing = Printing::unattended(args.output.json);
     let run = |timing| {
         run_viewers(
@@ -76,7 +76,7 @@ pub(super) async fn scheduled(
         // calendar would answer with its next moment on the grid.
         last_run = Some(snob_core::clock::now());
         // Asked for at start, by hand: due for nothing.
-        let timing = crate::engine::watch::RunTiming::by_hand(snob_core::clock::now());
+        let timing = snob_engine::engine::watch::RunTiming::by_hand(snob_core::clock::now());
         if let Err(e) = run(timing).await.into_result() {
             report::print_error(&e, printing.wording());
         }
@@ -170,7 +170,7 @@ pub(super) async fn scheduled(
             last_run = Some(now);
             waiting_for = None;
             // The jitter rolled is the schedule's own lateness, not the run's.
-            let timing = crate::engine::watch::RunTiming::due(due_at, now, schedule.jitter());
+            let timing = snob_engine::engine::watch::RunTiming::due(due_at, now, schedule.jitter());
 
             // A scheduled service does not exit because one run failed.
             if let Err(e) = run(timing).await.into_result() {
@@ -180,7 +180,7 @@ pub(super) async fn scheduled(
             // what it rotated is written back now, and the browser is left to
             // its owner, which closes it once idle (or closed here, when this
             // process runs its own).
-            crate::owner::finish(&secrets, paths).await;
+            snob_engine::owner::finish(&secrets, paths).await;
             continue;
         }
 

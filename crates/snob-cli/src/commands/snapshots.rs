@@ -7,11 +7,11 @@
 use anyhow::Result;
 use snob_core::Pk;
 use snob_core::model::{ListKind, printable};
+use snob_engine::exit::{ExitCode, ExitError};
 use snob_store::paths::AccountPaths;
 use snob_store::store::{Store, accounts, snapshots};
 
 use crate::cli::SnapshotsArgs;
-use crate::exit::{ExitCode, ExitError};
 use crate::output::grid::{Grid, Value};
 use crate::output::{self, Presentation};
 
@@ -26,10 +26,11 @@ pub(crate) fn stored_account(
         return Err(nothing_here(target));
     };
     let Some(name) = target else {
-        let own = crate::report::acting_as().map_or_else(|| "your account".into(), |v| v.label());
+        let own = snob_engine::sentences::acting_as()
+            .map_or_else(|| "your account".into(), |v| v.label());
         return Ok((store, account.pk(), own));
     };
-    let name = crate::engine::target::clean(name);
+    let name = snob_engine::engine::target::clean(name);
     match accounts::find_pk_by_username(store.conn(), name)? {
         Some(pk) => Ok((store, pk, format!("@{}", printable(name)))),
         None => Err(nothing_here(Some(name))),
@@ -41,7 +42,7 @@ pub(crate) fn stored_account(
 fn nothing_here(target: Option<&str>) -> anyhow::Error {
     let (whose, walk) = match target {
         Some(name) => {
-            let name = printable(crate::engine::target::clean(name));
+            let name = printable(snob_engine::engine::target::clean(name));
             (format!("@{name}"), format!("snob followers {name}"))
         }
         None => ("your account".to_string(), "snob scan".to_string()),

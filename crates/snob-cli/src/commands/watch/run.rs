@@ -9,6 +9,9 @@
 use anyhow::Result;
 use snob_core::model::printable;
 use snob_core::{Epoch, Pk};
+use snob_engine::app::{App, Viewer};
+use snob_engine::engine::watch::{RunTiming, TickReport, Watched, group_by_viewer};
+use snob_engine::exit::{ExitCode, ExitError};
 use snob_ig::pace::CancelToken;
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::registry::Registry;
@@ -16,9 +19,6 @@ use snob_store::secrets::SecretStore;
 use snob_store::store::Store;
 use snob_store::store::shared::Shared;
 
-use crate::app::{App, Viewer};
-use crate::engine::watch::{RunTiming, TickReport, Watched, group_by_viewer};
-use crate::exit::{ExitCode, ExitError};
 use crate::report;
 use crate::ui;
 
@@ -38,7 +38,7 @@ pub(super) async fn run_viewers(
     timing: RunTiming,
 ) -> RunSummary {
     started(paths, timing.began_at);
-    let cancel = crate::interrupt::install();
+    let cancel = snob_engine::interrupt::install();
     run_groups(
         paths,
         watched,
@@ -51,7 +51,7 @@ pub(super) async fn run_viewers(
                 crate::front::front(with_progress)
             })?;
             Ok(opened.map(|mut app| {
-                app.stops_on_a_critical_battery(crate::power::battery::critical);
+                app.stops_on_a_critical_battery(snob_engine::power::battery::critical);
                 Box::new(app)
             }))
         },
@@ -74,7 +74,7 @@ fn started(paths: &AppPaths, at: Epoch) {
 /// system is about to hibernate or shut down under a run started now
 /// (`power::battery`).
 pub(super) fn waits_for_power(paths: &AppPaths, now: Epoch) -> bool {
-    if !crate::power::battery::critical() {
+    if !snob_engine::power::battery::critical() {
         return false;
     }
     match Shared::open(paths) {
@@ -125,7 +125,7 @@ async fn run_groups(
         };
         let reader = viewer.map(|pk| Viewer {
             pk,
-            username: crate::account::username(&registry, pk).map(str::to_string),
+            username: snob_engine::account::username(&registry, pk).map(str::to_string),
         });
         let as_whom = reader.as_ref().map(Viewer::label);
         let why = match opened {
@@ -208,7 +208,7 @@ pub(super) fn settle_all(paths: &AppPaths) {
     say_what_was_given_up(
         account_databases(paths)
             .iter()
-            .map(|account| crate::engine::watch::settle_account(account, now))
+            .map(|account| snob_engine::engine::watch::settle_account(account, now))
             .sum(),
     );
 }
@@ -224,7 +224,7 @@ fn no_session_for(
     let hint = match viewer {
         Some(pk) => format!(
             "run \"snob login --account {}\"",
-            crate::account::username(registry, pk).map_or_else(|| pk.to_string(), printable)
+            snob_engine::account::username(registry, pk).map_or_else(|| pk.to_string(), printable)
         ),
         None => "run \"snob login\"".to_string(),
     };
@@ -249,7 +249,7 @@ fn skipped_because(as_whom: Option<&str>, why: &str, entries: &[Watched]) -> Exi
         })
         .collect();
     let verb = if names.len() > 1 { "are" } else { "is" };
-    let named = crate::report::and_list(&names).unwrap_or_else(|| "nothing".to_string());
+    let named = snob_engine::sentences::and_list(&names).unwrap_or_else(|| "nothing".to_string());
     let message = match as_whom {
         Some(viewer) => format!("{viewer}: {why}, so {named} {verb} skipped this run"),
         None => format!("{why}, so {named} {verb} skipped this run"),
@@ -377,7 +377,7 @@ impl Tally {
             report::print_error_as(&earlier, printing.wording(), viewer.as_ref());
         }
         let failed = failed.map(|(viewer, e)| {
-            report::set_acting_as(viewer);
+            snob_engine::sentences::set_acting_as(viewer);
             e
         });
         RunSummary {
@@ -390,7 +390,7 @@ impl Tally {
 
 /// Every account one viewer watches, through that viewer's `App`.
 async fn run_accounts(
-    app: &mut crate::app::App,
+    app: &mut snob_engine::app::App,
     watched: &[Watched],
     delivery: Option<&Delivery>,
     printing: Printing,
@@ -466,7 +466,7 @@ fn record_failed_run(
         return;
     };
 
-    let outcome = crate::exit::from_chain(error).unwrap_or(ExitCode::Error);
+    let outcome = snob_engine::exit::from_chain(error).unwrap_or(ExitCode::Error);
     let record = snob_store::store::watch::record_run(
         db.conn(),
         &snob_store::store::watch::Run {
@@ -505,13 +505,13 @@ fn first_reason(so_far: ExitCode, tick: ExitCode) -> ExitCode {
 
 /// One account, inside a run that may cover several.
 async fn tick_one(
-    app: &mut crate::app::App,
+    app: &mut snob_engine::app::App,
     watched: &Watched,
     delivery: Option<&Delivery>,
     printing: Printing,
     timing: RunTiming,
 ) -> Result<TickReport> {
-    let tick = crate::engine::watch::tick(app, watched).await;
+    let tick = snob_engine::engine::watch::tick(app, watched).await;
     app.progress().finish();
     let mut tick = tick?;
     // Saved before the report is made, so it names what is in the directory,
@@ -568,7 +568,7 @@ mod tests {
     /// The skipped entries are named as a sentence would, and the verb agrees.
     #[test]
     fn the_skipped_entries_are_named_and_the_verb_agrees() {
-        let friend = Watched::consented("friend".into(), crate::engine::watch::Consent);
+        let friend = Watched::consented("friend".into(), snob_engine::engine::watch::Consent);
         let one = skipped_because(Some("@me"), "no session", &[Watched::own()]);
         assert_eq!(
             one.to_string(),
@@ -609,7 +609,7 @@ mod tests {
 
         let watched = [Watched::consented(
             "friend".into(),
-            crate::engine::watch::Consent,
+            snob_engine::engine::watch::Consent,
         )];
         let mut outcome = Tally::default();
         run_accounts(
@@ -791,7 +791,10 @@ mod tests {
             "the viewer with a session was still read"
         );
         let failed = summary.failed.expect("the skipped viewer is a failure");
-        assert_eq!(crate::exit::from_chain(&failed), Some(ExitCode::NoSession));
+        assert_eq!(
+            snob_engine::exit::from_chain(&failed),
+            Some(ExitCode::NoSession)
+        );
         assert!(failed.to_string().contains("skipped"), "{failed}");
 
         let outcomes = |pk: Pk| -> Vec<_> {

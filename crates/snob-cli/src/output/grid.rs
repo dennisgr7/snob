@@ -53,7 +53,7 @@ impl Value {
     /// As a person reads it: a moment in the local zone.
     fn shown(&self) -> String {
         match self {
-            Self::Moment(at) => crate::report::stored_on(*at),
+            Self::Moment(at) => snob_engine::sentences::stored_on(*at),
             Self::Flag(true) => "yes".into(),
             Self::Flag(false) => "no".into(),
             other => other.field(),

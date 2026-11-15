@@ -2,16 +2,16 @@
 
 use anyhow::{Result, anyhow};
 use snob_core::model::printable;
+use snob_engine::app::{App, Viewer};
+use snob_engine::engine::target;
+use snob_engine::exit::ExitCode;
 use snob_ig::client::IgClient;
 use snob_ig::model::{Via, WebProfileInfo};
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::{App, Viewer};
 use crate::cli::PfpArgs;
 use crate::commands::common::{self, Switched};
-use crate::engine::target;
-use crate::exit::ExitCode;
 use crate::output::{self, Rendered};
 use crate::report;
 use crate::ui;
@@ -20,7 +20,7 @@ pub async fn run(args: PfpArgs, store: SecretStore, paths: &AccountPaths) -> Res
     let browses = args.browses(crate::ui::a_human_would_watch_the_listing_scroll_by());
     // `-o -` on a terminal is refused before the profile is read and the
     // picture fetched, not after.
-    output::stdout_download_ahead(args.output.as_deref(), Some(1))?;
+    snob_engine::files::stdout_download_ahead(args.output.as_deref(), Some(1))?;
 
     // No bar: three requests do not need one, and the picture goes to standard
     // output when there is no `-o`.
@@ -53,14 +53,16 @@ pub async fn run(args: PfpArgs, store: SecretStore, paths: &AccountPaths) -> Res
 
     match args.output {
         // `-o -`: standard output, said, and refused on a terminal.
-        Some(path) if output::is_stdout(&path) => {
-            output::one_file_to_stdout(1)?;
+        Some(path) if snob_engine::files::is_stdout(&path) => {
+            snob_engine::files::one_file_to_stdout(1)?;
             output::write_rendered(&rendered, None)?;
         }
         // A directory that is there already: the picture goes into it under the
         // name it would get in the working directory, never replacing one.
         Some(dir) if dir.is_dir() => {
-            let path = dir.join(output::default_path(&dir, &username, extension)?);
+            let path = dir.join(snob_engine::files::default_path(
+                &dir, &username, extension,
+            )?);
             output::write_new(&rendered, &path)?;
         }
         // The user named it, so replacing what is there is their call.
@@ -69,7 +71,8 @@ pub async fn run(args: PfpArgs, store: SecretStore, paths: &AccountPaths) -> Res
         // it gets a name of its own — created exclusively, because that name
         // came off a server rather than out of anybody's keyboard.
         None if output::Presentation::detect(None).interactive => {
-            let path = output::default_path(std::path::Path::new("."), &username, extension)?;
+            let path =
+                snob_engine::files::default_path(std::path::Path::new("."), &username, extension)?;
             output::write_new(&rendered, &path)?;
         }
         None => output::write_rendered(&rendered, None)?,
@@ -159,7 +162,7 @@ impl Picture {
 impl Picture {
     /// Names the file after what actually arrived rather than after the URL.
     pub(crate) fn extension(&self) -> &'static str {
-        crate::media::extension_of(&self.bytes)
+        snob_engine::media::extension_of(&self.bytes)
     }
 }
 

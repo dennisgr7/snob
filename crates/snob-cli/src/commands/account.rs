@@ -3,14 +3,14 @@
 
 use anyhow::Result;
 use snob_core::{Epoch, Pk};
+use snob_engine::account::Unresolved;
+use snob_engine::app::Viewer;
+use snob_engine::exit::ExitCode;
 use snob_store::paths::AppPaths;
 use snob_store::registry::Registry;
 use snob_store::secrets::SecretStore;
 
-use crate::account::Unresolved;
-use crate::app::Viewer;
 use crate::cli::{AccountCommand, AccountListArgs, AccountUseArgs};
-use crate::exit::ExitCode;
 use crate::ui;
 
 /// Runs `account list` or `account use`.
@@ -50,13 +50,13 @@ fn list(
     let registry = Registry::load(paths)?;
     // Several accounts and none chosen is what this command helps with, so
     // only a name that fits no account, or more than one, is refused.
-    let viewer = match crate::account::resolve(flag, env, &registry) {
+    let viewer = match snob_engine::account::resolve(flag, env, &registry) {
         Ok(viewer) => Some(viewer),
         Err(Unresolved::NoAccount | Unresolved::NoneChosen) => None,
         Err(refused) => return Err(refused.into_error()),
     };
     if let Some(viewer) = &viewer {
-        crate::report::act_as(viewer.clone());
+        snob_engine::sentences::act_as(viewer.clone());
     }
 
     let active = registry.active_account().map(|account| account.pk);
@@ -98,7 +98,7 @@ fn make_active(args: &AccountUseArgs, secrets: &SecretStore, paths: &AppPaths) -
     // the file still lists when it is written.
     let mut outcome = Err(Unresolved::NoAccount);
     Registry::update(paths, |registry| {
-        outcome = crate::account::named(&args.name, registry).map(|chosen| {
+        outcome = snob_engine::account::named(&args.name, registry).map(|chosen| {
             let previous = registry.active_account().map(Viewer::from);
             registry.active = Some(chosen.pk);
             (chosen, previous)
@@ -156,14 +156,14 @@ fn table(rows: &[Row]) -> String {
         .iter()
         .map(|row| {
             [
-                crate::app::label(
+                snob_engine::app::label(
                     row.pk,
                     Some(row.username.as_str()).filter(|name| !name.is_empty()),
                 ),
                 row.pk.to_string(),
                 row.session.unwrap_or("no session").to_string(),
                 row.last_used
-                    .map_or_else(|| "never".to_string(), crate::report::dated),
+                    .map_or_else(|| "never".to_string(), snob_engine::sentences::dated),
             ]
         })
         .collect();

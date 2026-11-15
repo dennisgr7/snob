@@ -38,7 +38,7 @@ struct Told {
     /// The list being walked (`Progress::walking`), and the account's
     /// sitting as the last page left it: its pages and when the rest it owes
     /// ends. **Kept from one walk to the next**, as the sitting is the
-    /// account's and a crossing walks two lists in a row; `jobs::show::eta`
+    /// account's and a crossing walks two lists in a row; `snob_engine::jobs::show::eta`
     /// counts the rests to come from them.
     list: Option<&'static str>,
     sitting: Option<u32>,

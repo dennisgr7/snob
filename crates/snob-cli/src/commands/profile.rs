@@ -7,26 +7,27 @@
 //! because neither is served then; and one per twelve accounts you follow that
 //! follow them, skipped when there are none.
 //!
-//! **It does not ask for consent**, for the reason `stories` gives.
+//! **It asks no consent** (AGENTS.md, "Consent"): the one list it walks is the
+//! viewer's own following.
 //!
-//! **Reading a highlight's tray does not tell anybody you looked**, for the
-//! reason `stories` gives; `crates/snob-core/tests/no_seen.rs` holds it.
+//! **Reading a highlight's tray does not tell anybody you looked**:
+//! `crates/snob-core/tests/no_seen.rs` holds it.
 
 use anyhow::Result;
 use snob_core::Epoch;
 use snob_core::model::{User, printable};
+use snob_engine::app::{App, Viewer};
+use snob_engine::engine::target;
+use snob_engine::exit::ExitCode;
+use snob_engine::media::Story;
 use snob_ig::client::IgClient;
 use snob_ig::pace::Pace;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::{App, Viewer};
 use crate::cli::{Format, ProfileArgs, ProfileFormat};
 use crate::commands::common::{self, Switched};
 use crate::commands::stories::story_from;
-use crate::engine::target;
-use crate::exit::ExitCode;
-use crate::media::Story;
 use crate::output::{self, Presentation, Rendered};
 use crate::report;
 use crate::ui;
@@ -507,7 +508,7 @@ async fn rest_before_a_page(client: &IgClient) -> Result<bool> {
         .rest_before_a_page(&Pace::default(), |left| {
             crate::ui::info(&format!(
                 "Resting {} between sittings before the next page of the list.",
-                crate::report::rest_left(left)
+                snob_engine::sentences::rest_left(left)
             ));
         })
         .await?)
@@ -743,7 +744,10 @@ fn as_text(profile: &Profile, explicit_target: bool, hints: bool) -> String {
                     }
                 );
                 if let Some(at) = h.updated_at {
-                    row.push_str(&format!(", updated {}", report::stored_on(at)));
+                    row.push_str(&format!(
+                        ", updated {}",
+                        snob_engine::sentences::stored_on(at)
+                    ));
                 }
                 // A tray that knows no count leaves the padding behind.
                 rows.push(row.trim_end().to_string());
@@ -887,7 +891,9 @@ fn as_markdown(profile: &Profile) -> String {
                     index + 1,
                     output::md::escape(&h.title),
                     h.items.map(|n| n.to_string()).unwrap_or_default(),
-                    h.updated_at.map(report::stored_on).unwrap_or_default()
+                    h.updated_at
+                        .map(snob_engine::sentences::stored_on)
+                        .unwrap_or_default()
                 ));
             }
         }
@@ -903,7 +909,7 @@ fn as_markdown(profile: &Profile) -> String {
     }
     s.push_str(&format!(
         "\n*Read {}.*\n",
-        report::stored_on(profile.read_at)
+        snob_engine::sentences::stored_on(profile.read_at)
     ));
     s
 }
@@ -944,7 +950,7 @@ mod tests {
 
     fn story() -> Story {
         Story {
-            kind: crate::media::Kind::Photo,
+            kind: snob_engine::media::Kind::Photo,
             taken_at: Epoch::new(0),
             expiring_at: None,
             url: None,

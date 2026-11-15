@@ -3,6 +3,8 @@
 use anyhow::{Context, Result, bail};
 use snob_core::secret::Secret;
 use snob_core::{Epoch, Pk};
+use snob_engine::engine::watch::TickReport;
+use snob_engine::watch::webhook::{self, Attempt, Webhook, WebhookClient};
 use snob_ig::pace::CancelToken;
 use snob_store::config::{WatchConfig, WebhookConfig, WebhookFormat};
 use snob_store::secrets::{Kind, SecretStore, Stored};
@@ -10,9 +12,7 @@ use snob_store::store::{Store, deliveries, watch::Queued};
 use url::Url;
 
 use crate::cli::WebhookArgs;
-use crate::engine::watch::TickReport;
-use crate::watch::webhook::{self, Attempt, Webhook, WebhookClient};
-use crate::{report, ui};
+use crate::ui;
 
 use super::wire::{event, outgoing, payload};
 
@@ -41,9 +41,28 @@ impl Delivery {
 /// What this run would send, worked out without touching the keyring or the
 /// network.
 struct Planned {
+    /// Without the stored token, which [`Planned::into_webhook`] adds.
     webhook: Webhook,
+    /// The stored `Authorization` value, when this run sends it.
+    token: Option<Secret>,
     heartbeat: bool,
     format: WebhookFormat,
+}
+
+impl Planned {
+    /// The request as the engine's client takes it.
+    ///
+    /// **The one place the stored token leaves its `Secret`**: the engine's
+    /// `Webhook` takes every header as a plain string.
+    fn into_webhook(self) -> Webhook {
+        let mut webhook = self.webhook;
+        if let Some(token) = &self.token {
+            webhook
+                .headers
+                .push(("Authorization".to_string(), token.expose().to_string()));
+        }
+        webhook
+    }
 }
 
 /// Decides what to send, and what to say about it.
@@ -111,7 +130,7 @@ fn plan(
     // Every message below names the address, and the address may carry a
     // password: `check` refuses one, but these are built before it runs, and a
     // refusal that printed the secret first is not a refusal.
-    let shown = crate::watch::webhook::shown(&url);
+    let shown = snob_engine::watch::webhook::shown(&url);
 
     /// Names the origin a stored credential belongs to, for a warning about not
     /// sending it.
@@ -154,17 +173,18 @@ fn plan(
     let authorization_given = headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
-    if !authorization_given && let Some(token) = stored_token {
-        if same_destination {
-            headers.push(("Authorization".to_string(), token.expose().to_string()));
-        } else {
+    let token = match stored_token.filter(|_| !authorization_given) {
+        Some(token) if same_destination => Some(token),
+        Some(_) => {
             warnings.push(format!(
                 "the stored token was set up for {}, so it is not sent to {shown}. Pass one with \
                  --header \"Authorization: ...\" if this address needs it.",
                 configured_for(configured_origin.as_ref()),
             ));
+            None
         }
-    }
+        None => None,
+    };
 
     let key = match args.sign_with.clone() {
         // An empty `--sign-with` is not a request to sign with nothing: it is
@@ -194,9 +214,7 @@ fn plan(
     // missing**: a key from `--sign-with` or `SNOB_SIGNING_KEY` still signs,
     // and a header still authenticates, and a warning that said otherwise sent
     // somebody looking for a fault there was not.
-    let authenticated = headers
-        .iter()
-        .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
+    let authenticated = authorization_given || token.is_some();
     if store_unreadable && from_file.is_some() {
         let (stored, goes_out, pass) = match (authenticated, key.is_some()) {
             (true, true) => (None, "", ""),
@@ -220,6 +238,7 @@ fn plan(
     Ok((
         Some(Planned {
             webhook: Webhook { url, headers, key },
+            token,
             heartbeat: args.heartbeat || from_file.is_some_and(|w| w.heartbeat),
             // The file's format is the file's address's: Slack's shape posted
             // to another address given with --webhook would be refused there.
@@ -256,17 +275,19 @@ pub(super) fn delivery_from(
     let Some(planned) = planned else {
         return Ok(None);
     };
-    webhook::check(&planned.webhook)?;
+    let (heartbeat, format) = (planned.heartbeat, planned.format);
+    let webhook = planned.into_webhook();
+    webhook::check(&webhook)?;
 
     Ok(Some(Delivery {
         // The address this run posts to, kept beside the client so the outbox
         // can be filtered by it: a queued report belongs to the address it was
         // addressed to, and `--webhook` must not flush a backlog somewhere else.
-        destination: destination_of(&planned.webhook.url),
-        signed: planned.webhook.key.is_some(),
-        client: WebhookClient::new(planned.webhook)?,
-        heartbeat: planned.heartbeat,
-        format: planned.format,
+        destination: destination_of(&webhook.url),
+        signed: webhook.key.is_some(),
+        client: WebhookClient::new(webhook)?,
+        heartbeat,
+        format,
         undelivered: std::sync::atomic::AtomicBool::new(false),
     }))
 }
@@ -289,7 +310,7 @@ pub(crate) fn destination_of(url: &Url) -> String {
 /// The order is the whole of it: the report is queued and the marks retire in
 /// **one transaction**, and only then is anything sent.
 pub(super) async fn deliver(
-    app: &mut crate::app::App,
+    app: &mut snob_engine::app::App,
     tick: &TickReport,
     delivery: Option<&Delivery>,
 ) -> Result<()> {
@@ -315,7 +336,7 @@ pub(super) async fn deliver(
         None => None,
     };
 
-    let queued = crate::engine::watch::commit(
+    let queued = snob_engine::engine::watch::commit(
         app,
         tick,
         // A report and the address it was made for are one thing: the body is
@@ -342,7 +363,7 @@ pub(super) async fn deliver(
     }
 
     // Whatever is still owed from earlier runs is NOT drained here but once
-    // per run, after every watched account, by the caller: `drain` says why.
+    // per run, after every watched account, by the caller (`drain`).
     Ok(())
 }
 
@@ -440,7 +461,7 @@ fn describe_when(at: Epoch, now: Epoch) -> String {
     if at > now {
         format!(
             "the first run after {} tries it again",
-            report::stored_on(at)
+            snob_engine::sentences::stored_on(at)
         )
     } else {
         "the next run tries it again".to_string()
@@ -630,7 +651,7 @@ mod tests {
             .await;
     }
 
-    fn owe(app: &crate::app::App, delivery: &Delivery, how_many: usize, at: Epoch) {
+    fn owe(app: &snob_engine::app::App, delivery: &Delivery, how_many: usize, at: Epoch) {
         for n in 0..how_many {
             deliveries::enqueue(
                 app.db().conn(),
@@ -809,13 +830,57 @@ mod tests {
     /// A `Vec`, not an `Option`: "the header went out twice" and "the header
     /// went out once" are different answers.
     fn sent_as<'a>(planned: &'a Planned, name: &str) -> Vec<&'a str> {
+        let token = planned
+            .token
+            .as_ref()
+            .filter(|_| name.eq_ignore_ascii_case("authorization"))
+            .map(|token| token.expose());
         planned
             .webhook
             .headers
             .iter()
             .filter(|(n, _)| n.eq_ignore_ascii_case(name))
             .map(|(_, v)| v.as_str())
+            .chain(token)
             .collect()
+    }
+
+    /// The token stays a `Secret` in the plan, apart from the headers, which
+    /// are plain strings.
+    #[test]
+    fn the_stored_token_is_planned_apart_from_the_plain_headers() {
+        let file = configured("https://n8n.internal/webhook/snob", &[("X-Source", "file")]);
+
+        let (planned, _) = plan(
+            &WebhookArgs::default(),
+            Some(&file),
+            Stored::Found(Secret::from("Bearer stored".to_string())),
+            Stored::Nothing,
+        )
+        .unwrap();
+        let planned = planned.unwrap();
+
+        assert!(
+            planned
+                .webhook
+                .headers
+                .iter()
+                .all(|(_, value)| !value.contains("stored")),
+            "the token was copied into a plain header before the request was made"
+        );
+        assert_eq!(
+            planned.token.as_ref().map(|token| token.expose()),
+            Some("Bearer stored")
+        );
+        let webhook = planned.into_webhook();
+        assert_eq!(
+            webhook
+                .headers
+                .last()
+                .map(|(n, v)| (n.as_str(), v.as_str())),
+            Some(("Authorization", "Bearer stored")),
+            "the token did not reach the request"
+        );
     }
 
     /// A keyring that cannot be read is not a keyring with nothing in it, and

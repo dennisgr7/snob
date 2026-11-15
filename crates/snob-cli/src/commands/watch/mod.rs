@@ -1,11 +1,11 @@
 //! `snob watch`: the monitor.
 
 use anyhow::Result;
+use snob_engine::exit::ExitCode;
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::secrets::SecretStore;
 
 use crate::cli::{WatchArgs, WatchCommand};
-use crate::exit::ExitCode;
 
 pub(super) mod delivery;
 
@@ -61,7 +61,7 @@ pub async fn run(
         // service started then would read the entries that name no viewer as
         // nobody for as long as it ran.
         None => {
-            let in_use = in_use.ok_or_else(crate::commands::common::no_session)?;
+            let in_use = in_use.ok_or_else(snob_engine::sentences::no_session)?;
             scheduled(args.run, secrets, paths, in_use).await
         }
     }

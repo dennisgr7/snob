@@ -3,7 +3,7 @@
 use snob_core::Pk;
 use snob_store::config::{AccountConfig, WatchConfig};
 
-use crate::engine::watch::{PostsWatch, Watched};
+use snob_engine::engine::watch::{PostsWatch, Watched};
 
 /// Which account a scheduled run watches, as whom, and whether it may.
 pub(super) fn watched_from(
@@ -55,12 +55,12 @@ pub(super) fn watched_from(
 /// file is where somebody said to watch an account's posts and where to save
 /// them, and an argument says neither.
 fn from_entry(name: &str, entry: Option<&AccountConfig>) -> Watched {
-    let name = crate::engine::target::clean(name);
+    let name = snob_engine::engine::target::clean(name);
     let recorded = entry.and_then(|account| account.consent);
 
     let watched = if recorded.is_some() {
         // The table is what matters, not what is in it.
-        Watched::consented(name.to_string(), crate::engine::watch::Consent)
+        Watched::consented(name.to_string(), snob_engine::engine::watch::Consent)
     } else {
         Watched::asking(name.to_string())
     };
@@ -73,13 +73,13 @@ fn from_entry(name: &str, entry: Option<&AccountConfig>) -> Watched {
 /// The first entry for somebody else's account named `name`, the at sign off
 /// both sides.
 fn entry_named<'a>(name: &str, configured: Option<&'a WatchConfig>) -> Option<&'a AccountConfig> {
-    let name = crate::engine::target::clean(name);
+    let name = snob_engine::engine::target::clean(name);
     configured
         .into_iter()
         .flat_map(|c| c.accounts.iter())
         .find(|account| {
             !account.is_own()
-                && crate::engine::target::clean(&account.target).eq_ignore_ascii_case(name)
+                && snob_engine::engine::target::clean(&account.target).eq_ignore_ascii_case(name)
         })
 }
 
@@ -96,22 +96,23 @@ fn posts_of(account: &AccountConfig) -> Option<PostsWatch> {
 pub(super) fn watching_label(watched: &[Watched]) -> String {
     let names: Vec<String> = watched
         .iter()
-        .map(|w| crate::app::target_label(w.name()))
+        .map(|w| snob_engine::app::target_label(w.name()))
         .collect();
 
-    crate::report::and_list(&names).unwrap_or_else(|| "nothing".to_string())
+    snob_engine::sentences::and_list(&names).unwrap_or_else(|| "nothing".to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::commands::watch::fixtures::watch_toml;
-    use crate::engine::watch::group_by_viewer;
+    use snob_engine::engine::watch::group_by_viewer;
 
     /// The opening line names what it watches as a sentence would.
     #[test]
     fn the_opening_line_names_what_it_watches() {
-        let friend = |name: &str| Watched::consented(name.into(), crate::engine::watch::Consent);
+        let friend =
+            |name: &str| Watched::consented(name.into(), snob_engine::engine::watch::Consent);
         assert_eq!(watching_label(&[]), "nothing");
         assert_eq!(watching_label(&[Watched::own()]), "your account");
         assert_eq!(

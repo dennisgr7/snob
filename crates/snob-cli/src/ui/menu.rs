@@ -33,8 +33,8 @@ pub fn choose(prompt: &str, labels: &[&str]) -> Result<Option<usize>> {
             Step::Interrupt => {
                 tui.terminal.clear()?;
                 drop(tui);
-                return Err(crate::exit::ExitError::new(
-                    crate::exit::ExitCode::Interrupted,
+                return Err(snob_engine::exit::ExitError::new(
+                    snob_engine::exit::ExitCode::Interrupted,
                     "canceled",
                 )
                 .into());
@@ -120,8 +120,7 @@ mod tests {
 
     use super::*;
 
-    /// The selection stops at the ends rather than wrapping; the module header
-    /// says why.
+    /// The selection stops at the ends rather than wrapping.
     #[test]
     fn the_selection_stops_at_the_ends_and_does_not_wrap() {
         assert_eq!(step(0, 3, Action::Up), Step::Stay);

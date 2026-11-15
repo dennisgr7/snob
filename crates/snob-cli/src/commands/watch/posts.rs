@@ -13,16 +13,16 @@
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use snob_engine::app::App;
+use snob_engine::engine::watch::{TickReport, Watched};
+use snob_engine::engine::watch_posts::SavedPost;
+use snob_engine::exit::ExitCode;
+use snob_engine::posts::{Bounds, Post, Videos, files_of, save_telling};
 
-use crate::app::App;
-use crate::engine::watch::{TickReport, Watched};
-use crate::engine::watch_posts::SavedPost;
-use crate::exit::ExitCode;
-use crate::posts::{Bounds, Post, Videos, files_of, save_telling};
 use crate::ui;
 
 /// The most one run fetches into an account's directory: 1 GiB, the ceiling one
-/// call of an agent has (`commands::mcp::tools::SAVE_AT_MOST`, kept apart
+/// call of an agent has (`snob_mcp::tools::SAVE_AT_MOST`, kept apart
 /// because that module is behind the `mcp` feature).
 pub(super) const SAVE_AT_MOST: u64 = 1 << 30;
 
@@ -123,10 +123,12 @@ pub async fn save_new(app: &App, tick: &mut TickReport, watched: &Watched) -> Re
                 }
             }
             // Ctrl+C: the tick ends, and nothing of it is committed.
-            Err(e) if crate::exit::exit_code_for(&e) == ExitCode::Interrupted => return Err(e),
+            Err(e) if snob_engine::exit::exit_code_for(&e) == ExitCode::Interrupted => {
+                return Err(e);
+            }
             // A push-back, or the cooldown it started: no further file is
             // asked for, and the report still goes out.
-            Err(e) if crate::media::stopped_the_run(&e) => {
+            Err(e) if snob_engine::media::stopped_the_run(&e) => {
                 ui::warn(&format!(
                     "saving the new posts stopped: {e:#}. What was not saved is owed to a later \
                      run."

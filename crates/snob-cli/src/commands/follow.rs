@@ -8,6 +8,8 @@
 
 use anyhow::{Result, anyhow};
 use snob_core::model::printable;
+use snob_engine::engine::target;
+use snob_engine::exit::{ExitCode, ExitError};
 use snob_ig::graphql::DocIds;
 use snob_ig::model::FriendshipStatus;
 use snob_store::paths::AccountPaths;
@@ -15,8 +17,6 @@ use snob_store::secrets::SessionStore;
 
 use crate::cli::FollowArgs;
 use crate::commands::common;
-use crate::engine::target;
-use crate::exit::{ExitCode, ExitError};
 use crate::ui;
 
 /// Which of the two verbs is being run.
@@ -69,7 +69,7 @@ pub async fn run(
         // The advice goes in the message, where it arrives: a hint on exit 130
         // is never shown, because `report::rendered` returns early for that
         // code.
-        return Err(crate::report::refuse_unattended(
+        return Err(snob_engine::sentences::refuse_unattended(
             format!("nothing was {}ed: it needs confirmation", verb.present()),
             "Pass -y to confirm in advance.".to_string(),
         ));
@@ -146,7 +146,7 @@ pub async fn run(
 /// **Not a reason to fail the run**: the write has happened, and saying it
 /// failed would invite sending it again.
 fn remember_own_write(
-    app: &crate::app::App,
+    app: &snob_engine::app::App,
     profile: &snob_ig::model::WebProfileInfo,
     outcome: Outcome,
 ) {
@@ -208,8 +208,8 @@ fn check_ahead(
     if session.csrftoken.is_none() && !snob_ig::client::page::a_client_would_use_a_page() {
         return Err(cannot_write(verb));
     }
-    let (store, budget) = common::standing(paths, now)?;
-    if let Some(held) = common::held_in(&budget, paths, now) {
+    let (store, budget) = snob_engine::app::standing(paths, now)?;
+    if let Some(held) = snob_engine::app::held_in(&budget, paths, now) {
         return Err(common::in_cooldown(&held, NOTHING_SENT));
     }
     let cap = args
@@ -224,7 +224,7 @@ fn check_ahead(
     // the write bucket on top, so its wait is the longest of the run's.
     let owed = budget.next_write_at.get().saturating_sub(now.get());
     let wait = std::time::Duration::from_millis(u64::try_from(owed).unwrap_or(0));
-    if let Some(limit) = crate::app::max_wait()
+    if let Some(limit) = snob_engine::app::max_wait()
         && wait > limit
     {
         return Err(snob_ig::error::IgError::WaitTooLong { wait, limit }.into());
@@ -249,13 +249,13 @@ fn check_ahead(
                 "changed": false,
                 "following": true,
                 "requested": null,
-                "viewer": crate::report::acting_as().map(|viewer| viewer.json()),
+                "viewer": snob_engine::sentences::acting_as().map(|viewer| viewer.json()),
                 "as_stored": taken_at,
                 "message": format!(
                     "nothing was asked or sent: the following list read at {} (as_stored) \
                      already has this account. If that has changed since, a walk of the \
                      following list reads it again.",
-                    crate::report::stored_on(taken_at)
+                    snob_engine::sentences::stored_on(taken_at)
                 ),
             })
         );
@@ -397,7 +397,7 @@ fn tell(
                 "changed": outcome.changed(),
                 "following": following,
                 "requested": requested,
-                "viewer": crate::report::acting_as().map(|viewer| viewer.json()),
+                "viewer": snob_engine::sentences::acting_as().map(|viewer| viewer.json()),
             }))?
         );
     } else if let Some(sentence) = outcome.sentence(verb, name) {

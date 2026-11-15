@@ -6,14 +6,14 @@ use anyhow::Result;
 use snob_core::filters::Filter;
 use snob_core::model::{ListKind, User, printable};
 use snob_core::{Epoch, Pk};
+use snob_engine::app::{App, Viewer};
+use snob_engine::engine::{self, ListOutcome, people};
+use snob_engine::exit::ExitCode;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::{App, Viewer};
 use crate::cli::{Format, ScanArgs};
 use crate::commands::common::{self, Destination};
-use crate::engine::{self, ListOutcome, people};
-use crate::exit::ExitCode;
 use crate::output::Rendered;
 #[cfg(feature = "xlsx")]
 use crate::output::xlsx::Cell;
@@ -273,7 +273,7 @@ fn closing_line(scanned: &Scanned, filtered: bool, whom: Option<&Viewer>) {
 }
 
 /// How this summary names the account it is about.
-fn summary_target(typed: Option<&str>, viewer: &crate::app::Viewer) -> String {
+fn summary_target(typed: Option<&str>, viewer: &snob_engine::app::Viewer) -> String {
     match typed {
         Some(raw) => printable(engine::target::clean(raw)),
         None => viewer
@@ -387,7 +387,10 @@ fn followed_by_line(summary: &Summary<'_>) -> Option<String> {
     let names = report::name_a_few(people, NAMES_SHOWN)?;
     // Dated, like the two walked lists below it.
     Some(match summary.followed_by_at {
-        Some(taken_at) => format!("Followed by {names}, as of {}", report::stored_on(taken_at)),
+        Some(taken_at) => format!(
+            "Followed by {names}, as of {}",
+            snob_engine::sentences::stored_on(taken_at)
+        ),
         None => format!("Followed by {names}"),
     })
 }
@@ -485,7 +488,7 @@ fn row_fields(summary: &Summary<'_>) -> Vec<String> {
     );
     for outcome in [summary.followers, summary.following] {
         fields.push(source_token(outcome).to_string());
-        // Epoch seconds, matching the JSON — not `report::stored_on`, which is
+        // Epoch seconds, matching the JSON — not `snob_engine::sentences::stored_on`, which is
         // "Aug 3 at 14:12": a human string, and one with no year in it.
         fields.push(outcome.taken_at.to_string());
     }
@@ -563,7 +566,7 @@ mod tests {
     /// where a character below 0x20 is illegal XML rather than invisible.
     #[test]
     fn the_heading_is_filtered_whoever_the_name_came_from() {
-        let viewer = crate::app::Viewer {
+        let viewer = snob_engine::app::Viewer {
             pk: Pk::new(7),
             username: Some("me\u{1b}[2K".into()),
         };
@@ -572,7 +575,7 @@ mod tests {
         assert_eq!(summary_target(None, &viewer), "me[2K");
 
         // No name learned yet, so the id stands in for one.
-        let nameless = crate::app::Viewer {
+        let nameless = snob_engine::app::Viewer {
             pk: Pk::new(7),
             username: None,
         };
@@ -885,7 +888,7 @@ mod tests {
         assert!(
             text.starts_with(&format!(
                 "Followed by @ana and @luis, as of {}\n",
-                report::stored_on(Epoch::new(1_720_360_320))
+                snob_engine::sentences::stored_on(Epoch::new(1_720_360_320))
             )),
             "{text}"
         );
@@ -938,7 +941,7 @@ mod tests {
             outcome(),
         );
         let text = rendered_text(&summary(counts(), false, &stored), Format::Table, false);
-        let when = report::stored_on(Epoch::new(1_722_700_000));
+        let when = snob_engine::sentences::stored_on(Epoch::new(1_722_700_000));
         assert!(text.contains(&format!("Stored on:    {when}")), "{text}");
 
         let json: serde_json::Value = serde_json::from_str(&rendered_text(

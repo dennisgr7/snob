@@ -1,8 +1,7 @@
-//! Jobs as the command line has them: the engine's (`snob_engine::jobs`),
-//! with the halves tied to its grammar, the start of a job and the check of
-//! a job's command line, and the commands that read jobs back.
-
-pub use snob_engine::jobs::*;
+//! The halves of jobs tied to the command line's grammar: the start of a job
+//! (`start`), the check of a job's command line (`argv`), and the commands
+//! that read jobs back (`dispatch`). The rest of jobs is the engine's
+//! (`snob_engine::jobs`).
 
 pub mod argv;
 pub mod dispatch;

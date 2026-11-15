@@ -4,6 +4,7 @@ use anyhow::Result;
 use serde_json::{Value, json};
 use snob_core::model::{ListKind, printable};
 use snob_core::{Epoch, EpochMs};
+use snob_engine::exit::ExitCode;
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::registry::Registry;
 use snob_store::secrets::SecretStore;
@@ -13,7 +14,6 @@ use snob_store::store::shared::Shared;
 use snob_store::store::{Store, accounts, mcp_acts, snapshots, users, watch as watch_store};
 
 use crate::cli::{StatusArgs, StatusSections};
-use crate::exit::ExitCode;
 use crate::report;
 
 /// Reports on `account`, the account resolved for this run, and with `--json`
@@ -26,7 +26,7 @@ pub fn run(
     account: Option<AccountPaths>,
     sandboxed: bool,
 ) -> Result<ExitCode> {
-    let viewer = report::acting_as().map(|viewer| viewer.json());
+    let viewer = snob_engine::sentences::acting_as().map(|viewer| viewer.json());
     // Where the session was found, not where this run would put a new one:
     // on a machine with no keyring, `login` fell back to the file, and every
     // later run reads it from there.
@@ -46,8 +46,14 @@ pub fn run(
     // A session this computer no longer sends as is no session to report on
     // either, and is said as what it is: every command refuses it at its
     // start (`App::open`), with the same code.
-    if crate::owner::signed_out(paths, &session) {
-        return no_session(&args, viewer, report::SIGNED_OUT_HERE, paths, sandboxed);
+    if snob_engine::owner::signed_out(paths, &session) {
+        return no_session(
+            &args,
+            viewer,
+            snob_engine::sentences::SIGNED_OUT_HERE,
+            paths,
+            sandboxed,
+        );
     }
 
     let now = snob_core::clock::now_ms();
@@ -109,9 +115,9 @@ pub fn run(
         Vec::new()
     };
     // The walks agents left running, read from their files and their locks,
-    // which asking does not write (`jobs::look`).
-    let jobs: Vec<crate::jobs::Seen> = if sections.jobs {
-        crate::jobs::all(&account, now.get())?
+    // which asking does not write (`snob_engine::jobs::look`).
+    let jobs: Vec<snob_engine::jobs::Seen> = if sections.jobs {
+        snob_engine::jobs::all(&account, now.get())?
             .into_iter()
             .filter(|seen| !seen.status.finished())
             .collect()
@@ -137,7 +143,7 @@ pub fn run(
         let mut out = found.json();
         out["viewer"] = viewer.unwrap_or(Value::Null);
         if !args.names_a_section() {
-            out["update"] = crate::update::report(paths, sandboxed);
+            out["update"] = snob_engine::update::report(paths, sandboxed);
         }
         crate::ui::say!("{}", serde_json::to_string_pretty(&out)?);
     } else {
@@ -164,9 +170,7 @@ fn no_session(
     paths: &AppPaths,
     sandboxed: bool,
 ) -> Result<ExitCode> {
-    let mut said = format!("{why}.");
-    said[..1].make_ascii_uppercase();
-    eprintln!("{said} Run \"snob login\".");
+    eprintln!("{}. Run \"snob login\".", report::opening(why));
     if args.output.json {
         let mut out = serde_json::Map::new();
         for key in args.sections().names() {
@@ -181,7 +185,10 @@ fn no_session(
         );
         out.insert("viewer".into(), viewer.unwrap_or(Value::Null));
         if !args.names_a_section() {
-            out.insert("update".into(), crate::update::report(paths, sandboxed));
+            out.insert(
+                "update".into(),
+                snob_engine::update::report(paths, sandboxed),
+            );
         }
         crate::ui::say!("{}", serde_json::to_string_pretty(&Value::Object(out))?);
     }
@@ -201,7 +208,7 @@ fn braked_names(budget: &BudgetState, held: Option<EpochMs>, paths: &AppPaths) -
     brake
         .accounts
         .iter()
-        .map(|&pk| crate::app::label(pk, registry.get(pk).map(|r| r.username.as_str())))
+        .map(|&pk| snob_engine::app::label(pk, registry.get(pk).map(|r| r.username.as_str())))
         .collect()
 }
 
@@ -262,7 +269,7 @@ struct Found<'a> {
     lists: &'a [Stored],
     runs: &'a [(watch_store::Run, Option<String>)],
     acts: &'a [mcp_acts::Act],
-    jobs: &'a [crate::jobs::Seen],
+    jobs: &'a [snob_engine::jobs::Seen],
     now: EpochMs,
 }
 
@@ -415,8 +422,11 @@ impl Found<'_> {
                 .jobs
                 .iter()
                 .map(|seen| {
-                    let record =
-                        crate::jobs::show::record(seen, self.now.get(), crate::jobs::argv::walk_of);
+                    let record = snob_engine::jobs::show::record(
+                        seen,
+                        self.now.get(),
+                        crate::jobs::argv::walk_of,
+                    );
                     let mut kept = serde_json::Map::new();
                     for key in [
                         "job_id",
@@ -447,7 +457,7 @@ impl Found<'_> {
                 None => s.ds_user_id.to_string(),
             };
             let checked = match s.validated_at {
-                Some(at) => format!("last checked {}", report::stored_on(at)),
+                Some(at) => format!("last checked {}", snob_engine::sentences::stored_on(at)),
                 None => "never checked".to_string(),
             };
             blocks.push(vec![
@@ -535,12 +545,11 @@ impl Found<'_> {
             let mut lines = vec!["Cooldown".to_string()];
             match self.held {
                 Some(until) => {
-                    let mut said = report::held_until(&crate::app::Held {
+                    let said = snob_engine::sentences::held_until(&snob_engine::app::Held {
                         until_ms: until,
                         braked: self.braked.to_vec(),
                     });
-                    said[..1].make_ascii_uppercase();
-                    lines.push(format!("  {said}"));
+                    lines.push(format!("  {}", report::opening(&said)));
                 }
                 None => lines.push("  None; requests may go out".to_string()),
             }
@@ -550,14 +559,14 @@ impl Found<'_> {
                     &format!(
                         "{} on {}, strike {}",
                         printable(&last.reason),
-                        report::stored_on(last.set_at.to_epoch()),
+                        snob_engine::sentences::stored_on(last.set_at.to_epoch()),
                         last.strikes
                     ),
                 ));
                 if self.now < last.escalates_until() {
                     lines.push(format!(
                         "  Another push-back before {} would be longer",
-                        report::stored_on(last.escalates_until().to_epoch())
+                        snob_engine::sentences::stored_on(last.escalates_until().to_epoch())
                     ));
                 }
             }
@@ -574,13 +583,17 @@ impl Found<'_> {
                     Some(s) => format!(
                         "{} stored {}",
                         s.member_count,
-                        s.taken_at.map_or("earlier".to_string(), report::stored_on)
+                        s.taken_at
+                            .map_or("earlier".to_string(), snob_engine::sentences::stored_on)
                     ),
                     None => "none stored".to_string(),
                 };
                 let counter = match (list.counter, list.polled_at) {
                     (Some(n), Some(at)) => {
-                        format!("; the counter said {n} {}", report::stored_on(at))
+                        format!(
+                            "; the counter said {n} {}",
+                            snob_engine::sentences::stored_on(at)
+                        )
                     }
                     _ => String::new(),
                 };
@@ -602,8 +615,8 @@ impl Found<'_> {
                 let outcome = run.outcome.as_ref().map_or("unfinished", |o| o.as_str());
                 lines.push(format!(
                     "  {}  {outcome} {}, {} requests, {} changes",
-                    crate::app::label(run.account_pk, name.as_deref()),
-                    report::stored_on(run.started_at),
+                    snob_engine::app::label(run.account_pk, name.as_deref()),
+                    snob_engine::sentences::stored_on(run.started_at),
                     run.requests,
                     run.changes
                 ));
@@ -625,7 +638,7 @@ impl Found<'_> {
             for act in self.acts {
                 lines.push(format!(
                     "  {}  {}",
-                    report::stored_on(act.at.to_epoch()),
+                    snob_engine::sentences::stored_on(act.at.to_epoch()),
                     told_yes(act)
                 ));
             }
@@ -639,7 +652,7 @@ impl Found<'_> {
             for seen in self.jobs {
                 lines.push(format!(
                     "  {}",
-                    crate::jobs::show::line(seen, self.now.get(), crate::jobs::argv::walk_of)
+                    snob_engine::jobs::show::line(seen, self.now.get(), crate::jobs::argv::walk_of)
                 ));
             }
             blocks.push(lines);
@@ -681,7 +694,11 @@ impl Found<'_> {
         if let Some((load, at)) = &day.load {
             lines.push(row(
                 "Load",
-                &format!("{} {}", printable(load), report::stored_on(at.to_epoch())),
+                &format!(
+                    "{} {}",
+                    printable(load),
+                    snob_engine::sentences::stored_on(at.to_epoch())
+                ),
             ));
         }
         lines.push(row(
@@ -716,7 +733,7 @@ impl Found<'_> {
         if at <= self.now {
             "now".to_string()
         } else {
-            report::stored_on(at.to_epoch_not_before())
+            snob_engine::sentences::stored_on(at.to_epoch_not_before())
         }
     }
 }

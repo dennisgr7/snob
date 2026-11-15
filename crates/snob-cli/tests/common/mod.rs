@@ -24,7 +24,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use snob_cli::app::{App, Viewer};
 use snob_cli::cli::{
     BrowseArgs, ConsentArgs, FilterArgs, ListArgs, OutputArgs, ProgressArgs, WalkArgs,
 };
@@ -32,6 +31,7 @@ use snob_core::Pk;
 use snob_core::budget::{RateBudget, UnlimitedRateBudget};
 use snob_core::model::User;
 use snob_core::session::{Session, SessionOrigin};
+use snob_engine::app::{App, Viewer};
 use snob_ig::client::IgClient;
 use snob_ig::pace::Pacer;
 use snob_store::paths::{AccountPaths, AppPaths};

@@ -18,26 +18,27 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Cell, Padding, Paragraph, Row, Table, TableState, Wrap};
 use snob_core::model::{ListKind, User, printable};
+use snob_engine::app::{App, Viewer};
+use snob_engine::engine;
+use snob_engine::exit::ExitCode;
+use snob_engine::files::ABANDONED_AFTER;
+use snob_engine::media::Story;
+use snob_engine::posts::Fetched;
 use snob_ig::client::IgClient;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::{App, Viewer};
 use crate::commands::common;
 use crate::commands::highlights::{Entry, Tray};
 use crate::commands::pfp::Picture;
 use crate::commands::profile::{Highlight, Profile, Visibility, badges};
-use crate::engine;
-use crate::exit::ExitCode;
-use crate::media::Story;
-use crate::posts::Fetched;
 use crate::report;
 use crate::ui::accounts::{self, Browsed, Picked};
 use crate::ui::browser::busy::Busy;
 use crate::ui::browser::input::{
     self, Action, Raw, Stopped, action_of, page, watching_cancel_keys,
 };
-use crate::ui::browser::scratch::{ABANDONED_AFTER, Scratch};
+use crate::ui::browser::scratch::Scratch;
 use crate::ui::help;
 use crate::ui::highlights::{Folder, empty_note, folder_title, keep_folder, stem_of, walk_in};
 use crate::ui::people::Shelf;
@@ -192,7 +193,7 @@ impl Media {
             picture: self.side.as_ref(),
             cover: self
                 .item_under_the_cursor(state)
-                .is_some_and(|item| item.kind == crate::media::Kind::Video),
+                .is_some_and(|item| item.kind == snob_engine::media::Kind::Video),
         }
     }
 }
@@ -602,7 +603,7 @@ pub async fn browse(
                                         .run(
                                             &mut tui,
                                             app.client().pacer().cancel_token(),
-                                            crate::posts::fetch_grid(
+                                            snob_engine::posts::fetch_grid(
                                                 app.client(),
                                                 &profile.username,
                                                 viewer.pk,
@@ -3105,7 +3106,7 @@ mod tests {
 
     fn story() -> Story {
         Story {
-            kind: crate::media::Kind::Photo,
+            kind: snob_engine::media::Kind::Photo,
             taken_at: Epoch::new(0),
             expiring_at: None,
             url: None,

@@ -8,16 +8,16 @@ use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::widgets::{Cell, Row, TableState};
 use snob_core::model::printable;
+use snob_engine::app::Viewer;
+use snob_engine::exit::ExitCode;
+use snob_engine::files::ABANDONED_AFTER;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::app::Viewer;
 use crate::commands::pfp::Picture;
-use crate::exit::ExitCode;
-use crate::output;
 use crate::ui::accounts::{self, Browsed, Picked};
 use crate::ui::browser::input::{self, Action, next};
-use crate::ui::browser::scratch::{ABANDONED_AFTER, Scratch};
+use crate::ui::browser::scratch::Scratch;
 use crate::ui::help;
 use crate::ui::preview;
 use crate::ui::tui;
@@ -187,9 +187,10 @@ pub(crate) fn open(
         opener::open(&existing).context("the system viewer would not start")?;
         return Ok(existing);
     }
-    let name = output::default_path(scratch.dir(), &picture.username, picture.extension())?;
+    let name =
+        snob_engine::files::default_path(scratch.dir(), &picture.username, picture.extension())?;
     let path = scratch.dir().join(name);
-    output::create_new(&path)?
+    snob_engine::files::create_new(&path)?
         .write_all(&picture.bytes)
         .with_context(|| format!("could not write {}", path.display()))?;
     opener::open(&path).context("the system viewer would not start")?;
@@ -200,12 +201,12 @@ pub(crate) fn open(
 /// Saves the picture where the user is working — the very name and refusal
 /// `snob pfp someone` gives: created, never written over.
 pub(crate) fn keep(picture: &Picture) -> Result<PathBuf> {
-    let path = output::default_path(
+    let path = snob_engine::files::default_path(
         std::path::Path::new("."),
         &picture.username,
         picture.extension(),
     )?;
-    output::create_new(&path)?
+    snob_engine::files::create_new(&path)?
         .write_all(&picture.bytes)
         .with_context(|| format!("could not write {}", path.display()))?;
     Ok(path)

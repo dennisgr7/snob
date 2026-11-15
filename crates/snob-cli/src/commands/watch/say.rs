@@ -3,11 +3,11 @@
 use snob_core::Epoch;
 use snob_core::model::{ListKind, User, printable};
 use snob_core::watch::{Basis, ListDiff};
+use snob_engine::engine::Provenance;
+use snob_engine::engine::check::Problem;
+use snob_engine::engine::watch::{Skipped, TickReport, WatchReport};
+use snob_engine::engine::watch_posts::{PostsReport, PostsSkipped, SavedPost};
 
-use crate::engine::Provenance;
-use crate::engine::check::Problem;
-use crate::engine::watch::{Skipped, TickReport, WatchReport};
-use crate::engine::watch_posts::{PostsReport, PostsSkipped, SavedPost};
 use crate::report;
 use snob_core::watch::posts::Basis as PostsBasis;
 
@@ -71,7 +71,9 @@ pub(super) fn problem_line(problem: &Problem) -> String {
         Problem::NoSchedule => "the file names no schedule: \"snob watch\" runs only with one \
              on its command line, as --every 6h, and \"watch once --when-due\" refuses"
             .to_string(),
-        Problem::InCooldown { held } => format!("not checked: {}", report::held_until(held)),
+        Problem::InCooldown { held } => {
+            format!("not checked: {}", snob_engine::sentences::held_until(held))
+        }
         // One condition, one wording, and a clause for the account a cooldown
         // stopped anything else being checked about.
         Problem::NoRecordedConsent { in_cooldown: false } => {
@@ -83,7 +85,11 @@ pub(super) fn problem_line(problem: &Problem) -> String {
         ),
         Problem::SessionSilent => "not checked: the session is not responding".to_string(),
         Problem::NoSession => "no session is stored; run \"snob login\"".to_string(),
-        Problem::SignedOutHere => format!("{}; {}", report::SIGNED_OUT_HERE, report::SIGN_IN_AGAIN),
+        Problem::SignedOutHere => format!(
+            "{}; {}",
+            snob_engine::sentences::SIGNED_OUT_HERE,
+            snob_engine::sentences::SIGN_IN_AGAIN
+        ),
         Problem::NoUsername => "not checked: the session carries no username, and Instagram \
              did not name the account either"
             .to_string(),
@@ -160,7 +166,7 @@ pub(super) fn describe_tick(tick: &TickReport) -> Vec<String> {
     // Posts read within the hour are no refusal.
     let posts_refused = posts_skipped.is_some_and(|skipped| skipped != PostsSkipped::ReadRecently);
     if tick.lists.is_empty() && posts_skipped == Some(PostsSkipped::ReadRecently) {
-        let who = crate::app::label(tick.report.account_pk, tick.report.username.as_deref());
+        let who = snob_engine::app::label(tick.report.account_pk, tick.report.username.as_deref());
         return vec![format!(
             "The posts of {who} were read less than an hour ago, so they were not read again \
              this time."
@@ -186,15 +192,18 @@ pub(super) fn describe_tick(tick: &TickReport) -> Vec<String> {
 
 /// When a run the schedule asked for was due, began and ended, and how late it
 /// began when that is late (`RunTiming::late`).
-pub(super) fn timing_line(timing: &crate::engine::watch::RunTiming) -> Option<String> {
+pub(super) fn timing_line(timing: &snob_engine::engine::watch::RunTiming) -> Option<String> {
     let due = timing.due_at?;
     let mut line = format!(
         "Due on {}, began on {}",
-        report::stored_on(due),
-        report::stored_on(timing.began_at)
+        snob_engine::sentences::stored_on(due),
+        snob_engine::sentences::stored_on(timing.began_at)
     );
     if let Some(ended) = timing.ended_at {
-        line.push_str(&format!(", ended on {}", report::stored_on(ended)));
+        line.push_str(&format!(
+            ", ended on {}",
+            snob_engine::sentences::stored_on(ended)
+        ));
     }
     line.push('.');
     if timing.late()
@@ -227,7 +236,7 @@ pub(super) fn describe(report: &WatchReport, refused: bool) -> Vec<String> {
 
 /// What the posts of `report`'s account came to.
 fn posts_lines(report: &WatchReport, posts: &PostsReport) -> Vec<String> {
-    let who = crate::app::label(report.account_pk, report.username.as_deref());
+    let who = snob_engine::app::label(report.account_pk, report.username.as_deref());
     if posts.basis == PostsBasis::Baseline {
         return vec![format!(
             "The posts of {who} have never been reported on, so there is nothing to compare \
@@ -240,13 +249,13 @@ fn posts_lines(report: &WatchReport, posts: &PostsReport) -> Vec<String> {
     } else {
         let since = posts
             .since
-            .map(|since| format!(" since {}", report::stored_on(since)))
+            .map(|since| format!(" since {}", snob_engine::sentences::stored_on(since)))
             .unwrap_or_default();
         lines.push(format!("New posts from {who}{since}: {}", posts.news.len()));
         for post in &posts.news {
             lines.push(format!(
                 "  {}  {}  {}",
-                report::stored_on(post.taken_at),
+                snob_engine::sentences::stored_on(post.taken_at),
                 kind_words(post.kind),
                 post.link()
             ));
@@ -276,9 +285,9 @@ fn posts_lines(report: &WatchReport, posts: &PostsReport) -> Vec<String> {
 }
 
 /// What a post is, in a few words.
-fn kind_words(kind: crate::posts::PostKind) -> String {
+fn kind_words(kind: snob_engine::posts::PostKind) -> String {
     match kind {
-        crate::posts::PostKind::Carousel(n) => format!("carousel of {n}"),
+        snob_engine::posts::PostKind::Carousel(n) => format!("carousel of {n}"),
         other => other.label(),
     }
 }
@@ -333,7 +342,7 @@ fn plural_files(n: usize) -> String {
 
 /// The lists' part of [`describe`].
 fn describe_lists(report: &WatchReport, refused: bool) -> Vec<String> {
-    let who = crate::app::label(report.account_pk, report.username.as_deref());
+    let who = snob_engine::app::label(report.account_pk, report.username.as_deref());
 
     if report.followers.is_none() && report.following.is_none() {
         // A run in which every list was refused concluded nothing, and that is
@@ -486,14 +495,17 @@ pub(super) fn name_of(user: &User) -> String {
 /// " since Aug 14 at 09:12", when there is a moment to name.
 pub(super) fn period(report: &WatchReport) -> String {
     match earliest_since(report) {
-        Some(since) => format!(" since {}", report::stored_on(since)),
+        Some(since) => format!(" since {}", snob_engine::sentences::stored_on(since)),
         None => String::new(),
     }
 }
 
 pub(super) fn since_line(report: &WatchReport) -> String {
     match earliest_since(report) {
-        Some(since) => format!("The last report was on {}.", report::stored_on(since)),
+        Some(since) => format!(
+            "The last report was on {}.",
+            snob_engine::sentences::stored_on(since)
+        ),
         None => "Nothing has been reported yet.".to_string(),
     }
 }
@@ -511,10 +523,10 @@ pub(super) fn earliest_since(report: &WatchReport) -> Option<Epoch> {
 mod tests {
     use super::*;
     use crate::commands::watch::fixtures::{list, post, posts_report, report_with, user};
-    use crate::engine::watch::ListReport;
     use snob_core::model::ListKind;
     use snob_core::watch::{Basis, ListDiff, Rename};
     use snob_core::{EpochMs, Pk};
+    use snob_engine::engine::watch::ListReport;
 
     /// Every reason a check can give says something.
     ///
@@ -531,7 +543,7 @@ mod tests {
             Problem::Unbuildable("5m is too often".to_string()),
             Problem::NoSchedule,
             Problem::InCooldown {
-                held: crate::app::Held {
+                held: snob_engine::app::Held {
                     until_ms: EpochMs::new(1_722_700_000_000),
                     braked: Vec::new(),
                 },
@@ -843,7 +855,7 @@ mod tests {
     }
 
     /// An account somebody else owns, whose posts alone are reported.
-    fn school(posts: crate::engine::watch_posts::PostsReport) -> WatchReport {
+    fn school(posts: snob_engine::engine::watch_posts::PostsReport) -> WatchReport {
         WatchReport {
             account_pk: Pk::new(9001),
             username: Some("school".into()),
@@ -971,7 +983,7 @@ mod tests {
     /// it began late when it did; one by hand says nothing of it.
     #[test]
     fn a_late_run_says_so_in_its_summary() {
-        use crate::engine::watch::RunTiming;
+        use snob_engine::engine::watch::RunTiming;
         let due = snob_core::Epoch::new(1_700_000_000);
         let late = RunTiming::due(
             Some(due),
@@ -994,8 +1006,8 @@ mod tests {
     /// account nothing was ever walked for.
     #[test]
     fn posts_read_within_the_hour_are_said_to_be() {
-        use crate::engine::watch::TickPosts;
-        let mut tick = crate::engine::watch::TickReport::for_test(
+        use snob_engine::engine::watch::TickPosts;
+        let mut tick = snob_engine::engine::watch::TickReport::for_test(
             WatchReport {
                 account_pk: Pk::new(9001),
                 username: Some("school".into()),

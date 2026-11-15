@@ -9,17 +9,17 @@ use anyhow::Result;
 use snob_core::model::{ListKind, printable};
 use snob_core::watch::{RunOutcome, schedule};
 use snob_core::{Epoch, Pk};
+use snob_engine::app::Viewer;
+use snob_engine::engine::check::Verdict;
+use snob_engine::engine::watch::Watched;
+use snob_engine::exit::ExitCode;
 use snob_store::config::{self, WatchConfig};
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::registry::Registry;
 use snob_store::store::shared::PowerWait;
 use snob_store::store::{Store, deliveries, watch as watch_store};
 
-use crate::app::Viewer;
 use crate::cli::WatchStatusArgs;
-use crate::engine::check::Verdict;
-use crate::engine::watch::Watched;
-use crate::exit::ExitCode;
 use crate::report;
 
 use super::schedule::schedule_from;
@@ -228,7 +228,7 @@ fn recorded(
     for account in super::run::account_databases(paths) {
         let viewer = Viewer {
             pk: account.pk(),
-            username: crate::account::username(&registry, account.pk()).map(str::to_string),
+            username: snob_engine::account::username(&registry, account.pk()).map(str::to_string),
         };
         // Gone since it was listed: `purge` removed it meanwhile.
         let Some(db) = Store::read_existing(&account)? else {
@@ -262,7 +262,7 @@ impl Recorded {
                 return Ok(label.clone());
             }
             let name = snob_store::store::users::name(conn, pk)?;
-            let label = crate::app::label(pk, name.as_deref());
+            let label = snob_engine::app::label(pk, name.as_deref());
             labels.insert(pk, label.clone());
             Ok(label)
         };
@@ -329,7 +329,10 @@ impl Recorded {
             let mut ran = false;
             for RunOf { run, who, .. } in self.runs.iter().filter(|of| of.viewer.pk == viewer.pk) {
                 ran = true;
-                let mut line = format!("  {who} last ran on {}", report::stored_on(run.started_at));
+                let mut line = format!(
+                    "  {who} last ran on {}",
+                    snob_engine::sentences::stored_on(run.started_at)
+                );
                 if let Some(outcome) = &run.outcome
                     && *outcome != RunOutcome::Ok
                 {
@@ -359,8 +362,8 @@ impl Recorded {
                         .unwrap_or_default();
                     lines.push(format!(
                         "    It was due on {} and began on {}{late}.",
-                        report::stored_on(run.due_at.unwrap_or_default()),
-                        report::stored_on(timing.began_at),
+                        snob_engine::sentences::stored_on(run.due_at.unwrap_or_default()),
+                        snob_engine::sentences::stored_on(timing.began_at),
                     ));
                 }
             }
@@ -375,7 +378,7 @@ impl Recorded {
                 lines.push(format!(
                     "  {who}: {} last reported on {}",
                     mark.kind,
-                    report::stored_on(mark.compared_at)
+                    snob_engine::sentences::stored_on(mark.compared_at)
                 ));
             }
             for PostsOf {
@@ -384,13 +387,16 @@ impl Recorded {
             {
                 reported = true;
                 let last = match mark.reported_at {
-                    Some(at) => format!("a new one last reported on {}", report::stored_on(at)),
+                    Some(at) => format!(
+                        "a new one last reported on {}",
+                        snob_engine::sentences::stored_on(at)
+                    ),
                     None => "none new reported yet".to_string(),
                 };
                 let mut line = format!(
                     "  {who}: posts seen since {}, last read on {}, {last}",
-                    report::stored_on(mark.baseline_at),
-                    report::stored_on(mark.read_at),
+                    snob_engine::sentences::stored_on(mark.baseline_at),
+                    snob_engine::sentences::stored_on(mark.read_at),
                 );
                 if *owed > 0 {
                     line.push_str(&format!(
@@ -415,10 +421,10 @@ const MISSED_BEFORE_FAILED: i64 = 3;
 
 /// When a recorded run was due and began, when it was recorded with both: what
 /// `status` and its `--json` tell a late run by.
-pub(super) fn timing_of(run: &watch_store::Run) -> Option<crate::engine::watch::RunTiming> {
-    Some(crate::engine::watch::RunTiming {
+pub(super) fn timing_of(run: &watch_store::Run) -> Option<snob_engine::engine::watch::RunTiming> {
+    Some(snob_engine::engine::watch::RunTiming {
         ended_at: run.finished_at,
-        ..crate::engine::watch::RunTiming::due(
+        ..snob_engine::engine::watch::RunTiming::due(
             Some(run.due_at?),
             run.began_at?,
             std::time::Duration::ZERO,
@@ -541,7 +547,7 @@ fn health(
     // stays empty.
     if let Some(webhook) = config.and_then(|c| c.webhook.as_ref())
         && let Some(problem) =
-            crate::watch::webhook::problem_with_config(&webhook.url, &webhook.headers)
+            snob_engine::watch::webhook::problem_with_config(&webhook.url, &webhook.headers)
     {
         at_least(Verdict::Failed);
         notes.push(problem);
@@ -555,7 +561,7 @@ fn health(
         at_least(Verdict::Warned);
         notes.push(format!(
             "the run that is due is waiting for power: the battery has been critical since {}",
-            report::stored_on(wait.since)
+            snob_engine::sentences::stored_on(wait.since)
         ));
     } else if let Some(gap) = gap
         && let Some(newest) = runs.iter().map(|r| r.run.started_at).max()
@@ -573,13 +579,13 @@ fn health(
             at_least(Verdict::Failed);
             notes.push(format!(
                 "it has not run since {}, which is {missed} scheduled runs ago",
-                report::stored_on(newest)
+                snob_engine::sentences::stored_on(newest)
             ));
         } else if missed >= 1 {
             at_least(Verdict::Warned);
             notes.push(format!(
                 "it has not run since {}, and one was due by now",
-                report::stored_on(newest)
+                snob_engine::sentences::stored_on(newest)
             ));
         }
     }
@@ -739,7 +745,7 @@ fn next_run(paths: &AppPaths, config: &WatchConfig, now: Epoch) -> Option<NextRu
 
 fn next_line(next: NextRun) -> String {
     match next {
-        NextRun::At(at) => format!("Next run: {}.", report::stored_on(at)),
+        NextRun::At(at) => format!("Next run: {}.", snob_engine::sentences::stored_on(at)),
         NextRun::Now => {
             "Next run: due now, at the next start of the monitor or of its timer.".to_string()
         }
@@ -777,7 +783,7 @@ pub(super) fn describe_config(config: &WatchConfig) -> Vec<String> {
     let address = config
         .webhook
         .as_ref()
-        .map(|webhook| printable(&crate::watch::webhook::shown_str(&webhook.url)));
+        .map(|webhook| printable(&snob_engine::watch::webhook::shown_str(&webhook.url)));
 
     match (&config.webhook, &address) {
         (Some(webhook), Some(address)) => {
@@ -1414,7 +1420,7 @@ url = \"https://example.com/hook\"
         );
         assert_eq!(status.notes.len(), 1, "{:?}", status.notes);
 
-        let check = crate::engine::check::without_a_session(None, None, NOW);
+        let check = snob_engine::engine::check::without_a_session(None, None, NOW);
         assert_eq!(check.checked.len(), 1, "{:?}", check.checked);
 
         assert_eq!(
