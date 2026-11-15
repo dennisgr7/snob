@@ -32,6 +32,10 @@ serde_json.workspace = true
 serde.workspace = true
 chrono.workspace = true
 tracing.workspace = true
+# The filter every program logs through and the layer that writes an app's
+# log to files (`log.rs`); already compiled in for the command line, which
+# takes the same filter.
+tracing-subscriber.workspace = true
 # So a message to or from the owner of the browsers, which may carry the
 # session, does not sit in freed memory once it is sent (`owner::wire`).
 zeroize.workspace = true
@@ -75,9 +79,6 @@ zbus.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 tempfile.workspace = true
-# The log lines a test of the browser's path reads back (`headless`); already
-# a dependency of the command line, which writes them.
-tracing-subscriber.workspace = true
 # The fake Instagram a login is checked against (`tests/login.rs`).
 snob-fake-ig.workspace = true
 

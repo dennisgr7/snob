@@ -762,79 +762,6 @@ fn restore_terminal_on_panic() {
     }));
 }
 
-/// What is logged, and at which level.
-fn log_filter(
-    verbose: bool,
-    spec: Option<&str>,
-    owner: bool,
-) -> tracing_subscriber::filter::Targets {
-    use tracing::Level;
-    use tracing_subscriber::filter::Targets;
-
-    if verbose {
-        return Targets::new()
-            .with_target("snob", Level::DEBUG)
-            .with_target("snob_ig", Level::DEBUG)
-            .with_target("snob_core", Level::DEBUG)
-            .with_target("snob_store", Level::DEBUG)
-            .with_target("snob_cli", Level::DEBUG)
-            .with_target("snob_engine", Level::DEBUG);
-    }
-    let quiet = || {
-        let quiet = Targets::new().with_default(Level::WARN);
-        if owner {
-            quiet.with_target("snob_engine::owner::server", Level::INFO)
-        } else {
-            quiet
-        }
-    };
-    match spec {
-        Some(spec) => with_moved_targets(spec)
-            .parse::<Targets>()
-            .unwrap_or_else(|e| {
-                eprintln!("warning: SNOB_LOG was ignored: {e}");
-                quiet()
-            }),
-        None => quiet(),
-    }
-}
-
-/// A `SNOB_LOG` spec with, ahead of every pair that names `snob_cli`, the same
-/// level for where that code lives now: most of what was `snob_cli::<module>`
-/// is `snob_engine::<module>`, and `snob_cli::commands::mcp` is `snob_mcp`, so
-/// a spec written before the crate was split would select nothing.
-///
-/// **Ahead, so a pair the person wrote for the new name wins**: of two pairs
-/// for one target the later is kept. A module that stayed gets a pair that
-/// matches nothing, which costs nothing.
-fn with_moved_targets(spec: &str) -> String {
-    /// `prefix` taken off `path` where it ends a path segment.
-    fn under<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
-        path.strip_prefix(prefix)
-            .filter(|rest| rest.is_empty() || rest.starts_with("::") || rest.starts_with('['))
-    }
-
-    let mut pairs = Vec::new();
-    for pair in spec.split(',') {
-        let pair = pair.trim();
-        let (target, level) = pair.split_at(pair.find('=').unwrap_or(pair.len()));
-        let Some(module) = under(target, "snob_cli") else {
-            continue;
-        };
-        match under(module, "::commands::mcp") {
-            Some(rest) => pairs.push(format!("snob_mcp{rest}{level}")),
-            None => {
-                pairs.push(format!("snob_engine{module}{level}"));
-                if module.is_empty() || module.starts_with('[') {
-                    pairs.push(format!("snob_mcp{module}{level}"));
-                }
-            }
-        }
-    }
-    pairs.push(spec.to_string());
-    pairs.join(",")
-}
-
 /// A command's lines are read as it runs; the owner's, in its log, later, so
 /// they say when.
 fn init_tracing(verbose: bool, owner: bool) {
@@ -842,7 +769,10 @@ fn init_tracing(verbose: bool, owner: bool) {
     use tracing_subscriber::util::SubscriberInitExt as _;
 
     let spec = std::env::var("SNOB_LOG").ok();
-    let filter = log_filter(verbose, spec.as_deref(), owner);
+    let (filter, ignored) = snob_engine::log::filter(verbose, spec.as_deref(), owner);
+    if let Some(why) = ignored {
+        eprintln!("warning: SNOB_LOG was ignored: {why}");
+    }
     let lines = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         // **The filter decides, and nothing before it.**
@@ -851,101 +781,6 @@ fn init_tracing(verbose: bool, owner: bool) {
         lines.finish().with(filter).init();
     } else {
         lines.without_time().finish().with(filter).init();
-    }
-}
-
-#[cfg(test)]
-mod filter_tests {
-    use super::log_filter;
-    use tracing::Level;
-
-    /// The two settings a person reaches for, and the one they mistype.
-    #[test]
-    fn the_filter_reads_what_was_asked_for() {
-        let verbose = log_filter(true, None, false);
-        assert!(verbose.would_enable("snob_ig::client", &Level::DEBUG));
-        assert!(!verbose.would_enable("hyper_util::client", &Level::DEBUG));
-        assert!(!verbose.would_enable("snob_ig::client", &Level::TRACE));
-
-        let quiet = log_filter(false, None, false);
-        assert!(quiet.would_enable("snob_ig::client", &Level::WARN));
-        assert!(!quiet.would_enable("snob_ig::client", &Level::INFO));
-        assert!(!quiet.would_enable("snob_engine::owner::server", &Level::INFO));
-
-        // The owner says when it starts, and otherwise no more than a command.
-        let owner = log_filter(false, None, true);
-        assert!(owner.would_enable("snob_engine::owner::server", &Level::INFO));
-        assert!(!owner.would_enable("snob_engine::owner::server", &Level::DEBUG));
-        assert!(!owner.would_enable("snob_engine::headless", &Level::INFO));
-
-        let chosen = log_filter(false, Some("snob_store=debug,warn"), false);
-        assert!(chosen.would_enable("snob_store::secrets", &Level::DEBUG));
-        assert!(!chosen.would_enable("snob_ig::client", &Level::DEBUG));
-        assert!(chosen.would_enable("snob_ig::client", &Level::WARN));
-
-        // A spec that does not parse falls back to the quiet default rather
-        // than to nothing at all, so a typo does not also silence warnings.
-        let typo = log_filter(false, Some("snob_ig=loud"), false);
-        assert!(typo.would_enable("snob_ig::client", &Level::WARN));
-        assert!(!typo.would_enable("snob_ig::client", &Level::INFO));
-    }
-
-    /// A spec saved when every module was `snob_cli`'s still selects them
-    /// where they are now, in the engine and in the server.
-    #[test]
-    fn a_spec_that_names_a_module_by_its_old_crate_still_selects_it() {
-        let old = log_filter(
-            false,
-            Some("snob_cli::headless=debug,snob_cli::commands::mcp=trace,warn"),
-            false,
-        );
-        assert!(old.would_enable("snob_engine::headless::guard", &Level::DEBUG));
-        assert!(!old.would_enable("snob_engine::headless::guard", &Level::TRACE));
-        assert!(!old.would_enable("snob_engine::owner::server", &Level::DEBUG));
-        assert!(old.would_enable("snob_mcp::child", &Level::TRACE));
-        assert!(old.would_enable("snob_mcp", &Level::TRACE));
-        assert!(!old.would_enable("snob_engine::cdp", &Level::INFO));
-        assert!(old.would_enable("snob_ig::client", &Level::WARN));
-
-        // The whole crate, as it was: the commands, the engine and the server.
-        let whole = log_filter(false, Some("snob_cli=debug"), false);
-        for target in [
-            "snob_cli::commands::lists",
-            "snob_engine::engine::list",
-            "snob_engine::jobs::supervise",
-            "snob_mcp::http",
-        ] {
-            assert!(whole.would_enable(target, &Level::DEBUG), "{target}");
-        }
-        assert!(!whole.would_enable("snob_ig::client", &Level::DEBUG));
-
-        // A module that stayed is still selected under its own name, and a
-        // name that only begins like the crate's is no module of it.
-        let stayed = log_filter(false, Some("snob_cli::jobs=debug,snob_client=debug"), false);
-        assert!(stayed.would_enable("snob_cli::jobs::start", &Level::DEBUG));
-        assert!(stayed.would_enable("snob_engine::jobs::supervise", &Level::DEBUG));
-        assert!(!stayed.would_enable("snob_engine::owner", &Level::DEBUG));
-
-        // What the person wrote for the new name is not overridden by what
-        // the old one implies, in either order.
-        for spec in [
-            "snob_cli=trace,snob_engine=warn",
-            "snob_engine=warn,snob_cli=trace",
-        ] {
-            let both = log_filter(false, Some(spec), false);
-            assert!(both.would_enable("snob_cli::commands::lists", &Level::TRACE));
-            assert!(
-                !both.would_enable("snob_engine::owner", &Level::INFO),
-                "{spec}"
-            );
-            assert!(both.would_enable("snob_mcp::http", &Level::TRACE), "{spec}");
-        }
-
-        // A spec that does not parse is still said and still quiet.
-        assert_eq!(
-            super::with_moved_targets("snob_cli::owner=loud"),
-            "snob_engine::owner=loud,snob_cli::owner=loud"
-        );
     }
 }
 
