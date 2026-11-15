@@ -111,7 +111,7 @@ runners of the command line.
 | A live region announced | set through AccessKit; not heard |
 | Windows 11 Snap Layouts over the caption buttons the app draws | yes |
 | The window drawn to a picture | Windows yes; Linux no ("not implemented for this platform"), where the visual suite says so and compares nothing |
-| Nothing drawn at rest | the app asks for no frame at rest, and holds about 80 MiB. **GPUI wakes every window on each refresh on Windows** (its `VSyncProvider` thread), which is the 1 to 2% of one processor a debug build measures there; a release build is not measured yet |
+| Nothing drawn at rest | the app asks for no frame at rest, and holds about 85 MiB. **GPUI wakes every window on each refresh on Windows** (its `VSyncProvider` thread), minimized or not: on a 164 Hz display a release build spends 0.9 to 1.2% of one processor there, some 10 ms a second, and a debug build 1.6% |
 | Closing the window on macOS leaves the app in the Dock, and a click there opens the window again | **written, never run**: there is no macOS here. Elsewhere closing the window is leaving |
 | The list of browsers under the field | one browser on this machine; the list of several is drawn and audited from a test build told to list three |
 | The app's own update | **none**: there is no package of the app to fetch. The screens for it are tested on the scripted backend |
