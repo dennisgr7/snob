@@ -7,7 +7,7 @@
 //!
 //! **What does not count**: `snob mcp`, which a client may keep running for
 //! days and which already refuses every call once its binary changed
-//! (`commands::mcp::child::Launch::upgraded`), so the client starts it again;
+//! (`snob_mcp::child::Launch::upgraded`), so the client starts it again;
 //! and the owner of the browsers, which lingers minutes after the last command
 //! and is retired by the next command of a newer build (`owner::wire::build`).
 

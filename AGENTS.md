@@ -53,8 +53,8 @@ Rust 2024, resolver 3. Dependencies point one way:
 | `snob-ig` | The Instagram web client: `client/`, `web.rs`, `allowlist.rs`, `pager.rs`, `pace.rs`, `graphql.rs`, `error.rs` (classifying answers), `http.rs` (the only place `reqwest` is configured). | Touch SQLite or the keyring, or drive a browser (it only defines the page's request shapes). |
 | `snob-store` | SQLite (`store/`, migrations in `store/sql/`), paths, the secret store, `accounts.toml`, `watch.toml`, the layout's migration. | Hold domain logic. |
 | `snob-engine` | What a desktop app links in process: `app.rs` (`App`), `engine/` (cache, consent, cooldown, walks, estimates, monitor), the browser (`headless/`, `cdp/`, `pipe.rs`, `owner/`), jobs' state and supervisor (`jobs/`), `relay/`, `update/`, reading and saving posts and stories (`posts.rs`, `media.rs`, `files.rs`), `ffmpeg.rs`, `watch/webhook.rs`, `exit.rs`, and `sentences.rs` (the plain sentences of its refusals). `host.rs` is what it is handed: a `Progress` and an `Ask` per run (`host::Front`, given to `App::open`), and a sink for notices. | Depend on `clap`, `console`, `indicatif`, `ratatui`, `crossterm`, `dialoguer`, or on `snob-mcp`/`snob-cli`; ask anybody anything itself; decide how anything looks. |
-| `snob-mcp` | `snob mcp`: the server over stdio and, with its `http` feature, over HTTP (`http.rs`); its key (`key.rs`), `snob mcp config` (`config.rs`), its arguments (`args.rs`). | Build an Instagram client or open a database; depend on `snob-cli` (its tests do, to parse what it builds). |
-| `snob-cli` | The `snob` binary and its library: `cli.rs`, `main.rs`, `commands/`, `output/`, `report.rs`, `progress.rs` (the bars), `front.rs` (what it hands the engine), `ui/`, and the clap-tied half of jobs (`jobs/argv.rs`, `jobs/start.rs`). It names the engine's modules as its own (`lib.rs`) and `commands::mcp` is `snob_mcp`. | |
+| `snob-mcp` | `snob mcp`: the server over stdio and, with its `http` feature, over HTTP (`http.rs`); its key (`key.rs`), `snob mcp config` (`config.rs`), its arguments (`args.rs`). | Build an Instagram client or open a database; depend on `snob-cli`, its tests included (the lines it builds are parsed in `crates/snob-cli/tests/mcp_lines.rs`). |
+| `snob-cli` | The `snob` binary and its library: `cli.rs`, `main.rs`, `commands/`, `output/`, `report.rs`, `progress.rs` (the bars), `front.rs` (what it hands the engine), `ui/`, and the clap-tied half of jobs (`jobs/argv.rs`, `jobs/start.rs`). It names what it uses of the engine and of the server by their own crates (`snob_engine::`, `snob_mcp::`). | |
 
 Inside `snob-cli` and `snob-engine`:
 
@@ -192,9 +192,13 @@ documented reason in the same place.
 
 - **Every call snob may send is a value in `snob_ig::allowlist`**; call sites
   pass those values, never a path or a name.
+- **The account's tab never leaves the site**: a request or a call naming
+  another origin is refused before any browser starts (`headless/mod.rs`,
+  against `snob_ig::client::site`).
 - **The tab's guard** (`headless::guard`) pauses every request the page makes
   and every document: GETs go on, a POST only if `allowlist::refused` lets it;
-  the view count, the event log and the Facebook sync always fail.
+  the view count, the event log and the Facebook sync always fail, and so does
+  a request whose address cannot be read.
 - **A follow or unfollow goes out only as snob's own write**: armed just before
   it is fetched (`guard::Armed`), spent by the first POST matching it exactly;
   every other write, the app's under any `doc_id`, fails
@@ -346,11 +350,13 @@ file started after ten minutes).
 - **Sessions**: the system keyring (Credential Manager with
   `CRED_PERSIST_LOCAL_MACHINE`, Keychain, Secret Service), or with
   `--no-keyring` a `0600` file in a `0700` directory (DPAPI-sealed on Windows).
-  One per account. A stored session that does not parse is reported without
-  quoting it (`secrets.rs`).
+  One per account. A stored session that does not parse, or that holds what
+  no login can have stored (`held_to_shape`), is reported naming the field and
+  never quoting it (`secrets.rs`); `session.json` is read up to 64 KiB.
 - **Credentials are `Secret`**: `Debug` prints `<hidden>`, zeroized on drop, read
   only through `expose()` (keep it greppable), `==` in constant time. Never log
-  or print a token.
+  or print a token. The headers that carry one (`Cookie`, `X-CSRFToken`,
+  `X-FB-LSD`, a webhook's stored `Authorization`) are marked sensitive.
 - **The MCP key** (`snob-mcp`, `key.rs`): `snob_mcp_` and 43 base64url
   characters, nothing else accepted. Keyring only, whatever `--no-keyring`
   says; where there is none, `SNOB_MCP_KEY` in the server's environment, which
@@ -358,7 +364,8 @@ file started after ten minutes).
   only to a terminal unless `--print`, otherwise named by a 12-digit
   fingerprint. Neither variable reaches a child (`jobs::NEVER_INHERITED`).
 - The webhook's token and signing key live in the keyring, never in
-  `watch.toml`.
+  `watch.toml`, and stay `Secret` until the request is made
+  (`webhook::Webhook`).
 
 ### Network clients
 
@@ -375,7 +382,9 @@ compile; the session is an explicit header on the one client meant to carry it.
 
 - A webhook body is `format` under `[webhook]` or `--webhook-format`
   (`wire::outgoing`): snob's JSON, or the summary alone for Slack, Discord, ntfy
-  or text. A queued row keeps its content type, so a retry goes out as queued.
+  or text (Discord's with its link syntax escaped: the words are another
+  person's). A queued row keeps its content type, so a retry goes out as
+  queued.
 - **TLS**: rustls (`prefer-post-quantum`) on four targets, schannel on Windows
   ARM64, where rustls does not build without LLVM. HTTP/2 is required (HTTP/1.1
   draws 429s). The platform's roots by default; `--strict-roots` narrows to
@@ -387,7 +396,8 @@ compile; the session is an explicit header on the one client meant to carry it.
 - **The browser's DevTools protocol is on a pipe** (`pipe.rs`), never a port: a
   port hands the session to any local process.
 - The owner's socket admits the same user only (Unix: `0600` and `peer_cred`;
-  Windows: a named pipe with a DACL for this user).
+  Windows: a named pipe with a DACL for this user), and a connection that does
+  not say who it is within 10 s is let go (`owner/server.rs`).
 - `login --remote`'s relay page gets JPEG frames and posts input, behind a
   one-visit token and a key in the URL fragment; the protocol never crosses the
   tunnel. It listens on a `0600` Unix socket, on a loopback port only where
@@ -449,7 +459,8 @@ A published migration is never edited; add the next numbered file in
 `store/sql/` (`store/sql/shared/` for `shared.db`). No `PRAGMA foreign_keys` in
 a migration; rebuild a table by create, copy, drop, rename
 (`SQLITE_DBCONFIG_DEFENSIVE` forbids `writable_schema`). Counts are not `u64`
-columns (`fallible_uint` is off on purpose).
+columns (`fallible_uint` is off on purpose): they go through
+`store::count_to_sql`/`count_from_sql`, and a negative one reads as not known.
 
 ## The MCP server
 
@@ -466,16 +477,18 @@ prints a client's snippet and never writes it.
   same code path.
 - **The server never builds an Instagram client, opens a database or reads a
   job's file**; it reads only the MCP key. Job I/O goes through `snob __job`.
-- Children get the server's globals, `--max-wait` (5 min, `mcp::MAX_WAIT`, when
+- Children get the server's globals, `--max-wait` (5 min, `snob_mcp::MAX_WAIT`, when
   the server has none; an hour, `JOB_MAX_WAIT`, for a job's walk),
   `--stop-when-stdin-closes`, and `--spend-alone` when they may reach
   Instagram, which takes `accounts/<pk>/spend.lock` before any request (held:
   `busy`).
 - **A child runs in its own process group** (`child::Launch`): closing its
   input is its stop, and it is killed only after `child::GRACE`.
-- Arguments are checked, never passed through. A tool not offered is JSON-RPC
-  -32602. Everything a child prints goes through `printable`, and is read
-  without assuming its shape (one panic is the server gone).
+- Arguments are checked, never passed through, and a refusal says back at most
+  40 characters of what it refused (`tools::echoed`). A tool not offered is
+  JSON-RPC -32602. Everything a child prints goes through `printable`, and is
+  read without assuming its shape (one panic is the server gone) and up to a
+  bound: past it the child is stopped and the call fails.
 
 ### Tools
 
@@ -533,6 +546,7 @@ depends on the server's flags alone.
 | Calls a minute | 60 | `limits.rs` |
 | A list page | 200 accounts, 30,000 bytes | `answer::PAGE`, `PAGE_BYTES` |
 | Lists held for later pages | 4, 30 min, 16 MiB | `pages.rs` |
+| A child's output; its messages | 64 MiB; 4 MiB | `child::MOST_OUTPUT`, `MOST_SAID` |
 | A job's wait in a call | 20 s default, at most 50; a task's 5 s | `tools::WAIT_SECONDS`, `MOST_WAIT_SECONDS`, `tasks::WAIT_SECONDS` |
 | Posts named in `until` | 24 | `tools::MOST_UNTIL` |
 | One download call | 1 GiB or 2 min, then no new file | `tools::SAVE_AT_MOST`, `SAVE_WITHIN` |
@@ -540,7 +554,8 @@ depends on the server's flags alone.
 | Agents' writes on an account | 10 in any 24 h by default, at most 99 | `mcp_acts::WRITES_A_DAY`, `MOST_WRITES_A_DAY` |
 
 Permits are **taken before anything is asked and never queued**: past a limit a
-call answers `busy` at once.
+call answers `busy` at once. A page handed back from a list the server holds
+runs nothing, takes no permit and is not counted.
 
 ### Lists, jobs and posts
 
@@ -552,12 +567,19 @@ call answers `busy` at once.
 - **A list that may be walked is a job** (`tools::Run::Job`), answered inline
   when it ends within `wait_seconds`, else with its `job_id`. One job per
   account. A client that declared MCP Tasks gets a task with the job's id
-  (`tasks.rs`). People start the same job with `--background`.
+  (`tasks.rs`), unless the call names `as_account`. People start the same job
+  with `--background`.
+- **A finished job's list is held by the server that handed back a page of it**
+  (`pages.rs`, under the job and the account the call acts as), so the
+  `snob_job` pages after it start no child; a server that signs an account out
+  forgets every list it holds.
 - **Jobs** (`jobs/mod.rs`): the supervisor runs this binary (`exe::program`),
   never a path from disk, and checks the stored command line again
   (`jobs::argv`, handed in as `jobs::Check`). **Stopping is
   a `stop` file, never a signal.** An account sees only its own jobs.
-- **No media address reaches an agent** (`answer::without_media_addresses`).
+- **No media address reaches an agent** (`answer::without_media_addresses` for
+  posts, stories and highlights; `pfp_url` is left out of every account,
+  `answer::LEFT_OUT`).
   Pictures asked for (`pictures: true`) come back as MCP image content, never a
   video.
 - **Files only into the directory the person named** (`--downloads-dir`, which
@@ -575,7 +597,8 @@ call answers `busy` at once.
 - A server acts as `--account` or `SNOB_ACCOUNT`, else the active account; **a
   call that names none acts as whichever is active when its child starts**.
 - `--any-account` (refused beside `--account` and `SNOB_ACCOUNT`) offers
-  `snob_accounts` and `as_account` on every tool, passed as the child's own
+  `snob_accounts` and `as_account` on every other tool but `snob_logout`,
+  passed as the child's own
   `--account`. Budget, cooldown, `spend.lock`, `mcp_acts` and jobs stay per
   account; a yes is bound to its account; the server's limits stay the server's.
 - `snob_logout` always names the account; `logout --only` refuses
@@ -616,9 +639,9 @@ call answers `busy` at once.
 ### Upgrades
 
 `snob mcp config` prints a path that outlives an upgrade (`config::stable_exe`).
-**A server whose binary changed refuses every call** (`upgraded`); the client
-restarts it. Codex's snippet carries `tool_timeout_sec` from
-`mcp::longest_call`.
+**A server whose binary changed refuses every call that would run a child**
+(`upgraded`); the client restarts it. Codex's snippet carries
+`tool_timeout_sec` from `snob_mcp::longest_call`.
 
 ## Updates
 
@@ -758,7 +781,9 @@ draw pixels it gets kitty's protocol, iTerm2's images or sixel
   newest capture; a report is queued before its mark moves.
 - **A post is new when its pk was never seen and it was taken after the newest
   one seen** (`snob_core::watch::posts`); a first read lays a baseline and says
-  nothing. **`counts.total` does not count posts.**
+  nothing. A `taken_at` more than a day ahead of this machine's clock never
+  becomes that floor (`watch_posts::AHEAD_AT_MOST`). **`counts.total` does not
+  count posts.**
 - The delivery queue is drained once per run, after every account; a report is
   owed for a week. `watch once` exits 1 (`not_delivered`) when one it tried did
   not arrive; `watch deliver` is the drain alone, sending nothing to Instagram.

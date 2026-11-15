@@ -31,7 +31,7 @@ use snob_store::paths::{self, AccountPaths, JobId};
 pub const COMMAND: &str = "__job";
 
 /// How long the start waits for the supervisor to take the job, before it
-/// waits `--wait` for the walk (`commands::mcp::longest_call` counts both).
+/// waits `--wait` for the walk (`snob_mcp::longest_call` counts both).
 pub const SUPERVISOR_WITHIN: Duration = Duration::from_secs(10);
 
 /// A job's command line, as the program that runs it reads one.
@@ -57,7 +57,7 @@ pub type Check = fn(&[String]) -> Result<Walk, String>;
 pub const SCHEMA: u32 = 1;
 
 /// How long a walk asked to stop gets before it is killed: the same as for a
-/// call's child (`commands::mcp::child`), for the same reason.
+/// call's child (`snob_mcp::child`), for the same reason.
 pub const GRACE: Duration = Duration::from_secs(30);
 
 pub use crate::detach::NEVER_INHERITED;

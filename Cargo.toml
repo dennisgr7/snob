@@ -373,10 +373,10 @@ linker_messages = "allow"
 # the settled position on that is that a lint earns its place by catching a
 # defect this codebase actually had.
 #
-# Not `unsafe_op_in_unsafe_fn`, which is the obvious companion and is moot
-# twice: it is warn-by-default in edition 2024, which this workspace is on, and
-# there is not one `unsafe fn` defined anywhere in the tree. Every unsafe here
-# is a block.
+# Not `unsafe_op_in_unsafe_fn`, which is the obvious companion and is moot:
+# it is warn-by-default in edition 2024, which this workspace is on, and the
+# tree defines one `unsafe fn` (`snob_store::windows_user::User::of`). Every
+# other unsafe here is a block.
 undocumented_unsafe_blocks = "warn"
 # The second, and it clears the same bar. Dropping the result of a builder
 # that returns `Self` is a silent no-op: `Pacer::new(budget).with_cancel(token);`

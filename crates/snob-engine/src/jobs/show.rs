@@ -23,7 +23,7 @@ use crate::sentences;
 const TAIL: u64 = 8 * 1024;
 
 /// The most of the walk's standard error kept for a failure with no JSON
-/// error line, as for a call's child (`commands::mcp::child`).
+/// error line, as for a call's child (`snob_mcp::child`).
 const SAID: usize = 4 * 1024;
 
 /// The refusal for an id this account has no job of.
@@ -376,7 +376,7 @@ pub fn record(seen: &Seen, now: i64, check: Check) -> Value {
 
 /// What the walk answered, once it has ended: its exit, what it printed and the
 /// JSON error line it ended with, as a call's child is read
-/// (`commands::mcp::child`), and `served`, where each list it answered with
+/// (`snob_mcp::child`), and `served`, where each list it answered with
 /// came from (`Progress::served`: a walk, or what is stored, and when that was
 /// read).
 pub fn finished(seen: &Seen) -> Option<Value> {
