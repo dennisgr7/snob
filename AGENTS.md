@@ -118,8 +118,8 @@ dbus-run-session -- bash -c '
   code. `bash tools/ci/run.sh` runs the Linux job in Docker; `tools/ci/ci.sh`
   stays in step with `ci.yml`.
 - The test lines need `cargo-nextest` (`cargo install --locked cargo-nextest`):
-  `--profile agent` is the quick local loop, and the full default profile runs
-  before a pull request.
+  `cargo xtask affected -- --profile agent` is the quick local loop, and the
+  full default profile runs before a pull request (CI keeps running everything).
 - **Never export `RUSTFLAGS`**: it replaces `.cargo/config.toml` instead of
   merging, silently dropping `+crt-static` and `/Brepro` on Windows. Add a flag
   to a table there, or to a second config file as `release.yml` does.

@@ -8,6 +8,7 @@ members = [
     "crates/snob-mcp",
     "crates/snob-cli",
     "crates/snob-fake-ig",
+    "xtask",
 ]
 
 [workspace.package]

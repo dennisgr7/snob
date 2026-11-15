@@ -69,3 +69,6 @@ rustflags = ["-Ctarget-feature=+crt-static", "-Clink-arg=/Brepro", "-Ctarget-cpu
 
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-Ctarget-feature=+crt-static", "-Clink-arg=/Brepro"]
+
+[alias]
+xtask = "run --package xtask --"
