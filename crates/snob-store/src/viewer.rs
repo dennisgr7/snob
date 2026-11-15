@@ -1,6 +1,7 @@
 //! What a signed-in account shows of itself, kept beside its session so a
 //! view can name it without asking Instagram: its name, its bio, and its
-//! small picture. **Cosmetic, and never asked for on its own**: it is
+//! small picture, kept in the account's cache (`cache`) since it can be
+//! fetched again. **Cosmetic, and never asked for on its own**: it is
 //! whatever an answer already paid for carried, and it goes with the session
 //! on a sign-out.
 
@@ -41,9 +42,10 @@ impl AccountPaths {
         self.dir().join("viewer.json")
     }
 
-    /// Its small picture, as the CDN served it.
+    /// Its small picture, as the CDN served it: the cache's picture of the
+    /// account itself.
     pub fn viewer_picture(&self) -> PathBuf {
-        self.dir().join("viewer.jpg")
+        self.cached_picture(self.pk())
     }
 }
 
@@ -73,7 +75,9 @@ impl Card {
         address: &str,
         picture: &[u8],
     ) -> std::io::Result<()> {
-        replace(account.viewer_picture(), picture)?;
+        if !crate::cache::keep_picture(account, account.pk(), picture)? {
+            return Err(std::io::ErrorKind::NotFound.into());
+        }
         self.kept_picture = Some(address.to_string());
         self.save(account)
     }
@@ -155,11 +159,7 @@ mod tests {
 
         Card::forget(&account);
 
-        let left: Vec<_> = std::fs::read_dir(account.dir())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert!(left.is_empty(), "{left:?}");
+        assert_eq!(crate::disk::tree(&account.dir()).files, 0);
     }
 
     #[test]

@@ -5,7 +5,9 @@
 //! **The direction is one-way**: this crate depends on `snob_core`, never the
 //! reverse. Everything here is per user, never per directory.
 
+pub mod cache;
 pub mod config;
+pub mod disk;
 pub mod layout;
 pub mod paths;
 pub mod registry;

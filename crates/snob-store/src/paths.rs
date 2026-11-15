@@ -285,15 +285,22 @@ impl AccountPaths {
     /// of who is signed in ([`Self::signed_in`]), which sends as every
     /// session.
     pub fn create_jobs_dir(&self) -> Result<bool, PathError> {
-        let dir = self.jobs_dir();
-        match std::fs::create_dir(&dir) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => {}
-            Err(source) => return Err(PathError::Create { path: dir, source }),
-        }
-        restrict_to_this_account(&dir)?;
-        Ok(true)
+        create_private_inside(&self.jobs_dir())
+    }
+
+    /// What the account's views show at once while the requests they make
+    /// anyway run (`snob_store::cache`). **Everything in it can be fetched
+    /// again**, so it is measured, swept and removed whole.
+    pub fn cache_dir(&self) -> PathBuf {
+        self.dir().join("cache")
+    }
+
+    /// Makes [`Self::cache_dir`] and `sub` inside it, both private, under the
+    /// rule of [`Self::create_jobs_dir`]: `false`, and nothing made, when the
+    /// account's directory is not there.
+    pub fn create_cache_dir(&self, sub: &str) -> Result<bool, PathError> {
+        let cache = self.cache_dir();
+        Ok(create_private_inside(&cache)? && create_private_inside(&cache.join(sub))?)
     }
 
     /// One job's directory. Only ever from a [`JobId`], which is checked, so
@@ -1214,6 +1221,25 @@ fn is_link_to_a_directory(found: &std::fs::Metadata) -> bool {
         let _ = found;
         false
     }
+}
+
+/// Makes `dir`, private, only when its parent is there: `false`, and nothing
+/// made, when it is not. Never `create_dir_all`, which would make a parent a
+/// `purge` removed again.
+fn create_private_inside(dir: &Path) -> Result<bool, PathError> {
+    match std::fs::create_dir(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => {}
+        Err(source) => {
+            return Err(PathError::Create {
+                path: dir.to_path_buf(),
+                source,
+            });
+        }
+    }
+    restrict_to_this_account(dir)?;
+    Ok(true)
 }
 
 /// The half of [`create_private_dir`] that makes the directory private.
