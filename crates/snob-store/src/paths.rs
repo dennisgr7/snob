@@ -518,6 +518,21 @@ impl AccountPaths {
             Err(_) => true,
         }
     }
+
+    /// Whether any session of this account may be sent as here: its list
+    /// holds one, or its directory is from before the list existed, which
+    /// refuses nobody. **A look at one small file**: what a program that
+    /// shows the accounts at its start can afford, where reading each
+    /// session out of the keyring is not.
+    pub fn anybody_signed_in(&self) -> bool {
+        match std::fs::read(self.signed_in()) {
+            Ok(bytes) => !sessions_in(&bytes).is_empty(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.dir().try_exists().unwrap_or(false)
+            }
+            Err(_) => false,
+        }
+    }
 }
 
 /// How many sessions [`AccountPaths::signed_in`] keeps.
@@ -1574,6 +1589,31 @@ mod tests {
         assert!(account.refuses_session(walking));
         account.sign_out().unwrap();
         assert!(account.refuses_session(again), "a sign-out takes them all");
+    }
+
+    /// What a start shows as signed in, from the list alone: nobody where
+    /// there is no account, anybody once a login is let in, nobody again
+    /// after a sign-out.
+    #[test]
+    fn whether_anybody_is_signed_in_is_read_off_the_list() {
+        let root = tempfile::tempdir().unwrap();
+        let account = AppPaths::rooted_at(root.path()).account(snob_core::Pk::new(42));
+        assert!(!account.anybody_signed_in(), "no directory, nobody");
+
+        // From before the list existed: nobody is refused there.
+        create_private_dir(&account.dir()).unwrap();
+        assert!(account.anybody_signed_in());
+
+        account
+            .admit_session(snob_core::Epoch::new(1_800_000_000))
+            .unwrap();
+        assert!(account.anybody_signed_in());
+        account.sign_out().unwrap();
+        assert!(!account.anybody_signed_in());
+        account
+            .admit_session(snob_core::Epoch::new(1_800_000_600))
+            .unwrap();
+        assert!(account.anybody_signed_in());
     }
 
     /// With the account's directory gone, as `purge` leaves it, no session is

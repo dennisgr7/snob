@@ -690,6 +690,28 @@ impl Crash {
         })
     }
 
+    /// The newest report in `dir`, shown already or not, for a diagnostic
+    /// report.
+    pub fn newest(dir: &Path) -> Option<String> {
+        let newest = std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(CRASH_PREFIX) && name.ends_with(".txt"))
+            })
+            .max()?;
+        let mut report = String::new();
+        std::io::Read::read_to_string(
+            &mut std::io::Read::take(std::fs::File::open(&newest).ok()?, MAX_CRASH_BYTES),
+            &mut report,
+        )
+        .ok()?;
+        Some(report)
+    }
+
     /// Marks every report in the directory as shown: they stay, for a
     /// diagnostic report, until they are past their keeping.
     pub fn shown(self) {
@@ -990,6 +1012,11 @@ mod tests {
         crash.shown();
 
         assert!(Crash::waiting(root.path()).is_none());
+        assert_eq!(
+            Crash::newest(root.path()).as_deref(),
+            Some("the newer one"),
+            "still there for a diagnostic report"
+        );
         assert!(root.path().join("crash-200.seen.txt").is_file());
         assert!(root.path().join("crash-100.seen.txt").is_file());
     }
