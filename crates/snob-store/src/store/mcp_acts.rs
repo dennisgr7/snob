@@ -32,6 +32,35 @@ pub fn is_write(action: &str) -> bool {
     matches!(action, "follow" | "unfollow")
 }
 
+/// How `snob mcp` obtained a yes: the word the server hands its child
+/// (`--confirmed-via`), the one stored, and the one `snob status` reads back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Via {
+    /// A form the client showed, answered in the call (2026-07-28 and later).
+    Form,
+    /// A form the client showed, asked with `elicitation/create` while the
+    /// call waited (the older revisions).
+    Elicitation,
+    /// A token the agent handed back after asking in the chat.
+    Chat,
+}
+
+impl Via {
+    pub const ALL: [Self; 3] = [Self::Form, Self::Elicitation, Self::Chat];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Form => "form",
+            Self::Elicitation => "elicitation",
+            Self::Chat => "chat",
+        }
+    }
+
+    pub fn parse(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|via| via.as_str() == word)
+    }
+}
+
 /// An act about to be run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NewAct<'a> {
@@ -39,8 +68,7 @@ pub struct NewAct<'a> {
     pub action: &'a str,
     /// The username the call named, if it named one.
     pub target: Option<&'a str>,
-    /// How the yes was given: `form`, `elicitation` or `chat`.
-    pub via: &'a str,
+    pub via: Via,
     /// The client, as the server reduced its name and version.
     pub client: Option<&'a str>,
 }
@@ -99,7 +127,13 @@ pub fn record(
     tx.execute(
         "INSERT INTO mcp_acts (at_ms, action, target_name, via, client)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![now.get(), act.action, act.target, act.via, act.client],
+        params![
+            now.get(),
+            act.action,
+            act.target,
+            act.via.as_str(),
+            act.client
+        ],
     )?;
     let id = tx.last_insert_rowid();
     tx.commit()?;
@@ -185,7 +219,7 @@ mod tests {
         NewAct {
             action,
             target: Some("someone"),
-            via: "chat",
+            via: Via::Chat,
             client: Some("test 0"),
         }
     }

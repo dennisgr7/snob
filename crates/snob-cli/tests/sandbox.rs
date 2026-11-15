@@ -7608,7 +7608,7 @@ async fn the_eleventh_agent_write_in_a_day_is_refused() {
         let act = NewAct {
             action: "follow",
             target: Some("somebody"),
-            via: "chat",
+            via: snob_store::store::mcp_acts::Via::Chat,
             client: Some("test 0"),
         };
         let recorded = record(&mut db, &act, None, snob_core::clock::now_ms()).unwrap();

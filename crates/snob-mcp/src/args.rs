@@ -255,29 +255,5 @@ pub enum McpClient {
 }
 
 /// How the server obtained a yes, as the child is told it
-/// (`--confirmed-via`). **The command line has an enum of its own for the
-/// flag**, since it takes the flag in builds without this crate; a test in
-/// `tools.rs` holds the two to one vocabulary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConfirmedVia {
-    /// A form the client showed, answered in the call (2026-07-28 and later).
-    Form,
-    /// A form the client showed, asked with `elicitation/create` while the
-    /// call waited (the older revisions).
-    Elicitation,
-    /// A token the agent handed back after asking in the chat.
-    Chat,
-}
-
-impl ConfirmedVia {
-    pub const ALL: [Self; 3] = [Self::Form, Self::Elicitation, Self::Chat];
-
-    /// The token stored and printed, which is also the flag's value.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Form => "form",
-            Self::Elicitation => "elicitation",
-            Self::Chat => "chat",
-        }
-    }
-}
+/// (`--confirmed-via`).
+pub use snob_store::store::mcp_acts::Via as ConfirmedVia;

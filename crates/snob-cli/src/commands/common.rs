@@ -147,7 +147,7 @@ pub fn record_agent_act(
     let act = NewAct {
         action,
         target: target.map(engine::target::clean),
-        via: via.as_str(),
+        via,
         client: agent
             .confirmed_for
             .as_deref()

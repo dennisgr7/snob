@@ -2529,7 +2529,7 @@ pub struct AgentArgs {
     /// How the yes this run is made on was given, through snob mcp
     // Only with `-y`: the yes the server obtained is the one `-y` gives in
     // advance, and a run that would still ask has nothing to record yet.
-    #[arg(long, value_enum, hide = true, requires = "yes", value_name = "HOW")]
+    #[arg(long, value_parser = confirmed_via, hide = true, requires = "yes", value_name = "HOW")]
     pub confirmed_via: Option<ConfirmedVia>,
 
     /// The client the yes came through, by its name and version
@@ -2537,27 +2537,16 @@ pub struct AgentArgs {
     pub confirmed_for: Option<String>,
 }
 
-/// How `snob mcp` obtained a yes (`snob_mcp`, `consent`).
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConfirmedVia {
-    /// A form the client showed, answered in the call (2026-07-28 and later).
-    Form,
-    /// A form the client showed, asked with `elicitation/create` while the
-    /// call waited (the older revisions).
-    Elicitation,
-    /// A token the agent handed back after asking in the chat.
-    Chat,
-}
+pub use snob_store::store::mcp_acts::Via as ConfirmedVia;
 
-impl ConfirmedVia {
-    /// The token stored and printed, which is also the flag's value.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Form => "form",
-            Self::Elicitation => "elicitation",
-            Self::Chat => "chat",
-        }
-    }
+fn confirmed_via(word: &str) -> Result<ConfirmedVia, String> {
+    ConfirmedVia::parse(word).ok_or_else(|| {
+        let words: Vec<&str> = ConfirmedVia::ALL
+            .into_iter()
+            .map(ConfirmedVia::as_str)
+            .collect();
+        format!("one of {}", words.join(", "))
+    })
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]

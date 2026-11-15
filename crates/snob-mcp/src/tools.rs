@@ -2510,20 +2510,6 @@ mod tests {
         plan(name, args.as_object().unwrap(), EVERYTHING)
     }
 
-    /// Every way the server says a yes was given is a value the command
-    /// line's `--confirmed-via` takes, and records under the same word, and
-    /// the command line takes no other.
-    #[test]
-    fn every_way_a_yes_was_given_is_one_the_command_line_takes() {
-        use clap::ValueEnum as _;
-        use snob_cli::cli::ConfirmedVia as Taken;
-        for via in ConfirmedVia::ALL {
-            let taken = Taken::from_str(via.as_str(), false).unwrap();
-            assert_eq!(taken.as_str(), via.as_str());
-        }
-        assert_eq!(Taken::value_variants().len(), ConfirmedVia::ALL.len());
-    }
-
     /// A refusal says back the start of what the client sent, filtered, and
     /// never the whole of it: a name, a value of any JSON type, a key.
     #[test]

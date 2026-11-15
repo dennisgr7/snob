@@ -750,10 +750,11 @@ fn told_yes(act: &mcp_acts::Act) -> String {
         (list, Some(who)) => format!("read {who}'s {}", printable(list)),
         (list, None) => format!("read your {}", printable(list)),
     };
-    let how = match act.via.as_str() {
-        "form" | "elicitation" => "yes given in a form".to_string(),
-        "chat" => "yes given in the chat".to_string(),
-        other => format!("yes given by {}", printable(other)),
+    use snob_store::store::mcp_acts::Via;
+    let how = match Via::parse(&act.via) {
+        Some(Via::Form | Via::Elicitation) => "yes given in a form".to_string(),
+        Some(Via::Chat) => "yes given in the chat".to_string(),
+        None => format!("yes given by {}", printable(&act.via)),
     };
     match &act.client {
         Some(client) => format!("{what}, {how}, through {}", printable(client)),
