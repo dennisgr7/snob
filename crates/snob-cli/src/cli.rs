@@ -19,8 +19,8 @@ pub use snob_mcp::args::{McpKeyCommand, McpKeyNewArgs, McpKeyShowArgs};
     // the command is typed.
     bin_name = "snob",
     version,
-    about = "Instagram from the terminal",
-    long_about = "Instagram from the terminal.\n\n\
+    about = "snob's command line: Instagram from the terminal",
+    long_about = "snob's command line: Instagram from the terminal.\n\n\
                   Walks your followers and your following, crosses them, and answers who \
                   does not follow you back, who you never followed back, and who you and \
                   somebody else both know. It also shows and downloads the stories an \

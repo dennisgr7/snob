@@ -1,6 +1,6 @@
 [package]
 name = "snob-cli"
-description = "Instagram CLI client with extra utilities, media downloads and output ready for AI agents"
+description = "Native Instagram client for the desktop, with a command line, an MCP server for AI agents, automations and webhooks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

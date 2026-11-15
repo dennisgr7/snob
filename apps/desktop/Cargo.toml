@@ -11,7 +11,7 @@ version = "0.0.0"
 edition = "2024"
 license = "MIT"
 publish = false
-description = "The desktop app for snob: the same engine as the command line, in a window"
+description = "snob as a desktop app: the same engine as the command line, in a window"
 
 [workspace]
 

@@ -20,7 +20,7 @@ pub fn run(paths: &AppPaths, flag: Option<&str>, env: Option<&str>) -> Result<Ex
 
 /// The screen, as text.
 fn screen(paths: &AppPaths, flag: Option<&str>, env: Option<&str>) -> String {
-    let mut out = String::from("snob: Instagram from the terminal.\n\n");
+    let mut out = String::from("snob's command line: Instagram from the terminal.\n\n");
     let registry = Registry::load(paths).unwrap_or_default();
     let account = snob_engine::account::resolve(flag, env, &registry).ok();
     match &account {

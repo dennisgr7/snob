@@ -1,6 +1,6 @@
 [package]
 name = "snob-store"
-description = "snob-ig storage: the SQLite database, the platform directories, the keyring and the monitor's configuration file"
+description = "snob's storage: the SQLite database, the platform directories, the keyring and the monitor's configuration file"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

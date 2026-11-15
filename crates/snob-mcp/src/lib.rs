@@ -411,7 +411,7 @@ impl ServerHandler for Server {
         )
         .with_server_info(
             Implementation::new("snob", env!("CARGO_PKG_VERSION"))
-                .with_title("snob, an Instagram CLI"),
+                .with_title("snob, a native Instagram client"),
         )
         .with_instructions(format!(
             "Instagram as the signed-in person sees it, through the snob command line: \

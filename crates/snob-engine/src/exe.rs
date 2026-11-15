@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn a_path_nothing_links_to_is_printed_as_it_is() {
-        let real = at("dev/snob-cli/target/release/snob");
+        let real = at("dev/snob/target/release/snob");
         let other = at("usr/bin");
         let table = [
             (real.clone(), real.clone()),
