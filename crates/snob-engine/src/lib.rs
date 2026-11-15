@@ -36,6 +36,7 @@ pub mod relay;
 #[cfg(feature = "testing")]
 pub mod sandbox;
 pub mod seat;
+pub mod storage;
 pub mod sentences;
 pub mod update;
 pub mod viewer;

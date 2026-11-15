@@ -220,6 +220,13 @@ pub fn size(account: &AccountPaths) -> Size {
     size
 }
 
+/// Whether `path`, an entry of `account`'s directory, is its cache: the
+/// cache's directory, or the picture kept before it and what a killed save of
+/// that left.
+pub fn holds(account: &AccountPaths, path: &Path) -> bool {
+    path == account.cache_dir() || legacy_files(account).iter().any(|file| file == path)
+}
+
 /// Removes `account`'s cache whole, and the picture kept before it. Nothing
 /// else of the account's: its database, session, card and jobs stay.
 pub fn forget(account: &AccountPaths) -> std::io::Result<()> {
