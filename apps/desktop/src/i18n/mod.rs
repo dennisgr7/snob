@@ -184,7 +184,7 @@ mod tests {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();
-            for call in ["tr(\"", "tr_with(\"", "around(\"", "Msg(\""] {
+            for call in [".tr(\"", ".tr_with(\"", ".around(\"", "Msg(\""] {
                 let mut rest = text.as_str();
                 while let Some(at) = rest.find(call) {
                     rest = &rest[at + call.len()..];

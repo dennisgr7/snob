@@ -78,6 +78,10 @@ pub struct Prefs {
     pub window: Option<Placement>,
     #[serde(default)]
     pub resume: Option<Resume>,
+    /// The account whose session was found dead: asked to sign in again at
+    /// the next start, without asking Instagram a second time.
+    #[serde(default)]
+    pub expired: Option<snob_core::Pk>,
 }
 
 fn file(paths: &AppPaths) -> PathBuf {
@@ -109,6 +113,16 @@ impl Prefs {
             });
         if let Err(e) = saved {
             tracing::warn!(error = %e, "what the app remembers could not be saved");
+        }
+    }
+
+    /// Reads what is remembered, applies `change` and saves the result.
+    pub fn change(paths: &AppPaths, change: impl FnOnce(&mut Self)) {
+        let mut prefs = Self::load(paths);
+        let before = prefs.clone();
+        change(&mut prefs);
+        if prefs != before {
+            prefs.save(paths);
         }
     }
 
@@ -150,9 +164,14 @@ mod tests {
                 method: Method::Paste,
                 at: Epoch::new(1_790_000_000),
             }),
+            expired: Some(42.into()),
         };
         prefs.save(&paths);
         assert_eq!(Prefs::load(&paths), prefs);
+
+        Prefs::change(&paths, |prefs| prefs.expired = None);
+        assert_eq!(Prefs::load(&paths).expired, None);
+        assert_eq!(Prefs::load(&paths).window, prefs.window);
 
         std::fs::write(file(&paths), b"{ not json").unwrap();
         assert_eq!(Prefs::load(&paths), Prefs::default());
@@ -161,11 +180,11 @@ mod tests {
     #[test]
     fn a_method_is_gone_back_to_only_shortly_after_it_was_chosen() {
         let prefs = Prefs {
-            window: None,
             resume: Some(Resume {
                 method: Method::Browser,
                 at: Epoch::new(1_000),
             }),
+            ..Prefs::default()
         };
         assert_eq!(prefs.resumed(Epoch::new(1_030)), Some(Method::Browser));
         assert_eq!(

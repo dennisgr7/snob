@@ -26,6 +26,11 @@ gpui-kit = "=0.9.1"
 snob-engine = { path = "../../crates/snob-engine" }
 snob-store = { path = "../../crates/snob-store" }
 snob-core = { path = "../../crates/snob-core" }
+# For one type: the token that stops a run (`snob_ig::pace::CancelToken`),
+# which the engine's calls take. Nothing here builds a client.
+snob-ig = { path = "../../crates/snob-ig" }
+# The engine's errors, which a failed call is logged as.
+anyhow = "1"
 # The engine's runtime, started by the app on threads of its own
 # (`runtime.rs`), with the features the engine already turns on.
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-util", "macros"] }
@@ -43,11 +48,13 @@ unic-langid = "0.9"
 
 [dev-dependencies]
 tempfile = "3"
+# The fake Instagram the backend is driven against (`tests/engine.rs`).
+snob-fake-ig = { path = "../../crates/snob-fake-ig" }
 
 [features]
 # The test build: never part of a release. GPUI's own test support renders a
 # window to a picture and drives it without a display.
-testing = ["gpui-kit/test-support"]
+testing = ["gpui-kit/test-support", "snob-engine/testing"]
 
 [lints.clippy]
 # The root workspace's rule, kept here by hand: this crate is outside it.
