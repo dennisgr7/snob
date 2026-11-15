@@ -2141,7 +2141,7 @@ fn job(name: &str, args: &Map<String, Value>) -> Result<Plan, String> {
             let id = job_id(args)?;
             let wait = wait_seconds(args)?;
             let offset = offset(args)?;
-            Ok(read(
+            let mut plan = read(
                 vec![
                     command,
                     "show".into(),
@@ -2150,7 +2150,19 @@ fn job(name: &str, args: &Map<String, Value>) -> Result<Plan, String> {
                     "--json".into(),
                 ],
                 Run::Show { offset },
-            ))
+            );
+            // A finished job's list is held under the job, so its later pages
+            // start no child (`job::held`). The `limit` is the one of the
+            // call that started the job, which the held list carries.
+            plan.page = Some(Page {
+                offset,
+                of: job_held_as(id.as_str()),
+                held_only: false,
+                limit: None,
+                rows: None,
+                brief: false,
+            });
+            Ok(plan)
         }
         "snob_jobs" => {
             no_more(args, &["all"])?;
@@ -2177,6 +2189,12 @@ fn job(name: &str, args: &Map<String, Value>) -> Result<Plan, String> {
             ))
         }
     }
+}
+
+/// What a finished job's list is held under (`pages.rs`), before the account
+/// a call names is added to it ([`Plan::acting`]).
+pub(crate) fn job_held_as(id: &str) -> String {
+    json!(["snob_job", id]).to_string()
 }
 
 /// The `job_id` argument, as a job's id and nothing else (`JobId::parse`):
@@ -3742,5 +3760,37 @@ mod tests {
         // Only `status`: a list asked for with no session did fail.
         let list = call("snob_list", json!({"list": "followers"})).unwrap();
         assert!(!list.answers.contains(&ExitCode::NoSession));
+    }
+
+    /// A finished job's list is held under the job and the account the call
+    /// acts as, whatever page and wait the call asks for: one account is
+    /// never handed the list held for another, nor one job another's.
+    #[test]
+    fn a_jobs_list_is_held_under_the_job_and_the_account() {
+        let id = format!("j{}", "0".repeat(26));
+        let other = format!("j{}", "1".repeat(26));
+        let held_as = |args: Value| call("snob_job", args).unwrap().page.unwrap().of;
+        let plain = held_as(json!({"job_id": id}));
+        assert_eq!(plain, job_held_as(&id));
+        assert_eq!(
+            held_as(json!({"job_id": id, "wait_seconds": 0, "offset": 200})),
+            plain
+        );
+        assert_ne!(held_as(json!({"job_id": other})), plain);
+        let as_me = held_as(json!({"job_id": id, "as_account": "me"}));
+        assert_ne!(as_me, plain);
+        assert_ne!(as_me, held_as(json!({"job_id": id, "as_account": "other"})));
+        // And never what a list's own call is held under.
+        let list = call("snob_list", json!({"list": "followers"})).unwrap();
+        assert_ne!(list.page.unwrap().of, plain);
+        let page = call("snob_job", json!({"job_id": id, "offset": 200}))
+            .unwrap()
+            .page
+            .unwrap();
+        assert_eq!(page.offset, 200);
+        assert!(
+            !page.held_only,
+            "a page not held is read from the job's file"
+        );
     }
 }

@@ -543,11 +543,11 @@ impl ServerHandler for Server {
         // read, with nothing run.
         if let Some(page) = plan.page.as_ref().filter(|page| page.offset > 0) {
             if let Some(whole) = self.pages.get(&page.of) {
-                return Ok(result(
-                    answer::held(&whole, page.offset, page.limit, page.brief),
-                    &request.name,
-                )
-                .into());
+                let told = match plan.run {
+                    Run::Show { .. } => job::held(&whole, page.offset),
+                    _ => answer::held(&whole, page.offset, page.limit, page.brief),
+                };
+                return Ok(result(told, &request.name).into());
             }
             if page.held_only {
                 return Ok(refusal(
@@ -669,6 +669,15 @@ impl ServerHandler for Server {
             .run(&line, stop, HEARTBEAT, tick)
             .await
             .map_err(|e| McpError::internal_error(format!("snob could not be run: {e}"), None))?;
+        // Whatever the child answered: a list read as an account is not
+        // handed back from memory after the call that signs one out.
+        if plan
+            .ask
+            .as_ref()
+            .is_some_and(|ask| ask.about == tools::About::SignOut)
+        {
+            self.pages.clear();
+        }
         Ok(self.told(&request.name, &plan, finished, as_task))
     }
 
@@ -678,8 +687,11 @@ impl ServerHandler for Server {
         context: RequestContext<RoleServer>,
     ) -> Result<GetTaskResult, McpError> {
         let doc = self.task(&request.task_id, false, &context).await?;
+        // Held as `snob_job` for that id would hold it: a task is read as
+        // the account the server acts as, and so are the pages asked of it.
+        let held_as = tools::job_held_as(&request.task_id);
         Ok(GetTaskResult::new(tasks::detailed(&doc, |walk| {
-            handed_back(&doc, walk, 0, "snob_job")
+            self.handed_back(&doc, walk, 0, "snob_job", Some(&held_as))
         })))
     }
 
@@ -811,8 +823,39 @@ impl Server {
                 keep(&mut told);
                 result(told, tool).into()
             }
-            Some(walk) => handed_back(&doc, walk, offset, tool).into(),
+            Some(walk) => {
+                let held_as = plan.page.as_ref().map(|page| page.of.as_str());
+                self.handed_back(&doc, walk, offset, tool, held_as).into()
+            }
         }
+    }
+
+    /// A finished job's walk handed back as the call that started it would
+    /// have answered it, the page at `offset` read from the job's file, or
+    /// refused once its result has been swept, with a sentence on calling
+    /// `tool` again for the next page. **The whole list is held as
+    /// `held_as`**, so the pages after this one start no child and read no
+    /// file.
+    fn handed_back(
+        &self,
+        doc: &Value,
+        walk: child::Finished,
+        offset: usize,
+        tool: &str,
+        held_as: Option<&str>,
+    ) -> CallToolResult {
+        if job::result_gone(&walk) {
+            return refusal(
+                "result_gone",
+                "a job's result is kept for a day after its walk ended, and this one's is \
+                 gone; call snob_list again for the list",
+            );
+        }
+        let mut told = job::with_id(answer::from(&job::plan_of(doc, offset), walk), doc);
+        if let (Some(of), Some(whole)) = (held_as, job::whole_of(&mut told, doc)) {
+            self.pages.keep(of.to_string(), whole);
+        }
+        result(told, tool)
     }
 
     /// The job a task is, read (`__job show`) or asked to stop (`__job
@@ -886,22 +929,6 @@ impl Server {
             }
         }
     }
-}
-
-/// A finished job's walk handed back as the call that started it would
-/// have answered it, the page at `offset` read from the job's file, or
-/// refused once its result has been swept, with a sentence on calling `tool`
-/// again for the next page.
-fn handed_back(doc: &Value, walk: child::Finished, offset: usize, tool: &str) -> CallToolResult {
-    if job::result_gone(&walk) {
-        return refusal(
-            "result_gone",
-            "a job's result is kept for a day after its walk ended, and this one's is gone; \
-             call snob_list again for the list",
-        );
-    }
-    let told = job::with_id(answer::from(&job::plan_of(doc, offset), walk), doc);
-    result(told, tool)
 }
 
 /// A call's answer as its result: the body as structured content and as

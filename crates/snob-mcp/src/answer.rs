@@ -343,6 +343,7 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
             .filter_map(|key| Some((key.to_string(), body.get(key)?.clone())))
             .collect(),
         pictures,
+        limit,
     });
     Answer {
         failed: false,
@@ -1596,11 +1597,7 @@ mod tests {
             assert!(told.failed, "{offset}");
             assert_eq!(told.body["error"]["code"], "offset_past_end", "{offset}");
             assert_eq!(told.body["error"]["count"], 450, "{offset}");
-            let none = Whole {
-                items: vec![],
-                about: serde_json::Map::new(),
-                pictures: Vec::new(),
-            };
+            let none = Whole::default();
             assert!(held(&none, offset, None, false).failed, "{offset}");
         }
         // The first page of an empty list is a page, not a refusal.

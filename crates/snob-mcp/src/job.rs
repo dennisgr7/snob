@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 use super::answer::{self, Answer};
 use super::child::Finished;
+use super::pages::Whole;
 use super::tools::{self, Plan};
 use crate::exit::ExitCode;
 
@@ -118,8 +119,8 @@ pub fn plan_of(doc: &Value, offset: usize) -> Plan {
         acting_as: None,
         records: true,
     });
-    // Not held under anything: the result is the job's file, read again for
-    // every page, so `of` names nothing the server keeps.
+    // `of` names nothing: the list is held under the job by the call that
+    // read it (`tools::job_held_as`), not under the call that started it.
     let limit = plan.page.as_ref().and_then(|page| page.limit);
     plan.page = Some(tools::Page {
         offset,
@@ -139,6 +140,29 @@ pub fn with_id(mut told: Answer, doc: &Value) -> Answer {
         doc.get("job_id").and_then(Value::as_str),
     ) {
         body.insert("job_id".into(), json!(id));
+    }
+    told
+}
+
+/// The whole list a finished job's answer is a page of, taken out of `told`
+/// to be held (`pages.rs`), saying on every later page which job it is.
+/// **A job that ended is never run again under its id** (`jobs::id`), so
+/// what is held cannot go stale.
+pub fn whole_of(told: &mut Answer, doc: &Value) -> Option<Whole> {
+    let mut whole = told.whole.take()?;
+    whole
+        .about
+        .insert("job_id".into(), doc.get("job_id")?.clone());
+    Some(whole)
+}
+
+/// The page at `offset` of a finished job's list the server holds, as the
+/// child that reads the job's file answers it: capped by the `limit` of the
+/// call that started the job, and naming the job in a refusal too.
+pub fn held(whole: &Whole, offset: usize) -> Answer {
+    let mut told = answer::held(whole, offset, whole.limit, false);
+    if let (Some(body), Some(id)) = (told.body.as_object_mut(), whole.about.get("job_id")) {
+        body.entry("job_id").or_insert_with(|| id.clone());
     }
     told
 }
@@ -463,5 +487,59 @@ mod tests {
 
         let (_, said) = standing(&doc("succeeded", Value::Null), true);
         assert!(said.contains("had already ended (succeeded)"), "{said}");
+    }
+
+    /// A later page handed back from the held list is the page the job's
+    /// file gives, a refusal past the end included, under the limit of the
+    /// call that started the job.
+    #[test]
+    fn a_page_of_a_held_job_is_the_page_its_file_gives() {
+        let accounts: Vec<Value> = (0..450)
+            .map(|n| json!({"pk": n, "username": format!("user{n}"), "pfp_url": "https://x/y"}))
+            .collect();
+        for limit in [None, Some(300)] {
+            let mut doc = doc(
+                "succeeded",
+                json!({"exit": "ok", "exit_number": 0, "output": accounts, "said": ""}),
+            );
+            if let Some(limit) = limit {
+                doc["arguments"]["limit"] = json!(limit);
+            }
+            let from_the_file = |offset: usize| {
+                with_id(
+                    answer::from(&plan_of(&doc, offset), finished_of(&doc).unwrap()),
+                    &doc,
+                )
+            };
+            let mut first = from_the_file(0);
+            let whole = whole_of(&mut first, &doc).expect("held for its later pages");
+            assert_eq!(whole.limit, limit);
+            assert!(first.whole.is_none(), "taken out to be held");
+            for offset in [200, 299, 300, 400, 449, 450, 9_999] {
+                let told = held(&whole, offset);
+                let read = from_the_file(offset);
+                assert_eq!(told.body, read.body, "{offset} {limit:?}");
+                assert_eq!(told.failed, read.failed, "{offset} {limit:?}");
+                assert_eq!(told.body["job_id"], "j0000000000000000000000000");
+            }
+        }
+    }
+
+    /// Only a walk that ended with its list is held: one stopped or failed
+    /// has no list to page through.
+    #[test]
+    fn a_walk_that_did_not_end_with_its_list_leaves_nothing_to_hold() {
+        for (status, number) in [("stopped", 130), ("failed", 5)] {
+            let doc = doc(
+                status,
+                json!({"exit_number": number, "output": null, "said": ""}),
+            );
+            let mut told = with_id(
+                answer::from(&plan_of(&doc, 0), finished_of(&doc).unwrap()),
+                &doc,
+            );
+            assert!(told.failed, "{status}");
+            assert!(whole_of(&mut told, &doc).is_none(), "{status}");
+        }
     }
 }

@@ -9104,6 +9104,103 @@ async fn snob_job_pages_a_finished_result_from_its_file() {
     assert_eq!(posted(&instagram).await.len(), sent, "nothing was sent");
 }
 
+/// The server that handed back a page of a finished job holds its list: the
+/// pages after it are answered with the job's files gone, so no child read
+/// them, and a server that never held the list has nothing to answer with.
+#[cfg(feature = "mcp")]
+#[tokio::test]
+async fn snob_job_answers_later_pages_from_the_list_the_server_holds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(450, 2).await;
+    log_in(tmp.path(), &instagram);
+    let _jobs = Jobs {
+        root: tmp.path(),
+        instagram: &instagram,
+    };
+    let mut first = McpClient::start(tmp.path(), &instagram, &[]).await;
+    let walked = first
+        .call("snob_list", serde_json::json!({ "list": "followers" }))
+        .await;
+    assert_eq!(walked["isError"], false, "{walked}");
+    let id = walked["structuredContent"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    drop(first);
+
+    // A server that never held the list reads its first page from the file.
+    let mut server = McpClient::start(tmp.path(), &instagram, &[]).await;
+    let page = server
+        .call("snob_job", serde_json::json!({ "job_id": id }))
+        .await;
+    assert_eq!(page["isError"], false, "{page}");
+    let next = page["structuredContent"]["next_offset"]
+        .as_u64()
+        .expect("a next page");
+    let from_the_file = server
+        .call(
+            "snob_job",
+            serde_json::json!({ "job_id": id, "offset": next }),
+        )
+        .await;
+
+    // The job is gone from disk.
+    let dir = snob_store::paths::AppPaths::rooted_at(tmp.path())
+        .account(PK)
+        .jobs_dir()
+        .join(&id);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::fs::remove_dir_all(&dir).is_err() && dir.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the job is still held"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let sent = posted(&instagram).await.len();
+    let held = server
+        .call(
+            "snob_job",
+            serde_json::json!({ "job_id": id, "offset": next }),
+        )
+        .await;
+    assert_eq!(held["isError"], false, "{held}");
+    assert_eq!(
+        held["structuredContent"], from_the_file["structuredContent"],
+        "the page the file gave"
+    );
+    assert_eq!(said(&held), said(&from_the_file));
+    assert_eq!(held["structuredContent"]["job_id"], id.as_str());
+
+    // Past the end is refused the same way, and says the job.
+    let past = server
+        .call(
+            "snob_job",
+            serde_json::json!({ "job_id": id, "offset": 450 }),
+        )
+        .await;
+    assert_eq!(past["isError"], true, "{past}");
+    assert_eq!(
+        past["structuredContent"]["error"]["code"], "offset_past_end",
+        "{past}"
+    );
+
+    let mut other = McpClient::start(tmp.path(), &instagram, &[]).await;
+    let gone = other
+        .call(
+            "snob_job",
+            serde_json::json!({ "job_id": id, "offset": next }),
+        )
+        .await;
+    assert_eq!(gone["isError"], true, "{gone}");
+    assert_eq!(
+        gone["structuredContent"]["error"]["code"], "no_such_job",
+        "{gone}"
+    );
+    assert_eq!(posted(&instagram).await.len(), sent, "nothing was sent");
+}
+
 /// What a client that takes MCP Tasks declares, at `initialize` or in the
 /// `_meta` of a stateless request.
 #[cfg(feature = "mcp")]
