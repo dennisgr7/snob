@@ -510,7 +510,8 @@ async fn account_of(
         None => Some(app.viewer().pk),
         Some(_) => crate::engine::target::known_pk(app, &name).ok().flatten(),
     };
-    match app.profile_named(&name, known).await {
+    // The client's own read: a check writes nothing, the cache included.
+    match app.client().profile_named(&name, known).await {
         Ok(profile) => {
             let shown = profile.id == app.viewer().pk
                 || profile.is_private != Some(true)

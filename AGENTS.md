@@ -472,7 +472,7 @@ compile; the session is an explicit header on the one client meant to carry it.
   the small pictures it was shown (`pictures/<pk>.jpg`), so a view shows the
   last known values at once while its usual requests run. **It adds no
   request and takes none away**: filled only where an answer already
-  arrives (`App::profile_named`, which every profile the engine reads goes
+  arrives (`App::profile_named`, which a list's resolve and the monitor read
   through; the counter poll; a picture a view downloaded, `Keeper::picture`),
   never read to decide whether to ask, so it has no refresh rule. **Kept by
   the account that saw it**, so what a private account showed one account

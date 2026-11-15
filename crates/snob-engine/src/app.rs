@@ -360,7 +360,8 @@ impl App {
 
     /// `IgClient::profile_named`, **the same requests**, with what it
     /// answered kept in the account's cache for a view to show at once next
-    /// time. Every profile the engine reads goes through here.
+    /// time. A list's resolve and the monitor read through here; a check,
+    /// which writes nothing, does not (`engine::check`).
     pub async fn profile_named(
         &self,
         name: &str,
