@@ -2823,10 +2823,7 @@ async fn serve_the_website_world() {
 /// should be loaded at the normal pace and only the rest efficiently.
 ///
 /// **Every load in a sandbox of its own**, signed in afresh and outside the
-/// clock. In one sandbox the pace bucket (`rate_budget.rs`) has spent its
-/// burst by the third command, and from then on spaces each request four
-/// seconds from the last: every run takes over half a minute, and the numbers
-/// are the pacer's, not the page's. The two modes take turns, so whatever the
+/// clock, so each starts cold. The two modes take turns, so whatever the
 /// machine does meanwhile falls on both.
 #[tokio::test]
 #[ignore = "a measurement of this machine, run by hand"]

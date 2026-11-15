@@ -77,7 +77,7 @@ fn is_instagram(url: &Url) -> bool {
 /// Where every client built after [`point_every_client_at`] points.
 ///
 /// **Compiled out of a release build**, which is why it is a Cargo feature
-/// and not a hidden flag. It sets the base URL, not a "skip the pace" switch:
+/// and not a hidden flag. It sets the base URL, not a "skip the waits" switch:
 /// [`IgClient::is_live`] answers by address. Set once from `main`; the binary
 /// refuses `--ig-base-url` without `--sandbox-root`.
 #[cfg(feature = "testing")]
@@ -109,7 +109,8 @@ impl IgClient {
     }
 
     fn pointed_at(session: Session, pacer: Pacer, base: Url) -> Result<Self, IgError> {
-        let page = if is_instagram(&base) || page::used_off_instagram() {
+        let live = is_instagram(&base);
+        let page = if live || page::used_off_instagram() {
             page::page_for(&session)
         } else {
             None
@@ -122,7 +123,7 @@ impl IgClient {
             cdn: OnceLock::new(),
             base,
             session,
-            pacer,
+            pacer: pacer.with_sleeps(live),
             claim: Mutex::new(INITIAL_CLAIM.to_string()),
             held_tray: Mutex::new(None),
             statuses_unbuilt: AtomicBool::new(false),
@@ -160,7 +161,7 @@ impl IgClient {
 
     /// Points the client at a different server. Tests only.
     ///
-    /// **This is also what turns the pace off**, through [`IgClient::is_live`].
+    /// **This is also what turns the waits off**, through [`IgClient::is_live`].
     /// Rebuilds rather than assigns: the redirect policies are decided from
     /// the base URL when the client is made.
     #[doc(hidden)]
@@ -206,8 +207,9 @@ impl IgClient {
     }
 
     /// Whether this client is pointed at Instagram itself, which decides
-    /// whether the pace is real. **Asked of the base URL, never set by a
-    /// caller**: nobody can ask to walk Instagram with no waits.
+    /// whether the waits are real (`AGENTS.md`, "Tests"). **Asked of the base
+    /// URL, never set by a caller**: nobody can ask to walk Instagram with no
+    /// waits.
     pub fn is_live(&self) -> bool {
         is_instagram(&self.base)
     }
@@ -538,5 +540,119 @@ mod tests {
 
         assert!(!message.contains('\x1b'), "{message:?}");
         assert!(message.contains("an HTML page"), "{message}");
+    }
+
+    /// A client sleeps on its budget only when pointed at Instagram; against a
+    /// local server `--max-wait` is still checked, the budget is still charged,
+    /// and the wait is still announced, without sleeping.
+    #[tokio::test]
+    async fn only_a_client_pointed_at_instagram_sleeps_for_the_budget() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        use snob_core::EpochMs;
+        use snob_core::budget::{RateBudget, RateBudgetError};
+        use snob_core::session::{Session, SessionOrigin};
+
+        use crate::client::harness::{SID, UA};
+
+        #[derive(Default)]
+        struct OwedBudget {
+            charged: AtomicU32,
+        }
+
+        impl RateBudget for OwedBudget {
+            fn reserve(&self) -> Result<Duration, RateBudgetError> {
+                self.charged.fetch_add(1, Ordering::Relaxed);
+                Ok(Duration::from_secs(30))
+            }
+            fn reserve_write(&self) -> Result<Duration, RateBudgetError> {
+                self.reserve()
+            }
+            fn read_wait(&self) -> Result<Duration, RateBudgetError> {
+                Ok(Duration::from_secs(30))
+            }
+            fn write_wait(&self) -> Result<Duration, RateBudgetError> {
+                Ok(Duration::from_secs(30))
+            }
+            fn cooldown(&self) -> Result<Option<EpochMs>, RateBudgetError> {
+                Ok(None)
+            }
+            fn start_cooldown(
+                &self,
+                _reason: &str,
+                _minimum: Duration,
+            ) -> Result<EpochMs, RateBudgetError> {
+                Ok(EpochMs::new(0))
+            }
+        }
+
+        let announced = Arc::new(AtomicU32::new(0));
+        let budget = Arc::new(OwedBudget::default());
+        let pacer = {
+            let announced = Arc::clone(&announced);
+            Pacer::new(Arc::clone(&budget) as Arc<dyn RateBudget>).announcing(Arc::new(move |_| {
+                announced.fetch_add(1, Ordering::Relaxed);
+            }))
+        };
+        let session = Session::from_sessionid(SID, UA, SessionOrigin::Paste).unwrap();
+
+        // Pointed at Instagram: every budget wait sleeps without sending anything.
+        let live = IgClient::new(session.clone(), pacer).unwrap();
+        assert!(live.is_live());
+
+        let cleared =
+            tokio::time::timeout(Duration::from_millis(50), live.pacer().clear_to_send()).await;
+        assert!(cleared.is_err(), "live clear_to_send should sleep on owed");
+        let paid =
+            tokio::time::timeout(Duration::from_millis(50), live.pacer().pay_for_sent()).await;
+        assert!(paid.is_err(), "live pay_for_sent should sleep on owed");
+        let rested =
+            tokio::time::timeout(Duration::from_millis(50), live.pacer().rested_for_a_write())
+                .await;
+        assert!(
+            rested.is_err(),
+            "live rested_for_a_write should sleep on owed"
+        );
+        assert_eq!(budget.charged.load(Ordering::Relaxed), 2);
+        assert_eq!(live.pacer().spent(), 2);
+        assert_eq!(announced.load(Ordering::Relaxed), 3);
+
+        // Retargeted off Instagram: same budget, same announcements, no sleeps.
+        let local = live.with_base_url(Url::parse("http://127.0.0.1:1").unwrap());
+        assert!(!local.is_live());
+
+        for check in [
+            local.pacer().clear_to_send().await,
+            local.pacer().pay_for_sent().await,
+            local.pacer().clear_to_send_write().await,
+            local.pacer().rested_for_a_write().await,
+        ] {
+            assert!(check.is_ok(), "{check:?}");
+        }
+        assert_eq!(budget.charged.load(Ordering::Relaxed), 5);
+        assert_eq!(local.pacer().spent(), 5);
+        assert_eq!(announced.load(Ordering::Relaxed), 7);
+
+        // Against a non-Instagram address, `--max-wait` still refuses before charging.
+        let local_limited = |limit| {
+            let pacer = Pacer::new(Arc::clone(&budget) as Arc<dyn RateBudget>)
+                .waiting_at_most(Some(Duration::from_secs(limit)));
+            IgClient::new(session.clone(), pacer)
+                .unwrap()
+                .with_base_url(Url::parse("http://127.0.0.1:1").unwrap())
+        };
+        assert!(matches!(
+            local_limited(5).pacer().clear_to_send().await,
+            Err(IgError::WaitTooLong { .. })
+        ));
+        assert!(matches!(
+            local_limited(5).pacer().rested_for_a_write().await,
+            Err(IgError::WaitTooLong { .. })
+        ));
+        assert_eq!(budget.charged.load(Ordering::Relaxed), 5);
+        // What was already sent still pays past `--max-wait`, without sleeping.
+        assert!(local_limited(5).pacer().pay_for_sent().await.is_ok());
+        assert_eq!(budget.charged.load(Ordering::Relaxed), 6);
     }
 }

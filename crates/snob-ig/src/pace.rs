@@ -221,6 +221,8 @@ pub struct Pacer {
     sitting: std::sync::Mutex<Option<Sitting>>,
     actions: AtomicU32,
     max_wait: Option<Duration>,
+    /// Whether owed waits for the budget are slept out.
+    sleeps: bool,
     /// The latest answers this process was given, newest last.
     answers: std::sync::Mutex<std::collections::VecDeque<AnswerTime>>,
 }
@@ -235,6 +237,7 @@ impl Pacer {
             sitting: std::sync::Mutex::new(None),
             actions: AtomicU32::new(0),
             max_wait: None,
+            sleeps: true,
             answers: std::sync::Mutex::new(std::collections::VecDeque::new()),
         }
     }
@@ -399,6 +402,17 @@ impl Pacer {
         self
     }
 
+    /// Sets whether owed budget waits are slept out. Decided from the client's
+    /// base URL (`IgClient::is_live`), never by a caller (`AGENTS.md`, "Tests"):
+    /// against a non-Instagram address, `--max-wait` is still checked, the
+    /// budget is still charged, and the wait is still announced, without
+    /// sleeping.
+    #[must_use]
+    pub(crate) fn with_sleeps(mut self, sleeps: bool) -> Self {
+        self.sleeps = sleeps;
+        self
+    }
+
     pub fn max_wait(&self) -> Option<Duration> {
         self.max_wait
     }
@@ -542,7 +556,7 @@ impl Pacer {
         if let Some(announce) = &self.announce {
             announce(owed);
         }
-        if self.cancel.sleep_or_cancel(owed).await {
+        if self.sleeps && self.cancel.sleep_or_cancel(owed).await {
             return Err(IgError::Canceled);
         }
         Ok(())
@@ -587,7 +601,7 @@ impl Pacer {
         if let Some(announce) = &self.announce {
             announce(owed);
         }
-        if self.cancel.sleep_or_cancel(owed).await {
+        if self.sleeps && self.cancel.sleep_or_cancel(owed).await {
             return Err(IgError::Canceled);
         }
         Ok(())
