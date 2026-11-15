@@ -389,7 +389,8 @@ compile; the session is an explicit header on the one client meant to carry it.
   ARM64, where rustls does not build without LLVM. HTTP/2 is required (HTTP/1.1
   draws 429s). The platform's roots by default; `--strict-roots` narrows to
   Mozilla's (refused on Windows ARM64), `--tls-extra-root` adds PEM files;
-  neither reaches the webhook. No C crypto library is linked.
+  neither reaches the webhook. The provider under rustls is `aws-lc-rs`, which
+  `prefer-post-quantum` needs; signing is RustCrypto's `hmac` and `sha2`.
 
 ### Local processes
 
@@ -733,7 +734,8 @@ English, **US spelling**. A test enforces it (`language.rs`).
   The one `unsafe fn` is `snob_store::windows_user::User::of`.
 - Every dependency and feature in a `Cargo.toml` says why it is there and why
   its features are what they are; features are narrowed to what is used. No
-  `ring`, `aws-lc-rs` or OpenSSL.
+  OpenSSL and no `ring` on any target; `aws-lc-rs` only as the provider under
+  rustls, on the four targets that build it.
 - Release profile: `opt-level = "s"`, fat LTO, one codegen unit, stripped,
   **`panic = "abort"`**: no destructor runs on a panic, so durable state is
   committed as it is made, and code fed by a browser never panics.
