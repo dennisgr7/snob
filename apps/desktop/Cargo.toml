@@ -45,6 +45,12 @@ serde_json = "1"
 # holes cannot say.
 fluent-bundle = "0.16"
 unic-langid = "0.9"
+# The local time of day a pause ends at, as the engine's own sentences
+# say it.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# The language the system is set to, which GPUI does not say
+# (`system/native.rs`): one call per platform, and nothing else of it used.
+sys-locale = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

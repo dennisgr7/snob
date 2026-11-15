@@ -14,6 +14,7 @@ use std::time::Duration;
 use gpui_kit::App;
 use tokio::sync::mpsc;
 
+pub mod native;
 #[cfg(feature = "testing")]
 pub mod simulated;
 
@@ -126,6 +127,9 @@ pub trait System {
     /// Tells the system whether somebody is looking at what the app does:
     /// work nobody waits for runs in the system's efficient mode.
     fn attended(&self, attended: bool);
+
+    /// Starts the app again in place of this one: after an update.
+    fn restart(&self, cx: &mut App);
 
     /// Everything the system says from now on. Called once.
     fn events(&self) -> mpsc::UnboundedReceiver<Event>;

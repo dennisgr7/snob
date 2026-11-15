@@ -1,104 +1,217 @@
 //! The desktop app: one window on the engine the command line runs, linked
-//! in process. **A skeleton**: it shows the accounts snob knows on this
-//! computer and sends nothing; no view reads a session or starts a walk yet.
+//! in process.
 //!
-//! Every rule of AGENTS.md holds here through the engine: a view reaches
-//! Instagram through an `App` (`snob_engine::app`), never a client of its
-//! own.
+//! What `main` does is the order things start in: where the data is, the
+//! log, the one instance, the engine's runtime, and then the window. **A
+//! `testing` build never uses the real data directory or the real keyring**,
+//! whatever it is started with.
 
 // No console window behind the app on Windows.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use snob_desktop::front;
+use std::rc::Rc;
+use std::sync::Arc;
 
-use gpui_kit::*;
-use snob_core::model::printable;
+use gpui_kit::QuitMode;
+use snob_desktop::backend::engine::Engine;
+use snob_desktop::instance::{self, Instance};
+use snob_desktop::runtime::Runtime;
+use snob_desktop::state::prefs::Prefs;
+use snob_desktop::system::native::Native;
+use snob_desktop::system::{Event, Settings, System};
+use snob_desktop::ui::assets::Assets;
+use snob_desktop::{front, ui};
+use snob_engine::log;
 use snob_store::paths::AppPaths;
-use snob_store::registry::Registry;
+use snob_store::secrets::SecretStore;
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
 
-/// An account as the first view lists it.
-struct Known {
-    username: String,
-    pk: String,
-    active: bool,
+/// Where this run keeps its files and its secrets.
+struct Wiring {
+    paths: AppPaths,
+    secrets: SecretStore,
+    /// A test build says so in its band.
+    testing: bool,
 }
 
-/// What the first view shows: read once, when the window opens.
-struct Home {
-    accounts: Result<Vec<Known>, String>,
-    /// Whether the `snob` the engine starts for its own processes was found
-    /// beside the app.
-    snob_found: bool,
-    notices: front::Lines,
+#[cfg(not(feature = "testing"))]
+fn wiring(_: &[String]) -> anyhow::Result<Wiring> {
+    let paths = AppPaths::discover()?;
+    Ok(Wiring {
+        secrets: SecretStore::new(paths.clone(), false),
+        paths,
+        testing: false,
+    })
 }
 
-/// The accounts in `accounts.toml`: a file read, no keyring and no network.
-fn known_accounts() -> Result<Vec<Known>, String> {
-    let paths = AppPaths::discover().map_err(|e| e.to_string())?;
-    let registry = Registry::load(&paths).map_err(|e| e.to_string())?;
-    Ok(registry
-        .accounts
-        .iter()
-        .map(|account| Known {
-            username: printable(&account.username),
-            pk: account.pk.to_string(),
-            active: registry.active == Some(account.pk),
-        })
-        .collect())
+/// The value after `name` among `args`.
+#[cfg(feature = "testing")]
+fn value_of<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    let at = args.iter().position(|arg| arg == name)?;
+    args.get(at + 1).map(String::as_str)
 }
 
-impl Render for Home {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let accounts = match &self.accounts {
-            Ok(accounts) if accounts.is_empty() => {
-                vec!["No account yet. Sign in with \"snob login\" in a terminal.".to_string()]
-            }
-            Ok(accounts) => accounts
-                .iter()
-                .map(|account| {
-                    let mark = if account.active { " (active)" } else { "" };
-                    format!("{}  {}{mark}", account.username, account.pk)
-                })
-                .collect(),
-            Err(why) => vec![format!("The accounts could not be read: {why}")],
-        };
-        let engine = if self.snob_found {
-            "snob found beside the app".to_string()
-        } else {
-            "no snob beside the app: nothing that starts a browser or a job can run".to_string()
-        };
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p_4()
-            .size_full()
-            .child(div().text_xl().child("snob"))
-            .child(engine)
-            .child(div().pt_2().child("Accounts"))
-            .children(accounts)
-            .children(self.notices.all())
+/// A test build's wiring: everything under `--test-root`, or a directory of
+/// this run's own when none is given, and every client pointed at
+/// `--instagram` when that is.
+#[cfg(feature = "testing")]
+fn wiring(args: &[String]) -> anyhow::Result<Wiring> {
+    let root = match value_of(args, "--test-root") {
+        Some(root) => std::path::PathBuf::from(root),
+        None => std::env::temp_dir().join(format!("snob-desktop-test-{}", std::process::id())),
+    };
+    std::fs::create_dir_all(&root)?;
+    let instagram = value_of(args, "--instagram").map(str::parse).transpose()?;
+    let sandbox = snob_engine::sandbox::Sandbox::under(&root, instagram, false)?;
+    Ok(Wiring {
+        secrets: sandbox.secrets(),
+        paths: sandbox.paths,
+        testing: true,
+    })
+}
+
+/// The system a test speaks for, when the run was started with
+/// `--simulate-system`: set up as the arguments say, and following nothing
+/// of the real one.
+#[cfg(feature = "testing")]
+fn simulated(args: &[String]) -> Option<Settings> {
+    let has = |name: &str| args.iter().any(|arg| arg == name);
+    has("--simulate-system").then(|| Settings {
+        dark: has("--dark"),
+        more_contrast: has("--more-contrast"),
+        reduce_motion: has("--reduce-motion"),
+        reduce_transparency: has("--reduce-transparency"),
+        text_scale: value_of(args, "--text-scale")
+            .and_then(|scale| scale.parse().ok())
+            .unwrap_or(1.0),
+        locale: value_of(args, "--locale").unwrap_or("en").to_string(),
+    })
+}
+
+#[cfg(not(feature = "testing"))]
+fn simulated(_: &[String]) -> Option<Settings> {
+    None
+}
+
+/// The system the app asks, and what brings its window to the front when it
+/// is started a second time.
+type Wired = (Rc<dyn System>, Box<dyn Fn() + Send>);
+
+/// The real system, which also follows the theme the window is drawn in.
+fn native(cx: &mut gpui_kit::App) -> (Wired, Rc<Native>) {
+    let native = Rc::new(Native::new(cx));
+    let says = native.says();
+    let activate = Box::new(move || says.say(Event::Activate));
+    ((native.clone(), activate), native)
+}
+
+#[cfg(feature = "testing")]
+fn system(simulated: Option<Settings>, cx: &mut gpui_kit::App) -> (Wired, Option<Rc<Native>>) {
+    use snob_desktop::system::simulated::Simulated;
+    match simulated {
+        Some(settings) => {
+            let system = Simulated::new(settings);
+            let says = system.clone();
+            let activate = Box::new(move || says.say(Event::Activate));
+            ((Rc::new(system), activate), None)
+        }
+        None => {
+            let (wired, native) = native(cx);
+            (wired, Some(native))
+        }
     }
 }
 
-fn main() {
-    let (notices, snob_found) = front::hand_over();
-    gpui_kit::application().run(move |cx| {
-        gpui_kit::init(cx);
-        let options = WindowOptions {
-            titlebar: Some(TitlebarOptions {
-                title: Some("snob".into()),
-                ..Default::default()
-            }),
-            ..Default::default()
+#[cfg(not(feature = "testing"))]
+fn system(_: Option<Settings>, cx: &mut gpui_kit::App) -> (Wired, Option<Rc<Native>>) {
+    let (wired, native) = native(cx);
+    (wired, Some(native))
+}
+
+/// What this program is, for a crash report and a diagnostic one.
+fn about() -> String {
+    format!(
+        "snob desktop {} on {} {}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    )
+}
+
+fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let Wiring {
+        paths,
+        secrets,
+        testing,
+    } = wiring(&args)?;
+    paths.ensure_dirs()?;
+
+    let started = log::start(&paths, std::env::var("SNOB_LOG").ok().as_deref())?;
+    let (detail, files) = (started.detail, started.layer.files());
+    tracing_subscriber::registry().with(started.layer).init();
+    log::keep_crashes(&log::dir(&paths), about());
+
+    let runtime = Arc::new(Runtime::start()?);
+    let listener = match runtime.block_on(instance::claim(&paths))? {
+        Instance::First(listener) => listener,
+        Instance::Second => {
+            tracing::info!("another start of the app is running: handed over to it");
+            return Ok(());
+        }
+    };
+    let (_notices, snob_found) = front::hand_over();
+    tracing::info!(about = about(), testing, snob_found, "the app started");
+
+    let placement = Prefs::load(&paths).window;
+    let simulated = simulated(&args);
+    gpui_kit::application().with_assets(Assets).run(move |cx| {
+        cx.set_quit_mode(QuitMode::LastWindowClosed);
+        let ((system, activate), native) = system(simulated, cx);
+        runtime.handle().spawn(instance::serve(listener, activate));
+
+        ui::window::init(&*system, testing, cx);
+        let settings = system.settings();
+        tracing::info!(
+            dark = settings.dark,
+            more_contrast = settings.more_contrast,
+            reduce_motion = settings.reduce_motion,
+            reduce_transparency = settings.reduce_transparency,
+            text_scale = settings.text_scale,
+            locale = settings.locale,
+            "the system's settings"
+        );
+        let backend = Arc::new(Engine::new(
+            Arc::clone(&runtime),
+            paths.clone(),
+            secrets,
+            (detail, files),
+            about(),
+        ));
+        let opened = ui::window::open(backend, system, placement, cx);
+        let (window, _shell) = match opened {
+            Ok(opened) => opened,
+            Err(e) => {
+                tracing::error!(error = %e, "the window could not be opened");
+                cx.quit();
+                return;
+            }
         };
-        gpui_kit::open_window(options, cx, |_, cx| {
-            cx.new(|_| Home {
-                accounts: known_accounts(),
-                snob_found,
-                notices,
-            })
-        })
-        .expect("the first window opens");
+        if let Some(native) = native {
+            let followed = window.update(cx, |_, window, _| {
+                window
+                    .observe_window_appearance(move |window, _| {
+                        native.appearance_changed(window.appearance());
+                    })
+                    .detach();
+            });
+            if let Err(e) = followed {
+                tracing::warn!(error = %e, "the system's theme is not followed");
+            }
+        }
+        cx.on_app_quit(|_| async { tracing::info!("the app stopped") })
+            .detach();
     });
+    Ok(())
 }

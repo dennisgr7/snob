@@ -12,7 +12,8 @@ use snob_ig::pace::CancelToken;
 use tokio::sync::{oneshot, watch};
 
 use super::{Account, Answer, Backend, Loaded, SignIn};
-use crate::state::flow::{Found, Named, Update};
+use crate::state::flow::{Found, Method, Named, Update};
+use crate::state::prefs::Placement;
 
 /// What the backend was asked, in order. **Never the session ID itself**:
 /// only that one was handed over, and whether it was the one expected.
@@ -27,6 +28,8 @@ pub enum Asked {
     CheckForUpdate,
     FetchUpdate,
     SetDetailed(bool),
+    RememberMethod(Option<Method>),
+    RememberWindow,
     DiagnosticReport,
     CrashShown,
 }
@@ -41,11 +44,15 @@ struct State {
     session_id: String,
     sign_in: SignIn,
     update: Update,
+    /// The update checks left unanswered, kept so they stay that way.
+    stalled: Option<Vec<oneshot::Sender<Update>>>,
     /// The progress a fetch reports before it answers, and whether it ends
     /// ready.
     fetch: (Vec<Option<u8>>, bool),
     paused_until: Option<Epoch>,
     detailed_until: Option<Epoch>,
+    resume: Option<Method>,
+    placed: Option<Placement>,
     asked: Vec<Asked>,
     /// Whether answers wait for [`Scripted::release`].
     holding: bool,
@@ -82,9 +89,12 @@ impl Scripted {
             session_id: "42%3AAbCdEfGhIjKl%3A20".to_string(),
             sign_in: SignIn::Done(account(42, "me", true)),
             update: Update::None,
+            stalled: None,
             fetch: (vec![Some(0), Some(50), Some(100)], true),
             paused_until: None,
             detailed_until: None,
+            resume: None,
+            placed: None,
             asked: Vec::new(),
             holding: false,
             held: Vec::new(),
@@ -123,6 +133,11 @@ impl Scripted {
         for answer in held {
             answer();
         }
+    }
+
+    /// Where the window was last said to be.
+    pub fn window(&self) -> Option<Placement> {
+        self.state().placed
     }
 
     /// Whether the window login in flight was told to stop.
@@ -192,6 +207,12 @@ impl Script<'_> {
         self
     }
 
+    /// From now on the update check never answers.
+    pub fn check_never_answers(&mut self) -> &mut Self {
+        self.0.stalled = Some(Vec::new());
+        self
+    }
+
     pub fn fetch(&mut self, progress: Vec<Option<u8>>, ready: bool) -> &mut Self {
         self.0.fetch = (progress, ready);
         self
@@ -199,6 +220,12 @@ impl Script<'_> {
 
     pub fn paused_until(&mut self, until: Option<Epoch>) -> &mut Self {
         self.0.paused_until = until;
+        self
+    }
+
+    /// The method chosen before the restart this start comes after.
+    pub fn resume(&mut self, method: Method) -> &mut Self {
+        self.0.resume = Some(method);
         self
     }
 }
@@ -225,6 +252,7 @@ impl Backend for Scripted {
             },
             accounts: state.accounts.clone(),
             crash: state.crash.clone(),
+            resume: state.resume,
         })
     }
 
@@ -275,7 +303,28 @@ impl Backend for Scripted {
         self.answer(Asked::PausedUntil, |state| state.paused_until)
     }
 
+    fn remember_method(&self, method: Option<Method>) {
+        let mut state = self.state();
+        state.asked.push(Asked::RememberMethod(method));
+        state.resume = method;
+    }
+
+    fn remember_window(&self, placement: Placement) {
+        let mut state = self.state();
+        state.asked.push(Asked::RememberWindow);
+        state.placed = Some(placement);
+    }
+
     fn check_for_update(&self) -> Answer<Update> {
+        {
+            let mut state = self.state();
+            if let Some(stalled) = &mut state.stalled {
+                let (answer, answered) = oneshot::channel();
+                stalled.push(answer);
+                state.asked.push(Asked::CheckForUpdate);
+                return answered;
+            }
+        }
         self.answer(Asked::CheckForUpdate, |state| state.update)
     }
 

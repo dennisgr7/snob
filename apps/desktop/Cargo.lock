@@ -7246,6 +7246,7 @@ name = "snob-desktop"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "fluent-bundle",
  "gpui-kit",
  "serde",
@@ -7255,6 +7256,7 @@ dependencies = [
  "snob-fake-ig",
  "snob-ig",
  "snob-store",
+ "sys-locale",
  "tempfile",
  "tokio",
  "tracing",

@@ -25,8 +25,8 @@ use tokio::sync::watch;
 use super::{Account, Answer, Backend, Loaded, SignIn, answered};
 use crate::report;
 use crate::runtime::Runtime;
-use crate::state::flow::{Found, Named, Update};
-use crate::state::prefs::Prefs;
+use crate::state::flow::{Found, Method, Named, Update};
+use crate::state::prefs::{Placement, Prefs, Resume};
 
 /// The engine, for the data directory `paths` is.
 pub struct Engine {
@@ -166,7 +166,8 @@ impl Backend for Engine {
         let paths = self.paths.clone();
         self.runtime.run(move || async move {
             let accounts = signed_in(&paths);
-            let expired = Prefs::load(&paths).expired;
+            let prefs = Prefs::load(&paths);
+            let expired = prefs.expired;
             let registry = Registry::load(&paths).ok();
             let found = match accounts.first() {
                 Some(active) if expired != Some(active.named.pk) => {
@@ -191,6 +192,7 @@ impl Backend for Engine {
                 found,
                 accounts,
                 crash,
+                resume: prefs.resumed(snob_core::clock::now()),
             }
         })
     }
@@ -337,6 +339,26 @@ impl Backend for Engine {
             let active = Registry::load(&paths).ok()?.active?;
             paused(&paths, active)
         })
+    }
+
+    fn remember_method(&self, method: Option<Method>) {
+        let paths = self.paths.clone();
+        // A file replaced: off the window's thread, and nobody waits for it.
+        drop(self.runtime.run(move || async move {
+            Prefs::change(&paths, |prefs| {
+                prefs.resume = method.map(|method| Resume {
+                    method,
+                    at: snob_core::clock::now(),
+                });
+            });
+        }));
+    }
+
+    fn remember_window(&self, placement: Placement) {
+        let paths = self.paths.clone();
+        drop(self.runtime.run(move || async move {
+            Prefs::change(&paths, |prefs| prefs.window = Some(placement));
+        }));
     }
 
     // The app's own update comes with its packaging: until there is a

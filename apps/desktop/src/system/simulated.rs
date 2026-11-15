@@ -23,6 +23,7 @@ struct State {
     opened: Vec<PathBuf>,
     clipboard: Option<String>,
     holds: Vec<String>,
+    restarts: usize,
 }
 
 /// The simulated system. Clones are the same system.
@@ -105,6 +106,11 @@ impl Simulated {
         (self.state().holds.clone(), self.held.load(Ordering::SeqCst))
     }
 
+    /// How many times the app asked to be started again.
+    pub fn restarts(&self) -> usize {
+        self.state().restarts
+    }
+
     /// Whether the app last said somebody is looking.
     pub fn is_attended(&self) -> bool {
         self.attended.load(Ordering::SeqCst)
@@ -153,6 +159,10 @@ impl System for Simulated {
 
     fn attended(&self, attended: bool) {
         self.attended.store(attended, Ordering::SeqCst);
+    }
+
+    fn restart(&self, _: &mut App) {
+        self.state().restarts += 1;
     }
 
     fn events(&self) -> mpsc::UnboundedReceiver<Event> {

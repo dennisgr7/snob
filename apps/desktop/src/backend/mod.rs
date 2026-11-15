@@ -16,7 +16,8 @@ use snob_engine::login::Failure;
 use snob_ig::pace::CancelToken;
 use tokio::sync::{oneshot, watch};
 
-use crate::state::flow::{Found, Named, Update};
+use crate::state::flow::{Found, Method, Named, Update};
+use crate::state::prefs::Placement;
 
 pub mod engine;
 #[cfg(feature = "testing")]
@@ -47,6 +48,8 @@ pub struct Loaded {
     pub accounts: Vec<Account>,
     /// The report of a crash nobody has been shown yet.
     pub crash: Option<String>,
+    /// The method chosen shortly before a restart for an update.
+    pub resume: Option<Method>,
 }
 
 /// How a sign-in ended.
@@ -87,6 +90,13 @@ pub trait Backend: Send + Sync + 'static {
     /// Until when Instagram asked the account in use to wait, when it did.
     /// Read from its budget; nothing is sent.
     fn paused_until(&self) -> Answer<Option<Epoch>>;
+
+    /// Remembers the method chosen before a restart for an update, or with
+    /// `None` forgets it.
+    fn remember_method(&self, method: Option<Method>);
+
+    /// Remembers where the window is, to open there the next time.
+    fn remember_window(&self, placement: Placement);
 
     /// Whether a newer version is out.
     fn check_for_update(&self) -> Answer<Update>;
