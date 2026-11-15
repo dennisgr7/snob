@@ -24,6 +24,7 @@ fn client_at(base: &str, key: Option<&str>, headers: Vec<(String, String)>) -> W
         url: Url::parse(&format!("{base}/hook")).unwrap(),
         headers,
         key: key.map(|k| Secret::from(k.to_string())),
+        token: None,
     })
     .unwrap()
 }
@@ -67,6 +68,38 @@ async fn a_report_that_is_accepted_is_delivered() {
             .await,
         Attempt::Delivered { status: 200 }
     );
+}
+
+/// The stored token reaches the receiver as `Authorization`, once, in place
+/// of nothing: a configured header of that name keeps the token from being
+/// planned at all (`commands/watch/delivery.rs`).
+#[tokio::test]
+async fn the_stored_token_arrives_as_the_authorization_header() {
+    let server = MockServer::start().await;
+    mount_hook(&server, 200).await;
+
+    let client = WebhookClient::new(Webhook {
+        url: Url::parse(&format!("{}/hook", server.uri())).unwrap(),
+        headers: vec![("X-Source".into(), "homelab".into())],
+        key: None,
+        token: Some(Secret::from("Bearer stored".to_string())),
+    })
+    .unwrap();
+    assert_eq!(
+        client
+            .post(BODY, webhook::JSON, "watch.changes", "7", 1)
+            .await,
+        Attempt::Delivered { status: 200 }
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    let sent: Vec<_> = last(&requests)
+        .headers
+        .get_all("authorization")
+        .iter()
+        .collect();
+    assert_eq!(sent, ["Bearer stored"]);
+    assert_eq!(last(&requests).headers.get("x-source").unwrap(), "homelab");
 }
 
 /// The body is posted verbatim, not re-rendered. The signature covers bytes, so

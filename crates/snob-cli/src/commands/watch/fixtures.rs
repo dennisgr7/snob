@@ -150,6 +150,7 @@ pub(in crate::commands::watch) fn delivery_to(server: &wiremock::MockServer) -> 
             url,
             headers: vec![],
             key: None,
+            token: None,
         })
         .unwrap(),
         heartbeat: false,

@@ -612,6 +612,7 @@ fn ask_webhook() -> Result<WebhookAnswers> {
         url: parsed,
         headers: headers.clone(),
         key: None,
+        token: None,
     })?;
 
     let mut token = None;

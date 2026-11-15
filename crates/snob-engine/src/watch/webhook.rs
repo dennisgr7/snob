@@ -28,6 +28,9 @@ pub struct Webhook {
     pub headers: Vec<(String, String)>,
     /// The shared secret, when there is one.
     pub key: Option<Secret>,
+    /// The stored `Authorization`, when it is sent: a secret until it is the
+    /// request's header, which is marked sensitive.
+    pub token: Option<Secret>,
 }
 
 /// A client that can reach the user's server and nothing else of ours.
@@ -140,6 +143,15 @@ impl WebhookClient {
                     };
                 }
             }
+        }
+        if let Some(token) = &self.webhook.token {
+            let Ok(mut value) = reqwest::header::HeaderValue::try_from(token.expose()) else {
+                return Attempt::Refused {
+                    error: "the stored token is not a header this can send".to_string(),
+                };
+            };
+            value.set_sensitive(true);
+            headers.insert(reqwest::header::AUTHORIZATION, value);
         }
         let request = self.client.post(self.webhook.url.clone()).headers(headers);
 
@@ -425,6 +437,7 @@ pub fn problem_with_config(
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect(),
         key: None,
+        token: None,
     };
     check(&webhook).err().map(|e| e.to_string())
 }
@@ -514,23 +527,32 @@ pub fn check(webhook: &Webhook) -> Result<()> {
                 snob_core::model::printable(name)
             );
         }
-        if reqwest::header::HeaderValue::try_from(value.as_str()).is_err() {
-            bail!(
-                "the value of \"{}\" is not one a header can carry (a line break, most likely)",
-                snob_core::model::printable(name)
-            );
-        }
-        // An empty value, for the same reason `--sign-with ""` is refused: it is
-        // `--header "Authorization: ${SNOB_TOKEN}"` in a unit file whose
-        // variable is not set.
-        if value.trim().is_empty() {
-            bail!(
-                "\"{}\" was given an empty value. If that came from an environment variable that \
-                 is not set, leave the header out: a header with nothing in it replaces whatever \
-                 \"snob watch setup\" stored under the same name.",
-                snob_core::model::printable(name)
-            );
-        }
+        a_value(name, value)?;
+    }
+    if let Some(token) = &webhook.token {
+        a_value("Authorization", token.expose())?;
+    }
+    Ok(())
+}
+
+/// Refuses a header's value that no header can carry, or an empty one.
+fn a_value(name: &str, value: &str) -> Result<()> {
+    if reqwest::header::HeaderValue::try_from(value).is_err() {
+        bail!(
+            "the value of \"{}\" is not one a header can carry (a line break, most likely)",
+            snob_core::model::printable(name)
+        );
+    }
+    // An empty value, for the same reason `--sign-with ""` is refused: it is
+    // `--header "Authorization: ${SNOB_TOKEN}"` in a unit file whose
+    // variable is not set.
+    if value.trim().is_empty() {
+        bail!(
+            "\"{}\" was given an empty value. If that came from an environment variable that \
+             is not set, leave the header out: a header with nothing in it replaces whatever \
+             \"snob watch setup\" stored under the same name.",
+            snob_core::model::printable(name)
+        );
     }
     Ok(())
 }
@@ -622,6 +644,7 @@ mod tests {
             url: Url::parse(url).unwrap(),
             headers: vec![],
             key: None,
+            token: None,
         }
     }
 
@@ -1193,6 +1216,27 @@ mod tests {
             let error = check(&hook).unwrap_err();
             assert!(error.to_string().contains("empty value"), "{error}");
         }
+    }
+
+    /// The stored token is held to what a configured header is: one that no
+    /// header can carry, or an empty one, is refused before any report is
+    /// queued for it, and never quoted.
+    #[test]
+    fn a_stored_token_no_header_can_carry_is_refused() {
+        for (value, said) in [
+            ("Bearer a\nX-Other: b", "not one a header can carry"),
+            ("  ", "empty value"),
+        ] {
+            let mut hook = webhook("https://example.com/hook");
+            hook.token = Some(Secret::from(value.to_string()));
+            let error = check(&hook).unwrap_err().to_string();
+            assert!(error.contains(said), "{error}");
+            assert!(error.contains("Authorization"), "{error}");
+            assert!(!error.contains("X-Other"), "{error}");
+        }
+        let mut hook = webhook("https://example.com/hook");
+        hook.token = Some(Secret::from("Bearer x".to_string()));
+        assert!(check(&hook).is_ok());
     }
 
     #[test]

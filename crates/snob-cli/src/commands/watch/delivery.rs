@@ -41,28 +41,11 @@ impl Delivery {
 /// What this run would send, worked out without touching the keyring or the
 /// network.
 struct Planned {
-    /// Without the stored token, which [`Planned::into_webhook`] adds.
+    /// With the stored `Authorization` as its `token`, when this run sends
+    /// it: never among the plain headers.
     webhook: Webhook,
-    /// The stored `Authorization` value, when this run sends it.
-    token: Option<Secret>,
     heartbeat: bool,
     format: WebhookFormat,
-}
-
-impl Planned {
-    /// The request as the engine's client takes it.
-    ///
-    /// **The one place the stored token leaves its `Secret`**: the engine's
-    /// `Webhook` takes every header as a plain string.
-    fn into_webhook(self) -> Webhook {
-        let mut webhook = self.webhook;
-        if let Some(token) = &self.token {
-            webhook
-                .headers
-                .push(("Authorization".to_string(), token.expose().to_string()));
-        }
-        webhook
-    }
 }
 
 /// Decides what to send, and what to say about it.
@@ -237,8 +220,12 @@ fn plan(
 
     Ok((
         Some(Planned {
-            webhook: Webhook { url, headers, key },
-            token,
+            webhook: Webhook {
+                url,
+                headers,
+                key,
+                token,
+            },
             heartbeat: args.heartbeat || from_file.is_some_and(|w| w.heartbeat),
             // The file's format is the file's address's: Slack's shape posted
             // to another address given with --webhook would be refused there.
@@ -276,7 +263,7 @@ pub(super) fn delivery_from(
         return Ok(None);
     };
     let (heartbeat, format) = (planned.heartbeat, planned.format);
-    let webhook = planned.into_webhook();
+    let webhook = planned.webhook;
     webhook::check(&webhook)?;
 
     Ok(Some(Delivery {
@@ -728,6 +715,7 @@ mod tests {
                 url,
                 headers: vec![("Not a header".into(), "homelab".into())],
                 key: None,
+                token: None,
             })
             .unwrap(),
             heartbeat: false,
@@ -831,6 +819,7 @@ mod tests {
     /// went out once" are different answers.
     fn sent_as<'a>(planned: &'a Planned, name: &str) -> Vec<&'a str> {
         let token = planned
+            .webhook
             .token
             .as_ref()
             .filter(|_| name.eq_ignore_ascii_case("authorization"))
@@ -869,16 +858,8 @@ mod tests {
             "the token was copied into a plain header before the request was made"
         );
         assert_eq!(
-            planned.token.as_ref().map(|token| token.expose()),
-            Some("Bearer stored")
-        );
-        let webhook = planned.into_webhook();
-        assert_eq!(
-            webhook
-                .headers
-                .last()
-                .map(|(n, v)| (n.as_str(), v.as_str())),
-            Some(("Authorization", "Bearer stored")),
+            planned.webhook.token.as_ref().map(|token| token.expose()),
+            Some("Bearer stored"),
             "the token did not reach the request"
         );
     }
