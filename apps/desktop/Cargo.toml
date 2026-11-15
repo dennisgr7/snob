@@ -1,0 +1,32 @@
+# The desktop app: a window on the engine the command line runs, linked in
+# process (`snob-engine`).
+#
+# **A workspace of its own**, outside the one at the root. GPUI brings some
+# 500 crates and does not build for musl; the command line's lockfile, its
+# `cargo deny` checks, its CI lines and its five release targets must not
+# change because an app exists. Build it from this directory.
+[package]
+name = "snob-desktop"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "The desktop app for snob: the same engine as the command line, in a window"
+
+[workspace]
+
+[dependencies]
+# GPUI and Longbridge's component library, as one release pinned exactly:
+# `gpui-kit` names a published snapshot of Zed's GPUI (`gpui-pre`), so nothing
+# here is a git dependency. GPUI is before 1.0 and breaks between releases;
+# the pin moves on purpose, never by `cargo update`.
+gpui-kit = "=0.9.1"
+# The engine, the store and the domain, as the command line links them. They
+# take their own dependencies from the root workspace.
+snob-engine = { path = "../../crates/snob-engine" }
+snob-store = { path = "../../crates/snob-store" }
+snob-core = { path = "../../crates/snob-core" }
+
+[lints.clippy]
+# The root workspace's rule, kept here by hand: this crate is outside it.
+undocumented_unsafe_blocks = "warn"
