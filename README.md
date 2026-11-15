@@ -1,14 +1,23 @@
-# Snob CLI
+# snob
 
-An Instagram CLI: a client for the terminal, with extra utilities, media
-downloads and output ready for AI agents.
+Native Instagram client for the desktop, with a command line, an MCP server
+for AI agents, automations and webhooks.
 
-`snob` tells you who does not follow you back, browses profiles, stories,
-highlights, posts and reels, downloads their photos and videos, and watches an
-account over time to report what changed. It signs in as you and sends its
-requests from a Chrome, Edge, Brave or Chromium already on your machine, at a
-human pace. It only ever changes two things, `follow` and `unfollow`, one
-account at a time and after asking; it never marks a story as seen.
+snob signs in as you and shows who does not follow you back, browses profiles,
+stories, highlights, posts and reels, and downloads their photos and videos. Its
+tools around that are snob's command line (`snob`, below), an MCP server that
+lets AI agents use it under your rules, a monitor (`snob watch`) that reports
+what changed in an account on a schedule, and webhooks that carry those reports
+to your own server. It sends its requests from a Chrome, Edge, Brave or Chromium
+already on your machine, at a human pace. It only ever changes two things,
+`follow` and `unfollow`, one account at a time and after asking; it never marks
+a story as seen.
+
+> [!NOTE]
+> The desktop app is not released yet. It signs in, handles several accounts,
+> signs out and has a command palette, and its home screen is still a title.
+> What you can install today is the command line and the MCP server, which are
+> the same `snob` program.
 
 - [Install](#install)
 - [Getting started](#getting-started)
@@ -23,19 +32,19 @@ account at a time and after asking; it never marks a story as seen.
 **Windows** ([Scoop](https://scoop.sh)):
 
 ```bash
-scoop bucket add snob https://github.com/dennisgr7/snob-cli
+scoop bucket add snob https://github.com/dennisgr7/snob
 scoop install snob
 ```
 
 **macOS and Linux** ([Homebrew](https://brew.sh)):
 
 ```bash
-brew tap dennisgr7/snob https://github.com/dennisgr7/snob-cli
+brew tap dennisgr7/snob https://github.com/dennisgr7/snob
 brew install snob
 ```
 
 **Debian and Ubuntu**: the `.deb` for your architecture is on the
-[releases page](https://github.com/dennisgr7/snob-cli/releases).
+[releases page](https://github.com/dennisgr7/snob/releases).
 
 ```bash
 sudo apt install ./snob-v<version>-x86_64-unknown-linux-musl.deb
@@ -44,17 +53,23 @@ sudo apt install ./snob-v<version>-x86_64-unknown-linux-musl.deb
 **Without a package manager**:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dennisgr7/snob-cli/main/packaging/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/dennisgr7/snob/main/packaging/install.sh | sh
 ```
 
 ```powershell
-irm https://raw.githubusercontent.com/dennisgr7/snob-cli/main/packaging/install.ps1 | iex
+irm https://raw.githubusercontent.com/dennisgr7/snob/main/packaging/install.ps1 | iex
 ```
+
+The scripts read `SNOB_EDITION`. `cli` installs the command line and the MCP
+server alone. `desktop` installs the app beside them as well, and stops with an
+error when the release does not list it, as no release does yet. Without it the
+script installs the app where a release lists it, and the command line
+otherwise, which is what it does today.
 
 **From source** (Rust and a C compiler):
 
 ```bash
-cargo install --locked --git https://github.com/dennisgr7/snob-cli snob-cli
+cargo install --locked --git https://github.com/dennisgr7/snob snob-cli
 ```
 
 Builds exist for Windows 11 and Linux on x86_64 and ARM64, and macOS on Apple

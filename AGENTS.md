@@ -11,13 +11,20 @@ why, is in that module: **read a file's `//!` header before changing it.**
 
 ## What snob is
 
-`snob` is an Instagram CLI: binary `snob`, crate `snob-cli`, version in
-`[workspace.package]` of `Cargo.toml`. It walks followers and following and
-crosses them (`unfollowers`, `fans`, `friends`, `scan`); shows profiles,
-stories, highlights, posts and reels and downloads their media; reads
-Instagram's data export (`import dyi`) and its own stored lists (`snapshots`,
-`changes`) without sending anything; monitors accounts (`watch`, with
-webhooks); serves agents (`snob mcp`); and updates itself (`snob update`).
+`snob` is a native Instagram client for the desktop, with tools around it: a
+command line, an MCP server for AI agents, automations (the monitor) and
+webhooks. Its binary is `snob`, built by the crate `snob-cli` (the crate keeps
+that name); the version is in `[workspace.package]` of `Cargo.toml`. The
+desktop app is `apps/desktop` (binary `snob-desktop`), a window on the engine
+that is not released yet.
+
+The command line walks followers and following and crosses them
+(`unfollowers`, `fans`, `friends`, `scan`); shows profiles, stories, highlights,
+posts and reels and downloads their media; reads Instagram's data export
+(`import dyi`) and its own stored lists (`snapshots`, `changes`) without sending
+anything; monitors accounts (`watch`, with webhooks); serves agents (`snob
+mcp`); and updates itself (`snob update`). The app and the command line both
+sit on `snob-engine`.
 
 It signs in as the user, speaks Instagram's **web** API (`www.instagram.com`,
 never the mobile API), and by default sends every request from a headless
