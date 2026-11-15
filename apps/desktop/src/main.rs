@@ -9,7 +9,7 @@
 // No console window behind the app on Windows.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-mod front;
+use snob_desktop::front;
 
 use gpui_kit::*;
 use snob_core::model::printable;
