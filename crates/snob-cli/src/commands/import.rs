@@ -549,6 +549,9 @@ fn hrefs_in(html: &str) -> impl Iterator<Item = &str> {
     })
 }
 
+/// The longest entity read, `&#x10FFFF;`, with room to spare.
+const MAX_ENTITY_BYTES: usize = 12;
+
 /// The five named entities and the numeric ones. That is the whole of what
 /// the export writes into an attribute — `&amp;` in an address, `&#064;` for
 /// an at sign — and anything else is left as it came.
@@ -561,31 +564,32 @@ fn decode_entities(text: &str) -> String {
     while let Some(at) = rest.find('&') {
         out.push_str(&rest[..at]);
         rest = &rest[at..];
-        let Some(end) = rest.find(';') else {
-            out.push_str(rest);
-            return out;
-        };
-        let entity = &rest[1..end];
-        let decoded = match entity {
+        // Looked for close by: a run of ampersands with no semicolon is not
+        // searched to the end of the text once for each of them.
+        let end = rest
+            .bytes()
+            .take(MAX_ENTITY_BYTES)
+            .position(|byte| byte == b';');
+        let decoded = end.and_then(|end| match &rest[1..end] {
             "amp" => Some('&'),
             "lt" => Some('<'),
             "gt" => Some('>'),
             "quot" => Some('"'),
             "apos" => Some('\''),
-            _ => entity.strip_prefix('#').and_then(|number| {
+            entity => entity.strip_prefix('#').and_then(|number| {
                 let code = match number.strip_prefix(['x', 'X']) {
                     Some(hex) => u32::from_str_radix(hex, 16).ok(),
                     None => number.parse().ok(),
                 };
                 code.and_then(char::from_u32)
             }),
-        };
-        match decoded {
-            Some(c) => {
+        });
+        match (decoded, end) {
+            (Some(c), Some(end)) => {
                 out.push(c);
                 rest = &rest[end + 1..];
             }
-            None => {
+            _ => {
                 out.push('&');
                 rest = &rest[1..];
             }
@@ -899,6 +903,28 @@ mod tests {
                 "{href}"
             );
         }
+    }
+
+    /// A file made to be slow: each ampersand of an address used to be
+    /// searched to the address's end for its semicolon, which for an address
+    /// of megabytes of them is hours. Bounded, it is read in one pass and
+    /// comes out as it went in.
+    #[test]
+    fn an_address_of_open_entities_is_read_in_one_pass() {
+        let ampersands = "&".repeat(2_000_000);
+        let began = std::time::Instant::now();
+        let decoded = decode_entities(&format!("{ampersands};"));
+        assert_eq!(decoded.len(), 2_000_001);
+        assert!(decoded.ends_with("&;"));
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(30),
+            "{:?}",
+            began.elapsed()
+        );
+        // Multi-byte text right after the ampersand: the bound cuts no
+        // character in half.
+        assert_eq!(decode_entities("&ééééééééé;"), "&ééééééééé;");
+        assert_eq!(decode_entities("&#x10FFFF;"), "\u{10FFFF}");
     }
 
     #[test]
