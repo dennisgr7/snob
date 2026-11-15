@@ -249,7 +249,7 @@ pub async fn save_story(
     dir: &Path,
 ) -> Result<Saved> {
     let stem = format!("{}-{number}", printable(stem_base));
-    let url = items[number - 1].url.as_deref();
+    let url = url_of(items, number);
     save_named(
         client,
         &stem,
@@ -259,6 +259,12 @@ pub async fn save_story(
         dir,
     )
     .await
+}
+
+/// Where story `number` of `items` is, counted from one; a number that is
+/// none of them has no address, and is refused as a story with no file.
+fn url_of(items: &[Story], number: usize) -> Option<&str> {
+    items.get(number.checked_sub(1)?)?.url.as_deref()
 }
 
 /// [`save_story`] for any file of the CDN: `url` saved into `dir` as
@@ -349,7 +355,7 @@ pub async fn download_many(
         .map(|&number| Named {
             number,
             stem: format!("{}-{number}", printable(&stem_base)),
-            url: items[number - 1].url.clone(),
+            url: url_of(&items, number).map(str::to_string),
             what: format!("story {number}"),
             cap: MAX_STORY_BYTES,
             best: None,
@@ -418,6 +424,9 @@ pub(crate) async fn save_file_saying(
     file: &Named,
     dir: &Path,
 ) -> Result<(Saved, Option<String>)> {
+    // Before a path is made of it, as `save_named` asks: a video's tracks
+    // are looked for and fetched under the stem first.
+    files::usable_stem(&file.stem)?;
     let (best, mut said) = joinable(file);
     if let Some(best) = best {
         if let Some(existing) = already_saved(dir, &file.stem) {
@@ -515,6 +524,7 @@ async fn joined(
     ffmpeg: Option<&Ffmpeg>,
     dir: &Path,
 ) -> Result<PathBuf> {
+    files::usable_stem(stem)?;
     let pid = std::process::id();
     let video = dir.join(format!("{stem}.{pid}.v.part"));
     let audio = dir.join(format!("{stem}.{pid}.a.part"));
@@ -833,6 +843,70 @@ mod tests {
             "something was made beside the directory: {left:?}"
         );
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    /// The same for a video saved from its best tracks, which are looked for
+    /// and fetched under the stem before the one file is: an earlier copy
+    /// outside the directory was handed back as saved, and the tracks'
+    /// scratch files were made there.
+    #[tokio::test]
+    async fn a_videos_tracks_are_not_fetched_under_a_stem_that_is_no_file_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("downloads");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(tmp.path().join("escaped-1.mp4"), b"theirs").unwrap();
+
+        let session = snob_core::session::Session::from_sessionid(
+            "42%3Aabc%3A1",
+            "Mozilla/5.0",
+            snob_core::session::SessionOrigin::Paste,
+        )
+        .unwrap();
+        let client = IgClient::new(session, snob_ig::pace::Pacer::unlimited()).unwrap();
+        // No host of the CDN's, so nothing is sent whatever is tried.
+        let silent = Best {
+            video: track("https://cdn.invalid/v", None),
+            audio: None,
+        };
+        let named = Named {
+            stem: "../escaped-1".into(),
+            url: None,
+            ..file(Some(silent.clone()), false)
+        };
+
+        let saved = save_file_saying(&client, &named, &dir).await;
+        let error = saved.err().expect("a stem with a separator was used");
+        assert!(
+            error.to_string().contains("cannot be used as a file name"),
+            "{error}"
+        );
+        let fetched = joined(&client, &named.stem, &silent, None, &dir).await;
+        let error = fetched.expect_err("the tracks were fetched under it");
+        assert!(
+            error.to_string().contains("cannot be used as a file name"),
+            "{error}"
+        );
+
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 2);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    /// A story or an item named by a number the listing does not hold is
+    /// one with no file, not an index past the end.
+    #[test]
+    fn a_number_past_the_listing_names_no_file() {
+        let story = Story {
+            kind: Kind::Photo,
+            taken_at: Epoch::default(),
+            expiring_at: None,
+            url: Some("https://x.cdninstagram.com/s.jpg".into()),
+            mentions: Vec::new(),
+            thumb: None,
+        };
+        let items = [story];
+        assert_eq!(url_of(&items, 1), Some("https://x.cdninstagram.com/s.jpg"));
+        assert_eq!(url_of(&items, 0), None);
+        assert_eq!(url_of(&items, 2), None);
     }
 
     /// A push-back is not one file that failed: a loop that collects its
