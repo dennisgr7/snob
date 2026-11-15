@@ -1,6 +1,6 @@
 //! A login, from a session in hand to an account commands act as, against the
 //! fake Instagram: what a program is handed back, and what a login that did
-//! not happen leaves behind.
+//! not happen leaves behind. And the sign-out that undoes one.
 //!
 //! No browser is started: the browser logins here are handed their cookies
 //! by the test, in place of a window.
@@ -11,6 +11,7 @@ use std::sync::OnceLock;
 
 use snob_core::Pk;
 use snob_engine::login::{self, Agent, ByBrowser, Check, Failure, Method, Opened};
+use snob_engine::logout::{self, Who};
 use snob_engine::sandbox::Sandbox;
 use snob_engine::{browser, cdp};
 use snob_fake_ig::world::{self, World};
@@ -302,4 +303,78 @@ async fn a_window_closed_before_a_login_is_an_error_a_program_can_tell() {
 
     assert_eq!(login::failure_of(&error), Failure::WindowClosed);
     assert!(!opened_at.expect("the browser was opened").exists());
+}
+
+/// Two accounts signed in, each with a browser profile of its own.
+async fn two_signed_in(sandbox: &Sandbox, tag: &str) {
+    for pk in [world::ME, world::SOMEONE] {
+        paste(sandbox, &sessionid(pk, tag)).await.unwrap();
+        std::fs::create_dir_all(sandbox.paths.browser_profile_for(Pk::new(pk))).unwrap();
+    }
+}
+
+async fn signed_out(sandbox: &Sandbox, who: &Who) -> logout::Left {
+    let (stopping, settled) = snob_engine::jobs::stop_every_job(who.accounts(&sandbox.paths))
+        .await
+        .unwrap();
+    assert!(settled, "there is no job to wait for");
+    logout::sign_out(&sandbox.secrets(), &sandbox.paths, who, &stopping).await
+}
+
+#[tokio::test]
+async fn signing_one_account_out_takes_its_session_and_profile_and_leaves_the_other() {
+    let (_root, sandbox) = sandbox();
+    two_signed_in(&sandbox, "one-leaves").await;
+
+    let who = Who::of(&sandbox.paths, Some(Pk::new(world::ME)), false);
+    assert_eq!(who.leaving, [Pk::new(world::ME)]);
+    assert!(!who.sweep, "the other account's profile is kept");
+    let left = signed_out(&sandbox, &who).await;
+
+    assert!(left.had_session);
+    assert!(left.sessions.is_ok());
+    assert!(left.profiles_deleted);
+    assert!(left.profile_failure.is_none());
+    assert!(stored_session(&sandbox, world::ME).is_none());
+    assert!(
+        !sandbox
+            .paths
+            .browser_profile_for(Pk::new(world::ME))
+            .exists()
+    );
+    assert!(stored_session(&sandbox, world::SOMEONE).is_some());
+    assert!(
+        sandbox
+            .paths
+            .browser_profile_for(Pk::new(world::SOMEONE))
+            .is_dir()
+    );
+}
+
+#[tokio::test]
+async fn signing_out_with_no_account_named_takes_every_one() {
+    let (_root, sandbox) = sandbox();
+    two_signed_in(&sandbox, "all-leave").await;
+
+    let who = Who::of(&sandbox.paths, None, false);
+    assert_eq!(who.leaving.len(), 2);
+    assert!(who.sweep);
+    let left = signed_out(&sandbox, &who).await;
+
+    assert!(left.had_session && left.sessions.is_ok() && left.profiles_deleted);
+    for pk in [world::ME, world::SOMEONE] {
+        assert!(stored_session(&sandbox, pk).is_none());
+        assert!(!sandbox.paths.browser_profile_for(Pk::new(pk)).exists());
+    }
+}
+
+#[tokio::test]
+async fn signing_out_where_nothing_is_stored_says_there_was_no_session() {
+    let (_root, sandbox) = sandbox();
+
+    let left = signed_out(&sandbox, &Who::of(&sandbox.paths, None, true)).await;
+
+    assert!(!left.had_session);
+    assert!(left.sessions.is_ok());
+    assert!(!left.profiles_deleted);
 }

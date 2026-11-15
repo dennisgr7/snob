@@ -21,6 +21,7 @@ pub mod host;
 pub mod interrupt;
 pub mod jobs;
 pub mod login;
+pub mod logout;
 pub mod media;
 pub mod owner;
 pub mod parent;
