@@ -44,6 +44,12 @@ pub fn contrast(one: Rgb, other: Rgb) -> f64 {
     (lighter + 0.05) / (darker + 0.05)
 }
 
+/// The least contrast between the panel and the frame where nothing but
+/// their colors sets them apart. No guideline asks for one; 1.07:1 (light)
+/// and 1.15:1 (dark) were reported as one gray on a poorly calibrated
+/// monitor, 1.16:1 and 1.26:1 are what replaced them.
+pub const PANEL_FROM_FRAME: f64 = 1.15;
+
 /// The brand's pink, the same in both themes.
 pub const PINK: Rgb = Rgb::hex(0xf472b6);
 
@@ -59,7 +65,10 @@ pub enum Scheme {
 pub struct Palette {
     /// The content panel.
     pub panel: Rgb,
-    /// The frame that holds the panel, the top band included.
+    /// The frame that holds the panel, the top band included. **Told apart
+    /// from the panel by its color alone** in the usual looks
+    /// ([`PANEL_FROM_FRAME`]), and by a line in the text's color where the
+    /// system asks for more contrast.
     pub frame: Rgb,
     pub text: Rgb,
     pub secondary: Rgb,
@@ -91,7 +100,7 @@ impl Palette {
         match (scheme, high_contrast) {
             (Scheme::Light, false) => Self {
                 panel: Rgb::hex(0xffffff),
-                frame: Rgb::hex(0xf7f7f7),
+                frame: Rgb::hex(0xeeeeee),
                 text: Rgb::hex(0x111111),
                 secondary: Rgb::hex(0x52525b),
                 line: Rgb::hex(0xe4e4e7),
@@ -107,7 +116,7 @@ impl Palette {
             },
             (Scheme::Dark, false) => Self {
                 panel: Rgb::hex(0x000000),
-                frame: Rgb::hex(0x12151a),
+                frame: Rgb::hex(0x1a1e24),
                 text: Rgb::hex(0xe6e8ec),
                 secondary: Rgb::hex(0x9aa1ab),
                 line: Rgb::hex(0x23272f),
@@ -269,6 +278,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_panel_stands_apart_from_the_frame_in_every_look() {
+        for (name, p) in every() {
+            let apart = contrast(p.panel, p.frame);
+            if p.panel == p.frame {
+                // More contrast: the panel's outline is a line, held to what
+                // a mark needs.
+                let line = contrast(p.line, p.panel);
+                assert!(line >= MARK, "{name}: the panel's outline is {line:.2}:1");
+            } else {
+                assert!(
+                    apart >= PANEL_FROM_FRAME,
+                    "{name}: the panel is {apart:.3}:1 from the frame"
+                );
+            }
+        }
+    }
+
     /// Whichever of two colors stands out more from `on`.
     fn best_of(one: Rgb, other: Rgb, on: Rgb) -> Rgb {
         if contrast(one, on) >= contrast(other, on) {
@@ -303,12 +330,12 @@ mod tests {
                 light.secondary,
                 light.line
             ],
-            [0xffffff, 0xf7f7f7, 0x111111, 0x52525b, 0xe4e4e7].map(Rgb::hex)
+            [0xffffff, 0xeeeeee, 0x111111, 0x52525b, 0xe4e4e7].map(Rgb::hex)
         );
         let dark = Palette::of(Scheme::Dark, false);
         assert_eq!(
             [dark.panel, dark.frame, dark.text, dark.secondary, dark.line],
-            [0x000000, 0x12151a, 0xe6e8ec, 0x9aa1ab, 0x23272f].map(Rgb::hex)
+            [0x000000, 0x1a1e24, 0xe6e8ec, 0x9aa1ab, 0x23272f].map(Rgb::hex)
         );
         for palette in [light, dark] {
             assert_eq!(palette.accent, PINK);
