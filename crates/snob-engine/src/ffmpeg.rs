@@ -106,9 +106,14 @@ fn on_path(path: &std::ffi::OsStr) -> Option<PathBuf> {
 
 /// Runs `command` to its end, stopping it on `cancel` or past `within`.
 fn run(mut command: Command, cancel: &CancelToken, within: Duration) -> Result<()> {
-    let mut child = command
-        .spawn()
-        .map_err(|e| anyhow!("ffmpeg would not start: {e}"))?;
+    // One start at a time with the browsers' (`pipe`): a command that runs
+    // its own browser may be starting it, and ffmpeg must inherit no end of
+    // its pipe.
+    let spawned = {
+        let _starting = crate::pipe::one_start_at_a_time();
+        command.spawn()
+    };
+    let mut child = spawned.map_err(|e| anyhow!("ffmpeg would not start: {e}"))?;
     // Read on a thread of its own, so a child that says a lot never stops on
     // a full pipe; what is past the first few kilobytes is read and dropped.
     let said = child.stderr.take().map(|stderr| {
