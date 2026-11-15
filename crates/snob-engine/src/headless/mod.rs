@@ -782,6 +782,12 @@ impl Headless {
             return Err(PageError::NotAllowed(what));
         }
         let origin = on_the_site(&call.origin)?;
+        // The origin alone from here on: every address the call becomes is
+        // made from it, and a path or a query handed in with it is dropped.
+        let call = Call {
+            origin: origin.clone(),
+            ..call
+        };
         self.on_ready_tab(session, &origin, async |live, _| {
             let told = answer_on(live, session, &call).await;
             // Whatever failed once a push-back was heard, the push-back is
