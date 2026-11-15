@@ -86,6 +86,10 @@ pub struct Prefs {
     /// Instagram or by signing in.
     #[serde(default)]
     pub checked: Vec<Checked>,
+    /// The browser the last pasted session was said to come from: the one
+    /// offered first the next time.
+    #[serde(default)]
+    pub browser: Option<String>,
 }
 
 /// An account's session, found to work at a moment.
@@ -216,6 +220,7 @@ mod tests {
                 pk: 42.into(),
                 at: Epoch::new(1_790_000_000),
             }],
+            browser: Some("Edge".to_string()),
         };
         prefs.save(&paths);
         assert_eq!(Prefs::load(&paths), prefs);

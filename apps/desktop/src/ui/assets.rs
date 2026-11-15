@@ -42,6 +42,21 @@ icons! {
     STEP_TOOLS = "step-tools.svg";
     STEP_COOKIES = "step-cookies.svg";
     STEP_COPY = "step-copy.svg";
+    BROWSER = "browser.svg";
+    BROWSER_CHROME = "browser-chrome.svg";
+    BROWSER_EDGE = "browser-edge.svg";
+    BROWSER_BRAVE = "browser-brave.svg";
+}
+
+/// The drawing of the browser the engine calls `name`: its own mark, drawn
+/// plain, or a browser like any other.
+pub fn browser(name: &str) -> &'static str {
+    match name {
+        "Chrome" => BROWSER_CHROME,
+        "Edge" => BROWSER_EDGE,
+        "Brave" => BROWSER_BRAVE,
+        _ => BROWSER,
+    }
 }
 
 /// What GPUI loads a drawing from.
@@ -70,7 +85,7 @@ mod tests {
 
     #[test]
     fn every_drawing_named_is_built_in_and_is_a_drawing() {
-        assert_eq!(ALL.len(), 22);
+        assert_eq!(ALL.len(), 26);
         for (name, bytes) in ALL {
             let loaded = Assets.load(name).unwrap().expect("built in");
             assert_eq!(&*loaded, *bytes);

@@ -221,6 +221,8 @@ fn main() -> anyhow::Result<()> {
     let (_notices, snob_found) = front::hand_over();
     tracing::info!(about = about(), testing, snob_found, "the app started");
 
+    #[cfg(feature = "testing")]
+    let listed = value_of(&args, "--browsers").and_then(|count| count.parse().ok());
     let simulated = simulated(&args);
     let reopen: Rc<RefCell<Option<Opens>>> = Rc::default();
     let app = gpui_kit::application().with_assets(Assets);
@@ -261,6 +263,11 @@ fn main() -> anyhow::Result<()> {
             (detail, files),
             about(),
         );
+        #[cfg(feature = "testing")]
+        let backend = match listed {
+            Some(count) => backend.listing_browsers(count),
+            None => backend,
+        };
         let backend = Arc::new(backend);
         let open = {
             let paths = paths.clone();

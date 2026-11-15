@@ -5,7 +5,7 @@
 //! never told to a screen reader, never logged, and gone from the field as
 //! soon as it is handed to the engine.
 
-use gpui_kit::base::TestSupportExt as _;
+use gpui_kit::base::{Button, TestSupportExt as _};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Input, InputContentType};
 use gpui_kit::prelude::*;
@@ -104,6 +104,115 @@ fn tutorial(look: &Look) -> Div {
         )
 }
 
+/// How tall a browser's row is under the field, at the default text size.
+const BROWSER_ROW: f32 = 34.0;
+
+/// Under the field and joined to it, as if it came out from behind it: the
+/// browser the session is said to come from, which its requests are sent as.
+/// One found is said; several are chosen among; none is said too.
+fn browsers(
+    found: &[String],
+    chosen: usize,
+    choosing: bool,
+    enabled: bool,
+    look: &Look,
+    cx: &mut Context<Shell>,
+) -> Div {
+    let palette = look.palette;
+    let strip = div()
+        .mt(px(-shape::CONTROL_RADIUS))
+        .pt(px(shape::CONTROL_RADIUS))
+        .rounded_b(px(shape::CONTROL_RADIUS))
+        .border_1()
+        .border_color(color(palette.control_line))
+        .bg(color(palette.frame))
+        .flex()
+        .flex_col()
+        .text_size(sp(13.));
+    let said = |text: String, ink| {
+        div()
+            .id("paste-browser")
+            .test_support()
+            .role(Role::Label)
+            .aria_label(text.clone())
+            .aria_value(text)
+            .h(sp(BROWSER_ROW))
+            .px(sp(12.))
+            .flex()
+            .items_center()
+            .gap(sp(8.))
+            .text_color(color(ink))
+    };
+    let mark = |name: &str, ink| icon(assets::browser(name), 16.).text_color(color(ink));
+
+    let Some(name) = found.get(chosen).or_else(|| found.first()) else {
+        let none = look.tr("paste-browser-none");
+        return strip.child(said(none.clone(), palette.error).child(none));
+    };
+    if found.len() == 1 {
+        let one = look.tr_with("paste-browser-one", &[("browser", name)]);
+        return strip.child(
+            said(one.clone(), palette.secondary)
+                .child(mark(name, palette.secondary))
+                .child(one),
+        );
+    }
+
+    let choose = look.tr("paste-browser-choose");
+    let row = |id: gpui_kit::ElementId| {
+        Button::new(id)
+            .w_full()
+            .h(sp(BROWSER_ROW))
+            .px(sp(12.))
+            .gap(sp(8.))
+            .justify_start()
+            .text_size(sp(13.))
+            .text_color(color(palette.text))
+            .hover(move |style| style.bg(color(palette.panel)))
+            .focus_visible(parts::focus_ring(&palette))
+            .cursor_pointer()
+    };
+    strip
+        .child(
+            row("paste-browser".into())
+                .role(Role::ComboBox)
+                .accessibility_label(format!("{choose}: {name}"))
+                .aria_expanded(choosing)
+                .disabled(!enabled)
+                .rounded_b(px(shape::CONTROL_RADIUS))
+                .child(mark(name, palette.text))
+                .child(name.clone())
+                .child(div().flex_1())
+                .child(icon(assets::CHEVRON, 14.).text_color(color(palette.secondary)))
+                .on_click(cx.listener(|shell, _, _, cx| shell.toggle_the_browsers(cx))),
+        )
+        .when(choosing, |strip| {
+            strip.child(
+                div()
+                    .id("paste-browsers")
+                    .test_support()
+                    .role(Role::ListBox)
+                    .aria_label(choose)
+                    .flex()
+                    .flex_col()
+                    .border_t_1()
+                    .border_color(color(palette.line))
+                    .children(found.iter().enumerate().map(|(at, name)| {
+                        row(("paste-browser-option", at).into())
+                            .role(Role::ListBoxOption)
+                            .accessibility_label(name.clone())
+                            .aria_selected(at == chosen)
+                            .when(at == chosen, |row| row.font_weight(FontWeight::MEDIUM))
+                            .child(mark(name, palette.text))
+                            .child(name.clone())
+                            .on_click(cx.listener(move |shell, _, _, cx| {
+                                shell.choose_the_browser(at, cx);
+                            }))
+                    })),
+            )
+        })
+}
+
 pub fn render(
     shell: &mut Shell,
     phase: Phase,
@@ -117,6 +226,7 @@ pub fn render(
         return div().into_any_element();
     };
     let (revealed, judged, checking) = (form.revealed, form.judged, form.checking);
+    let (found, chosen, choosing) = (form.browsers.clone(), form.browser, form.choosing);
     let valid = judged == Some(Field::Valid);
     let invalid = judged == Some(Field::Invalid);
     let field = form.input.clone();
@@ -128,103 +238,114 @@ pub fn render(
     };
     let pasted = cx.entity().downgrade();
 
-    let entry = div()
-        .flex_1()
-        .min_w(sp(300.))
-        .max_w(sp(420.))
-        .flex()
-        .flex_col()
-        .gap(sp(10.))
-        .child(
-            div()
-                .font_family(MONO)
-                .font_weight(FontWeight::MEDIUM)
-                .text_size(sp(13.))
-                .text_color(color(palette.text))
-                .child(parts::said("paste-field-label", look.tr("paste-field"))),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(sp(8.))
-                .child(
-                    div().flex_1().min_w_0().child(
-                        Input::new(&field)
-                            .id("session-id")
-                            .aria_label(look.tr("paste-field"))
-                            // What a password is to a screen reader: said to
-                            // be there, never read out.
-                            .content_type(InputContentType::Password)
-                            .disabled(checking)
-                            .large()
-                            .on_paste(move |_, _, cx| {
-                                pasted
-                                    .update(cx, |shell, _| shell.pasted_into_the_field())
-                                    .ok();
-                                false
-                            }),
-                    ),
-                )
-                .child(
-                    parts::icon_button("paste-reveal", look.tr(reveal), eye, !checking, &look)
-                        .on_click(cx.listener(|shell, _, window, cx| shell.reveal(window, cx))),
-                )
-                .child(
-                    parts::button(
-                        "paste-paste",
-                        look.tr("paste-paste"),
-                        Kind::Secondary,
-                        !checking,
-                        &look,
-                    )
-                    .h(sp(parts::FIELD_HEIGHT))
-                    .px(sp(14.))
-                    .on_click(cx.listener(|shell, _, window, cx| {
-                        shell.paste_from_the_clipboard(window, cx);
-                    })),
-                ),
-        )
-        // What is wrong with what is in the field, said under it and to a
-        // screen reader when it is judged.
-        .child(
-            div()
-                .min_h(sp(20.))
-                .flex()
-                .items_center()
-                .gap(sp(6.))
-                .text_size(sp(13.))
-                .text_color(color(palette.error))
-                .when(invalid, |hint| {
-                    hint.child(icon(assets::ERROR, 14.).text_color(color(palette.error)))
-                        .child(parts::said("paste-hint", look.tr("paste-hint-invalid")))
-                }),
-        )
-        .child(
-            parts::button(
-                "paste-submit",
-                look.tr(if checking {
-                    "paste-checking"
-                } else {
-                    "paste-submit"
-                }),
-                Kind::Primary,
-                valid && !checking,
-                &look,
+    let entry =
+        div()
+            .flex_1()
+            .min_w(sp(300.))
+            .max_w(sp(420.))
+            .flex()
+            .flex_col()
+            .gap(sp(10.))
+            .child(
+                div()
+                    .font_family(MONO)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_size(sp(13.))
+                    .text_color(color(palette.text))
+                    .child(parts::said("paste-field-label", look.tr("paste-field"))),
             )
-            .when(checking, |button| {
-                button.child(parts::ring(16., &look, window))
-            })
-            .on_click(cx.listener(|shell, _, window, cx| shell.submit_the_paste(window, cx))),
-        )
-        .child(div().flex().child(
-            parts::button("back", look.tr("back"), Kind::Secondary, true, &look).on_click(
-                cx.listener(|shell, _, window, cx| {
-                    shell.leave_the_sign_in();
-                    shell.happened(Event::Back, window, cx);
-                }),
-            ),
-        ));
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(sp(8.))
+                    .child(
+                        // Bottom to top, so the field is drawn over the strip
+                        // that comes out from under it.
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col_reverse()
+                            .children(found.map(|found| {
+                                browsers(&found, chosen, choosing, !checking, &look, cx)
+                            }))
+                            .child(
+                                Input::new(&field)
+                                    .id("session-id")
+                                    .aria_label(look.tr("paste-field"))
+                                    // What a password is to a screen reader: said
+                                    // to be there, never read out.
+                                    .content_type(InputContentType::Password)
+                                    .disabled(checking)
+                                    .large()
+                                    .on_paste(move |_, _, cx| {
+                                        pasted
+                                            .update(cx, |shell, _| shell.pasted_into_the_field())
+                                            .ok();
+                                        false
+                                    }),
+                            ),
+                    )
+                    .child(
+                        parts::icon_button("paste-reveal", look.tr(reveal), eye, !checking, &look)
+                            .on_click(cx.listener(|shell, _, window, cx| shell.reveal(window, cx))),
+                    )
+                    .child(
+                        parts::button(
+                            "paste-paste",
+                            look.tr("paste-paste"),
+                            Kind::Secondary,
+                            !checking,
+                            &look,
+                        )
+                        .h(sp(parts::FIELD_HEIGHT))
+                        .px(sp(14.))
+                        .on_click(cx.listener(|shell, _, window, cx| {
+                            shell.paste_from_the_clipboard(window, cx);
+                        })),
+                    ),
+            )
+            // What is wrong with what is in the field, said under it and to a
+            // screen reader when it is judged.
+            .child(
+                div()
+                    .min_h(sp(20.))
+                    .flex()
+                    .items_center()
+                    .gap(sp(6.))
+                    .text_size(sp(13.))
+                    .text_color(color(palette.error))
+                    .when(invalid, |hint| {
+                        hint.child(icon(assets::ERROR, 14.).text_color(color(palette.error)))
+                            .child(parts::said("paste-hint", look.tr("paste-hint-invalid")))
+                    }),
+            )
+            .child(
+                parts::button(
+                    "paste-submit",
+                    look.tr(if checking {
+                        "paste-checking"
+                    } else {
+                        "paste-submit"
+                    }),
+                    Kind::Primary,
+                    valid && !checking,
+                    &look,
+                )
+                .when(checking, |button| {
+                    button.child(parts::ring(16., &look, window))
+                })
+                .on_click(cx.listener(|shell, _, window, cx| shell.submit_the_paste(window, cx))),
+            )
+            .child(div().flex().child(
+                parts::button("back", look.tr("back"), Kind::Secondary, true, &look).on_click(
+                    cx.listener(|shell, _, window, cx| {
+                        shell.leave_the_sign_in();
+                        shell.happened(Event::Back, window, cx);
+                    }),
+                ),
+            ));
 
     div()
         .flex_1()

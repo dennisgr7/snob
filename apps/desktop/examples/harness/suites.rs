@@ -202,7 +202,7 @@ fn logic() -> Vec<Outcome> {
 
 /// The screens a picture is taken of and an audit made of, and how each is
 /// reached from the screen before it.
-const SCREENS: [&str; 9] = [
+const SCREENS: [&str; 10] = [
     "start",
     "paste",
     "failed",
@@ -212,6 +212,7 @@ const SCREENS: [&str; 9] = [
     "sign-out",
     "settings",
     "palette",
+    "paste-browsers",
 ];
 
 /// Takes the app from one of [`SCREENS`] to the next.
@@ -271,6 +272,23 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
                     "ctrl-k"
                 })
                 .await?;
+        }
+        "paste-browsers" => {
+            // The same computer with three browsers listed, and the list of
+            // them open under the field.
+            let start = Start {
+                browsers: 3,
+                ..stage.start.clone()
+            };
+            let app = stage.open_with(start).await?;
+            app.until_screen("home").await?;
+            app.click("account").await?;
+            app.click("menu-switch").await?;
+            app.click("menu-add").await?;
+            app.until_screen("start").await?;
+            app.click("start-paste").await?;
+            app.until_screen("paste").await?;
+            app.click("paste-browser").await?;
         }
         other => bail!("no screen is called {other}"),
     }
@@ -396,7 +414,9 @@ async fn visual(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
 fn acted_on(role: Option<&str>) -> bool {
     matches!(
         role,
-        Some("Button" | "MenuItem" | "Switch" | "TextInput" | "PasswordInput" | "Link")
+        Some(
+            "Button" | "MenuItem" | "Switch" | "TextInput" | "PasswordInput" | "Link" | "ComboBox"
+        )
     )
 }
 

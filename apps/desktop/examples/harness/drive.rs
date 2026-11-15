@@ -24,6 +24,9 @@ pub struct Start {
     pub reduce_motion: bool,
     pub text_scale: Option<f32>,
     pub locale: Option<String>,
+    /// How many browsers the app lists, whatever this machine has: one,
+    /// unless a scenario is about choosing among several.
+    pub browsers: usize,
 }
 
 /// The app, running.
@@ -46,6 +49,9 @@ fn arguments(root: &Path, start: &Start) -> Vec<String> {
         "--test-root".to_string(),
         root.display().to_string(),
         "--simulate-system".to_string(),
+        // A picture is of the same browsers, whichever machine takes it.
+        "--browsers".to_string(),
+        start.browsers.max(1).to_string(),
     ];
     if let Some(instagram) = &start.instagram {
         args.extend(["--instagram".to_string(), instagram.clone()]);

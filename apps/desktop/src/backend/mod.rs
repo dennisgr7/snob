@@ -52,6 +52,16 @@ pub struct Loaded {
     pub resume: Option<Method>,
 }
 
+/// The browsers a pasted session can be said to come from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Browsers {
+    /// Each one installed that snob can use, by the engine's name for it, in
+    /// its order of preference.
+    pub found: Vec<String>,
+    /// The one chosen the last time, when it is still installed.
+    pub last: Option<String>,
+}
+
 /// How a sign-in ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SignIn {
@@ -73,8 +83,16 @@ pub trait Backend: Send + Sync + 'static {
     /// What is on this computer: read from files alone, nothing sent.
     fn load(&self) -> Answer<Loaded>;
 
-    /// Signs in with a pasted session ID.
-    fn sign_in_with(&self, session_id: Secret) -> Answer<SignIn>;
+    /// The browsers installed that a session can be sent as. Nothing is
+    /// sent: each is asked its version, on this computer.
+    fn browsers(&self) -> Answer<Browsers>;
+
+    /// Signs in with a pasted session ID, as the browser called `browser`:
+    /// the one the session was copied from, **which its requests are sent
+    /// as from then on, that browser's later versions included**
+    /// (`snob_engine::browser::refresh_user_agent`). With none named, as
+    /// the first one found.
+    fn sign_in_with(&self, session_id: Secret, browser: Option<String>) -> Answer<SignIn>;
 
     /// Signs in through a window of snob's own browser, as `renewing` when
     /// that account's session expired. `stop` closes the window and ends it

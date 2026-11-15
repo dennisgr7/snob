@@ -11,7 +11,7 @@ use snob_core::{Epoch, Pk};
 use snob_ig::pace::CancelToken;
 use tokio::sync::{oneshot, watch};
 
-use super::{Account, Answer, Backend, Loaded, SignIn, answered};
+use super::{Account, Answer, Backend, Browsers, Loaded, SignIn, answered};
 use crate::state::flow::{Found, Method, Named, Update};
 use crate::state::prefs::Placement;
 
@@ -46,6 +46,9 @@ struct State {
     crash: Option<String>,
     /// The session ID a paste is expected to carry.
     session_id: String,
+    browsers: Browsers,
+    /// The browser the last paste was said to come from.
+    sent_as: Option<String>,
     sign_in: SignIn,
     update: Update,
     /// The update checks left unanswered, kept so they stay that way.
@@ -93,6 +96,11 @@ impl Scripted {
             session_checks: 0,
             crash: None,
             session_id: "42%3AAbCdEfGhIjKl%3A20".to_string(),
+            browsers: Browsers {
+                found: vec!["Chrome".to_string()],
+                last: None,
+            },
+            sent_as: None,
             sign_in: SignIn::Done(account(42, "me", true)),
             update: Update::None,
             stalled: None,
@@ -115,6 +123,11 @@ impl Scripted {
     /// How many times the session was asked about.
     pub fn session_checks(&self) -> usize {
         self.state().session_checks
+    }
+
+    /// The browser the last paste was said to come from.
+    pub fn sent_as(&self) -> Option<String> {
+        self.state().sent_as.clone()
     }
 
     /// Changes what the backend answers from now on.
@@ -202,6 +215,15 @@ impl Script<'_> {
         self
     }
 
+    /// The browsers found installed, and the one chosen the last time.
+    pub fn browsers(&mut self, found: &[&str], last: Option<&str>) -> &mut Self {
+        self.0.browsers = Browsers {
+            found: found.iter().map(|name| (*name).to_string()).collect(),
+            last: last.map(str::to_string),
+        };
+        self
+    }
+
     /// The next check of the session finds this account's dead.
     pub fn session_dies(&mut self, account: Named) -> &mut Self {
         self.0.dies = Some(account);
@@ -273,8 +295,14 @@ impl Backend for Scripted {
         })
     }
 
-    fn sign_in_with(&self, session_id: Secret) -> Answer<SignIn> {
+    // Not among what was asked, as the session's check is not.
+    fn browsers(&self) -> Answer<Browsers> {
+        answered(self.state().browsers.clone())
+    }
+
+    fn sign_in_with(&self, session_id: Secret, browser: Option<String>) -> Answer<SignIn> {
         let expected = session_id.expose() == self.state().session_id;
+        self.state().sent_as = browser;
         self.answer(Asked::SignInWith { expected }, |state| {
             let outcome = state.sign_in.clone();
             signed_in(state, &outcome);
@@ -411,7 +439,7 @@ mod tests {
             });
         });
         let failed = backend
-            .sign_in_with(Secret::new("not the one".to_string()))
+            .sign_in_with(Secret::new("not the one".to_string()), None)
             .blocking_recv()
             .unwrap();
         assert!(matches!(failed, SignIn::Failed { .. }));
@@ -420,7 +448,7 @@ mod tests {
             script.sign_in(SignIn::Done(account(42, "me", true)));
         });
         let done = backend
-            .sign_in_with(Secret::new("42%3AAbCdEfGhIjKl%3A20".to_string()))
+            .sign_in_with(Secret::new("42%3AAbCdEfGhIjKl%3A20".to_string()), None)
             .blocking_recv()
             .unwrap();
         assert_eq!(done, SignIn::Done(account(42, "me", true)));

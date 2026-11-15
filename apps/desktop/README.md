@@ -34,6 +34,11 @@ cargo harness demo              # the test build, by hand, on a fake Instagram
 - **A view never calls an operating system** (`system/`): it reads `Settings`
   and takes `Event`s from one trait, which GPUI and Windows answer
   (`native.rs`, `windows.rs`) and a test speaks for (`simulated.rs`).
+- **A pasted session is sent as the browser it was copied from**, which the
+  person names under the field when more than one is installed: the engine
+  keeps that name with the session and follows the browser's later versions
+  (`snob_engine::browser::refresh_user_agent`). The marks beside the names
+  are the app's own plain drawings, not the browsers' artwork.
 - **The words are Fluent files** (`locales/en`, `locales/es`), chosen by the
   system's language; a test holds the two to the same messages.
 - **The processes the engine starts are the command line's**
@@ -108,6 +113,7 @@ runners of the command line.
 | The window drawn to a picture | Windows yes; Linux no ("not implemented for this platform"), where the visual suite says so and compares nothing |
 | Nothing drawn at rest | the app asks for no frame at rest, and holds about 80 MiB. **GPUI wakes every window on each refresh on Windows** (its `VSyncProvider` thread), which is the 1 to 2% of one processor a debug build measures there; a release build is not measured yet |
 | Closing the window on macOS leaves the app in the Dock, and a click there opens the window again | **written, never run**: there is no macOS here. Elsewhere closing the window is leaving |
+| The list of browsers under the field | one browser on this machine; the list of several is drawn and audited from a test build told to list three |
 | The app's own update | **none**: there is no package of the app to fetch. The screens for it are tested on the scripted backend |
 | System notifications | shown through GPUI; on macOS only from inside a bundle |
 | `cargo deny` for this workspace, packaging, signing, an installer | none |

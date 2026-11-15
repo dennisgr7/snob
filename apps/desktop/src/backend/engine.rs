@@ -22,7 +22,7 @@ use snob_store::secrets::SecretStore;
 use snob_store::viewer::Card;
 use tokio::sync::watch;
 
-use super::{Account, Answer, Backend, Loaded, SignIn, answered};
+use super::{Account, Answer, Backend, Browsers, Loaded, SignIn, answered};
 use crate::report;
 use crate::runtime::Runtime;
 use crate::state::flow::{Found, Method, Named, Update};
@@ -37,6 +37,10 @@ pub struct Engine {
     files: Arc<log::Files>,
     /// What the system is, for a diagnostic report.
     about: String,
+    /// How many browsers are listed, whichever machine a test's pictures
+    /// are taken on.
+    #[cfg(feature = "testing")]
+    listed: Option<usize>,
 }
 
 impl Engine {
@@ -54,7 +58,19 @@ impl Engine {
             detail: log.0,
             files: log.1,
             about,
+            #[cfg(feature = "testing")]
+            listed: None,
         }
+    }
+
+    /// Lists `count` browsers, whatever is installed: the first ones found,
+    /// then the others snob knows by name. **Only the list**: a session is
+    /// still sent as a browser that is installed, or not at all.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn listing_browsers(mut self, count: usize) -> Self {
+        self.listed = Some(count);
+        self
     }
 }
 
@@ -199,12 +215,45 @@ impl Backend for Engine {
         })
     }
 
-    fn sign_in_with(&self, session_id: Secret) -> Answer<SignIn> {
+    fn browsers(&self) -> Answer<Browsers> {
+        let paths = self.paths.clone();
+        #[cfg(feature = "testing")]
+        let listed = self.listed;
+        #[cfg(not(feature = "testing"))]
+        let listed = None::<usize>;
+        self.runtime.run(move || async move {
+            let mut found: Vec<String> = Vec::new();
+            for browser in browser::detect_all() {
+                if !found.iter().any(|name| name == browser.name) {
+                    found.push(browser.name.to_string());
+                }
+            }
+            if let Some(count) = listed {
+                found.truncate(count);
+                for known in ["Chrome", "Edge", "Brave"] {
+                    if found.len() < count && !found.iter().any(|name| name == known) {
+                        found.push(known.to_string());
+                    }
+                }
+            }
+            let last = Prefs::load(&paths)
+                .browser
+                .filter(|last| found.contains(last));
+            Browsers { found, last }
+        })
+    }
+
+    fn sign_in_with(&self, session_id: Secret, browser: Option<String>) -> Answer<SignIn> {
         let (paths, secrets) = (self.paths.clone(), self.secrets.clone());
         self.runtime.run(move || async move {
             tracing::info!(method = "paste", "signing in");
-            // The session is sent as the browser it is checked from.
-            let Some(browser) = browser::detect() else {
+            // The session is sent as the browser it was copied from, which
+            // the engine keeps following as that browser updates.
+            let detected = match &browser {
+                Some(name) => browser::detect_named(name),
+                None => browser::detect(),
+            };
+            let Some(browser) = detected else {
                 return failed(&paths, None, &anyhow::Error::new(login::NoBrowser));
             };
             let stored = match writable(&secrets) {
@@ -222,7 +271,12 @@ impl Backend for Engine {
                 Err(e) => Err(e),
             };
             match stored {
-                Ok(stored) => done(&paths, &secrets, stored.viewer).await,
+                Ok(stored) => {
+                    Prefs::change(&paths, |prefs| {
+                        prefs.browser = Some(browser.name.to_string());
+                    });
+                    done(&paths, &secrets, stored.viewer).await
+                }
                 Err(e) => {
                     let pk = snob_core::session::Session::from_sessionid(
                         session_id.expose(),

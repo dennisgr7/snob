@@ -548,3 +548,107 @@ async fn the_paste_screen_says_where_to_find_an_id_in_four_steps(cx: &mut TestAp
         assert_eq!(steps[3].label(), Some("Copy the value of sessionid."));
     });
 }
+
+#[gpui_kit::test]
+async fn one_browser_found_is_said_under_the_field_and_is_what_the_session_is_sent_as(
+    cx: &mut TestAppContext,
+) {
+    let backend = Scripted::with(Vec::new());
+    let app = on_the_paste_screen(cx, backend.clone()).await;
+    cx.run_until_parked();
+
+    app.in_window(cx, |window, _| {
+        let browser = window.find("paste-browser");
+        assert_eq!(browser.role(), Some(Role::Label));
+        assert_eq!(browser.label(), Some("Chrome detected"));
+        assert!(window.try_find("paste-browsers").is_none());
+    });
+
+    app.system.put_on_clipboard(SESSION_ID);
+    app.click(cx, "paste-paste");
+    app.click(cx, "paste-submit");
+    app.until_screen(cx, |screen| matches!(screen, Screen::Welcome(_)))
+        .await;
+    assert_eq!(backend.sent_as().as_deref(), Some("Chrome"));
+}
+
+#[gpui_kit::test]
+async fn several_browsers_are_chosen_among_starting_from_the_one_chosen_last(
+    cx: &mut TestAppContext,
+) {
+    let backend = Scripted::with(Vec::new());
+    backend.script(|script| {
+        script.browsers(&["Chrome", "Edge", "Brave"], Some("Edge"));
+    });
+    let app = on_the_paste_screen(cx, backend.clone()).await;
+    cx.run_until_parked();
+
+    app.in_window(cx, |window, _| {
+        let browser = window.find("paste-browser");
+        assert_eq!(browser.role(), Some(Role::ComboBox));
+        assert_eq!(
+            browser.label(),
+            Some("Browser this session comes from: Edge")
+        );
+        assert_eq!(browser.expanded(), Some(false));
+        assert!(window.try_find("paste-browsers").is_none());
+    });
+
+    app.click(cx, "paste-browser");
+    app.in_window(cx, |window, _| {
+        assert_eq!(window.find("paste-browser").expanded(), Some(true));
+        assert_eq!(window.find("paste-browsers").role(), Some(Role::ListBox));
+        for (at, name) in ["Chrome", "Edge", "Brave"].into_iter().enumerate() {
+            let option = window.find(("paste-browser-option", at));
+            assert_eq!(option.role(), Some(Role::ListBoxOption));
+            assert_eq!(option.label(), Some(name));
+            assert_eq!(option.selected(), Some(name == "Edge"));
+        }
+    });
+    // Escape closes the list and nothing else.
+    app.press(cx, "escape");
+    app.in_window(cx, |window, _| {
+        assert!(window.try_find("paste-browsers").is_none());
+    });
+    assert_eq!(
+        app.shell.read_with(cx, |shell, _| shell.shown().clone()),
+        Screen::Paste
+    );
+
+    app.click(cx, "paste-browser");
+    app.in_window(cx, |window, cx| {
+        window.click(("paste-browser-option", 2usize), cx);
+    });
+    app.in_window(cx, |window, _| {
+        assert_eq!(
+            window.find("paste-browser").label(),
+            Some("Browser this session comes from: Brave")
+        );
+        assert!(
+            window.try_find("paste-browsers").is_none(),
+            "chosen and closed"
+        );
+    });
+
+    app.system.put_on_clipboard(SESSION_ID);
+    app.click(cx, "paste-paste");
+    app.click(cx, "paste-submit");
+    app.until_screen(cx, |screen| matches!(screen, Screen::Welcome(_)))
+        .await;
+    assert_eq!(backend.sent_as().as_deref(), Some("Brave"));
+}
+
+#[gpui_kit::test]
+async fn no_browser_found_is_said_under_the_field(cx: &mut TestAppContext) {
+    let backend = Scripted::with(Vec::new());
+    backend.script(|script| {
+        script.browsers(&[], None);
+    });
+    let app = on_the_paste_screen(cx, backend).await;
+    cx.run_until_parked();
+
+    assert_eq!(
+        app.label_of(cx, "paste-browser"),
+        "No browser snob can use was found"
+    );
+}

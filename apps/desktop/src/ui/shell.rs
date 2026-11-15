@@ -73,6 +73,13 @@ pub(crate) struct PasteForm {
     edits: usize,
     /// Whether the change under way is a paste, which is judged at once.
     pasting: bool,
+    /// The browsers the session can be said to come from: not known until
+    /// the backend has looked.
+    pub browsers: Option<Vec<String>>,
+    /// Which of them it is said to come from.
+    pub browser: usize,
+    /// Whether the list of them is open.
+    pub choosing: bool,
     _watching: Subscription,
 }
 
@@ -538,6 +545,8 @@ impl Shell {
     pub(crate) fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.palette.is_some() {
             self.close_the_palette(window, cx);
+        } else if self.paste.as_ref().is_some_and(|form| form.choosing) {
+            self.toggle_the_browsers(cx);
         } else if self.signing_out.is_some() {
             self.keep_signed_in(window, cx);
         } else {
@@ -963,6 +972,24 @@ impl Shell {
                 _ => {}
             },
         );
+        let looking = self.backend.browsers();
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(browsers) = looking.await else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                if let Some(form) = &mut this.paste {
+                    form.browser = browsers
+                        .last
+                        .and_then(|last| browsers.found.iter().position(|name| *name == last))
+                        .unwrap_or(0);
+                    form.browsers = Some(browsers.found);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
         PasteForm {
             input,
             revealed: false,
@@ -970,7 +997,28 @@ impl Shell {
             checking: false,
             edits: 0,
             pasting: false,
+            browsers: None,
+            browser: 0,
+            choosing: false,
             _watching: watching,
+        }
+    }
+
+    /// Opens the list of browsers under the field, or closes it.
+    pub(crate) fn toggle_the_browsers(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = &mut self.paste {
+            form.choosing = !form.choosing;
+            cx.notify();
+        }
+    }
+
+    /// The session is said to come from the browser listed at `at`.
+    pub(crate) fn choose_the_browser(&mut self, at: usize, cx: &mut Context<Self>) {
+        if let Some(form) = &mut self.paste {
+            tracing::info!(action = "choose_browser", "action");
+            form.browser = at;
+            form.choosing = false;
+            cx.notify();
         }
     }
 
@@ -1059,6 +1107,11 @@ impl Shell {
         }
         form.checking = true;
         form.judged = Some(Field::Valid);
+        form.choosing = false;
+        let browser = form
+            .browsers
+            .as_ref()
+            .and_then(|found| found.get(form.browser).cloned());
         let session_id = Secret::new(value.trim().to_string());
         form.input
             .update(cx, |input, cx| input.set_value("", window, cx));
@@ -1066,7 +1119,7 @@ impl Shell {
 
         self.attempt += 1;
         let attempt = self.attempt;
-        let signing_in = self.backend.sign_in_with(session_id);
+        let signing_in = self.backend.sign_in_with(session_id, browser);
         cx.spawn_in(window, async move |this, cx| {
             let outcome = signing_in.await;
             this.update_in(cx, |this, window, cx| {

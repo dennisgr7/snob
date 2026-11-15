@@ -97,7 +97,7 @@ fn session_id(pk: u64, tag: &str) -> String {
 
 fn sign_in(engine: &Engine, session_id: &str) -> SignIn {
     engine
-        .sign_in_with(Secret::new(session_id.to_string()))
+        .sign_in_with(Secret::new(session_id.to_string()), None)
         .blocking_recv()
         .expect("the engine answers")
 }
@@ -307,5 +307,61 @@ fn a_session_is_asked_about_once_a_day_and_one_found_dead_is_asked_back() {
     assert_eq!(
         engine.load().blocking_recv().unwrap().found,
         Found::Expired(account.named)
+    );
+}
+
+#[test]
+fn a_pasted_session_is_kept_as_the_browser_it_was_said_to_come_from() {
+    let Some((_root, sandbox, engine)) = backend() else {
+        return;
+    };
+    let browsers = engine.browsers().blocking_recv().unwrap();
+    assert!(!browsers.found.is_empty(), "one is installed");
+    assert_eq!(browsers.last, None, "none was chosen yet");
+
+    // The last one found: with several installed, not the one preferred.
+    let chosen = browsers.found.last().unwrap().clone();
+    let outcome = engine
+        .sign_in_with(
+            Secret::new(session_id(world::ME, "browser")),
+            Some(chosen.clone()),
+        )
+        .blocking_recv()
+        .unwrap();
+    assert!(matches!(outcome, SignIn::Done(_)), "{outcome:?}");
+
+    // What the engine follows as that browser updates is its name, kept
+    // with the session.
+    let account = sandbox.paths.account(Pk::new(world::ME));
+    let session = sandbox
+        .secrets()
+        .session_of(&account)
+        .load()
+        .unwrap()
+        .expect("a session is stored");
+    assert_eq!(session.browser.as_deref(), Some(chosen.as_str()));
+    assert!(!session.user_agent_pinned);
+    assert_eq!(
+        engine.browsers().blocking_recv().unwrap().last,
+        Some(chosen),
+        "offered first the next time"
+    );
+
+    let outcome = engine
+        .sign_in_with(
+            Secret::new(session_id(world::SOMEONE, "browser")),
+            Some("Netscape".to_string()),
+        )
+        .blocking_recv()
+        .unwrap();
+    assert!(
+        matches!(
+            outcome,
+            SignIn::Failed {
+                why: Failure::NoBrowser,
+                ..
+            }
+        ),
+        "a browser that is not installed is none: {outcome:?}"
     );
 }
