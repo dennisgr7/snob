@@ -621,7 +621,11 @@ pub(super) fn outgoing(
         }
         WebhookFormat::Discord => Outgoing {
             body: json_line(&serde_json::json!({
-                "content": fit(&summary, DISCORD_MOST, chars),
+                // Discord draws `[words](address)` as the words alone, linked:
+                // a display name or a caption written so would put a link to
+                // anywhere in the report under words of its choosing. With the
+                // parenthesis escaped, both are shown as they were written.
+                "content": fit(&summary.replace("](", "]\\("), DISCORD_MOST, chars),
                 "allowed_mentions": { "parse": [] },
             })),
             content_type: crate::watch::webhook::JSON,
@@ -755,6 +759,30 @@ mod tests {
             assert_eq!(made.body, "@everyone <b> & co", "filtered, and plain");
             assert!(made.content_type.starts_with("text/plain"));
         }
+    }
+
+    /// A display name or a caption written as a Discord link is shown as it
+    /// was written, never as a link under words of its author's choosing; the
+    /// other formats, which draw no such link, carry it untouched.
+    #[test]
+    fn a_name_written_as_a_discord_link_is_not_drawn_as_one() {
+        use snob_store::config::WebhookFormat;
+        let summary = "    @someone ([Instagram login](https://elsewhere.test))";
+
+        let discord = outgoing(WebhookFormat::Discord, a_body(), summary);
+        let discord: serde_json::Value = serde_json::from_str(&discord.body).unwrap();
+        assert_eq!(
+            discord["content"],
+            "    @someone ([Instagram login]\\(https://elsewhere.test))"
+        );
+
+        let json = outgoing(WebhookFormat::Json, a_body(), summary);
+        let json: serde_json::Value = serde_json::from_str(&json.body).unwrap();
+        assert_eq!(json["summary"], summary);
+        assert_eq!(
+            outgoing(WebhookFormat::Text, a_body(), summary).body,
+            summary
+        );
     }
 
     /// Past what the service shows, the summary is cut at a line, and says
