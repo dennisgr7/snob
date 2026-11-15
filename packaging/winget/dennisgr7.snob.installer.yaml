@@ -8,13 +8,13 @@ Commands:
 ReleaseDate: 2026-11-08
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/dennisgr7/snob-cli/releases/download/v0.9.0/snob-v0.9.0-x86_64-pc-windows-msvc.zip
+    InstallerUrl: https://github.com/dennisgr7/snob/releases/download/v0.9.0/snob-v0.9.0-x86_64-pc-windows-msvc.zip
     InstallerSha256: B1286AEC5DC55F7C520AB7CE89770644060249B4D1F60A9D519B220C42B54FB3
     NestedInstallerFiles:
       - RelativeFilePath: snob-v0.9.0-x86_64-pc-windows-msvc\snob.exe
         PortableCommandAlias: snob
   - Architecture: arm64
-    InstallerUrl: https://github.com/dennisgr7/snob-cli/releases/download/v0.9.0/snob-v0.9.0-aarch64-pc-windows-msvc.zip
+    InstallerUrl: https://github.com/dennisgr7/snob/releases/download/v0.9.0/snob-v0.9.0-aarch64-pc-windows-msvc.zip
     InstallerSha256: 8E324BD99B33756C405E526F0B442E9177CD8DDA26BDC356D6A41FA5E5FDA254
     NestedInstallerFiles:
       - RelativeFilePath: snob-v0.9.0-aarch64-pc-windows-msvc\snob.exe

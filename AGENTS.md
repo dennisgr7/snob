@@ -708,6 +708,13 @@ runs nothing, takes no permit and is not counted.
   --json`), with `--auto off|notify|download|apply` (default `apply`).
 - **Never** in a sandbox (but a `testing` build with `SNOB_TEST_UPDATE_ORIGIN`),
   with `CI` or `SNOB_NO_UPDATE_CHECK` set, or on a pre-release build. No retry.
+- **An install is updated as the edition it is** (`update/edition.rs`): the
+  app's file beside `snob` is the desktop edition, never a setting. Its two
+  binaries come from one archive, are written whole beside theirs before
+  either is swapped (`apply::replace_all`), the app first and `snob` last.
+  The app counts as a running snob while it is open (`Role::Counted`), so
+  nothing is applied under it. `edition` is in `snob update --status --json`
+  and `snob status --json`.
 
 ## Output contract
 
@@ -855,7 +862,10 @@ Releases: `x86_64-pc-windows-msvc` (`x86-64-v2`, Windows 11 only),
 `aarch64-pc-windows-msvc`, `x86_64-unknown-linux-musl`,
 `aarch64-unknown-linux-musl` (static), `aarch64-apple-darwin`; no Intel macOS.
 The five triples appear in `ci.yml`, `release.yml`, `deny.toml` and
-`packaging/render.sh`: a new target touches all four.
+`packaging/render.sh`: a new target touches all four. The desktop edition
+adds `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` for the app
+alone (`release.yml`'s job `desktop`, `update::edition::APP_TARGET`,
+`install.sh`).
 
 Platform code compiles only on that OS's CI job:
 
@@ -977,9 +987,10 @@ screen is a title: what a scan shows comes next.
 
 **A workspace of its own**, with its own `Cargo.lock`: GPUI brings some 500
 crates and does not build for musl. Build and test it from that directory;
-no line of `ci.yml` builds it, and `packaging/`, `Formula/`, `bucket/` and
-`release.yml` know nothing of it. GPUI comes through `gpui-kit`, pinned
-exactly, everything from crates.io.
+no line of `ci.yml` builds it, and `Formula/`, `bucket/` and WinGet know
+nothing of it. `release.yml` builds it into the desktop edition only once
+its version is the release's ("Release and packaging"). GPUI comes through
+`gpui-kit`, pinned exactly, everything from crates.io.
 
 ### How it is put together
 
@@ -1089,7 +1100,7 @@ pictures, one of the window when it failed, and the app's log.
 | A screen reader's own reading (Narrator, VoiceOver, Orca), a live region heard | not verified: the tree is checked by role and name, not a reader's speech |
 | Windows 11 Snap Layouts over the caption buttons the app draws | yes, when the drag area is a sibling of the buttons |
 | The list of several browsers under the field | drawn and audited from a test build told to list three; one browser on the machine it was written on |
-| The app's own update | **none**: there is no package of the app to fetch. Its screens are tested on the scripted backend |
+| The app's own update | the command line replaces it with itself (the desktop edition, "Updates"), tested in `crates/snob-cli/tests/sandbox.rs` on Unix only; the app's own update screens still ask a backend that answers none, tested on the scripted backend |
 | System notifications | shown through GPUI; on macOS only from inside a bundle |
 | `cargo deny` for this workspace, packaging, signing, an installer | none |
 
@@ -1115,8 +1126,34 @@ a feature names whether or not it is enabled.
    vX.Y.Z" to `main` and cherry-picks it onto `dev`.
 4. `Formula/snob.rb` and `bucket/snob.json` are read straight from this
    repository; `packaging/winget/` goes to `microsoft/winget-pkgs` by hand.
-   `packaging/install.sh` and `install.ps1` install the latest release
-   (`SNOB_VERSION`, `SNOB_INSTALL_DIR`).
+   All three install the cli edition. `packaging/install.sh` and
+   `install.ps1` install the latest release (`SNOB_VERSION`,
+   `SNOB_INSTALL_DIR`, `SNOB_EDITION=desktop|cli`): the desktop edition
+   where `SHA256SUMS` lists it for the machine, else the cli edition, said
+   so. A release up to 0.9.0 is verified as signed in `dennisgr7/snob-cli`,
+   the repository's name then.
+
+**Two editions of one release**, archived by `packaging/package.sh` alone
+(the one definition of what each holds; it rebuilds 0.9.0's archives byte
+for byte):
+
+| Edition | Archive | Holds | Targets |
+|---|---|---|---|
+| desktop | `snob-desktop-v<version>-<target>` | `snob-desktop` and `snob` | the two Windows ones, and Linux as `-gnu` (GPUI needs glibc); no macOS until there is a bundle |
+| cli | `snob-v<version>-<target>`, and the `.deb` | `snob` | the five |
+
+- The cli archive keeps the name every released snob updates from and
+  Homebrew, Scoop and WinGet install from.
+- The desktop edition's `snob` is the file the cli archive for that machine
+  holds, taken out of it, never built twice; on Linux, the static one.
+- **The app ships only when `apps/desktop/Cargo.toml` says the tag's
+  version**; at `0.0.0` job `desktop` is skipped and the release is the cli
+  edition's alone. Any other version is refused by `check` and by
+  `crates/snob-core/tests/layers.rs`.
+- `packaging/docker/Dockerfile` builds the cli edition into an image from a
+  released binary checked against `SHA256SUMS`: Chromium, no root, no
+  keyring (`--no-keyring`, `SNOB_MCP_KEY`), no self-update, data under
+  `/data`. No image is published.
 
 Workflows pin every action to a commit SHA with its version in a comment, and
 start from `permissions: contents: read`. `claude.yml` and

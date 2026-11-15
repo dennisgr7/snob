@@ -279,7 +279,7 @@ mod tests {
 
     use super::*;
 
-    const RELEASE: &str = "/repos/dennisgr7/snob-cli/releases/latest";
+    const RELEASE: &str = "/repos/dennisgr7/snob/releases/latest";
 
     #[test]
     fn sums_are_read_as_sha256sum_writes_them() {
@@ -297,7 +297,7 @@ mod tests {
         let github = Origin::github();
         for allowed in [
             "https://api.github.com/x",
-            "https://github.com/dennisgr7/snob-cli/releases/download/v1.0.0/SHA256SUMS",
+            "https://github.com/dennisgr7/snob/releases/download/v1.0.0/SHA256SUMS",
             "https://objects.githubusercontent.com/x",
             "https://release-assets.githubusercontent.com/x",
         ] {
@@ -374,9 +374,7 @@ mod tests {
     async fn a_download_that_does_not_match_its_sum_leaves_nothing() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(
-                "/dennisgr7/snob-cli/releases/download/v0.10.0/a.tar.gz",
-            ))
+            .and(path("/dennisgr7/snob/releases/download/v0.10.0/a.tar.gz"))
             .respond_with(ResponseTemplate::new(200).set_body_string("the archive"))
             .mount(&server)
             .await;
@@ -459,9 +457,7 @@ mod tests {
     async fn a_redirect_off_github_is_refused() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(
-                "/dennisgr7/snob-cli/releases/download/v0.10.0/SHA256SUMS",
-            ))
+            .and(path("/dennisgr7/snob/releases/download/v0.10.0/SHA256SUMS"))
             .respond_with(
                 ResponseTemplate::new(302).insert_header("location", "https://example.com/sums"),
             )

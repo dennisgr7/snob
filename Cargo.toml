@@ -19,7 +19,7 @@ edition = "2024"
 # dependency rather than being refused here with a message that says why.
 rust-version = "1.95"
 license = "MIT"
-repository = "https://github.com/dennisgr7/snob-cli"
+repository = "https://github.com/dennisgr7/snob"
 
 [workspace.dependencies]
 snob-core = { path = "crates/snob-core" }

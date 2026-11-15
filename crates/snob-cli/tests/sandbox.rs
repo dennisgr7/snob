@@ -11086,24 +11086,61 @@ struct FakeRelease {
     bin: std::path::PathBuf,
 }
 
+/// The release target the desktop edition updates from on this machine, as
+/// `update::edition::APP_TARGET` names it.
+#[cfg(unix)]
+fn app_release_target() -> Option<&'static str> {
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some("x86_64-unknown-linux-gnu")
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        Some("aarch64-unknown-linux-gnu")
+    } else {
+        None
+    }
+}
+
 #[cfg(unix)]
 impl FakeRelease {
     async fn new(tmp: &Path) -> Option<Self> {
+        Self::of(tmp, false).await
+    }
+
+    /// The same with the app beside the copy, as the desktop edition is
+    /// installed, and a release that holds the app too: a script that says
+    /// its version. **Only the desktop edition's archive is there to
+    /// fetch.**
+    async fn with_the_app(tmp: &Path) -> Option<Self> {
+        Self::of(tmp, true).await
+    }
+
+    fn app(&self) -> std::path::PathBuf {
+        self.bin.with_file_name("snob-desktop")
+    }
+
+    async fn of(tmp: &Path, with_the_app: bool) -> Option<Self> {
         use sha2::Digest;
-        let target = release_target()?;
+        use std::os::unix::fs::PermissionsExt;
+        let top = if with_the_app {
+            format!("snob-desktop-v9.9.9-{}", app_release_target()?)
+        } else {
+            format!("snob-v9.9.9-{}", release_target()?)
+        };
         let bin_dir = tmp.join("bin");
         std::fs::create_dir(&bin_dir).unwrap();
         let bin = bin_dir.join("snob");
         std::fs::copy(env!("CARGO_BIN_EXE_snob"), &bin).unwrap();
+        if with_the_app {
+            std::fs::write(bin_dir.join("snob-desktop"), "#!/bin/sh\necho \"app 0\"\n").unwrap();
+        }
 
-        let top = format!("snob-v9.9.9-{target}");
         let staging = tmp.join("release");
         std::fs::create_dir_all(staging.join(&top)).unwrap();
         let fake = staging.join(&top).join("snob");
         std::fs::write(&fake, "#!/bin/sh\necho \"snob 9.9.9 $*\"\n").unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if with_the_app {
+            let app = staging.join(&top).join("snob-desktop");
+            std::fs::write(&app, "#!/bin/sh\necho \"app 9.9.9\"\n").unwrap();
         }
         let name = format!("{top}.tar.gz");
         let archive = staging.join(&name);
@@ -11123,9 +11160,9 @@ impl FakeRelease {
             .collect();
 
         let github = MockServer::start().await;
-        let release = "/dennisgr7/snob-cli/releases/download/v9.9.9";
+        let release = "/dennisgr7/snob/releases/download/v9.9.9";
         Mock::given(method("GET"))
-            .and(url_path("/repos/dennisgr7/snob-cli/releases/latest"))
+            .and(url_path("/repos/dennisgr7/snob/releases/latest"))
             .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"tag_name":"v9.9.9"}"#))
             .mount(&github)
             .await;
@@ -11214,6 +11251,46 @@ async fn snob_update_replaces_a_script_install_with_the_latest_release() {
     assert_eq!(state["current"], "9.9.9", "{state}");
     assert!(state["available"].is_null(), "{state}");
     assert_eq!(release.version(), "snob 9.9.9 --version");
+}
+
+/// An install with the app beside `snob` is updated from the desktop
+/// edition's archive, the app with the command line: both are the release's
+/// afterwards, and the app is left a program.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn snob_update_replaces_the_app_beside_it_from_the_same_archive() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(release) = FakeRelease::with_the_app(tmp.path()).await else {
+        return;
+    };
+    let root = tmp.path().join("root");
+
+    let out = release
+        .command(&root)
+        .args(["update", "--status", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(json(&out)["edition"], "desktop", "{}", stdout(&out));
+
+    let out = release
+        .command(&root)
+        .args(["update", "-y", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let state = json(&out);
+    assert_eq!(state["applied"]["to"], "9.9.9", "{state}");
+    assert_eq!(state["edition"], "desktop", "{state}");
+    assert_eq!(release.version(), "snob 9.9.9 --version");
+    let app = Command::new(release.app()).output().unwrap();
+    assert_eq!(stdout(&app).trim(), "app 9.9.9");
+    let left: Vec<_> = std::fs::read_dir(release.bin.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "snob" && name != "snob-desktop")
+        .collect();
+    assert!(left.is_empty(), "left beside the binaries: {left:?}");
 }
 
 /// A command finds a newer release on its own, detached, and downloads it;

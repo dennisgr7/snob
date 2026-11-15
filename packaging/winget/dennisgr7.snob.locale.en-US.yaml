@@ -5,9 +5,9 @@ PackageLocale: en-US
 Publisher: dennisgr7
 PublisherUrl: https://github.com/dennisgr7
 PackageName: snob
-PackageUrl: https://github.com/dennisgr7/snob-cli
+PackageUrl: https://github.com/dennisgr7/snob
 License: MIT
-LicenseUrl: https://github.com/dennisgr7/snob-cli/blob/main/LICENSE
+LicenseUrl: https://github.com/dennisgr7/snob/blob/main/LICENSE
 ShortDescription: "Instagram CLI client with extra utilities, media downloads and output ready for AI agents"
 Description: |-
   Walks an Instagram account's followers and following, crosses them, and
@@ -21,6 +21,6 @@ Tags:
   - cli
   - followers
   - unfollowers
-ReleaseNotesUrl: https://github.com/dennisgr7/snob-cli/releases/tag/v0.9.0
+ReleaseNotesUrl: https://github.com/dennisgr7/snob/releases/tag/v0.9.0
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

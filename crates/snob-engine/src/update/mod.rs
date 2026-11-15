@@ -16,8 +16,12 @@
 //!
 //! **One integrity check: the release's `SHA256SUMS`**, the same one the
 //! install scripts make, over HTTPS to GitHub's hosts only.
+//!
+//! **An install is updated as the edition it is** ([`edition`]): the app
+//! beside `snob` comes from the same archive and is replaced with it.
 
 pub mod apply;
+pub mod edition;
 pub mod github;
 pub mod how;
 pub(crate) mod running;
@@ -30,12 +34,13 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 use snob_store::paths::AppPaths;
 
+use self::edition::Edition;
 use self::how::{Applies, Method};
 use self::state::{Auto, Files, State};
 use self::version::Version;
 
 /// The repository releases come from.
-pub(crate) const REPO: &str = "dennisgr7/snob-cli";
+pub(crate) const REPO: &str = "dennisgr7/snob";
 
 /// The hidden command: `snob __update fetch|apply`.
 pub const COMMAND: &str = "__update";
@@ -43,7 +48,8 @@ pub const COMMAND: &str = "__update";
 /// How long after a check the next one is due.
 const CHECK_EVERY_SECS: i64 = 24 * 60 * 60;
 
-/// The release target this build is, whose archive it updates from.
+/// The release target this build is, whose archive the command line updates
+/// from; the desktop edition's is `edition::APP_TARGET`.
 pub(crate) const TARGET: Option<&str> = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
     Some("x86_64-unknown-linux-musl")
 } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
@@ -57,13 +63,6 @@ pub(crate) const TARGET: Option<&str> = if cfg!(all(target_os = "linux", target_
 } else {
     None
 };
-
-/// The directory a release archive holds, and the archive's name.
-fn archive(version: Version, target: &str) -> (String, String) {
-    let top = format!("snob-v{version}-{target}");
-    let name = format!("{top}.{}", if cfg!(windows) { "zip" } else { "tar.gz" });
-    (top, name)
-}
 
 /// Whether this process may check for and apply updates at all.
 pub fn enabled(sandboxed: bool) -> bool {
@@ -141,7 +140,8 @@ pub fn this_exe() -> std::io::Result<PathBuf> {
 pub enum Role {
     /// A command: applies, tells, checks, and counts as running.
     Command,
-    /// Counts as running and nothing more: a job's supervisor.
+    /// Counts as running and nothing more: a job's supervisor, and the app
+    /// for as long as it is open.
     Counted,
 }
 
@@ -164,6 +164,7 @@ pub fn at_start(paths: &AppPaths, sandboxed: bool, role: Role, globals: &[OsStri
     }
     if let Ok(exe) = this_exe() {
         apply::sweep_old(&exe);
+        apply::sweep_old(&edition::app_beside(&exe));
     }
     let state = state::load(&files);
     if state.auto == Auto::Apply
@@ -262,17 +263,43 @@ fn apply_when_alone(files: &Files, state: &State, globals: &[OsString]) {
     }
 }
 
-/// Checks the staged binary is the one downloaded, and puts it at `exe`.
+/// Checks the staged binary is the one downloaded, and puts it at `exe`,
+/// with the app beside it when the install is the desktop edition's.
 pub fn put_in_place(exe: &Path, staged: &state::Staged) -> anyhow::Result<()> {
     let (Some(file), Some(sha256)) = (&staged.file, &staged.sha256) else {
         anyhow::bail!("the downloaded version has no file to apply");
     };
-    let found = github::sha256_of(file)?;
-    anyhow::ensure!(
-        &found == sha256,
-        "the downloaded binary changed since it was checked; it is downloaded again"
-    );
-    apply::replace(exe, file)?;
+    let unchanged = |file: &Path, sha256: &str| -> anyhow::Result<()> {
+        anyhow::ensure!(
+            github::sha256_of(file)? == sha256,
+            "the downloaded binary changed since it was checked; it is downloaded again"
+        );
+        Ok(())
+    };
+    unchanged(file, sha256)?;
+    let mut swaps = Vec::new();
+    match (Edition::of(exe), &staged.app) {
+        (Edition::Desktop, Some(app)) => {
+            unchanged(&app.file, &app.sha256)?;
+            swaps.push(apply::Swap {
+                exe: edition::app_beside(exe),
+                new: app.file.clone(),
+            });
+        }
+        (Edition::Desktop, None) => anyhow::bail!(
+            "the downloaded version is the command line alone, and the app is now beside \
+             it; it is downloaded again"
+        ),
+        // An app taken away since: the command line is updated alone.
+        (Edition::Cli, _) => {}
+    }
+    // The command line last: a swap cut short between the two leaves it
+    // the older version, which the next check sees and puts right.
+    swaps.push(apply::Swap {
+        exe: exe.to_path_buf(),
+        new: file.clone(),
+    });
+    apply::replace_all(&swaps)?;
     Ok(())
 }
 
@@ -458,20 +485,32 @@ pub async fn stage_telling(
     let dir = files.staged_dir();
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
+    let mut app = None;
     let (file, sha256) = match method.applies() {
         Applies::Itself => {
-            let (top, name) = archive(version, target);
+            let installed = Edition::of(&this_exe()?);
+            let (top, name) = installed.archive(version)?;
             let sums = github::sums(origin, version).await?;
             let expected = github::listed(&sums, &name)
                 .ok_or_else(|| anyhow::anyhow!("{name} is not listed in SHA256SUMS"))?;
             let archive = dir.join(&name);
             github::download(origin, version, &name, &expected, &archive, told).await?;
-            let binary = apply::unpack(&archive, &dir.join("x"), &top)?;
-            let staged = dir.join(format!("{}.new", apply::EXE));
-            std::fs::rename(&binary, &staged)?;
+            let held = apply::unpack(&archive, &dir.join("x"), &top)?;
+            // Out of the unpacked directory under the name it is kept as,
+            // with its SHA-256 as it now is.
+            let keep = |name: &str| -> anyhow::Result<(PathBuf, String)> {
+                let staged = dir.join(format!("{name}.new"));
+                std::fs::rename(apply::file_in(&held, name)?, &staged)?;
+                let sha256 = github::sha256_of(&staged)?;
+                Ok((staged, sha256))
+            };
+            let (staged, sha256) = keep(apply::EXE)?;
+            if installed == Edition::Desktop {
+                let (file, sha256) = keep(edition::APP)?;
+                app = Some(state::StagedApp { file, sha256 });
+            }
             let _ = std::fs::remove_dir_all(dir.join("x"));
             let _ = std::fs::remove_file(&archive);
-            let sha256 = github::sha256_of(&staged)?;
             (Some(staged), Some(sha256))
         }
         Applies::ByHand if *method == Method::Deb => {
@@ -499,6 +538,7 @@ pub async fn stage_telling(
             version: version.to_string(),
             file,
             sha256,
+            app,
             at: state::now(),
         });
         s.error = None;
@@ -576,9 +616,11 @@ pub fn report_as(paths: &AppPaths, sandboxed: bool, current: Option<Version>) ->
         (Applies::ByHand, _) => "by_hand",
         (Applies::Never, _) => "never",
     };
+    let installed = this_exe().map_or(Edition::Cli, |exe| Edition::of(&exe));
     json!({
         "current": current.map(|v| v.to_string()),
         "method": method.as_str(),
+        "edition": installed.as_str(),
         "enabled": enabled(sandboxed),
         "auto": state.auto.as_str(),
         "last_check": state.last_check.map(&at),

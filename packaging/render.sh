@@ -30,7 +30,7 @@ case "$sums" in
 esac
 cd "$(dirname "$0")/.."
 
-repo="https://github.com/dennisgr7/snob-cli"
+repo="https://github.com/dennisgr7/snob"
 base="$repo/releases/download/v$version"
 
 # The checksum for one archive, by target.

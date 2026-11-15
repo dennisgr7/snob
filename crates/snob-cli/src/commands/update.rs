@@ -227,8 +227,12 @@ fn finish(
 fn prose(report: &serde_json::Value) -> String {
     let text = |key: &str| report[key].as_str().unwrap_or_default().to_string();
     let mut lines = vec![format!(
-        "snob {}, installed with {}.",
+        "snob {}{}, installed with {}.",
         text("current"),
+        match text("edition").as_str() {
+            "desktop" => " with the app",
+            _ => "",
+        },
         match text("method").as_str() {
             "homebrew" => "Homebrew",
             "scoop" => "Scoop",

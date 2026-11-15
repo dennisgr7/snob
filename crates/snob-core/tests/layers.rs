@@ -11,7 +11,10 @@
 //! **And the fake Instagram stays out of what ships**: `snob-fake-ig` depends
 //! on nothing above `snob-ig`, and every crate that names it does so under
 //! `[dev-dependencies]`. The desktop app (`apps/desktop`, a workspace of its
-//! own) is held to the engine's rule and to that one.
+//! own) is held to the engine's rule and to that one, and its version is
+//! 0.0.0 (not shipped) or the workspace's: the desktop edition's two binaries
+//! are one version (`snob_engine::update::edition`), and `release.yml`
+//! ships the app only when it says the tag's.
 
 mod common;
 use common::repo_root;
@@ -194,6 +197,31 @@ fn the_fake_instagram_is_linked_by_tests_only() {
     }
     broken.extend(fake_broken(&manifest_of(&root, FAKE), &others));
     assert!(broken.is_empty(), "{}", broken.join("\n"));
+}
+
+/// The first `version = "..."` of a manifest.
+fn version_in(manifest: &str) -> Option<&str> {
+    manifest
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("version = \""))
+        .and_then(|rest| rest.split('"').next())
+}
+
+#[test]
+fn the_app_is_unshipped_or_the_version_of_the_command_line() {
+    let Some(root) = repo_root() else {
+        return; // packaged build, nothing to read
+    };
+    let Ok(app) = std::fs::read_to_string(root.join("apps/desktop/Cargo.toml")) else {
+        return;
+    };
+    let workspace = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    let (app, workspace) = (version_in(&app), version_in(&workspace));
+    assert!(workspace.is_some());
+    assert!(
+        app == Some("0.0.0") || app == workspace,
+        "apps/desktop/Cargo.toml says {app:?}; it is 0.0.0 or {workspace:?}"
+    );
 }
 
 #[test]

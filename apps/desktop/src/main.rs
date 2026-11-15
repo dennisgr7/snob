@@ -220,6 +220,15 @@ fn main() -> anyhow::Result<()> {
     };
     let (_notices, snob_found) = front::hand_over();
     tracing::info!(about = about(), testing, snob_found, "the app started");
+    // Held until the process ends: while the app is open no command applies
+    // an update under it, and the app and the `snob` beside it stay one
+    // version (`snob_engine::update::edition`).
+    let _running = snob_engine::update::at_start(
+        &paths,
+        testing,
+        snob_engine::update::Role::Counted,
+        &[],
+    );
 
     #[cfg(feature = "testing")]
     let listed = value_of(&args, "--browsers").and_then(|count| count.parse().ok());

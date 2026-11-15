@@ -3,7 +3,8 @@
 //! **Every snob that counts holds `running.lock` shared for its whole life**,
 //! and the one that would apply a version asks for it alone, without waiting:
 //! granted, nobody else holds it, so nobody runs from the binary about to be
-//! replaced or is halfway through a write.
+//! replaced or is halfway through a write. The app counts while it is open:
+//! it starts the `snob` beside it and must stay its version.
 //!
 //! **What does not count**: `snob mcp`, which a client may keep running for
 //! days and which already refuses every call once its binary changed

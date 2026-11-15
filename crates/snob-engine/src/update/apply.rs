@@ -4,7 +4,9 @@
 //! every Linux and macOS has one, and Windows 10 and 11 ship bsdtar as
 //! `System32\tar.exe`, which reads a `.zip`.
 //!
-//! **Replacing the binary never leaves half of one.**
+//! **Replacing a binary never leaves half of one**, and the desktop
+//! edition's two are written whole before either is swapped
+//! ([`replace_all`]).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -28,9 +30,9 @@ fn tar() -> PathBuf {
     }
 }
 
-/// Unpacks `archive` into `into`, made empty first, and returns the binary
-/// it holds: `<top>/snob`, `top` being the archive's own directory
-/// (`snob-v<version>-<target>`).
+/// Unpacks `archive` into `into`, made empty first, and returns the
+/// directory it holds, `top` (`snob-v<version>-<target>`), once `snob` is
+/// seen to be in it.
 pub(crate) fn unpack(archive: &Path, into: &Path, top: &str) -> anyhow::Result<PathBuf> {
     if into.exists() {
         std::fs::remove_dir_all(into)?;
@@ -52,29 +54,105 @@ pub(crate) fn unpack(archive: &Path, into: &Path, top: &str) -> anyhow::Result<P
         archive.display(),
         String::from_utf8_lossy(&out.stderr).trim()
     );
-    let binary = into.join(top).join(EXE);
-    let regular = std::fs::symlink_metadata(&binary).is_ok_and(|meta| meta.file_type().is_file());
-    anyhow::ensure!(regular, "the archive holds no {EXE} under {top}");
-    Ok(binary)
+    let held = into.join(top);
+    file_in(&held, EXE)?;
+    Ok(held)
 }
 
-/// Puts `new` in place of the binary at `exe` (its real path, every link
-/// followed).
-#[cfg(unix)]
-pub(crate) fn replace(exe: &Path, new: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+/// The file `name` in the unpacked directory `held`, refused when it is
+/// anything but a regular file.
+pub(crate) fn file_in(held: &Path, name: &str) -> anyhow::Result<PathBuf> {
+    let file = held.join(name);
+    let regular = std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.file_type().is_file());
+    anyhow::ensure!(
+        regular,
+        "the archive holds no {name} under {}",
+        held.file_name().unwrap_or_default().to_string_lossy()
+    );
+    Ok(file)
+}
+
+/// One binary to put in place: where it runs from (its real path, every
+/// link followed) and the new file.
+pub(crate) struct Swap {
+    pub exe: PathBuf,
+    pub new: PathBuf,
+}
+
+/// Where a new binary is written whole before it takes `exe`'s name.
+fn written_beside(exe: &Path) -> PathBuf {
     let name = exe.file_name().unwrap_or_default().to_string_lossy();
-    let beside = exe.with_file_name(format!(".{name}.update-{}", std::process::id()));
-    let placed = (|| {
-        std::fs::copy(new, &beside)?;
-        std::fs::set_permissions(&beside, std::fs::Permissions::from_mode(0o755))?;
-        std::fs::File::open(&beside)?.sync_all()?;
-        std::fs::rename(&beside, exe)
-    })();
-    if placed.is_err() {
-        let _ = std::fs::remove_file(&beside);
+    if cfg!(windows) {
+        exe.with_file_name(format!("{name}.new"))
+    } else {
+        exe.with_file_name(format!(".{name}.update-{}", std::process::id()))
     }
-    placed
+}
+
+/// Writes `swap`'s new binary whole beside the one it replaces.
+fn write_beside(swap: &Swap) -> std::io::Result<()> {
+    let beside = written_beside(&swap.exe);
+    #[cfg(windows)]
+    {
+        // An `.old` left by an earlier update, which a snob still running
+        // from it keeps; then this one cannot be renamed there either, and
+        // waits.
+        let old = old_of(&swap.exe);
+        if old.exists() {
+            std::fs::remove_file(&old)?;
+        }
+    }
+    std::fs::copy(&swap.new, &beside)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&beside, std::fs::Permissions::from_mode(0o755))?;
+    }
+    // `FlushFileBuffers` wants a handle opened for writing.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&beside)?
+        .sync_all()
+}
+
+/// Gives the binary written beside `exe` its name.
+#[cfg(unix)]
+fn swap_in(exe: &Path) -> std::io::Result<()> {
+    std::fs::rename(written_beside(exe), exe)
+}
+
+/// Gives the binary written beside `exe` its name: a running `.exe` cannot
+/// be written over, and can be renamed.
+#[cfg(windows)]
+fn swap_in(exe: &Path) -> std::io::Result<()> {
+    let old = old_of(exe);
+    std::fs::rename(exe, &old)?;
+    std::fs::rename(written_beside(exe), exe).inspect_err(|_| {
+        let _ = std::fs::rename(&old, exe);
+    })
+}
+
+/// Puts every new binary in place of the one it replaces.
+///
+/// **All are written whole beside theirs before any is swapped**: a copy cut
+/// short (a kill, the power, a full disk) leaves every old binary where it
+/// was, never half of a new one under its name and never one binary of two
+/// updated. The swaps are then renames, in the order given.
+pub(crate) fn replace_all(swaps: &[Swap]) -> std::io::Result<()> {
+    let forget = || {
+        for swap in swaps {
+            let _ = std::fs::remove_file(written_beside(&swap.exe));
+        }
+    };
+    if let Err(e) = swaps.iter().try_for_each(write_beside) {
+        forget();
+        return Err(e);
+    }
+    let swapped = swaps.iter().try_for_each(|swap| swap_in(&swap.exe));
+    if swapped.is_err() {
+        forget();
+    }
+    swapped
 }
 
 /// The `.old` a replacement on Windows leaves beside `exe`.
@@ -83,38 +161,6 @@ fn old_of(exe: &Path) -> PathBuf {
     let mut name = exe.file_name().unwrap_or_default().to_os_string();
     name.push(".old");
     exe.with_file_name(name)
-}
-
-#[cfg(windows)]
-pub(crate) fn replace(exe: &Path, new: &Path) -> std::io::Result<()> {
-    let old = old_of(exe);
-    // One left by an earlier update, which a snob still running from it
-    // keeps; then this one cannot be renamed there either, and waits.
-    if old.exists() {
-        std::fs::remove_file(&old)?;
-    }
-    // Written whole beside the binary and renamed in: a copy cut short (a
-    // kill, the power) leaves the old binary where it was, never half of the
-    // new one under its name.
-    let mut staged = exe.file_name().unwrap_or_default().to_os_string();
-    staged.push(".new");
-    let staged = exe.with_file_name(staged);
-    let placed = (|| {
-        std::fs::copy(new, &staged)?;
-        // `FlushFileBuffers` wants a handle opened for writing.
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&staged)?
-            .sync_all()?;
-        std::fs::rename(exe, &old)?;
-        std::fs::rename(&staged, exe).inspect_err(|_| {
-            let _ = std::fs::rename(&old, exe);
-        })
-    })();
-    if placed.is_err() {
-        let _ = std::fs::remove_file(&staged);
-    }
-    placed
 }
 
 /// Removes the `.old` an update on Windows left, once nothing runs from it;
@@ -192,6 +238,23 @@ pub(crate) fn shown(step: &Step) -> String {
 mod tests {
     use super::*;
 
+    fn swap(exe: &Path, new: &Path) -> Swap {
+        Swap {
+            exe: exe.to_path_buf(),
+            new: new.to_path_buf(),
+        }
+    }
+
+    /// The names in `dir`, sorted.
+    fn left_in(dir: &Path) -> Vec<String> {
+        let mut left: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        left
+    }
+
     /// A new binary that cannot be copied leaves the old one in place, under
     /// its own name, and nothing staged beside it.
     #[test]
@@ -200,13 +263,39 @@ mod tests {
         let exe = tmp.path().join(EXE);
         std::fs::write(&exe, "old").unwrap();
 
-        assert!(replace(&exe, &tmp.path().join("missing")).is_err());
+        assert!(replace_all(&[swap(&exe, &tmp.path().join("missing"))]).is_err());
         assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old");
-        let left: Vec<_> = std::fs::read_dir(tmp.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(left, [EXE.to_string()]);
+        assert_eq!(left_in(tmp.path()), [EXE.to_string()]);
+    }
+
+    /// The desktop edition's two binaries: when the second cannot be
+    /// written, the first is not swapped either, and nothing is left beside
+    /// them.
+    #[test]
+    fn two_binaries_are_replaced_together_or_neither_is() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let (app, exe) = (bin.join("app"), bin.join(EXE));
+        let new = tmp.path().join("new");
+        std::fs::write(&app, "old app").unwrap();
+        std::fs::write(&exe, "old").unwrap();
+        std::fs::write(&new, "new").unwrap();
+
+        let missing = tmp.path().join("missing");
+        assert!(replace_all(&[swap(&app, &new), swap(&exe, &missing)]).is_err());
+        assert_eq!(std::fs::read_to_string(&app).unwrap(), "old app");
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old");
+        let mut both = ["app".to_string(), EXE.to_string()];
+        both.sort();
+        assert_eq!(left_in(&bin), both);
+
+        replace_all(&[swap(&app, &new), swap(&exe, &new)]).unwrap();
+        assert_eq!(std::fs::read_to_string(&app).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
+        sweep_old(&app);
+        sweep_old(&exe);
+        assert_eq!(left_in(&bin), both);
     }
 
     /// The swap leaves the new binary at the name and nothing else beside it
@@ -219,17 +308,12 @@ mod tests {
         std::fs::write(&exe, "old").unwrap();
         std::fs::write(&new, "new").unwrap();
 
-        replace(&exe, &new).unwrap();
+        replace_all(&[swap(&exe, &new)]).unwrap();
         assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
         sweep_old(&exe);
-        let mut left: Vec<_> = std::fs::read_dir(tmp.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        left.sort();
         let mut expected = [EXE.to_string(), "new".to_string()];
         expected.sort();
-        assert_eq!(left, expected);
+        assert_eq!(left_in(tmp.path()), expected);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -259,8 +343,10 @@ mod tests {
         assert!(made.success());
 
         let into = tmp.path().join("x");
-        let binary = unpack(&archive, &into, top).unwrap();
+        let held = unpack(&archive, &into, top).unwrap();
+        let binary = file_in(&held, EXE).unwrap();
         assert_eq!(std::fs::read_to_string(binary).unwrap(), "binary");
+        assert!(file_in(&held, "snob-desktop").is_err());
         assert!(unpack(&archive, &into, "snob-v1.0.0-other").is_err());
     }
 

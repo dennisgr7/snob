@@ -2,12 +2,20 @@
 #
 # Installs snob on Linux or macOS.
 #
-#     curl -fsSL https://raw.githubusercontent.com/dennisgr7/snob-cli/main/packaging/install.sh | sh
+#     curl -fsSL https://raw.githubusercontent.com/dennisgr7/snob/main/packaging/install.sh | sh
 #
-# Reads two variables, both optional:
+# Reads three variables, all optional:
 #
 #     SNOB_VERSION      a version to install instead of the latest
-#     SNOB_INSTALL_DIR  where to put the binary; default ~/.local/bin
+#     SNOB_INSTALL_DIR  where to put the binaries; default ~/.local/bin
+#     SNOB_EDITION      desktop (the app, with the command line and the MCP
+#                       server beside it) or cli (those two alone, for a
+#                       server or a container)
+#
+# Without SNOB_EDITION the desktop edition is installed where the release
+# lists it for this machine, and the command line alone otherwise, said so.
+# The app's two binaries go to the same directory: the app starts the
+# `snob` beside it, and that is also how an update knows the edition.
 #
 # POSIX sh rather than bash: this is the one file that has to run before the
 # user has installed anything, so it cannot assume a shell that some minimal
@@ -15,7 +23,7 @@
 
 set -eu
 
-REPO="dennisgr7/snob-cli"
+REPO="dennisgr7/snob"
 INSTALL_DIR="${SNOB_INSTALL_DIR:-$HOME/.local/bin}"
 
 die() {
@@ -23,7 +31,7 @@ die() {
   exit 1
 }
 
-# Which archive this machine needs.
+# Which archive of the command line this machine needs.
 target() {
   os=$(uname -s)
   arch=$(uname -m)
@@ -46,6 +54,21 @@ target() {
       ;;
     *) die "no build for $os on $arch" ;;
   esac
+}
+
+# The desktop edition's target here, or nothing: glibc on Linux, which the
+# app's toolkit needs (the `snob` inside is the static one all the same),
+# and none on macOS yet.
+desktop_target() {
+  case "$1" in
+    x86_64-unknown-linux-musl) echo "x86_64-unknown-linux-gnu" ;;
+    aarch64-unknown-linux-musl) echo "aarch64-unknown-linux-gnu" ;;
+  esac
+}
+
+# Whether SHA256SUMS lists a file.
+listed() {
+  awk -v f="$1" '$2 == f || $2 == "*"f {found = 1} END {exit !found}' "$2"
 }
 
 download() {
@@ -83,6 +106,22 @@ verify() {
 # where somebody finally asks it. `gh` is the only client that reads those
 # attestations, so without it the step is skipped and said so -- a check that
 # silently did not run is the one outcome worse than no check.
+#
+# The provenance keeps the name the repository had when it was signed, which
+# was `snob-cli` up to 0.9.0.
+signed_in() {
+  old_ifs=$IFS
+  IFS=.
+  # shellcheck disable=SC2086
+  set -- $1
+  IFS=$old_ifs
+  if [ "${1:-0}" -eq 0 ] && [ "${2:-0}" -le 9 ]; then
+    echo "dennisgr7/snob-cli"
+  else
+    echo "$REPO"
+  fi
+}
+
 attest() {
   archive="$1"
   if ! command -v gh >/dev/null 2>&1; then
@@ -99,9 +138,10 @@ attest() {
     echo "      logged in), so the build provenance was not verified (the checksum was)."
     return 0
   fi
-  gh attestation verify "$archive" --repo "$REPO" \
-    --signer-workflow "$REPO/.github/workflows/release.yml" >/dev/null \
-    || die "$archive does not carry a valid build provenance from $REPO's release workflow"
+  signer=$(signed_in "$version")
+  gh attestation verify "$archive" --repo "$signer" \
+    --signer-workflow "$signer/.github/workflows/release.yml" >/dev/null \
+    || die "$archive does not carry a valid build provenance from $signer's release workflow"
   echo "Build provenance verified"
 }
 
@@ -120,22 +160,53 @@ main() {
     [ -n "$version" ] || die "could not work out the latest version"
   fi
 
-  name="snob-v$version-$t"
   base="https://github.com/$REPO/releases/download/v$version"
 
   work=$(mktemp -d)
   # Whatever happens next, the download does not outlive this script.
   trap 'rm -rf "$work"' EXIT INT TERM
 
-  echo "Downloading snob $version for $t"
-  download "$base/$name.tar.gz" "$work/$name.tar.gz"
   download "$base/SHA256SUMS" "$work/SHA256SUMS"
+
+  # Which edition, from what the release lists for this machine.
+  edition="${SNOB_EDITION:-}"
+  dt=$(desktop_target "$t")
+  desktop="snob-desktop-v$version-$dt"
+  case "$edition" in
+    desktop)
+      [ -n "$dt" ] || die "snob has no desktop app for this machine yet; SNOB_EDITION=cli installs the command line"
+      listed "$desktop.tar.gz" "$work/SHA256SUMS" ||
+        die "snob $version has no desktop app for this machine; SNOB_EDITION=cli installs the command line"
+      ;;
+    cli) ;;
+    "")
+      if [ -n "$dt" ] && listed "$desktop.tar.gz" "$work/SHA256SUMS"; then
+        edition=desktop
+      else
+        edition=cli
+        echo "snob $version has no desktop app for this machine: installing the command line and the MCP server"
+      fi
+      ;;
+    *) die "SNOB_EDITION is desktop or cli, not $edition" ;;
+  esac
+  if [ "$edition" = desktop ]; then
+    name="$desktop"
+    echo "Downloading snob $version, the desktop app, for $dt"
+  else
+    name="snob-v$version-$t"
+    echo "Downloading snob $version for $t"
+  fi
+  download "$base/$name.tar.gz" "$work/$name.tar.gz"
 
   (cd "$work" && verify "$name.tar.gz" SHA256SUMS)
   attest "$work/$name.tar.gz"
   tar -xzf "$work/$name.tar.gz" -C "$work"
 
   mkdir -p "$INSTALL_DIR"
+  # The app first and the command line last, as an update replaces them.
+  if [ "$edition" = desktop ]; then
+    install -m 755 "$work/$name/snob-desktop" "$INSTALL_DIR/snob-desktop"
+  fi
   install -m 755 "$work/$name/snob" "$INSTALL_DIR/snob"
 
   echo "Installed $("$INSTALL_DIR/snob" --version) to $INSTALL_DIR"
@@ -165,6 +236,9 @@ main() {
   fi
 
   echo
+  if [ "$edition" = desktop ]; then
+    echo "Open the app with: $INSTALL_DIR/snob-desktop"
+  fi
   echo "Start with: $snob login"
   echo "Before uninstalling, run \"$snob purge\": the session and the database"
   echo "live outside this directory and deleting the binary will not reach them."

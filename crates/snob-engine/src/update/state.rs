@@ -50,8 +50,19 @@ pub struct Staged {
     pub file: Option<PathBuf>,
     /// The file's SHA-256, checked again before it is applied.
     pub sha256: Option<String>,
+    /// The app's new binary, when the install is the desktop edition's
+    /// (`edition`): applied with `file` or not at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<StagedApp>,
     /// When it was staged, in seconds since the epoch.
     pub at: i64,
+}
+
+/// The app's binary of a staged version, and its SHA-256.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StagedApp {
+    pub file: PathBuf,
+    pub sha256: String,
 }
 
 /// The last version applied.
@@ -216,6 +227,10 @@ mod tests {
                 version: "0.10.0".into(),
                 file: Some("/x/snob.new".into()),
                 sha256: Some("ab".into()),
+                app: Some(StagedApp {
+                    file: "/x/snob-desktop.new".into(),
+                    sha256: "cd".into(),
+                }),
                 at: 7,
             });
         })

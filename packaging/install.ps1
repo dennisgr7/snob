@@ -3,17 +3,24 @@
     Installs snob on Windows.
 
 .DESCRIPTION
-    irm https://raw.githubusercontent.com/dennisgr7/snob-cli/main/packaging/install.ps1 | iex
+    irm https://raw.githubusercontent.com/dennisgr7/snob/main/packaging/install.ps1 | iex
 
-    Reads two optional environment variables:
+    Reads three optional environment variables:
 
         SNOB_VERSION      a version to install instead of the latest
         SNOB_INSTALL_DIR  where to put it; default %LOCALAPPDATA%\Programs\snob
+        SNOB_EDITION      desktop (the app, with the command line and the MCP
+                          server beside it) or cli (those two alone)
+
+    Without SNOB_EDITION the desktop edition is installed where the release
+    lists it for this machine, and the command line alone otherwise, said so.
+    The app's two binaries go to the same directory: the app starts the
+    snob.exe beside it, and that is also how an update knows the edition.
 #>
 
 $ErrorActionPreference = 'Stop'
 
-$repo = 'dennisgr7/snob-cli'
+$repo = 'dennisgr7/snob'
 $installDir = if ($env:SNOB_INSTALL_DIR) { $env:SNOB_INSTALL_DIR }
               else { Join-Path $env:LOCALAPPDATA 'Programs\snob' }
 
@@ -33,20 +40,56 @@ if (-not $version) {
     $version = $latest.tag_name -replace '^v', ''
 }
 
-$name = "snob-v$version-$arch"
 $base = "https://github.com/$repo/releases/download/v$version"
 $work = Join-Path ([System.IO.Path]::GetTempPath()) "snob-install-$([System.Guid]::NewGuid())"
 New-Item -ItemType Directory -Force $work | Out-Null
 
 try {
-    Write-Host "Downloading snob $version for $arch"
-    $zip = Join-Path $work "$name.zip"
-    Invoke-WebRequest -UseBasicParsing "$base/$name.zip" -OutFile $zip
     $sumsFile = Join-Path $work 'SHA256SUMS'
     Invoke-WebRequest -UseBasicParsing "$base/SHA256SUMS" -OutFile $sumsFile
+    $sums = Get-Content $sumsFile
+    # The checksum SHA256SUMS lists for a file, or nothing.
+    function Listed([string]$file) {
+        foreach ($line in $sums) {
+            $fields = $line -split '\s+'
+            if ($fields.Count -ge 2 -and ($fields[1] -eq $file -or $fields[1] -eq "*$file")) {
+                return $fields[0]
+            }
+        }
+        return $null
+    }
+
+    # Which edition, from what the release lists for this machine.
+    $desktop = "snob-desktop-v$version-$arch"
+    $edition = $env:SNOB_EDITION
+    switch ($edition) {
+        'desktop' {
+            if (-not (Listed "$desktop.zip")) {
+                throw "snob $version has no desktop app for this machine; SNOB_EDITION=cli installs the command line"
+            }
+        }
+        'cli' {}
+        { -not $_ } {
+            if (Listed "$desktop.zip") { $edition = 'desktop' }
+            else {
+                $edition = 'cli'
+                Write-Host "snob $version has no desktop app for this machine: installing the command line and the MCP server"
+            }
+        }
+        default { throw "SNOB_EDITION is desktop or cli, not $edition" }
+    }
+    if ($edition -eq 'desktop') {
+        $name = $desktop
+        Write-Host "Downloading snob $version, the desktop app, for $arch"
+    } else {
+        $name = "snob-v$version-$arch"
+        Write-Host "Downloading snob $version for $arch"
+    }
+    $zip = Join-Path $work "$name.zip"
+    Invoke-WebRequest -UseBasicParsing "$base/$name.zip" -OutFile $zip
 
     # Not optional: this downloads an executable and puts it on the PATH.
-    $expected = ((Get-Content $sumsFile | Select-String -SimpleMatch "$name.zip") -split '\s+')[0]
+    $expected = Listed "$name.zip"
     if (-not $expected) { throw "$name.zip is not listed in SHA256SUMS" }
     $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
     if ($expected -ne $actual) { throw "checksum mismatch: expected $expected, got $actual" }
@@ -77,10 +120,14 @@ try {
         }
     }
     if ($canAttest) {
-        & gh attestation verify $zip --repo $repo `
-            --signer-workflow "$repo/.github/workflows/release.yml" | Out-Null
+        # The provenance keeps the name the repository had when it was
+        # signed, which was `snob-cli` up to 0.9.0.
+        $parts = @($version.Split('.') | ForEach-Object { [int]($_ -replace '\D.*', '') })
+        $signer = if ($parts[0] -eq 0 -and $parts[1] -le 9) { 'dennisgr7/snob-cli' } else { $repo }
+        & gh attestation verify $zip --repo $signer `
+            --signer-workflow "$signer/.github/workflows/release.yml" | Out-Null
         if ($LASTEXITCODE -ne 0) {
-            throw "$name.zip does not carry a valid build provenance from $repo's release workflow"
+            throw "$name.zip does not carry a valid build provenance from $signer's release workflow"
         }
         Write-Host "Build provenance verified"
     } else {
@@ -91,26 +138,32 @@ try {
     New-Item -ItemType Directory -Force $installDir | Out-Null
 
     # A running snob.exe -- `snob watch` as a scheduled service, most often --
-    # cannot be overwritten or removed. Windows does let a running executable
-    # be renamed, so one that will not go is moved aside, and removed by the
-    # next install; one that is not running is simply removed. A copy that
-    # fails puts the old one back rather than leaving no snob.exe at all.
+    # or a running app cannot be overwritten or removed. Windows does let a
+    # running executable be renamed, so one that will not go is moved aside,
+    # and removed by the next install; one that is not running is simply
+    # removed. A copy that fails puts the old ones back rather than leaving
+    # no snob.exe at all.
     $exe = Join-Path $installDir 'snob.exe'
-    Get-ChildItem $installDir -Filter 'snob.exe.old-*' -ErrorAction SilentlyContinue |
-        Remove-Item -Force -ErrorAction SilentlyContinue
-    $aside = $null
-    if (Test-Path $exe) {
-        Remove-Item $exe -Force -ErrorAction SilentlyContinue
-    }
-    if (Test-Path $exe) {
-        $aside = Join-Path $installDir "snob.exe.old-$([System.Guid]::NewGuid())"
-        Move-Item $exe $aside -Force
+    $binaries = @('snob.exe')
+    if ($edition -eq 'desktop') { $binaries = @('snob-desktop.exe') + $binaries }
+    $asides = @{}
+    foreach ($binary in $binaries) {
+        $path = Join-Path $installDir $binary
+        Get-ChildItem $installDir -Filter "$binary.old-*" -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+        if (Test-Path $path) {
+            Remove-Item $path -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path $path) {
+            $asides[$path] = Join-Path $installDir "$binary.old-$([System.Guid]::NewGuid())"
+            Move-Item $path $asides[$path] -Force
+        }
     }
     try {
         Copy-Item (Join-Path $work "$name\*") $installDir -Force
     } catch {
-        if ($aside -and -not (Test-Path $exe)) {
-            Move-Item $aside $exe -Force
+        foreach ($path in $asides.Keys) {
+            if (-not (Test-Path $path)) { Move-Item $asides[$path] $path -Force }
         }
         throw
     }
@@ -203,6 +256,9 @@ public static extern IntPtr SendMessageTimeout(
     $snob = if ($onPath) { 'snob' } else { "`"$exe`"" }
 
     Write-Host ""
+    if ($edition -eq 'desktop') {
+        Write-Host "Open the app with: `"$(Join-Path $installDir 'snob-desktop.exe')`""
+    }
     Write-Host "Start with: $snob login"
     Write-Host "Before uninstalling, run `"$snob purge`": the session and the database"
     Write-Host "live outside this directory and deleting the binary will not reach them."
