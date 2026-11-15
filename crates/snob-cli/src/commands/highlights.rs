@@ -655,7 +655,8 @@ fn items_json(tray: &Tray, number: usize, items: &[Story], format: Format) -> Re
                 "kind": story.kind.label(),
                 "taken_at": story.taken_at,
                 "mentions": story.mentions,
-                // Included for the reason `stories` gives.
+                // As `stories` includes it: the signed address is what lets
+                // another program fetch the file, and it expires on its own.
                 "url": story.url,
             })
         })

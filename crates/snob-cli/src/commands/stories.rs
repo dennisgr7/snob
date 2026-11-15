@@ -2,7 +2,9 @@
 //!
 //! **Downloading a story does not mark it as seen.**
 //!
-//! **It does not ask for consent, and that is deliberate.**
+//! **It asks no consent** (AGENTS.md, "Consent"): the question covers walking
+//! somebody's followers and following, and a story is what its account
+//! shows whoever opens the profile.
 
 use std::path::Path;
 
@@ -143,8 +145,7 @@ fn no_such_story(stories: &Stories, number: usize) -> anyhow::Error {
 }
 
 /// The network half: the profile and the reel, each paid for inside the client,
-/// for the reason `pfp`'s fetch gives, kept apart from the session and the
-/// filesystem so a test can drive it.
+/// kept apart from the session and the filesystem so a test can drive it.
 pub async fn fetch(
     client: &IgClient,
     typed: &str,

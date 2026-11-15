@@ -363,7 +363,7 @@ pub(super) async fn deliver(
     }
 
     // Whatever is still owed from earlier runs is NOT drained here but once
-    // per run, after every watched account, by the caller: `drain` says why.
+    // per run, after every watched account, by the caller (`drain`).
     Ok(())
 }
 

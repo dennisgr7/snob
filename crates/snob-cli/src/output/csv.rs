@@ -81,10 +81,13 @@ fn optional(value: Option<&str>) -> String {
     value.map(clean).unwrap_or_default()
 }
 
-/// What a field from a profile has to survive before it is written.
+/// A field somebody else wrote, made safe to open: through `printable`, and
+/// with an apostrophe ahead of one a spreadsheet would run as a formula, which
+/// is one that begins with `=`, `+`, `-` or `@`.
 ///
-/// The **first non-blank** character, not the first, and that is the other half
-/// of the same trap.
+/// **The first non-blank character decides, not the first**: a spreadsheet
+/// skips leading spaces before it looks, and `printable` has turned a leading
+/// tab or carriage return into one.
 fn clean(field: &str) -> String {
     let field = printable(field);
     match field.chars().find(|c| !c.is_whitespace()) {

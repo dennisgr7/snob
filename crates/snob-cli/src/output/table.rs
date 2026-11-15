@@ -17,13 +17,12 @@ const PROFILE_NOTE: &str = "Profiles: https://www.instagram.com/<username>";
 
 /// The real table, for a terminal someone is reading.
 ///
-/// **Drawn, then checked, and drawn again without links if the check fails.**
-///
-/// **It did change its mind, with `console` 0.16.6**, whose parser learned OSC:
-/// a wrapped link is no longer cut inside the address but closed with a style
-/// reset at the end of the line and reopened on the next — so every opener
-/// still found a terminator on its line, the old check passed, and the link ran
-/// across the border and the other columns anyway.
+/// **Drawn, then checked, and drawn again without links if the check fails**
+/// ([`links_are_whole`]): a link the table wraps on a narrow terminal is
+/// closed with a style reset at the end of the line and reopened on the next
+/// (`console` 0.16.6, whose parser learned OSC), so every opener finds a
+/// terminator on its line while the link runs across the border and the
+/// other columns.
 pub(crate) fn table(users: &[User], presentation: Presentation) -> String {
     if users.is_empty() {
         return String::new();

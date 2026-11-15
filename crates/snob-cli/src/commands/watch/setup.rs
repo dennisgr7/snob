@@ -458,8 +458,8 @@ fn jitter_of(schedule: &schedule::Schedule, typed: &str) -> Result<Option<std::t
 }
 
 /// Asks `question` until `holds` takes the answer, saying each time what was
-/// wrong with it: one mistyped answer used to end the whole wizard, after every
-/// question before it had been answered and nothing written.
+/// wrong with it, so one mistyped answer does not end the wizard with every
+/// question before it answered and nothing written.
 fn asked_until_it_holds<T>(question: &str, holds: impl Fn(&str) -> Result<T>) -> Result<T> {
     loop {
         let answer = ui::prompt_line(question)?;

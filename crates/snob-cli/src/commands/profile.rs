@@ -7,10 +7,11 @@
 //! because neither is served then; and one per twelve accounts you follow that
 //! follow them, skipped when there are none.
 //!
-//! **It does not ask for consent**, for the reason `stories` gives.
+//! **It asks no consent** (AGENTS.md, "Consent"): the one list it walks is the
+//! viewer's own following.
 //!
-//! **Reading a highlight's tray does not tell anybody you looked**, for the
-//! reason `stories` gives; `crates/snob-core/tests/no_seen.rs` holds it.
+//! **Reading a highlight's tray does not tell anybody you looked**:
+//! `crates/snob-core/tests/no_seen.rs` holds it.
 
 use anyhow::Result;
 use snob_core::Epoch;
