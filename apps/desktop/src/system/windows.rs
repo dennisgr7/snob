@@ -11,7 +11,6 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
-use tokio::sync::mpsc;
 use windows_sys::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     GetNetworkConnectivityHint, NotifyNetworkConnectivityHintChange,
@@ -143,7 +142,7 @@ fn network(level: NL_NETWORK_CONNECTIVITY_LEVEL_HINT) -> u8 {
 /// What the window and the network's callback share with the app.
 struct Shared {
     settings: Arc<Mutex<Settings>>,
-    said: mpsc::UnboundedSender<Event>,
+    said: Box<dyn Fn(Event) + Send + Sync>,
     network: AtomicU8,
     /// How many things ask the end of the session to wait.
     holds: Mutex<usize>,
@@ -152,8 +151,7 @@ struct Shared {
 
 impl Shared {
     fn say(&self, event: Event) {
-        // Nobody listening is the app on its way out.
-        let _ = self.said.send(event);
+        (self.said)(event);
     }
 
     /// Reads the settings again and says them when one changed.
@@ -188,15 +186,15 @@ pub(super) struct Windows {
 
 impl Windows {
     /// Reads what Windows is set to into `settings`, and says every change
-    /// from now on to `said`.
+    /// from now on through `said`, from threads of Windows' own.
     pub(super) fn listen(
         settings: Arc<Mutex<Settings>>,
-        said: mpsc::UnboundedSender<Event>,
+        said: impl Fn(Event) + Send + Sync + 'static,
     ) -> Self {
         read_into(&mut settings.lock().unwrap_or_else(|e| e.into_inner()));
         let shared = Arc::new(Shared {
             settings,
-            said,
+            said: Box::new(said),
             network: AtomicU8::new(NOT_SAID),
             holds: Mutex::new(0),
             released: Condvar::new(),
@@ -446,12 +444,16 @@ mod tests {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
 
+    use tokio::sync::mpsc;
+
     use super::*;
 
     /// A listener of the test's own, and what it says.
     fn listening() -> (Windows, mpsc::UnboundedReceiver<Event>) {
         let (said, heard) = mpsc::unbounded_channel();
-        let windows = Windows::listen(Arc::new(Mutex::new(Settings::default())), said);
+        let windows = Windows::listen(Arc::new(Mutex::new(Settings::default())), move |event| {
+            let _ = said.send(event);
+        });
         (windows, heard)
     }
 

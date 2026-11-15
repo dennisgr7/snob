@@ -107,6 +107,7 @@ runners of the command line.
 | Windows 11 Snap Layouts over the caption buttons the app draws | yes |
 | The window drawn to a picture | Windows yes; Linux no ("not implemented for this platform"), where the visual suite says so and compares nothing |
 | Nothing drawn at rest | the app asks for no frame at rest, and holds about 80 MiB. **GPUI wakes every window on each refresh on Windows** (its `VSyncProvider` thread), which is the 1 to 2% of one processor a debug build measures there; a release build is not measured yet |
+| Closing the window on macOS leaves the app in the Dock, and a click there opens the window again | **written, never run**: there is no macOS here. Elsewhere closing the window is leaving |
 | The app's own update | **none**: there is no package of the app to fetch. The screens for it are tested on the scripted backend |
 | System notifications | shown through GPUI; on macOS only from inside a bundle |
 | `cargo deny` for this workspace, packaging, signing, an installer | none |

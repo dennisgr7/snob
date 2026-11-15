@@ -133,7 +133,8 @@ pub trait System {
     /// Starts the app again in place of this one: after an update.
     fn restart(&self, cx: &mut App);
 
-    /// Everything the system says from now on. Called once.
+    /// Everything the system says from now on, to one listener: asked again,
+    /// by a window opened again, the new one takes over.
     fn events(&self) -> mpsc::UnboundedReceiver<Event>;
 }
 

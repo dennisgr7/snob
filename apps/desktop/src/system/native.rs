@@ -47,22 +47,31 @@ fn locale() -> String {
 /// The real system.
 pub struct Native {
     settings: Arc<Mutex<Settings>>,
-    said: mpsc::UnboundedSender<Event>,
-    heard: RefCell<Option<mpsc::UnboundedReceiver<Event>>>,
+    says: Says,
+    /// What was said before anybody listened, kept for the first who does.
+    first: RefCell<Option<mpsc::UnboundedReceiver<Event>>>,
     _listening: Vec<Subscription>,
     #[cfg(windows)]
     windows: super::windows::Windows,
 }
 
-/// Something that says what the system said from another thread: a second
-/// start of the app handing over.
+/// What says an event to whoever listens now, from any thread: the system's
+/// own callbacks, and a second start of the app handing over. **One listener
+/// at a time**: a window opened again takes over from the one that closed.
 #[derive(Clone)]
-pub struct Says(mpsc::UnboundedSender<Event>);
+pub struct Says(Arc<Mutex<mpsc::UnboundedSender<Event>>>);
 
 impl Says {
     pub fn say(&self, event: Event) {
-        // Nobody listening is the app on its way out.
-        let _ = self.0.send(event);
+        // Nobody listening is a window closed, or the app on its way out.
+        let _ = self.0.lock().unwrap_or_else(|e| e.into_inner()).send(event);
+    }
+
+    /// A listener of its own, in place of whoever listened before.
+    fn listen(&self) -> mpsc::UnboundedReceiver<Event> {
+        let (said, heard) = mpsc::unbounded_channel();
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = said;
+        heard
     }
 }
 
@@ -74,19 +83,23 @@ impl Native {
             ..Settings::default()
         }));
         let (said, heard) = mpsc::unbounded_channel();
+        let says = Says(Arc::new(Mutex::new(said)));
         #[cfg(windows)]
-        let windows = super::windows::Windows::listen(Arc::clone(&settings), said.clone());
+        let windows = {
+            let says = says.clone();
+            super::windows::Windows::listen(Arc::clone(&settings), move |event| says.say(event))
+        };
 
         let slept_at = Rc::new(RefCell::new(None::<SystemTime>));
         let sleeping = {
-            let (said, slept_at) = (said.clone(), Rc::clone(&slept_at));
+            let (says, slept_at) = (says.clone(), Rc::clone(&slept_at));
             cx.on_system_sleep(move |_| {
                 *slept_at.borrow_mut() = Some(SystemTime::now());
-                let _ = said.send(Event::Sleeping);
+                says.say(Event::Sleeping);
             })
         };
         let waking = {
-            let said = said.clone();
+            let says = says.clone();
             cx.on_system_wake(move |_| {
                 // By the wall clock: the one that went on while the machine
                 // did not.
@@ -95,22 +108,22 @@ impl Native {
                     .take()
                     .and_then(|at| at.elapsed().ok())
                     .unwrap_or(Duration::ZERO);
-                let _ = said.send(Event::Woke { slept });
+                says.say(Event::Woke { slept });
             })
         };
         {
-            let said = said.clone();
+            let says = says.clone();
             cx.on_system_notification_response(move |response, _| {
                 if let Some(about) = notice(&response.tag) {
-                    let _ = said.send(Event::Opened(about));
+                    says.say(Event::Opened(about));
                 }
             });
         }
 
         Self {
             settings,
-            said,
-            heard: RefCell::new(Some(heard)),
+            says,
+            first: RefCell::new(Some(heard)),
             _listening: vec![sleeping, waking],
             #[cfg(windows)]
             windows,
@@ -119,7 +132,7 @@ impl Native {
 
     /// What says an event from another thread.
     pub fn says(&self) -> Says {
-        Says(self.said.clone())
+        self.says.clone()
     }
 
     /// The window's appearance changed: the system's theme did.
@@ -132,7 +145,7 @@ impl Native {
             changed.then(|| settings.clone())
         };
         if let Some(settings) = changed {
-            let _ = self.said.send(Event::Settings(settings));
+            self.says.say(Event::Settings(settings));
         }
     }
 }
@@ -192,16 +205,30 @@ impl System for Native {
     }
 
     fn events(&self) -> mpsc::UnboundedReceiver<Event> {
-        self.heard.borrow_mut().take().unwrap_or_else(|| {
-            // Asked twice: the second listener hears nothing.
-            mpsc::unbounded_channel().1
-        })
+        // Asked again by a window opened again: it takes over.
+        self.first
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| self.says.listen())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_is_said_goes_to_whoever_listens_now() {
+        let (said, mut first) = mpsc::unbounded_channel();
+        let says = Says(Arc::new(Mutex::new(said)));
+        says.say(Event::Sleeping);
+        assert_eq!(first.try_recv().ok(), Some(Event::Sleeping));
+
+        let mut second = says.listen();
+        says.say(Event::Activate);
+        assert_eq!(second.try_recv().ok(), Some(Event::Activate));
+        assert!(first.try_recv().is_err(), "the one before hears no more");
+    }
 
     #[test]
     fn a_notification_clicked_is_told_apart_by_its_tag() {

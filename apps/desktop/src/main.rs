@@ -9,6 +9,7 @@
 // No console window behind the app on Windows.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -182,6 +183,9 @@ fn be_driven(
 ) {
 }
 
+/// What opens the window: at the start, and again from the Dock.
+type Opens = Box<dyn Fn(&mut gpui_kit::App)>;
+
 /// What this program is, for a crash report and a diagnostic one.
 fn about() -> String {
     format!(
@@ -217,10 +221,25 @@ fn main() -> anyhow::Result<()> {
     let (_notices, snob_found) = front::hand_over();
     tracing::info!(about = about(), testing, snob_found, "the app started");
 
-    let placement = Prefs::load(&paths).window;
     let simulated = simulated(&args);
-    gpui_kit::application().with_assets(Assets).run(move |cx| {
-        cx.set_quit_mode(QuitMode::LastWindowClosed);
+    let reopen: Rc<RefCell<Option<Opens>>> = Rc::default();
+    let app = gpui_kit::application().with_assets(Assets);
+    {
+        let reopen = Rc::clone(&reopen);
+        app.on_reopen(move |cx| {
+            if cx.windows().is_empty()
+                && let Some(open) = &*reopen.borrow()
+            {
+                tracing::info!("the window is opened again");
+                open(cx);
+            }
+        });
+    }
+    app.run(move |cx| {
+        // On macOS an app whose window was closed stays in the Dock, where a
+        // click opens it again; everywhere else closing the window is
+        // leaving.
+        cx.set_quit_mode(QuitMode::Default);
         let ((system, activate), native, spoken) = system(simulated, cx);
         runtime.handle().spawn(instance::serve(listener, activate));
 
@@ -235,35 +254,49 @@ fn main() -> anyhow::Result<()> {
             locale = settings.locale,
             "the system's settings"
         );
-        let backend = Arc::new(Engine::new(
+        let backend = Engine::new(
             Arc::clone(&runtime),
             paths.clone(),
             secrets,
             (detail, files),
             about(),
-        ));
-        let opened = ui::window::open(backend, system, placement, cx);
-        let (window, shell) = match opened {
-            Ok(opened) => opened,
-            Err(e) => {
-                tracing::error!(error = %e, "the window could not be opened");
-                cx.quit();
-                return;
+        );
+        let backend = Arc::new(backend);
+        let open = {
+            let paths = paths.clone();
+            move |cx: &mut gpui_kit::App| {
+                let placement = Prefs::load(&paths).window;
+                let opened = ui::window::open(backend.clone(), system.clone(), placement, cx);
+                let (window, shell) = match opened {
+                    Ok(opened) => opened,
+                    Err(e) => {
+                        tracing::error!(error = %e, "the window could not be opened");
+                        return None;
+                    }
+                };
+                if let Some(native) = native.clone() {
+                    let followed = window.update(cx, |_, window, _| {
+                        window
+                            .observe_window_appearance(move |window, _| {
+                                native.appearance_changed(window.appearance());
+                            })
+                            .detach();
+                    });
+                    if let Err(e) = followed {
+                        tracing::warn!(error = %e, "the system's theme is not followed");
+                    }
+                }
+                Some((window, shell))
             }
         };
+        let Some((window, shell)) = open(cx) else {
+            cx.quit();
+            return;
+        };
         be_driven(&paths, &runtime, window, shell, spoken, cx);
-        if let Some(native) = native {
-            let followed = window.update(cx, |_, window, _| {
-                window
-                    .observe_window_appearance(move |window, _| {
-                        native.appearance_changed(window.appearance());
-                    })
-                    .detach();
-            });
-            if let Err(e) = followed {
-                tracing::warn!(error = %e, "the system's theme is not followed");
-            }
-        }
+        *reopen.borrow_mut() = Some(Box::new(move |cx| {
+            open(cx);
+        }));
         cx.on_app_quit(|_| async { tracing::info!("the app stopped") })
             .detach();
     });
