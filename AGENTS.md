@@ -926,44 +926,138 @@ pnpm check && pnpm build && pnpm test   # Playwright against `wrangler dev` serv
 
 ## Desktop app
 
-`apps/desktop/`: a GPUI window on the engine, linked in process, from a cold
-start to somebody signed in. **A workspace of its own**, with its own
-`Cargo.lock`: build and test it from that directory; no line of `ci.yml`
-builds it, and `packaging/`, `Formula/`, `bucket/` and `release.yml` know
-nothing of it. Its `README.md` says how it is put together and what is
-verified on which system.
+`apps/desktop/`: a GPUI window on the engine, linked in process, **from a cold
+start to somebody signed in and welcomed**: the frame and its band, signing
+in through snob's own browser window or with a pasted session ID, several
+accounts, signing out, the settings of its log, a command palette. The home
+screen is a title: what a scan shows comes next.
+
+**A workspace of its own**, with its own `Cargo.lock`: GPUI brings some 500
+crates and does not build for musl. Build and test it from that directory;
+no line of `ci.yml` builds it, and `packaging/`, `Formula/`, `bucket/` and
+`release.yml` know nothing of it. GPUI comes through `gpui-kit`, pinned
+exactly, everything from crates.io.
+
+### How it is put together
 
 - **Every rule of this file holds there through the engine.** It builds no
   Instagram client and opens no database of its own: `backend/engine.rs`
   calls what a command calls (`snob_engine::login`, `logout`, `app`,
-  `viewer`, `log`).
-- **A view draws what `state/` says, asks through `backend::Backend`, and
-  hears the system through `system::System`**: never the engine, an
-  operating system or a clock of its own. No engine future runs on the
-  window's thread (`runtime.rs`).
-- **Nothing is sent to decide what a start shows or to find a network**, and
-  the session of the account in use is asked about once a day at most, never
-  in a cooldown (`Backend::expired_session`).
-- **The test build is the feature `testing`**: `--test-root`, the simulated
-  system, the control channel (`src/control.rs`). A build without it has
-  none of them, which the harness's privacy suite reads off the binary.
-- **Every word is in `locales/en/snob.ftl` and `locales/es/snob.ftl`**, held
-  to the same messages by a test. Spanish belongs there; `language.rs` does
-  not scan `.ftl`.
+  `viewer`, `log`, `browser`).
+- **A view never waits on the engine**, which runs on a tokio runtime of two
+  threads of the app's own (`runtime.rs`). A view asks through
+  `backend::Backend` and is answered on a channel; the trait is the engine
+  (`backend/engine.rs`) and, in a test build, a script
+  (`backend/scripted.rs`).
+- **What is shown is decided apart from how it is drawn** (`state/`): the
+  screen and why (`flow.rs`), what the band says (`status.rs`), what a pasted
+  ID is (`paste.rs`), what the palette offers (`commands.rs`), what is
+  remembered between runs (`prefs.rs`). No window, clock or network there.
+- **A view never calls an operating system** (`system/`): it reads `Settings`
+  and takes `Event`s from one trait, which GPUI and Windows answer
+  (`native.rs`, `windows.rs`) and a test speaks for (`simulated.rs`). One
+  listener at a time: a window opened again takes over.
+- **A pasted session is sent as the browser it was copied from**, named
+  under the field when several are installed. The engine keeps that name
+  with the session and follows the browser's later versions
+  (`browser::refresh_user_agent`). The marks beside the names are the app's
+  own plain drawings, not the browsers' artwork.
+- **The processes the engine starts are the command line's**
+  (`exe::start_as`): the app points the engine at the `snob` beside it and
+  logs when there is none.
+- **Every word is in `locales/en/snob.ftl` and `locales/es/snob.ftl`**, chosen
+  by the system's language and held to the same messages by a test. Spanish
+  belongs there; `language.rs` does not scan `.ftl`.
+- **Closing the window is leaving, but on macOS**, where the app stays in the
+  Dock and a click there opens the window again (`main.rs`).
+
+### What it never does
+
+- **Nothing is sent to decide what a start shows**: who is signed in is read
+  from files. The same files are read again when the window is looked at
+  again, which is how what the command line did meanwhile is seen.
+- **The session of the account in use is asked about once a day at most,
+  never in a cooldown** (`Backend::expired_session`); a login counts.
+- **Nothing is sent to find a network**: the app follows what the system
+  says, and where it does not say, assumes one.
+- **No secret reaches the log, the diagnostic report or a file of the
+  app's.** The report makes accounts anonymous and is copied by the person,
+  never sent.
+- **A build without the feature `testing` has no test mode**: no
+  `--test-root`, no simulated system, no control channel
+  (`src/control.rs`). The harness's privacy suite reads both of these off
+  the real binary.
+
+### Its tests
 
 ```bash
 cd apps/desktop
 cargo fmt --check
 cargo clippy --all-targets --features testing --locked -- -D warnings
 cargo clippy --all-targets --locked -- -D warnings
-cargo harness quick     # logic, behavior, visual, accessibility, privacy
-cargo harness all       # and performance and endurance, which run nightly
+cargo harness quick     # what a change is judged by
+cargo harness all       # and the two suites that run nightly
+cargo harness demo      # the test build, by hand, on a fake Instagram
 ```
 
-`.github/workflows/desktop.yml` runs those on the five runners of `ci.yml`;
-`bash tools/ci/run-desktop.sh` runs the Linux ones in Docker under Xvfb
-(`tools/ci/desktop.sh` stays in step with the workflow). The source-reading
-guards of `crates/snob-core/tests/` read `apps/desktop` too, from the root.
+`cargo harness` (`examples/harness/`, an example so that it links only
+dev-dependencies) owns the fake Instagram and the app it starts, in a
+directory of its own with no real keyring, and writes
+`target/harness/report.html`. A scenario that fails leaves its last steps as
+pictures, one of the window when it failed, and the app's log.
+
+| Suite | What it checks |
+|---|---|
+| `logic` | `cargo test --features testing`: the state, the backend on the engine against the fake Instagram, the views in process |
+| `behavior` | the real binary, driven through its control channel, from a first start to signing out with the keyboard alone |
+| `visual` | a picture of every screen in six looks (light, dark, both with more contrast, twice the text, 800 by 600), against `tests/approved/<os>/` |
+| `accessibility` | a name, a role and 24 by 24 on every control; one title a screen; every control reached with Tab |
+| `privacy` | no secret in the log, the report or the files; no test mode in a build without the feature |
+| `performance` (nightly) | start, memory and processor at rest, size, against this machine's `tests/baseline/<os>.json`; fails on 10% worse |
+| `endurance` (nightly) | 200 sleeps and 60 changes of account in one run, which must still answer and not have grown |
+
+- **The control channel** is the local socket of the same user under the test
+  root, one JSON request a line. It reads the window's accessibility nodes
+  and acts on one by its id, as a screen reader would; it never reaches into
+  a view.
+- `--approve` takes this run's pictures and numbers as the approved ones.
+  **The pictures are committed, a system each; the numbers are a machine's
+  own** and are not, so a runner with no baseline records them and fails
+  nothing.
+- **A test build lists as many browsers as it is told** (`--browsers`), so a
+  picture is of the same ones on every machine. That changes the list alone:
+  a session is still sent as a browser that is installed.
+- `.github/workflows/desktop.yml` runs the lines above on the five runners of
+  `ci.yml`, the nightly suites on a timer; `bash tools/ci/run-desktop.sh`
+  runs the Linux ones in Docker under Xvfb, with a browser in the image
+  (`tools/ci/desktop.sh` stays in step with the workflow). The source-reading
+  guards of `crates/snob-core/tests/` read `apps/desktop` too, from the root.
+
+### What is verified, and what is not
+
+| | |
+|---|---|
+| Windows 11 x86-64 | lints, the five suites of a change, the two nightly ones |
+| Linux x86-64 (glibc) in Docker under Xvfb, on Mesa's CPU Vulkan | lints, and the suites of a change but for the pictures: GPUI does not draw the window to a picture there, and the visual suite says so |
+| Windows ARM64, Linux ARM64, Wayland, macOS, GitHub's runners | **not yet**: `desktop.yml` has never run |
+| What Windows is set to (contrast theme, animations, transparency, battery saver, text size, network, session end) | read and followed; a change is tested by sending the window its message, not by changing the machine |
+| The same on macOS and Linux | **not asked yet**: the app follows only the theme there |
+| Staying in the Dock on macOS, and opening the window again from it | **written, never run** |
+| A screen reader's own reading (Narrator, VoiceOver, Orca), a live region heard | not verified: the tree is checked by role and name, not a reader's speech |
+| Windows 11 Snap Layouts over the caption buttons the app draws | yes, when the drag area is a sibling of the buttons |
+| The list of several browsers under the field | drawn and audited from a test build told to list three; one browser on the machine it was written on |
+| The app's own update | **none**: there is no package of the app to fetch. Its screens are tested on the scripted backend |
+| System notifications | shown through GPUI; on macOS only from inside a bundle |
+| `cargo deny` for this workspace, packaging, signing, an installer | none |
+
+**At rest the app asks for no frame** and holds about 85 MiB. GPUI wakes
+every window on each refresh on Windows (its `VSyncProvider` thread),
+minimized or not: on a 164 Hz display a release build spends 0.9 to 1.2% of
+one processor there, some 10 ms a second, and a debug build 1.6%.
+
+The app's `Cargo.lock` holds a second GPUI, `gpui-fast`, that is never built:
+GPUI's test support names it as an optional dependency, and Cargo locks what
+a feature names whether or not it is enabled.
 
 ## Release and packaging
 
