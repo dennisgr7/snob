@@ -773,4 +773,17 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn a_populated_user_serializes_to_the_contract_shape() {
+        let user = User {
+            pk: Pk::new(42),
+            username: "someone".into(),
+            full_name: Some("Some One".into()),
+            is_private: Some(true),
+            is_verified: Some(false),
+            pfp_url: Some("https://cdn.example/pfp.jpg".into()),
+        };
+        insta::assert_snapshot!(serde_json::to_string_pretty(&user).unwrap());
+    }
 }

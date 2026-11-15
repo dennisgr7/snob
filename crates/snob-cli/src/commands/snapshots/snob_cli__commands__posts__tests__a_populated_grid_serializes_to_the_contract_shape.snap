@@ -1,0 +1,97 @@
+---
+source: crates/snob-cli/src/commands/posts.rs
+expression: json
+---
+{
+  "declared_posts": 12,
+  "more": true,
+  "pages_read": 2,
+  "posts": [
+    {
+      "caption": "sun\nwith @friend",
+      "caption_edited": false,
+      "code": "DdzEShhEWCR",
+      "comments": 2,
+      "duration": 42.5,
+      "items": [
+        {
+          "alt": null,
+          "best": null,
+          "duration": 42.5,
+          "height": 1920,
+          "kind": "video",
+          "number": 1,
+          "pk": "3995556159532654737",
+          "url": "https://cdn.example/2.mp4",
+          "width": 1080
+        }
+      ],
+      "kind": "reel",
+      "liked_by": {
+        "name": "close",
+        "others": 9
+      },
+      "likers_known": [
+        {
+          "pk": null,
+          "username": "close"
+        }
+      ],
+      "likes": 10,
+      "likes_hidden": false,
+      "location": "A beach",
+      "mentions": [
+        "friend"
+      ],
+      "music": {
+        "artist": "someone",
+        "artist_username": "someone",
+        "kind": "original",
+        "title": "Original audio"
+      },
+      "number": 1,
+      "owner": "someone",
+      "owner_pk": "42",
+      "paid_partnership": true,
+      "pinned": true,
+      "pk": "3995556159532654737",
+      "place": {
+        "lat": 40.4168,
+        "lng": -3.7038,
+        "name": "A beach",
+        "pk": "100"
+      },
+      "plays": 100,
+      "plays_facebook": 10,
+      "plays_instagram": 90,
+      "reposts": 4,
+      "shares": 6,
+      "tagged": [
+        "tagged"
+      ],
+      "tagged_accounts": [
+        {
+          "pk": "7",
+          "username": "tagged"
+        }
+      ],
+      "taken_at": 1790510400,
+      "url": "https://www.instagram.com/reel/DdzEShhEWCR/",
+      "with": [
+        "partner"
+      ],
+      "with_accounts": [
+        {
+          "pk": "8",
+          "username": "partner"
+        }
+      ]
+    }
+  ],
+  "tab": "reels",
+  "until": {
+    "code": "DdzEShhEWCR",
+    "reached": true
+  },
+  "username": "someone"
+}

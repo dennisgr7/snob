@@ -86,6 +86,8 @@ tempfile.workspace = true
 reqwest.workspace = true
 # Property tests for MCP key parsing.
 proptest.workspace = true
+# Snapshots of the MCP tool page envelope JSON contract.
+insta.workspace = true
 
 # Only for the test of `http::twin` against a wildcard held with exclusive
 # use (`SO_EXCLUSIVEADDRUSE`), which neither `std` nor tokio can set before a

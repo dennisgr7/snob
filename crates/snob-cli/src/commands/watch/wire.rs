@@ -1540,4 +1540,87 @@ mod tests {
         assert_eq!(check_json(&checked, Some(&tick.viewer))["viewer"], reader);
         assert!(check_json(&checked, None)["viewer"].is_null());
     }
+
+    #[test]
+    fn a_populated_watch_payload_serializes_to_the_contract_shape() {
+        let full_user = |pk: u64, username: &str| User {
+            pk: Pk::new(pk),
+            username: username.into(),
+            full_name: Some(format!("Full {username}")),
+            is_private: Some(false),
+            is_verified: Some(true),
+            pfp_url: Some("https://cdn.example/pfp.jpg".into()),
+        };
+        let mut following = list(
+            Basis::Compare {
+                before: 3,
+                after: 4,
+            },
+            ListDiff {
+                gained: vec![full_user(3, "followed")],
+                lost: vec![full_user(4, "unfollowed")],
+            },
+            Some(Epoch::new(1_500)),
+        );
+        following.kind = ListKind::Following;
+
+        let new_post = post(1, "sun\nwith @friend");
+        let mut posts = posts_report(vec![new_post.clone()]);
+        posts.saved = vec![SavedPost {
+            pk: new_post.pk,
+            directory: "someone/posts/2026-11-15_DdzEShhEWCR".into(),
+            files: vec!["01.jpg".into()],
+            failed: 0,
+            left: 0,
+        }];
+
+        let mut report = report_with(
+            Some(list(
+                Basis::Compare {
+                    before: 1,
+                    after: 2,
+                },
+                ListDiff {
+                    gained: vec![full_user(1, "arrived")],
+                    lost: vec![full_user(2, "left")],
+                },
+                Some(Epoch::new(1_000)),
+            )),
+            vec![Rename {
+                pk: Pk::new(7),
+                history_id: 7,
+                from: "before".into(),
+                to: "after".into(),
+                at: Epoch::new(1_500),
+            }],
+        );
+        report.following = Some(following);
+        report.posts = Some(posts);
+
+        let mut tick = TickReport::for_test(report, 14, Epoch::new(1_700_000_000));
+        tick.lists = vec![
+            snob_engine::engine::watch::TickList {
+                kind: ListKind::Followers,
+                skipped: None,
+            },
+            snob_engine::engine::watch::TickList {
+                kind: ListKind::Following,
+                skipped: Some(Skipped::NobodyLooked(
+                    snob_engine::engine::Provenance::Cooldown,
+                )),
+            },
+        ];
+        tick.posts = Some(snob_engine::engine::watch::TickPosts { skipped: None });
+        tick.timing = Some(RunTiming {
+            due_at: Some(Epoch::new(1_699_999_800)),
+            began_at: Epoch::new(1_699_999_900),
+            ended_at: Some(Epoch::new(1_700_000_000)),
+            allowed: std::time::Duration::from_secs(60),
+        });
+
+        let mut body = payload(&tick, "run-1", "watch.changes");
+        // Keep release version bumps from invalidating the payload structure snapshot.
+        body["run"]["tool"]["version"] = serde_json::json!("0.0.0");
+        insta::assert_snapshot!(serde_json::to_string_pretty(&body).unwrap());
+    }
 }

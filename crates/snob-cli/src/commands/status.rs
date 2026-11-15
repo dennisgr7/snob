@@ -968,4 +968,166 @@ mod tests {
             found.text()
         );
     }
+
+    #[test]
+    fn a_populated_status_serializes_to_the_contract_shape() {
+        use snob_core::Pk;
+        use snob_core::budget::{Brake, Via};
+        use snob_core::watch::{RecordedOutcome, RunOutcome};
+        use snob_engine::jobs::{Detached, Job, Seen, State, Status as JobStatus};
+        use snob_store::paths::JobId;
+        use snob_store::store::rate_budget::CooldownRecord;
+        use std::time::Duration;
+
+        let now = EpochMs::new(1_773_576_000_000);
+        let mut session = snob_core::session::Session::from_sessionid(
+            "42%3AAbCdEfGh%3A20",
+            "Mozilla/5.0",
+            snob_core::session::SessionOrigin::Paste,
+        )
+        .unwrap();
+        session.username = Some("me".into());
+        session.created_at = Epoch::new(1_773_489_600);
+        session.validated_at = Some(Epoch::new(1_773_570_000));
+
+        let budget = BudgetState {
+            pace: BucketState {
+                left: 19,
+                most: 20,
+                free_at: now + Duration::from_secs(4),
+            },
+            daily: BucketState {
+                left: 1_980,
+                most: 2_000,
+                free_at: now + Duration::from_secs(45),
+            },
+            writes: BucketState {
+                left: 2,
+                most: 3,
+                free_at: now + Duration::from_secs(900),
+            },
+            next_write_at: now + Duration::from_secs(900),
+            accounts_read: 120,
+            accounts_ceiling: 1_000,
+            last_cooldown: Some(CooldownRecord {
+                until: now + Duration::from_secs(3_600),
+                set_at: now - Duration::from_secs(3_600),
+                reason: "rate_limit".into(),
+                strikes: 1,
+            }),
+            brake: Some(Brake {
+                until: now + Duration::from_secs(3_600),
+                accounts: vec![Pk::new(42), Pk::new(99)],
+            }),
+            sitting: None,
+        };
+        let answered = Answered {
+            day: AnswersDay {
+                answers: 15,
+                refused: 1,
+                median: Some(Duration::from_millis(250)),
+                p95: Some(Duration::from_millis(900)),
+                slowest: Some(Duration::from_millis(1_400)),
+                load: Some(("1/1".into(), now - Duration::from_secs(60))),
+                via: Some(Via::Browser),
+            },
+            slowing: Some(Duration::from_millis(500)),
+        };
+        let lists = vec![Stored {
+            kind: ListKind::Followers,
+            latest: Some(snapshots::Snapshot {
+                id: 1,
+                account_pk: Pk::new(42),
+                kind: ListKind::Followers,
+                started_at: Epoch::new(1_773_570_000),
+                taken_at: Some(Epoch::new(1_773_570_120)),
+                member_count: 244,
+                declared_count: Some(245),
+                next_cursor: None,
+            }),
+            resumable: true,
+            counter: Some(245),
+            polled_at: Some(Epoch::new(1_773_575_000)),
+        }];
+        let runs = vec![(
+            watch_store::Run {
+                account_pk: Pk::new(7),
+                started_at: Epoch::new(1_773_572_000),
+                finished_at: Some(Epoch::new(1_773_572_020)),
+                requests: 4,
+                outcome: Some(RecordedOutcome::Known(RunOutcome::Ok)),
+                changes: 2,
+                posts_skipped: None,
+                due_at: Some(Epoch::new(1_773_571_900)),
+                began_at: Some(Epoch::new(1_773_571_960)),
+            },
+            Some("someone".into()),
+        )];
+        let acts = vec![mcp_acts::Act {
+            at: now - Duration::from_secs(300),
+            action: "unfollow".into(),
+            target_pk: Some(Pk::new(7)),
+            target_name: Some("someone".into()),
+            via: "form".into(),
+            client: Some("claude".into()),
+        }];
+
+        let job_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            job_dir.path().join("err.log"),
+            concat!(
+                r#"{"progress":{"event":"page","list":"followers","page":3,"accounts":36,"of":120,"sitting":3,"at":1773575990000}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        let jobs = vec![Seen {
+            id: JobId::parse("j0123456789ABCDEFGHJKMNPQRS").unwrap(),
+            dir: job_dir.path().to_path_buf(),
+            job: Some(Job {
+                schema: 1,
+                id: "j0123456789ABCDEFGHJKMNPQRS".into(),
+                created_at: now.get() - 60_000,
+                viewer_pk: Pk::new(42),
+                tool: Some("snob_followers".into()),
+                arguments: json!({ "account": "someone" }),
+                argv: vec!["followers".into(), "someone".into()],
+                globals: vec![],
+                estimate: None,
+                detached: Some(Detached::LeftJob),
+                started_by: Some("claude".into()),
+                max_wait_seconds: Some(3_600),
+            }),
+            state: Some(State {
+                status: JobStatus::Running,
+                started_at: now.get() - 55_000,
+                updated_at: now.get() - 5_000,
+                finished_at: None,
+                exit_number: None,
+                cancel: false,
+                failure: None,
+                supervisor_pid: Some(1234),
+                child_pid: Some(5678),
+            }),
+            held: true,
+            stop_asked: false,
+            status: JobStatus::Running,
+        }];
+
+        let found = Found {
+            sections: args(&[]).sections(),
+            session: &session,
+            storage: "keyring",
+            budget: &budget,
+            answered: &answered,
+            held: Some(now + Duration::from_secs(3_600)),
+            braked: &["me".into(), "other".into()],
+            lists: &lists,
+            runs: &runs,
+            acts: &acts,
+            jobs: &jobs,
+            now,
+        };
+        insta::assert_snapshot!(serde_json::to_string_pretty(&found.json()).unwrap());
+    }
 }

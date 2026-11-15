@@ -1230,4 +1230,23 @@ third",
             }
         }
     }
+
+    #[test]
+    fn a_populated_error_object_serializes_to_the_contract_shape() {
+        let viewer = Viewer {
+            pk: snob_core::Pk::new(42),
+            username: Some("me".into()),
+        };
+        let exit_err = ExitError::new(
+            ExitCode::RateLimited,
+            "the walk stopped because the account is in cooldown",
+        )
+        .with_hint("try again after the cooldown lifts")
+        .with_reason("walked_elsewhere")
+        .with_cooldown_until(snob_core::EpochMs::new(1_773_583_200_000))
+        .with_retry_at(snob_core::EpochMs::new(1_773_583_200_000));
+        let wrapped = anyhow::Error::new(exit_err).context("could not read followers");
+        let object = error_json_for(&wrapped, Some(&viewer));
+        insta::assert_snapshot!(serde_json::to_string_pretty(&object).unwrap());
+    }
 }

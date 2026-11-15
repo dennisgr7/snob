@@ -1,0 +1,131 @@
+---
+source: crates/snob-cli/src/commands/status.rs
+expression: "serde_json::to_string_pretty(&found.json()).unwrap()"
+---
+{
+  "agents": {
+    "acts": [
+      {
+        "action": "unfollow",
+        "at": 1773575700,
+        "client": "claude",
+        "target": {
+          "pk": 7,
+          "username": "someone"
+        },
+        "via": "form",
+        "write": true
+      }
+    ],
+    "writes": 1
+  },
+  "answers": {
+    "count": 15,
+    "load": {
+      "at": 1773575940,
+      "value": "1/1"
+    },
+    "median_ms": 250,
+    "p95_ms": 900,
+    "refused": 1,
+    "slowest_ms": 1400,
+    "slowing_ms": 500,
+    "via": "browser"
+  },
+  "budget": {
+    "accounts_ceiling": 1000,
+    "accounts_left": 880,
+    "accounts_read": 120,
+    "day": {
+      "free_at": 1773576045,
+      "left": 1980,
+      "most": 2000
+    },
+    "next_request_at": 1773576045,
+    "next_write_at": 1773576900,
+    "pace": {
+      "free_at": 1773576004,
+      "left": 19,
+      "most": 20
+    },
+    "requests_now": 19,
+    "writes": {
+      "free_at": 1773576900,
+      "left": 2,
+      "most": 3
+    }
+  },
+  "cooldown": {
+    "active": true,
+    "brake": {
+      "accounts": [
+        42,
+        99
+      ],
+      "until": 1773579600
+    },
+    "last": {
+      "escalates_until": 1773658800,
+      "reason": "rate_limit",
+      "set_at": 1773572400,
+      "strikes": 1,
+      "until": 1773579600
+    },
+    "until": 1773579600
+  },
+  "jobs": {
+    "running": [
+      {
+        "account": "someone",
+        "command": "followers",
+        "created_at": 1773575940,
+        "eta_seconds": {
+          "least": 7,
+          "most": 22
+        },
+        "job_id": "j0123456789ABCDEFGHJKMNPQRS",
+        "progress": {
+          "accounts": 36,
+          "at": 1773575990000,
+          "event": "page",
+          "list": "followers",
+          "of": 120,
+          "page": 3,
+          "sitting": 3
+        },
+        "started_by": "claude",
+        "status": "running"
+      }
+    ]
+  },
+  "lists": {
+    "followers": {
+      "counter": 245,
+      "declared": 245,
+      "members": 244,
+      "polled_at": 1773575000,
+      "resumable": true,
+      "taken_at": 1773570120
+    }
+  },
+  "session": {
+    "created_at": 1773489600,
+    "origin": "paste",
+    "pk": 42,
+    "storage": "keyring",
+    "username": "me",
+    "validated_at": 1773570000
+  },
+  "watch": {
+    "last_runs": [
+      {
+        "at": 1773572000,
+        "changes": 2,
+        "outcome": "ok",
+        "pk": 7,
+        "requests": 4,
+        "username": "someone"
+      }
+    ]
+  }
+}

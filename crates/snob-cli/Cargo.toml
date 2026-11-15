@@ -118,6 +118,8 @@ snob-fake-ig.workspace = true
 # the tree through snob-ig.
 reqwest.workspace = true
 tempfile.workspace = true
+# Snapshots of the CLI, status, watch and error JSON contracts.
+insta.workspace = true
 # Only so the test for `--tls-extra-root` can check its predicate against a real
 # certificate as well as against rejections: one that refuses everything also
 # passes a test made only of rejections. Pure data, so it builds on every target

@@ -1,0 +1,23 @@
+---
+source: crates/snob-cli/src/report.rs
+expression: "serde_json::to_string_pretty(&object).unwrap()"
+---
+{
+  "error": {
+    "causes": [
+      "the walk stopped because the account is in cooldown"
+    ],
+    "code": "rate_limited",
+    "cooldown_until": 1773583200,
+    "exit": 5,
+    "hint": "try again after the cooldown lifts",
+    "message": "could not read followers",
+    "reason": "walked_elsewhere",
+    "retry_at": 1773583200,
+    "url": null
+  },
+  "viewer": {
+    "pk": 42,
+    "username": "me"
+  }
+}

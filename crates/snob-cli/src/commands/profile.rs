@@ -1153,4 +1153,39 @@ mod tests {
         assert!(console::measure_text_width(&wide) <= 24, "{wide}");
         assert!(wide.ends_with('…'));
     }
+
+    #[test]
+    fn a_populated_profile_serializes_to_the_contract_shape() {
+        let mut profile = sample();
+        profile.external_url = Some("https://example.test/me".into());
+        profile.category = Some("Photographer".into());
+        profile.pfp_url = Some("https://cdn.example/pfp.jpg".into());
+        profile.pfp_full_size = Some("https://cdn.example/pfp-full.jpg".into());
+        profile.read_at = Epoch::new(1_773_576_000);
+        if let Some(mutual) = profile.mutual.as_mut() {
+            for (index, account) in mutual.people.iter_mut().enumerate() {
+                account.pk = Pk::new(10 + index as u64);
+                account.full_name = Some("Friend Name".into());
+                account.is_private = Some(false);
+                account.is_verified = Some(true);
+                account.pfp_url = Some("https://cdn.example/friend.jpg".into());
+            }
+        }
+        profile.highlights = Visibility::Shown(vec![Highlight {
+            id: "highlight:1".into(),
+            title: "trip".into(),
+            items: Some(5),
+            updated_at: Some(Epoch::new(1_773_489_600)),
+            cover: Some("https://cdn.example/cover.jpg".into()),
+        }]);
+        profile.stories = Visibility::Shown(vec![Story {
+            kind: snob_engine::media::Kind::Photo,
+            taken_at: Epoch::new(1_773_576_000),
+            expiring_at: Some(Epoch::new(1_773_662_400)),
+            url: Some("https://cdn.example/story.jpg".into()),
+            mentions: vec!["friend".into()],
+            thumb: Some("https://cdn.example/story-thumb.jpg".into()),
+        }]);
+        insta::assert_snapshot!(serde_json::to_string_pretty(&as_json(&profile)).unwrap());
+    }
 }

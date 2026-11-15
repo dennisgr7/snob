@@ -1,0 +1,105 @@
+---
+source: crates/snob-core/src/model/post.rs
+expression: "serde_json::to_string_pretty(&sample_post()).unwrap()"
+---
+{
+  "pk": "3995556159532654737",
+  "code": "DdzEShhEWCR",
+  "url": "https://www.instagram.com/reel/DdzEShhEWCR/",
+  "owner": "someone",
+  "kind": "reel",
+  "taken_at": 1773576000,
+  "caption": "sun\nwith someone",
+  "location": "A beach",
+  "likes": 80,
+  "liked_by": {
+    "name": "close",
+    "others": 79
+  },
+  "comments": 8,
+  "plays": 100,
+  "tagged": [
+    "tagged"
+  ],
+  "mentions": [
+    "friend"
+  ],
+  "with": [
+    "partner"
+  ],
+  "items": [
+    {
+      "number": 1,
+      "kind": "photo",
+      "width": 1080,
+      "height": 1350,
+      "url": "https://cdn.example/1.jpg",
+      "pk": "1001",
+      "alt": "A sunlit beach",
+      "duration": null,
+      "best": null
+    },
+    {
+      "number": 2,
+      "kind": "video",
+      "width": 1080,
+      "height": 1920,
+      "url": "https://cdn.example/2.mp4",
+      "pk": "1002",
+      "alt": "Waves at sunset",
+      "duration": 42.5,
+      "best": {
+        "width": 1080,
+        "height": 1920,
+        "codec": "vp09.00.41.08",
+        "bytes": 1234567,
+        "video_url": "https://cdn.example/best-video.mp4",
+        "audio_url": "https://cdn.example/best-audio.mp4"
+      }
+    }
+  ],
+  "number": 1,
+  "owner_pk": "42",
+  "tagged_accounts": [
+    {
+      "pk": "7",
+      "username": "tagged"
+    }
+  ],
+  "with_accounts": [
+    {
+      "pk": "8",
+      "username": "partner"
+    }
+  ],
+  "likers_known": [
+    {
+      "pk": "9",
+      "username": "close"
+    }
+  ],
+  "likes_hidden": false,
+  "reposts": 4,
+  "shares": 6,
+  "plays_instagram": 90,
+  "plays_facebook": 10,
+  "duration": 42.5,
+  "music": {
+    "kind": "song",
+    "title": "Original song",
+    "artist": "Artist",
+    "artist_username": "artist"
+  },
+  "place": {
+    "pk": "100",
+    "name": "A beach",
+    "lat": 40.4168,
+    "lng": -3.7038
+  },
+  "pinned": true,
+  "paid_partnership": true,
+  "caption_edited": true,
+  "notes": [
+    "worth saving"
+  ]
+}

@@ -1,0 +1,12 @@
+---
+source: crates/snob-core/src/model.rs
+expression: "serde_json::to_string_pretty(&user).unwrap()"
+---
+{
+  "pk": 42,
+  "username": "someone",
+  "full_name": "Some One",
+  "is_private": true,
+  "is_verified": false,
+  "pfp_url": "https://cdn.example/pfp.jpg"
+}

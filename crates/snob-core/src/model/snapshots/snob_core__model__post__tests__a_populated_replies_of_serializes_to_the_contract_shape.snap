@@ -1,0 +1,23 @@
+---
+source: crates/snob-core/src/model/post.rs
+expression: "serde_json::to_string_pretty(&thread).unwrap()"
+---
+{
+  "comment_pk": "201",
+  "found": true,
+  "count": 5,
+  "more": true,
+  "replies": [
+    {
+      "author": "friend",
+      "text": "reply text",
+      "created_at": 1773576100,
+      "likes": 12,
+      "replies": 0,
+      "shown_replies": [],
+      "pk": "202",
+      "author_pk": "55",
+      "more_replies": false
+    }
+  ]
+}

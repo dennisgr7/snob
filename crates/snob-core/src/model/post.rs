@@ -207,3 +207,184 @@ pub struct Likers {
     pub complete: bool,
     pub accounts: Vec<Liker>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Pk;
+    use crate::model::User;
+
+    /// One account with every optional field set, for the contract snapshots.
+    fn sample_user(pk: u64, username: &str) -> User {
+        User {
+            pk: Pk::new(pk),
+            username: username.into(),
+            full_name: Some("Some One".into()),
+            is_private: Some(true),
+            is_verified: Some(false),
+            pfp_url: Some("https://cdn.example/pfp.jpg".into()),
+        }
+    }
+
+    /// One post holding a photo item, a video item with best tracks, and every
+    /// metadata sub-object populated.
+    fn sample_post() -> Post {
+        Post {
+            pk: "3995556159532654737".into(),
+            code: "DdzEShhEWCR".into(),
+            url: "https://www.instagram.com/reel/DdzEShhEWCR/".into(),
+            owner: "someone".into(),
+            kind: "reel".into(),
+            taken_at: 1_773_576_000,
+            caption: "sun\nwith someone".into(),
+            location: Some("A beach".into()),
+            likes: Some(80),
+            liked_by: Some(LikedBy {
+                name: "close".into(),
+                others: Some(79),
+            }),
+            comments: Some(8),
+            plays: Some(100),
+            tagged: vec!["tagged".into()],
+            mentions: vec!["friend".into()],
+            with: vec!["partner".into()],
+            items: vec![
+                PostItem {
+                    number: 1,
+                    kind: "photo".into(),
+                    width: Some(1080),
+                    height: Some(1350),
+                    url: Some("https://cdn.example/1.jpg".into()),
+                    pk: Some("1001".into()),
+                    alt: Some("A sunlit beach".into()),
+                    duration: None,
+                    best: None,
+                },
+                PostItem {
+                    number: 2,
+                    kind: "video".into(),
+                    width: Some(1080),
+                    height: Some(1920),
+                    url: Some("https://cdn.example/2.mp4".into()),
+                    pk: Some("1002".into()),
+                    alt: Some("Waves at sunset".into()),
+                    duration: Some(42.5),
+                    best: Some(BestTracks {
+                        width: Some(1080),
+                        height: Some(1920),
+                        codec: Some("vp09.00.41.08".into()),
+                        bytes: Some(1_234_567),
+                        video_url: "https://cdn.example/best-video.mp4".into(),
+                        audio_url: Some("https://cdn.example/best-audio.mp4".into()),
+                    }),
+                },
+            ],
+            number: Some(1),
+            owner_pk: Some("42".into()),
+            tagged_accounts: vec![AccountRef {
+                pk: Some("7".into()),
+                username: "tagged".into(),
+            }],
+            with_accounts: vec![AccountRef {
+                pk: Some("8".into()),
+                username: "partner".into(),
+            }],
+            likers_known: vec![AccountRef {
+                pk: Some("9".into()),
+                username: "close".into(),
+            }],
+            likes_hidden: false,
+            reposts: Some(4),
+            shares: Some(6),
+            plays_instagram: Some(90),
+            plays_facebook: Some(10),
+            duration: Some(42.5),
+            music: Some(Music {
+                kind: "song".into(),
+                title: Some("Original song".into()),
+                artist: Some("Artist".into()),
+                artist_username: Some("artist".into()),
+            }),
+            place: Some(Place {
+                pk: Some("100".into()),
+                name: Some("A beach".into()),
+                lat: Some(40.4168),
+                lng: Some(-3.7038),
+            }),
+            pinned: true,
+            paid_partnership: true,
+            caption_edited: true,
+            notes: vec!["worth saving".into()],
+        }
+    }
+
+    /// One comment with optional fields set, optionally carrying nested replies.
+    fn sample_comment(
+        pk: &str,
+        author: &str,
+        text: &str,
+        replies: u64,
+        more_replies: Option<bool>,
+        shown_replies: Vec<PostComment>,
+    ) -> PostComment {
+        PostComment {
+            author: author.into(),
+            text: text.into(),
+            created_at: 1_773_576_100,
+            likes: 12,
+            replies,
+            shown_replies,
+            pk: Some(pk.into()),
+            author_pk: Some("55".into()),
+            more_replies,
+        }
+    }
+
+    #[test]
+    fn a_populated_post_serializes_to_the_contract_shape() {
+        insta::assert_snapshot!(serde_json::to_string_pretty(&sample_post()).unwrap());
+    }
+
+    #[test]
+    fn a_populated_post_comment_serializes_to_the_contract_shape() {
+        let reply = sample_comment("202", "friend", "agreed", 0, Some(false), Vec::new());
+        let comment = sample_comment("201", "someone", "first", 3, Some(true), vec![reply]);
+        insta::assert_snapshot!(serde_json::to_string_pretty(&comment).unwrap());
+    }
+
+    #[test]
+    fn a_populated_replies_of_serializes_to_the_contract_shape() {
+        let thread = RepliesOf {
+            comment_pk: "201".into(),
+            found: true,
+            count: Some(5),
+            more: true,
+            replies: vec![sample_comment(
+                "202",
+                "friend",
+                "reply text",
+                0,
+                Some(false),
+                Vec::new(),
+            )],
+        };
+        insta::assert_snapshot!(serde_json::to_string_pretty(&thread).unwrap());
+    }
+
+    #[test]
+    fn a_populated_likers_document_serializes_to_the_contract_shape() {
+        let doc = Likers {
+            code: "DdzEShhEWCR".into(),
+            url: "https://www.instagram.com/p/DdzEShhEWCR/".into(),
+            likes: Some(80),
+            shown: 1,
+            complete: false,
+            accounts: vec![Liker {
+                account: sample_user(9, "close"),
+                you_follow: Some(true),
+                follows_you: Some(false),
+            }],
+        };
+        insta::assert_snapshot!(serde_json::to_string_pretty(&doc).unwrap());
+    }
+}

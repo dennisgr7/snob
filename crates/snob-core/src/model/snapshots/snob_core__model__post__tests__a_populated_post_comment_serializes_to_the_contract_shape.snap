@@ -1,0 +1,27 @@
+---
+source: crates/snob-core/src/model/post.rs
+expression: "serde_json::to_string_pretty(&comment).unwrap()"
+---
+{
+  "author": "someone",
+  "text": "first",
+  "created_at": 1773576100,
+  "likes": 12,
+  "replies": 3,
+  "shown_replies": [
+    {
+      "author": "friend",
+      "text": "agreed",
+      "created_at": 1773576100,
+      "likes": 12,
+      "replies": 0,
+      "shown_replies": [],
+      "pk": "202",
+      "author_pk": "55",
+      "more_replies": false
+    }
+  ],
+  "pk": "201",
+  "author_pk": "55",
+  "more_replies": true
+}

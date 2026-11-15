@@ -1,0 +1,74 @@
+---
+source: crates/snob-cli/src/commands/profile.rs
+expression: "serde_json::to_string_pretty(&as_json(&profile)).unwrap()"
+---
+{
+  "biography": "first line\nsecond line",
+  "category": "Photographer",
+  "counts": {
+    "followers": 244,
+    "following": 319,
+    "posts": 0
+  },
+  "external_url": "https://example.test/me",
+  "followed_by": {
+    "accounts": [
+      {
+        "full_name": "Friend Name",
+        "is_private": false,
+        "is_verified": true,
+        "pfp_url": "https://cdn.example/friend.jpg",
+        "pk": 10,
+        "username": "pat"
+      },
+      {
+        "full_name": "Friend Name",
+        "is_private": false,
+        "is_verified": true,
+        "pfp_url": "https://cdn.example/friend.jpg",
+        "pk": 11,
+        "username": "ana"
+      },
+      {
+        "full_name": "Friend Name",
+        "is_private": false,
+        "is_verified": true,
+        "pfp_url": "https://cdn.example/friend.jpg",
+        "pk": 12,
+        "username": "luis"
+      },
+      {
+        "full_name": "Friend Name",
+        "is_private": false,
+        "is_verified": true,
+        "pfp_url": "https://cdn.example/friend.jpg",
+        "pk": 13,
+        "username": "eva"
+      }
+    ],
+    "complete": false,
+    "count": 33
+  },
+  "full_name": "Some One",
+  "hidden": false,
+  "highlights": [
+    {
+      "id": "highlight:1",
+      "items": 5,
+      "number": 1,
+      "title": "trip",
+      "updated_at": 1773489600
+    }
+  ],
+  "private": true,
+  "read_at": 1773576000,
+  "relation": {
+    "follows_you": true,
+    "they_requested": false,
+    "you_follow": true,
+    "you_requested": false
+  },
+  "stories_up": 1,
+  "username": "someone",
+  "verified": false
+}

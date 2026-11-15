@@ -1,0 +1,161 @@
+---
+source: crates/snob-cli/src/commands/watch/wire.rs
+expression: "serde_json::to_string_pretty(&body).unwrap()"
+---
+{
+  "account": {
+    "is_self": true,
+    "pk": 42,
+    "username": "me"
+  },
+  "counts": {
+    "followers_gained": 1,
+    "followers_lost": 1,
+    "following_gained": 1,
+    "following_lost": 1,
+    "posts_new": 1,
+    "renamed": 1,
+    "total": 5
+  },
+  "event": "watch.changes",
+  "events": {
+    "followers_gained": [
+      {
+        "full_name": "Full arrived",
+        "is_private": false,
+        "is_verified": true,
+        "pfp_url": "https://cdn.example/pfp.jpg",
+        "pk": 1,
+        "profile_url": "https://www.instagram.com/arrived/",
+        "username": "arrived"
+      }
+    ],
+    "followers_lost": [
+      {
+        "full_name": "Full left",
+        "is_private": false,
+        "is_verified": true,
+        "pfp_url": "https://cdn.example/pfp.jpg",
+        "pk": 2,
+        "profile_url": "https://www.instagram.com/left/",
+        "username": "left"
+      }
+    ],
+    "following_gained": [
+      {
+        "full_name": "Full followed",
+        "is_private": false,
+        "is_verified": true,
+        "pfp_url": "https://cdn.example/pfp.jpg",
+        "pk": 3,
+        "profile_url": "https://www.instagram.com/followed/",
+        "username": "followed"
+      }
+    ],
+    "following_lost": [
+      {
+        "full_name": "Full unfollowed",
+        "is_private": false,
+        "is_verified": true,
+        "pfp_url": "https://cdn.example/pfp.jpg",
+        "pk": 4,
+        "profile_url": "https://www.instagram.com/unfollowed/",
+        "username": "unfollowed"
+      }
+    ],
+    "posts_new": [
+      {
+        "caption": "sun with @friend",
+        "code": "DS8T93ifAAB",
+        "item_count": 1,
+        "kind": "photo",
+        "pinned": false,
+        "pk": "3800000000000000001",
+        "saved": {
+          "directory": "someone/posts/2026-11-15_DdzEShhEWCR",
+          "failed": 0,
+          "files": [
+            "01.jpg"
+          ],
+          "left": 0
+        },
+        "taken_at": 1790000001,
+        "taken_at_iso": "2026-09-21T14:13:21Z",
+        "url": "https://www.instagram.com/p/DS8T93ifAAB/"
+      }
+    ],
+    "renamed": [
+      {
+        "changed_at": 1500,
+        "changed_at_iso": "1970-01-01T00:25:00Z",
+        "from": "before",
+        "pk": 7,
+        "to": "after"
+      }
+    ]
+  },
+  "lists": {
+    "followers": {
+      "basis": "compared",
+      "count": 10,
+      "since": 1000,
+      "since_iso": "1970-01-01T00:16:40Z",
+      "until": 2000,
+      "until_iso": "1970-01-01T00:33:20Z"
+    },
+    "following": {
+      "basis": "compared",
+      "count": 10,
+      "since": 1500,
+      "since_iso": "1970-01-01T00:25:00Z",
+      "until": 2000,
+      "until_iso": "1970-01-01T00:33:20Z"
+    }
+  },
+  "posts": {
+    "basis": "compared",
+    "complete": true,
+    "pages_read": 1,
+    "since": 1699913600,
+    "since_iso": "2023-11-13T22:13:20Z",
+    "until": 1700000000,
+    "until_iso": "2023-11-14T22:13:20Z"
+  },
+  "run": {
+    "at": 1700000000,
+    "at_iso": "2023-11-14T22:13:20Z",
+    "began_at": 1699999900,
+    "began_at_iso": "2023-11-14T22:11:40Z",
+    "due_at": 1699999800,
+    "due_at_iso": "2023-11-14T22:10:00Z",
+    "ended_at": 1700000000,
+    "ended_at_iso": "2023-11-14T22:13:20Z",
+    "id": "run-1",
+    "late": false,
+    "late_by": 100,
+    "lists": [
+      {
+        "kind": "followers",
+        "skipped": null
+      },
+      {
+        "kind": "following",
+        "skipped": "not_verified"
+      }
+    ],
+    "looked": true,
+    "posts": {
+      "skipped": null
+    },
+    "requests": 14,
+    "tool": {
+      "name": "snob",
+      "version": "0.0.0"
+    }
+  },
+  "schema": 1,
+  "viewer": {
+    "pk": 42,
+    "username": "me"
+  }
+}

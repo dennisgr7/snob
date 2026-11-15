@@ -169,6 +169,11 @@ dbus-run-session -- bash -c '
   by a person, a browser or Instagram is checked never to panic on any input
   (the release profile aborts), with the rules its documentation states. A new
   parser of outside input gets one.
+- **Contract snapshots** (`insta`, `.snap` files in `snapshots/` beside the
+  test): one fully populated value of each JSON shape a person, a script, an
+  agent or a webhook reads, the error object included. A changed `.snap` is a
+  contract change ("Output contract"): regenerate with `INSTA_UPDATE=always`
+  only on purpose, and read its diff. CI fails on a mismatch.
 - Migrations: the `validate()` tests run the whole chain of both databases.
 - Hand-run: `cargo test -p snob-cli --features testing --test headless
   serve_the_fake_world -- --ignored --nocapture` serves the fake Instagram for

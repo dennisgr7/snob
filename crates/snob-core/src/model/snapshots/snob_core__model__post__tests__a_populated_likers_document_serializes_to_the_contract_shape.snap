@@ -1,0 +1,23 @@
+---
+source: crates/snob-core/src/model/post.rs
+expression: "serde_json::to_string_pretty(&doc).unwrap()"
+---
+{
+  "code": "DdzEShhEWCR",
+  "url": "https://www.instagram.com/p/DdzEShhEWCR/",
+  "likes": 80,
+  "shown": 1,
+  "complete": false,
+  "accounts": [
+    {
+      "pk": 9,
+      "username": "close",
+      "full_name": "Some One",
+      "is_private": true,
+      "is_verified": false,
+      "pfp_url": "https://cdn.example/pfp.jpg",
+      "you_follow": true,
+      "follows_you": false
+    }
+  ]
+}

@@ -686,4 +686,41 @@ mod tests {
         let table = grid_table(&grid, plain);
         assert_eq!(table.matches(PIN).count(), 1, "{table}");
     }
+
+    #[test]
+    fn a_populated_grid_serializes_to_the_contract_shape() {
+        let first = post(
+            r#"{"pk":"3995556159532654737","code":"DdzEShhEWCR","product_type":"clips",
+            "media_type":2,"taken_at":1790510400,"like_count":10,"comment_count":2,
+            "user":{"pk":"42","username":"someone"},"caption":{"text":"sun\nwith @friend"},
+            "location":{"pk":"100","name":"A beach","lat":40.4168,"lng":-3.7038},
+            "top_likers":["close"],"usertags":{"in":[{"user":{"pk":"7","username":"tagged"}}]},
+            "coauthor_producers":[{"pk":"8","username":"partner"}],
+            "media_repost_count":4,"reshare_count":6,"play_count":100,"ig_play_count":90,
+            "fb_play_count":10,"video_duration":42.5,"timeline_pinned_user_ids":["42"],
+            "is_paid_partnership":true,
+            "clips_metadata":{"original_sound_info":{"original_audio_title":"Original audio",
+              "ig_artist":{"username":"someone"}}},
+            "image_versions2":{"candidates":[{"url":"https://cdn.example/1.jpg","width":1080,"height":1350}]},
+            "video_versions":[{"url":"https://cdn.example/2.mp4","width":1080,"height":1920}]}"#,
+        );
+        let reached = first.pk;
+        let mut grid = Grid::of(
+            "someone",
+            Some(snob_ig::client::ProfileTab::Reels),
+            Some(snob_core::Pk::new(42)),
+        );
+        grid.posts = vec![first];
+        grid.declared = Some(12);
+        grid.next = Some("cursor-1".into());
+        let asked = Asked {
+            until: true,
+            read: GridRead {
+                pages: 2,
+                reached: Some(reached),
+            },
+        };
+        let json = grid_json(&grid, &asked, Format::Json).unwrap();
+        insta::assert_snapshot!(json);
+    }
 }

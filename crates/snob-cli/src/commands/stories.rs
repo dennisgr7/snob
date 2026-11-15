@@ -425,4 +425,14 @@ mod tests {
             serde_json::json!({"username": "someone", "stories": rows})
         );
     }
+
+    #[test]
+    fn a_populated_story_listing_serializes_to_the_contract_shape() {
+        let mut stories = two_stories();
+        for story in &mut stories.items {
+            story.expiring_at = Some(Epoch::new(1_773_662_400));
+            story.thumb = Some("https://cdn.example/thumb.jpg".into());
+        }
+        insta::assert_snapshot!(as_json(&stories, Format::Json).unwrap());
+    }
 }

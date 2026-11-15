@@ -2196,4 +2196,37 @@ mod tests {
             assert!(!told.failed, "{odd}");
         }
     }
+
+    #[test]
+    fn a_populated_list_page_serializes_to_the_contract_shape() {
+        let items = Value::Array(
+            (0..5)
+                .map(|n| {
+                    json!({
+                        "pk": n + 1,
+                        "username": format!("user{n}"),
+                        "full_name": format!("User {n}"),
+                        "is_private": n % 2 == 0,
+                        "is_verified": n == 0,
+                        "pfp_url": format!("https://cdn.example/{n}.jpg"),
+                    })
+                })
+                .collect(),
+        );
+        let mut doc = finished(ExitCode::Ok, Some(items), None);
+        doc.served = vec![json!({
+            "event": "served",
+            "list": "followers",
+            "from": "stored_in_cooldown",
+            "taken_at": 1_793_340_000,
+            "own_changes": 2,
+            "cooldown_until": 1_793_347_200,
+            "reason": "page_limit",
+            "accounts": 5,
+            "of": 20,
+        })];
+        let told = from(&limited_at(0, Some(2)), doc);
+        assert!(!told.failed);
+        insta::assert_snapshot!(serde_json::to_string_pretty(&told.body).unwrap());
+    }
 }

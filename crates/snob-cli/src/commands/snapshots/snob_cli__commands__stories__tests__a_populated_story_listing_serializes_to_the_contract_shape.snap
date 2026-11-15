@@ -1,0 +1,28 @@
+---
+source: crates/snob-cli/src/commands/stories.rs
+expression: "as_json(&stories, Format::Json).unwrap()"
+---
+{
+  "stories": [
+    {
+      "expiring_at": 1773662400,
+      "kind": "photo",
+      "mentions": [
+        "a",
+        "b"
+      ],
+      "number": 1,
+      "taken_at": 1773576000,
+      "url": "https://cdn.example/2"
+    },
+    {
+      "expiring_at": 1773662400,
+      "kind": "video",
+      "mentions": [],
+      "number": 2,
+      "taken_at": 1773576000,
+      "url": "https://cdn.example/0"
+    }
+  ],
+  "username": "someone"
+}

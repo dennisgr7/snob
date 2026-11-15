@@ -328,6 +328,10 @@ tempfile = "3"
 # compiles `proptest!` and its strategies without pulling in `fork` (process
 # forking / `rusty-fork`), `timeout` or `bit-set`.
 proptest = { version = "1", default-features = false, features = ["std"] }
+# Snapshots of the JSON output contracts. `default-features = false` drops
+# YAML/TOML/redaction/glob machinery so tests snapshot `serde_json::to_string_pretty`
+# directly with only `once_cell`, `similar` and `tempfile`.
+insta = { version = "1", default-features = false }
 
 [profile.release]
 # `"s"` rather than `3`, and the numbers are from this program rather than from
