@@ -2102,7 +2102,12 @@ impl State {
         Some(json!({
             "id": id,
             "items": items,
-            "user": { "pk": owner.pk, "username": owner.username },
+            // The Relay reel names its owner's pk as a string (captures of
+            // 2026-11-13 and 2026-11-14); the REST one is not captured yet.
+            "user": {
+                "pk": if graph { json!(owner.pk.to_string()) } else { json!(owner.pk) },
+                "username": owner.username,
+            },
         }))
     }
 }
