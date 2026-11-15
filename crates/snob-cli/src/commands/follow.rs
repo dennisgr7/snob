@@ -280,27 +280,16 @@ fn followed_as_stored(
     typed: &str,
     now: snob_core::Epoch,
 ) -> Result<Option<(snob_core::model::User, snob_core::Epoch)>> {
-    use snob_store::store::{own_writes, snapshots, users};
+    use snob_store::store::{own_writes, users};
     let conn = store.conn();
     let Some(pk) = users::pk_named(conn, target::clean(typed))? else {
         return Ok(None);
     };
-    let latest = snapshots::latest_complete(conn, viewer, snob_core::model::ListKind::Following)?;
-    let Some(taken_at) = latest.as_ref().and_then(|snapshot| snapshot.taken_at) else {
-        return Ok(None);
-    };
-    if now - taken_at > FOLLOWED_AS_STORED_FOR {
-        return Ok(None);
-    }
-    let Some(snapshot) = latest else {
-        return Ok(None);
-    };
-    let mut members = snapshots::members(conn, snapshot.id)?;
-    own_writes::apply(conn, &mut members, taken_at)?;
-    Ok(members
-        .into_iter()
-        .find(|user| user.pk == pk)
-        .map(|user| (user, taken_at)))
+    let not_before = snob_core::Epoch::new(now.get() - FOLLOWED_AS_STORED_FOR);
+    Ok(match own_writes::followed(conn, viewer, pk, not_before)? {
+        own_writes::Followed::Yes { user, taken_at } => Some((user, taken_at)),
+        own_writes::Followed::No { .. } | own_writes::Followed::NoCapture => None,
+    })
 }
 
 /// How a run ended, as a word a program can match on and a sentence a person
