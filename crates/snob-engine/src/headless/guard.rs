@@ -5,7 +5,8 @@
 //! - **Paused by what sends it, not only by where it goes**
 //!   (`SENT_BY_A_PAGE`): every request a page's scripts make and every
 //!   document, whatever its address. A GET goes on; a POST only when the
-//!   allowlist lets it (`refused_app`).
+//!   allowlist lets it (`refused_app`); a request whose address cannot be
+//!   read fails whatever its method.
 //! - **snob's own write goes on only as the request it armed** ([`Armed`]):
 //!   the first paused POST matching its address and form exactly spends it,
 //!   and any other write fails.

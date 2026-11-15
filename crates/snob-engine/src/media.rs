@@ -238,9 +238,9 @@ pub enum Saved {
 
 /// Saves one story under the name the listing implies, to disk as it arrives.
 ///
-/// **Nothing is fetched for a story already on disk.**
-///
-/// **The file is written to `<stem>.<pid>.part` and renamed at the end.**
+/// **Nothing is fetched for a story already on disk**, and the file is
+/// written to `<stem>.<pid>.part` and put under its name once whole, never
+/// over one that is there (`files::place_new`).
 pub async fn save_story(
     client: &IgClient,
     stem_base: &str,

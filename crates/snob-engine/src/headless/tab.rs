@@ -550,18 +550,6 @@ const TRAY_REACH: usize = 512 * 1024;
 /// Where the home document's preload of the stories tray starts.
 const TRAY_MARKER: &str = r#""xdt_api__v1__feed__reels_tray""#;
 
-/// The script that hands back the first inline script holding `marker`,
-/// from the marker on, `reach` characters at most; `null` without one.
-const TRAY: &str = r#"((marker, reach) => {
-  for (const script of document.scripts) {
-    if (script.src) continue;
-    const text = script.textContent;
-    const at = text.indexOf(marker);
-    if (at >= 0) return text.slice(at, at + reach);
-  }
-  return null;
-})"#;
-
 /// The path of the tab's document, read from the isolated world: where the
 /// tab really is. `None` when it cannot be read.
 pub(super) async fn path_of(live: &mut Live) -> Option<String> {
@@ -583,7 +571,8 @@ pub(super) async fn path_of(live: &mut Live) -> Option<String> {
 /// the home page. Read from the isolated world; nothing is sent.
 pub(super) async fn tray(live: &mut Live) -> Result<Option<Vec<String>>, PageError> {
     let world = isolated_world(live).await?;
-    let expression = format!("{TRAY}({}, {TRAY_REACH})", json!(TRAY_MARKER));
+    // The one script that reads a document's inline scripts, for one marker.
+    let expression = format!("{DEFINITIONS}({}, {TRAY_REACH})[0]", json!([TRAY_MARKER]));
     let found = evaluate_in(
         &live.cdp,
         &live.tab,
