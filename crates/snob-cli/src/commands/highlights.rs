@@ -24,10 +24,11 @@ use snob_store::secrets::SecretStore;
 
 use crate::cli::{DownloadSelection, Format, HighlightsArgs, StoryFormat};
 use crate::commands::common::{self, Switched};
-use crate::commands::stories::story_from;
 use crate::output::Presentation;
 use crate::output::media::empty_document;
 use crate::ui;
+use snob_engine::media::story_from;
+use snob_engine::profile::cover_of;
 
 /// One tray entry: the cover the profile shows, not yet its items.
 #[derive(Debug, Clone)]
@@ -44,20 +45,6 @@ pub struct Entry {
     pub updated_at: Option<Epoch>,
     /// Its cover's address, for a view to draw ([`cover_of`]).
     pub cover: Option<String>,
-}
-
-/// The address of `highlight`'s cover, the square picture the profile
-/// shows above its title, as the tray hands it out
-/// (`cover_media.cropped_image_version`, on the REST and GraphQL trays
-/// alike).
-pub(crate) fn cover_of(highlight: &snob_ig::model::Highlight) -> Option<String> {
-    highlight
-        .cover_media
-        .as_ref()?
-        .cropped_image_version
-        .as_ref()
-        .map(|v| v.url.clone())
-        .filter(|url| !url.is_empty())
 }
 
 /// The tray, gathered before anything is printed.

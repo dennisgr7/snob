@@ -24,7 +24,6 @@ use snob_engine::files::ABANDONED_AFTER;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::commands::profile::{self as profile_read, MutualPolicy};
 use crate::report;
 use crate::ui::accounts::{self, Browsed, Picked};
 use crate::ui::browser::busy::Busy;
@@ -34,6 +33,7 @@ use crate::ui::browser::scratch::Scratch;
 use crate::ui::help;
 use crate::ui::profile::{self, Answer, answer, question_modal};
 use crate::ui::tui::{self, Tui};
+use snob_engine::profile::{self as profile_read, MutualPolicy, Reads};
 
 /// What the browser shows: one list, or a tray of them.
 pub struct Shelf<'a> {
@@ -620,11 +620,10 @@ fn open(shelf: &Shelf<'_>, state: &mut State) -> Step {
 /// The profile read behind an Enter: `snob profile`'s own, with the mutual walk
 /// left for a click that this view does not have.
 pub async fn read_profile(app: &App, person: &User) -> Result<profile_read::Profile> {
-    profile_read::fetch(
-        app.client(),
+    profile_read::read(
+        app,
         &person.username,
-        app.viewer().pk,
-        MutualPolicy::Defer,
+        Reads::all(MutualPolicy::Defer),
         Some(person.pk),
     )
     .await

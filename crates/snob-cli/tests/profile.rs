@@ -12,7 +12,7 @@ mod common;
 use common::{
     HOUR, ME as VIEWER, account_at, app, app_with, budget_at, client, start_cooldown, user,
 };
-use snob_cli::commands::profile::{MutualPolicy, Visibility, fetch};
+use snob_cli::commands::profile::{MutualPolicy, Reads, Visibility, fetch};
 use snob_core::Pk;
 use snob_store::store::Store;
 use wiremock::matchers::{method, path, query_param};
@@ -94,14 +94,14 @@ async fn a_private_account_you_do_not_follow_is_not_asked_for_what_it_hides() {
         &client(&server),
         "someone",
         VIEWER,
-        MutualPolicy::WalkNow,
+        Reads::all(MutualPolicy::WalkNow),
         None,
     )
     .await
     .unwrap();
 
     assert_eq!(profile.highlights, Visibility::Hidden);
-    assert_eq!(profile.stories_up(), Visibility::Hidden);
+    assert_eq!(profile.stories_up(), Some(Visibility::Hidden));
     assert!(profile.is_private);
     let relation = profile.relation.expect("somebody else's account");
     assert!(!relation.you_follow && relation.follows_you);
@@ -137,13 +137,13 @@ async fn an_account_with_nobody_in_common_costs_no_mutual_request() {
         &client(&server),
         "someone",
         VIEWER,
-        MutualPolicy::WalkNow,
+        Reads::all(MutualPolicy::WalkNow),
         None,
     )
     .await
     .unwrap();
 
-    assert_eq!(profile.stories_up(), Visibility::Shown(0));
+    assert_eq!(profile.stories_up(), Some(Visibility::Shown(0)));
     let mutual = profile.mutual.expect("somebody else's account");
     assert_eq!(mutual.count, 0);
     assert!(mutual.people.is_empty() && mutual.complete);
@@ -199,13 +199,13 @@ async fn the_mutual_list_follows_the_cursor_to_the_end() {
         &client(&server),
         "someone",
         VIEWER,
-        MutualPolicy::WalkNow,
+        Reads::all(MutualPolicy::WalkNow),
         None,
     )
     .await
     .unwrap();
 
-    assert_eq!(profile.stories_up(), Visibility::Shown(2));
+    assert_eq!(profile.stories_up(), Some(Visibility::Shown(2)));
     let mutual = profile.mutual.expect("somebody else's account");
     assert_eq!(mutual.count, 14);
     assert_eq!(mutual.people.len(), 14);
@@ -238,7 +238,7 @@ async fn deferring_the_mutual_walk_spends_no_mutual_request() {
         &client(&server),
         "someone",
         VIEWER,
-        MutualPolicy::Defer,
+        Reads::all(MutualPolicy::Defer),
         None,
     )
     .await
@@ -255,7 +255,7 @@ async fn deferring_the_mutual_walk_spends_no_mutual_request() {
     assert_eq!(profile.pk, Pk::new(7));
     // The stories arrive as items, not as a count, so the view can open them
     // without a second request.
-    assert!(matches!(profile.stories, Visibility::Shown(ref items) if items.len() == 2));
+    assert!(matches!(profile.stories, Some(Visibility::Shown(ref items)) if items.len() == 2));
 
     let asked = paths(&server.received_requests().await.unwrap());
     assert_eq!(asked.len(), 3, "{asked:?}");
@@ -278,7 +278,7 @@ async fn your_own_account_has_no_relation_and_no_mutuals() {
         &client(&server),
         "someone",
         VIEWER,
-        MutualPolicy::WalkNow,
+        Reads::all(MutualPolicy::WalkNow),
         None,
     )
     .await
@@ -288,7 +288,7 @@ async fn your_own_account_has_no_relation_and_no_mutuals() {
     assert!(profile.mutual.is_none());
     // Private, and yours: the reels are yours to see.
     assert!(matches!(profile.highlights, Visibility::Shown(ref l) if l.len() == 1));
-    assert_eq!(profile.stories_up(), Visibility::Shown(1));
+    assert_eq!(profile.stories_up(), Some(Visibility::Shown(1)));
     assert_eq!(profile.followers, Some(244));
     assert_eq!(profile.posts, Some(6));
 

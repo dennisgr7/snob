@@ -9,8 +9,8 @@ use snob_core::Epoch;
 use snob_core::model::printable;
 use snob_ig::client::IgClient;
 use snob_ig::error::IgError;
-use snob_ig::model::PictureVersion;
 use snob_ig::model::dash::Track;
+use snob_ig::model::{PictureVersion, ReelItem, largest};
 
 use crate::exit::{ExitCode, ExitError};
 use crate::ffmpeg::Ffmpeg;
@@ -88,6 +88,32 @@ pub fn thumb_among(candidates: &[PictureVersion]) -> Option<String> {
         .map(|v| v.url.clone())
 }
 
+/// The wire item, reduced.
+pub fn story_from(item: &ReelItem) -> Story {
+    let kind = Kind::of(item.media_type);
+    let video = largest(&item.video_versions).map(|v| v.url.clone());
+    let image = item
+        .image_versions2
+        .as_ref()
+        .and_then(|c| largest(&c.candidates))
+        .map(|v| v.url.clone());
+
+    Story {
+        kind,
+        taken_at: item.taken_at,
+        expiring_at: item.expiring_at,
+        url: match kind {
+            Kind::Video => video.or(image),
+            _ => image.or(video),
+        },
+        mentions: item.mentioned().map(printable).collect(),
+        thumb: item
+            .image_versions2
+            .as_ref()
+            .and_then(|c| thumb_among(&c.candidates)),
+    }
+}
+
 /// Everything the story listing needs, gathered before anything is printed.
 #[derive(Debug, Clone)]
 pub struct Stories {
@@ -97,7 +123,11 @@ pub struct Stories {
 }
 
 /// The most one small picture may weigh ([`small_pictures`]): half a megabyte.
-pub(crate) const MAX_SMALL_PICTURE: usize = 512 * 1024;
+pub const MAX_SMALL_PICTURE: usize = 512 * 1024;
+
+/// The most an account's largest picture may weigh: 1080 pixels square is
+/// some hundreds of kilobytes, and this leaves room for any.
+pub const MAX_LARGE_PICTURE: usize = 16 * 1024 * 1024;
 
 /// The most the small pictures of one listing weigh together: four megabytes,
 /// three pages of a grid at a hundred kilobytes a picture.
@@ -157,7 +187,7 @@ pub async fn small_pictures(
 
 /// What kind of picture `bytes` are, by how they start: the three kinds
 /// Instagram serves. `None` for anything else, a video among them.
-pub(crate) fn picture_type(bytes: &[u8]) -> Option<&'static str> {
+pub fn picture_type(bytes: &[u8]) -> Option<&'static str> {
     let webp = bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP");
     match bytes {
         [0xff, 0xd8, 0xff, ..] => Some("image/jpeg"),
@@ -735,6 +765,99 @@ pub fn default_name(dir: &Path, username: &str, number: usize, extension: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snob_ig::model::Candidates;
+
+    /// A story's thumbnail is the narrowest of its pictures wide enough
+    /// for a view, a video's cover included, and never the video's file.
+    #[test]
+    fn a_storys_thumbnail_is_its_narrowest_picture_wide_enough() {
+        let item: ReelItem = serde_json::from_value(serde_json::json!({
+            "pk": "1", "media_type": 2,
+            "image_versions2": {"candidates": [
+                {"url": "https://x.cdninstagram.com/1080.jpg", "width": 1080},
+                {"url": "https://x.cdninstagram.com/720.jpg", "width": 720},
+                {"url": "https://x.cdninstagram.com/480.jpg", "width": 480},
+                {"url": "https://x.cdninstagram.com/240.jpg", "width": 240},
+            ]},
+            "video_versions": [{"url": "https://x.cdninstagram.com/v.mp4", "width": 720}],
+        }))
+        .unwrap();
+        let story = story_from(&item);
+        assert_eq!(
+            story.url.as_deref(),
+            Some("https://x.cdninstagram.com/v.mp4")
+        );
+        assert_eq!(
+            story.thumb.as_deref(),
+            Some("https://x.cdninstagram.com/720.jpg")
+        );
+
+        let bare: ReelItem = serde_json::from_value(serde_json::json!({"pk": "2"})).unwrap();
+        assert_eq!(story_from(&bare).thumb, None);
+    }
+
+    fn version(url: &str, w: u32, h: u32) -> PictureVersion {
+        PictureVersion {
+            url: url.into(),
+            width: Some(w),
+            height: Some(h),
+        }
+    }
+
+    fn item(media_type: u8, images: Vec<PictureVersion>, videos: Vec<PictureVersion>) -> ReelItem {
+        ReelItem {
+            pk: "1".into(),
+            media_type,
+            taken_at: Epoch::new(1_000),
+            expiring_at: Some(Epoch::new(2_000)),
+            image_versions2: Some(Candidates { candidates: images }),
+            video_versions: videos,
+            reel_mentions: Vec::new(),
+            story_bloks_stickers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_biggest_version_wins_not_the_first() {
+        let story = story_from(&item(
+            1,
+            vec![version("small", 320, 320), version("big", 1080, 1920)],
+            vec![],
+        ));
+        assert_eq!(story.url.as_deref(), Some("big"));
+    }
+
+    /// A video item carries a poster frame in `image_versions2`. Taking the
+    /// first URL of either list would hand back the poster for a video, which
+    /// is a picture where a video was asked for.
+    #[test]
+    fn a_video_prefers_its_video_over_its_poster_frame() {
+        let story = story_from(&item(
+            2,
+            vec![version("poster", 1080, 1920)],
+            vec![version("clip", 720, 1280)],
+        ));
+        assert_eq!(story.kind, Kind::Video);
+        assert_eq!(story.url.as_deref(), Some("clip"));
+    }
+
+    /// And falls back to it rather than to nothing, because a poster is more
+    /// use than a refusal.
+    #[test]
+    fn a_video_with_no_video_falls_back_to_the_poster() {
+        let story = story_from(&item(2, vec![version("poster", 1080, 1920)], vec![]));
+        assert_eq!(story.url.as_deref(), Some("poster"));
+    }
+
+    /// A media type nobody has seen before is downloadable and honestly
+    /// labeled, rather than called a photo and given a `.jpg`.
+    #[test]
+    fn an_unknown_media_type_is_not_guessed_at() {
+        let story = story_from(&item(9, vec![version("something", 100, 100)], vec![]));
+        assert_eq!(story.kind, Kind::Unknown);
+        assert_eq!(story.kind.label(), "unknown");
+        assert_eq!(story.url.as_deref(), Some("something"));
+    }
 
     fn track(url: &str, bytes: Option<u64>) -> Track {
         Track {
