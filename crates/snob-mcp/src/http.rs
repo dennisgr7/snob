@@ -1085,9 +1085,17 @@ mod tests {
     /// any user may on Windows, is handed the connections to `[::1]`, though
     /// binding `[::1]` then fails with access denied rather than in use: the
     /// server does not start on a named port.
+    ///
+    /// Listening on `[::]` makes Windows Firewall ask about the test binary,
+    /// a new path on every build, so it runs on CI or with
+    /// `SNOB_TEST_WILDCARD=1` only.
     #[cfg(windows)]
     #[tokio::test]
     async fn a_wildcard_held_with_exclusive_use_is_taken_too() {
+        if std::env::var_os("CI").is_none() && std::env::var_os("SNOB_TEST_WILDCARD").is_none() {
+            eprintln!("skipped: set SNOB_TEST_WILDCARD=1 to listen on [::] here");
+            return;
+        }
         let Some(stranger) = exclusive_ipv6_wildcard() else {
             // No IPv6 here: nobody can listen on it either.
             return;

@@ -183,6 +183,10 @@ dbus-run-session -- bash -c '
   test is a process of its own, so they run in parallel (measured on 16 and 4
   cores) and the `ci` profile retries them; `.config/nextest.toml` serializes
   the `keyring` group. Under `cargo test`, give them `--test-threads=1`.
+- **A test listens on loopback only**: Windows Firewall asks about any
+  program listening elsewhere, and a test binary is a new program every
+  build. The one test that must hold a wildcard (`snob-mcp`'s `http.rs`)
+  runs on CI or with `SNOB_TEST_WILDCARD=1`.
 - **Source-reading guards** in `crates/snob-core/tests/`: `no_seen.rs`,
   `keyring.rs`, `sandbox.rs`, `nextest.rs`, `layers.rs` (which crate may depend
   on which, from the manifests), and `language.rs`, which scans
