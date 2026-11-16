@@ -942,17 +942,21 @@ impl Backend for Engine {
             let read = profile::read(&app, &username, reads, Some(who.pk))
                 .await
                 .map_err(|e| unread(&paths, viewer, &e))?;
-            addresses
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(
-                    read.pk,
-                    Largest {
-                        username: read.username.clone(),
-                        fallback: read.pfp_url.clone(),
-                        full_size: read.pfp_full_size.clone(),
-                    },
-                );
+            // The default avatar is no picture to fetch large, as `snob pfp`
+            // says of it.
+            if !read.pfp_anonymous {
+                addresses
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(
+                        read.pk,
+                        Largest {
+                            username: read.username.clone(),
+                            fallback: read.pfp_url.clone(),
+                            full_size: read.pfp_full_size.clone(),
+                        },
+                    );
+            }
             let keeper = app.cache();
             let picture = match snob_engine::cache::picture(&paths, viewer, read.pk) {
                 Some(kept) => Some(kept),

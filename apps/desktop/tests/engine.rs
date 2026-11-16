@@ -468,3 +468,72 @@ fn what_is_kept_is_measured_for_every_account_here_and_clearing_or_forgetting_ke
         "the session stays"
     );
 }
+
+/// A profile page is `snob profile`'s read, less the stories, and `snob
+/// pfp`'s picture: its small picture, its covers and its largest picture are
+/// kept in the account's cache, where a clearing finds them.
+#[test]
+fn a_profile_page_reads_through_the_engine_and_keeps_its_pictures_in_the_cache() {
+    use snob_desktop::state::flow::Named;
+
+    let Some((_root, sandbox, engine)) = backend() else {
+        return;
+    };
+    signed_in(&engine, &session_id(world::ME, "profile"));
+    let someone = Named {
+        pk: Pk::new(world::SOMEONE),
+        username: Some("someone".to_string()),
+    };
+
+    let profile = engine
+        .profile(someone.clone())
+        .blocking_recv()
+        .unwrap()
+        .expect("the profile is read");
+    assert_eq!(profile.named, someone);
+    assert!(profile.read);
+    assert_eq!(profile.visible, Some(true));
+    let titles: Vec<&str> = profile
+        .highlights
+        .iter()
+        .map(|h| h.title.as_str())
+        .collect();
+    assert_eq!(titles, ["Trips", "Food"]);
+
+    let cache = sandbox.paths.account(Pk::new(world::ME)).cache_dir();
+    let picture = profile.picture.expect("its small picture");
+    assert!(picture.starts_with(&cache), "{}", picture.display());
+    for cover in profile.highlights.iter().filter_map(|h| h.cover.as_ref()) {
+        assert!(
+            cover.starts_with(cache.join("highlights")),
+            "{}",
+            cover.display()
+        );
+    }
+
+    let largest = engine
+        .full_picture(someone.clone())
+        .blocking_recv()
+        .unwrap()
+        .expect("its largest picture");
+    assert!(
+        largest.starts_with(cache.join("full")),
+        "{}",
+        largest.display()
+    );
+    let bytes = engine
+        .picture_bytes(someone.clone())
+        .blocking_recv()
+        .unwrap();
+    assert_eq!(
+        bytes.as_deref(),
+        Some(std::fs::read(&largest).unwrap().as_slice())
+    );
+
+    let kept = engine
+        .profile_kept(someone)
+        .blocking_recv()
+        .unwrap()
+        .expect("what the read answered is kept");
+    assert_eq!(kept.followers, profile.followers);
+}
