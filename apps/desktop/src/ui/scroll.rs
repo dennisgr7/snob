@@ -56,9 +56,11 @@ impl ScrollbarHandle for OutlinedScroll {
 
 /// Where each of a list's parts reads on its scrollbar's track: the part's
 /// top in the list as a share of the whole list, laid on a track
-/// `track` tall, and which part is read now, the last whose top has
-/// scrolled past. `tops` are each part's top inside the list, `offset` how
-/// far it is scrolled, and `whole` how tall it is.
+/// `track` tall, and which part is read now: the last whose top has
+/// scrolled past, or the last part once the list is scrolled to its end,
+/// where a short last part never reaches the top. `tops` are each part's
+/// top inside the list, `offset` how far it is scrolled, and `whole` how
+/// tall it is.
 pub fn outline(tops: &[f32], offset: f32, whole: f32, track: f32) -> (Vec<f32>, Option<usize>) {
     if whole <= 0.0 {
         return (Vec::new(), None);
@@ -68,7 +70,12 @@ pub fn outline(tops: &[f32], offset: f32, whole: f32, track: f32) -> (Vec<f32>, 
         .map(|top| (top / whole).clamp(0.0, 1.0) * track)
         .collect();
     // Half a line of slack, so the heading just reached already counts.
-    let read = tops.iter().rposition(|top| *top <= offset + 12.0);
+    let at_the_end = offset + track >= whole - 1.0;
+    let read = if at_the_end && !tops.is_empty() {
+        Some(tops.len() - 1)
+    } else {
+        tops.iter().rposition(|top| *top <= offset + 12.0)
+    };
     (on_track, read.or((!tops.is_empty()).then_some(0)))
 }
 
@@ -85,6 +92,8 @@ mod tests {
         assert_eq!(read, Some(1), "scrolled to it, it is the one read");
         let (_, read) = outline(&[0.0, 600.0], 590.0, 1200.0, 400.0);
         assert_eq!(read, Some(1), "nearly there counts");
+        let (_, read) = outline(&[0.0, 1000.0], 800.0, 1200.0, 400.0);
+        assert_eq!(read, Some(1), "at the end, the last part is read");
     }
 
     #[test]

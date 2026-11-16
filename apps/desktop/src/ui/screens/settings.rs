@@ -1119,11 +1119,13 @@ fn outline(
     let palette = look.palette;
     let viewport = list.handle.bounds();
     let scrolled = -f32::from(list.handle.offset().y);
+    // The toolkit keeps a child's bounds as laid out before the scroll, so
+    // its distance from the viewport's top is already its top in the list.
     let tops: Vec<f32> = (0..shown.len())
         .map(|at| {
-            list.handle.bounds_for_item(first + at).map_or(0.0, |item| {
-                f32::from(item.origin.y - viewport.origin.y) + scrolled
-            })
+            list.handle
+                .bounds_for_item(first + at)
+                .map_or(0.0, |item| f32::from(item.origin.y - viewport.origin.y))
         })
         .collect();
     let track = f32::from(viewport.size.height);
