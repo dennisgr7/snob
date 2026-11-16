@@ -158,7 +158,7 @@ fn browsers(
     }
 
     let choose = look.tr("paste-browser-choose");
-    let row = |id: gpui_kit::ElementId| {
+    let row = |id: gpui_kit::ElementId, chosen: bool| {
         Button::new(id)
             .w_full()
             .h(sp(BROWSER_ROW))
@@ -168,14 +168,16 @@ fn browsers(
             .text_size(sp(13.))
             .text_color(color(palette.text))
             // A wash of the text's color: the pointer over a row is not the
-            // row chosen.
-            .hover(move |style| style.bg(color_at(palette.text, 0.08)))
+            // row chosen, which looks the same whatever the pointer does.
+            .when(!chosen, |row| {
+                row.hover(move |style| style.bg(color_at(palette.text, 0.08)))
+            })
             .focus_visible(parts::focus_ring(&palette))
             .cursor_pointer()
     };
     strip
         .child(
-            row("paste-browser".into())
+            row("paste-browser".into(), false)
                 .role(Role::ComboBox)
                 .accessibility_label(format!("{choose}: {name}"))
                 .aria_expanded(choosing)
@@ -199,7 +201,7 @@ fn browsers(
                     .border_t_1()
                     .border_color(color(palette.line))
                     .children(found.iter().enumerate().map(|(at, name)| {
-                        row(("paste-browser-option", at).into())
+                        row(("paste-browser-option", at).into(), at == chosen)
                             .role(Role::ListBoxOption)
                             .accessibility_label(name.clone())
                             .aria_selected(at == chosen)
