@@ -350,6 +350,7 @@ It prints what to add to that client's configuration.
 | `snob_status` | the status: budget, cooldown, stored lists | no |
 | `snob_list` | followers, following, unfollowers, fans, friends, optionally filtered (verified, private, no picture) | for another account's lists |
 | `snob_whoami` | whether the stored session still works, checked with Instagram unless told not to | no |
+| `snob_scan` | the five counts of an account's lists and who you both follow | for another account's lists |
 | `snob_job`, `snob_jobs`, `snob_job_cancel` | check on, list and stop a walk running as a job | no |
 | `snob_profile` | a profile | no |
 | `snob_posts` | the posts on a grid, or a profile's reels, tagged posts and reposts | no |

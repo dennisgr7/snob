@@ -1,7 +1,8 @@
 //! What a job may run, checked where it is started and again where it runs.
 //!
-//! **A job runs a list walk and nothing else**, with a handful of flags that
-//! shape what the walk returns and none that change where it reads or writes.
+//! **A job runs a list walk and nothing else** (a list, a crossing, or `scan`,
+//! which walks both lists), with a handful of flags that shape what the walk
+//! returns and none that change where it reads or writes.
 
 use std::ffi::OsString;
 
@@ -9,7 +10,7 @@ use clap::Parser;
 use snob_core::Pk;
 use snob_core::model::ListKind;
 
-use crate::cli::{Cli, Command, ListArgs};
+use crate::cli::{Cli, Command, WalkArgs};
 
 /// A list command a job may run, checked.
 pub struct Checked {
@@ -23,8 +24,10 @@ pub struct Checked {
     pub kinds: &'static [ListKind],
     /// Whose lists, as typed less a leading `@`; `None` is the viewer's own.
     pub target: Option<String>,
-    /// What clap made of it, for the estimate.
-    pub list: ListArgs,
+    /// The account as it was typed, for the estimate.
+    pub typed: Option<String>,
+    /// How the walk is made, as clap read it, for the estimate.
+    pub walk: WalkArgs,
 }
 
 /// The flags a job's command may carry, beside the account it names.
@@ -35,6 +38,7 @@ const ALLOWED: &[&str] = &[
     "--refresh",
     "--limit",
     "--max-pages",
+    "--max-age",
     "--hide",
     "--only",
     "-y",
@@ -49,6 +53,7 @@ const TAKES_A_VALUE: &[&str] = &[
     "--format",
     "--limit",
     "--max-pages",
+    "--max-age",
     "--hide",
     "--only",
     "--confirmed-via",
@@ -72,31 +77,51 @@ pub fn check(args: &[String]) -> Result<Checked, String> {
                     e.kind().as_str().unwrap_or("it was refused")
                 )
             })?;
-    let (command, kinds, list) = match parsed.command {
-        Command::Followers(list) => ("followers", &[ListKind::Followers][..], list),
-        Command::Following(list) => ("following", &[ListKind::Following][..], list),
+    let (command, kinds, typed, walk) = match parsed.command {
+        Command::Followers(list) => (
+            "followers",
+            &[ListKind::Followers][..],
+            list.target,
+            list.walk,
+        ),
+        Command::Following(list) => (
+            "following",
+            &[ListKind::Following][..],
+            list.target,
+            list.walk,
+        ),
         Command::Unfollowers(list) => (
             "unfollowers",
             &[ListKind::Followers, ListKind::Following][..],
-            list,
+            list.target,
+            list.walk,
         ),
         Command::Fans(list) => (
             "fans",
             &[ListKind::Followers, ListKind::Following][..],
-            list,
+            list.target,
+            list.walk,
         ),
         Command::Friends(list) => (
             "friends",
             &[ListKind::Followers, ListKind::Following][..],
-            list,
+            list.target,
+            list.walk,
+        ),
+        Command::Scan(scan) => (
+            "scan",
+            &[ListKind::Followers, ListKind::Following][..],
+            scan.target,
+            scan.walk,
         ),
         _ => {
             return Err(
-                "a job walks a list: followers, following, unfollowers, fans or friends".into(),
+                "a job walks a list: followers, following, unfollowers, fans, friends or scan"
+                    .into(),
             );
         }
     };
-    if list.walk.dry_run {
+    if walk.dry_run {
         return Err("a job walks a list; an estimate is not one".into());
     }
 
@@ -146,8 +171,7 @@ pub fn check(args: &[String]) -> Result<Checked, String> {
         }
     }
 
-    let target = list
-        .target
+    let target = typed
         .as_deref()
         .map(|t| t.strip_prefix('@').unwrap_or(t).to_string());
     Ok(Checked {
@@ -155,7 +179,8 @@ pub fn check(args: &[String]) -> Result<Checked, String> {
         command,
         kinds,
         target,
-        list,
+        typed,
+        walk,
     })
 }
 
@@ -163,7 +188,7 @@ pub fn check(args: &[String]) -> Result<Checked, String> {
 pub fn walk_of(args: &[String]) -> Result<snob_engine::jobs::Walk, String> {
     let checked = check(args)?;
     Ok(snob_engine::jobs::Walk {
-        max_pages: checked.list.walk.max_pages,
+        max_pages: checked.walk.max_pages,
         args: checked.args,
         command: checked.command,
         kinds: checked.kinds,
@@ -264,7 +289,6 @@ mod tests {
             "follow someone -y --json",
             "unfollow someone -y",
             "status --json",
-            "scan someone",
             "profile someone",
             "purge --yes",
             "followers --dry-run",
@@ -278,6 +302,9 @@ mod tests {
             "following someone -y --format json --no-interactive",
             "unfollowers --refresh --limit 5 --max-pages 3",
             "fans --hide=verified,no-pfp --only private",
+            "followers --max-age 6h",
+            "scan",
+            "scan someone -y --format json --max-pages 2 --max-age=2d --refresh",
             "fans @someone --offline",
             "friends",
             "mutuals",

@@ -83,13 +83,13 @@ fn agent_hint(reason: &str) -> Option<&'static str> {
              stopped (its id is in the message); call this again then"
         }
         "nothing_stored" => {
-            "nothing of this list is stored yet: call snob_list again without offset and with \
-             mode \"auto\" to read it"
+            "nothing of this list is stored yet: call snob_list (or snob_scan) again without \
+             offset and with mode \"auto\" to read it"
         }
         "stored_moments" => {
-            "the two stored lists were read too far apart to be crossed: call snob_list again \
-             without offset and with mode \"auto\" (not \"stored\"), so both lists are checked \
-             against the account"
+            "the two stored lists were read too far apart to be crossed: call snob_list (or \
+             snob_scan) again without offset and with mode \"auto\" (not \"stored\"), so both \
+             lists are checked against the account"
         }
         "busy" => {
             "another call that reaches Instagram is running for this account, and one runs \
@@ -137,6 +137,9 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
     }
     if is_changes(plan) {
         finished.json = finished.json.take().map(bounded_changes);
+    }
+    if plan.args.first().map(String::as_str) == Some("scan") {
+        finished.json = finished.json.take().map(bounded_scan);
     }
     if plan.args.first().map(String::as_str) == Some("whoami") {
         finished.json = finished.json.take().map(without_session_path);
@@ -1001,6 +1004,35 @@ fn last_lines(said: &str) -> String {
     lines[lines.len().saturating_sub(6)..].join("\n")
 }
 
+/// What an agent is told when [`bounded_scan`] left accounts out.
+const SCAN_CUT: &str = "The accounts you follow that follow this one are cut to what fits one \
+                        answer: count says how many there are, and snob_profile names them";
+
+/// A scan's `followed_by.accounts` held to what one answer carries, as a page
+/// of a list is ([`PAGE`], [`PAGE_BYTES`]): its `count` still says how many
+/// there are, and `cut` says the list is not all of them.
+fn bounded_scan(mut document: Value) -> Value {
+    let Some(accounts) = document
+        .pointer_mut("/followed_by/accounts")
+        .and_then(Value::as_array_mut)
+    else {
+        return document;
+    };
+    let (mut bytes, mut keep) = (0, 0);
+    for account in accounts.iter() {
+        bytes += account.to_string().len();
+        if keep >= PAGE || bytes > PAGE_BYTES {
+            break;
+        }
+        keep += 1;
+    }
+    if keep < accounts.len() {
+        accounts.truncate(keep);
+        document["followed_by"]["cut"] = json!(SCAN_CUT);
+    }
+    document
+}
+
 /// What `whoami` says of where the session is kept, a path on this machine
 /// that no tool hands to an agent, left out; `storage` says which store it is.
 fn without_session_path(mut document: Value) -> Value {
@@ -1118,6 +1150,53 @@ mod tests {
         assert!(kept.len() <= PAGE_BYTES && kept.len() > PAGE_BYTES - 3);
         assert!(kept.ends_with('\u{2192}'));
         assert!(told["cut"].is_string());
+    }
+
+    /// A scan's mutual followers are held to what one answer carries, with
+    /// their count intact and their pictures' addresses left out.
+    #[test]
+    fn a_scans_followed_by_is_cut_to_one_answer_and_keeps_its_count() {
+        let scan = Plan {
+            args: vec!["scan".into()],
+            ..plan(&[ExitCode::Ok])
+        };
+        let accounts: Vec<Value> = (0..450)
+            .map(|n| json!({ "pk": n.to_string(), "username": format!("u{n}"), "pfp_url": "x" }))
+            .collect();
+        let told = from(
+            &scan,
+            finished(
+                ExitCode::Ok,
+                Some(json!({
+                    "target": "someone",
+                    "counts": { "followers": 1 },
+                    "followed_by": { "count": 450, "accounts": accounts, "taken_at": 1 },
+                })),
+                None,
+            ),
+        );
+        let shown = told.body["followed_by"]["accounts"].as_array().unwrap();
+        assert_eq!(shown.len(), PAGE);
+        assert_eq!(told.body["followed_by"]["count"], 450);
+        assert!(told.body["followed_by"]["cut"].is_string());
+        assert!(shown[0].get("pfp_url").is_none());
+        assert_eq!(told.body["counts"]["followers"], 1);
+
+        let few = from(
+            &scan,
+            finished(
+                ExitCode::Ok,
+                Some(json!({ "followed_by": { "count": 1, "accounts": [{ "pk": "1" }] } })),
+                None,
+            ),
+        );
+        assert!(few.body["followed_by"].get("cut").is_none());
+        // Nothing to cut when the account has none: a null, as it came.
+        let none = from(
+            &scan,
+            finished(ExitCode::Ok, Some(json!({ "followed_by": null })), None),
+        );
+        assert!(none.body["followed_by"].is_null());
     }
 
     /// A session that does not answer is an answer with its error beside it,

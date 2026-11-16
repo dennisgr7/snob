@@ -1239,6 +1239,9 @@ pub struct ScanArgs {
 
     #[command(flatten)]
     pub walk: WalkArgs,
+
+    #[command(flatten)]
+    pub agent: AgentArgs,
 }
 
 /// The list commands' way into the account browser. One definition, like

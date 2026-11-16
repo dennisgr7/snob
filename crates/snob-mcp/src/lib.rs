@@ -852,7 +852,7 @@ impl Server {
             return refusal(
                 "result_gone",
                 "a job's result is kept for a day after its walk ended, and this one's is \
-                 gone; call snob_list again for the list",
+                 gone; call snob_list or snob_scan again",
             );
         }
         let mut told = job::with_id(answer::from(&job::plan_of(doc, offset), walk), doc);

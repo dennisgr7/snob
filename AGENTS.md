@@ -602,7 +602,8 @@ prints a client's snippet and never writes it.
 | Tool | Runs | Asks a yes | Offered |
 |---|---|---|---|
 | `snob_status` | `status` | no | always |
-| `snob_list` | a list or crossing, filtered by `--hide`/`--only` (`verified`, `private`, `no-pfp`; the job's allowed flags too); a walk runs as a job | another account's lists | always |
+| `snob_list` | a list or crossing, filtered by `--hide`/`--only` (`verified`, `private`, `no-pfp`), with `--max-age` (a minute to a year, only in mode `auto`); a walk runs as a job (all three are the job's allowed flags too) | another account's lists | always |
+| `snob_scan` | `scan`: the five counts of both lists and `followed_by` (cut to one answer, `answer::bounded_scan`); a walk runs as a job, `dry_run` and `stored` inline | another account's lists | always |
 | `snob_whoami` | `whoami --json`, `--offline` sends nothing; a dead session is an answer (exit 3, 4, 5 too), `storage_path` left out | no | always |
 | `snob_job`, `snob_jobs`, `snob_job_cancel` | `__job show`, `list`, `cancel` | no | always |
 | `snob_profile` | `profile`, inline | no | always |
@@ -679,7 +680,8 @@ runs nothing, takes no permit and is not counted.
   when it ends within `wait_seconds`, else with its `job_id`. One job per
   account. A client that declared MCP Tasks gets a task with the job's id
   (`tasks.rs`), unless the call names `as_account`. People start the same job
-  with `--background`.
+  with `--background`. **`scan` is one too** (`jobs::argv::check` takes it, with
+  both lists as its claim), though a person has no `--background` for it.
 - **A finished job's list is held by the server that handed back a page of it**
   (`pages.rs`, under the job and the account the call acts as), so the
   `snob_job` pages after it start no child; a server that signs an account out
