@@ -11,7 +11,9 @@ use snob_core::{Epoch, Pk};
 use snob_ig::pace::CancelToken;
 use tokio::sync::{oneshot, watch};
 
-use super::{Account, Answer, Backend, Browsers, Loaded, SignIn, answered};
+use super::{
+    Account, AccountStorage, Answer, Backend, Browsers, Cleared, Loaded, SignIn, Storage, answered,
+};
 use crate::state::flow::{Found, Method, Named, Update};
 use crate::state::prefs::{Appearance, Placement};
 
@@ -33,6 +35,8 @@ pub enum Asked {
     RememberAppearance(Appearance),
     DiagnosticReport,
     CrashShown,
+    Storage,
+    ClearCache,
 }
 
 type Held = Box<dyn FnOnce() + Send>;
@@ -67,6 +71,7 @@ struct State {
     held: Vec<Held>,
     /// The token of the window login in flight, to see it stopped.
     window: Option<CancelToken>,
+    storage: Storage,
 }
 
 /// The scripted backend. Clones are the same backend.
@@ -115,6 +120,7 @@ impl Scripted {
             holding: false,
             held: Vec::new(),
             window: None,
+            storage: Storage::default(),
         })))
     }
 
@@ -264,6 +270,29 @@ impl Script<'_> {
         self
     }
 
+    /// What is said to be kept: `kinds` by size in bytes, and each account
+    /// signed in holding `each`. Clearing the cache empties its kind.
+    pub fn storage(&mut self, kinds: &[(snob_engine::storage::Kind, u64)], each: u64) -> &mut Self {
+        let size = |bytes: u64| snob_store::disk::Size { bytes, files: 1 };
+        self.0.storage = Storage {
+            kinds: kinds
+                .iter()
+                .map(|(kind, bytes)| (*kind, size(*bytes)))
+                .collect(),
+            accounts: self
+                .0
+                .accounts
+                .iter()
+                .map(|account| AccountStorage {
+                    pk: account.named.pk,
+                    username: account.named.username.clone(),
+                    total: size(each),
+                })
+                .collect(),
+        };
+        self
+    }
+
     /// The method chosen before the restart this start comes after.
     pub fn resume(&mut self, method: Method) -> &mut Self {
         self.0.resume = Some(method);
@@ -378,6 +407,22 @@ impl Backend for Scripted {
         self.state()
             .asked
             .push(Asked::RememberAppearance(appearance));
+    }
+
+    fn storage(&self) -> Answer<Storage> {
+        self.answer(Asked::Storage, |state| state.storage.clone())
+    }
+
+    fn clear_cache(&self) -> Answer<Cleared> {
+        self.answer(Asked::ClearCache, |state| {
+            let mut freed = snob_store::disk::Size::default();
+            for (kind, size) in &mut state.storage.kinds {
+                if kind.clearable() {
+                    freed = std::mem::take(size);
+                }
+            }
+            Cleared { freed, whole: true }
+        })
     }
 
     fn check_for_update(&self) -> Answer<Update> {

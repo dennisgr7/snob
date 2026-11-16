@@ -17,7 +17,9 @@ use gpui_kit::{
 use super::look::Look;
 use super::shell::Shell;
 use crate::backend::Backend;
-use crate::state::prefs::{Appearance, FIRST_HEIGHT, FIRST_WIDTH, MIN_HEIGHT, MIN_WIDTH, Placement};
+use crate::state::prefs::{
+    Appearance, FIRST_HEIGHT, FIRST_WIDTH, MIN_HEIGHT, MIN_WIDTH, Placement,
+};
 use crate::system::System;
 use crate::theme::fonts;
 

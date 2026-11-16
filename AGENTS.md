@@ -1027,8 +1027,11 @@ pnpm check && pnpm build && pnpm test   # Playwright against `wrangler dev` serv
 `apps/desktop/`: a GPUI window on the engine, linked in process, **from a cold
 start to somebody signed in and welcomed**: the frame and its band, signing
 in through snob's own browser window or with a pasted session ID, several
-accounts, signing out, the settings of its log, a command palette. The home
-screen is a title: what a scan shows comes next.
+accounts, signing out, a command palette, and the settings: the theme and
+the language chosen over the system's, the log, and what snob keeps on the
+computer, with the cache to clear. Once somebody is signed in the frame
+opens on a rail of sections (home, search, automations); each is a title
+until what a scan shows comes next.
 
 **A workspace of its own**, with its own `Cargo.lock`: GPUI brings some 500
 crates and does not build for musl. Build and test it from that directory;
@@ -1049,10 +1052,16 @@ its version is the release's ("Release and packaging"). GPUI comes through
   (`backend/engine.rs`) and, in a test build, a script
   (`backend/scripted.rs`).
 - **What is shown is decided apart from how it is drawn** (`state/`): the
-  screen and why (`flow.rs`), what the band says (`status.rs`), what a pasted
-  ID is (`paste.rs`), what the palette offers (`commands.rs`), what is
+  screen and why (`flow.rs`), the frame's shape and its way between them
+  (`frame.rs`), what the band says (`status.rs`), what a pasted ID is
+  (`paste.rs`), what the palette offers (`commands.rs`), what the settings
+  hold and what their search shows (`settings.rs`, `storage.rs`), what is
   remembered between runs (`prefs.rs`), and when the app rests
   (`rest.rs`). No window, clock or network there.
+- **A theme or a language chosen holds whatever the system says**; the
+  contrast is always the system's (`ui/look.rs`). **What is kept is measured
+  from the files' sizes** and clearing it removes the cache alone
+  (`snob_engine::storage`), never a session, a list or a log.
 - **A view never calls an operating system** (`system/`): it reads `Settings`
   and takes `Event`s from one trait, which GPUI and Windows answer
   (`native.rs`, `windows.rs`) and a test speaks for (`simulated.rs`). One
@@ -1118,7 +1127,8 @@ pictures, one of the window when it failed, and the app's log.
 
 - **The control channel** is the local socket of the same user under the test
   root, one JSON request a line. It reads the window's accessibility nodes
-  and acts on one by its id, as a screen reader would; it never reaches into
+  and acts on one by its id, as a screen reader would, or moves the pointer
+  one step at a time, so a drag is looked at half-way; it never reaches into
   a view.
 - `--approve` takes this run's pictures and numbers as the approved ones.
   **The pictures are committed, a system each; the numbers are a machine's
@@ -1127,6 +1137,9 @@ pictures, one of the window when it failed, and the app's log.
 - **A test build lists as many browsers as it is told** (`--browsers`), so a
   picture is of the same ones on every machine. That changes the list alone:
   a session is still sent as a browser that is installed.
+- **A test build says the same sizes of what is kept when told**
+  (`--fixed-storage`), for the same reason. That changes what is shown
+  alone: clearing the cache still removes it.
 - `.github/workflows/desktop.yml` runs the lines above on the five runners of
   `ci.yml`, the nightly suites on a timer; `bash tools/ci/run-desktop.sh`
   runs the Linux ones in Docker under Xvfb, with a browser in the image

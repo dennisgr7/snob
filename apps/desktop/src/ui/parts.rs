@@ -126,6 +126,89 @@ pub fn icon_button(
         .child(icon(drawing, 18.).text_color(color(ink)))
 }
 
+/// A button for a row of the settings or a card: lower and narrower than
+/// [`button`], an outline all the same, and still at least 24 pixels square.
+pub fn small_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    enabled: bool,
+    look: &Look,
+) -> Button {
+    let label = label.into();
+    plain_button(id, label.clone(), Kind::Secondary, enabled, look)
+        .h(sp(30.))
+        .px(sp(12.))
+        .gap(sp(6.))
+        .text_size(sp(13.))
+        .child(label)
+}
+
+/// A choice of a few options side by side, one always on: a group a screen
+/// reader names, holding [`segment`]s.
+pub fn segmented(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    look: &Look,
+) -> ObservedElement<Stateful<Div>> {
+    div()
+        .id(id)
+        .test_support()
+        .role(Role::RadioGroup)
+        .aria_label(label.into())
+        .flex()
+        .flex_none()
+        .gap(px(2.))
+        .p(px(3.))
+        .rounded(px(shape::CONTROL_RADIUS + 3.))
+        .border_1()
+        .border_color(color(look.palette.control_line))
+        .bg(color(look.palette.frame))
+}
+
+/// One option of a [`segmented`] choice. **The one on is told apart by
+/// more than its color**: it is raised in the panel's color with an
+/// outline, and its words are heavier.
+pub fn segment(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    on: bool,
+    look: &Look,
+) -> Button {
+    let palette = look.palette;
+    let label = label.into();
+    Button::new(id)
+        .role(Role::RadioButton)
+        .accessibility_label(label.clone())
+        .aria_toggled(if on {
+            gpui_kit::Toggled::True
+        } else {
+            gpui_kit::Toggled::False
+        })
+        .h(sp(28.))
+        .min_w(px(shape::MIN_TARGET))
+        .px(sp(12.))
+        .rounded(px(shape::CONTROL_RADIUS))
+        .border_1()
+        .text_size(sp(13.))
+        .focus_visible(focus_ring(&palette))
+        .cursor_pointer()
+        .map(|segment| {
+            if on {
+                segment
+                    .bg(color(palette.panel))
+                    .border_color(color(palette.control_line))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(color(palette.text))
+            } else {
+                segment
+                    .border_color(gpui_kit::transparent_black())
+                    .text_color(color(palette.secondary))
+                    .hover(move |style| style.bg(color_at(palette.text, 0.06)))
+            }
+        })
+        .child(label)
+}
+
 /// A button's shape and states, with nothing in it yet.
 fn plain_button(
     id: impl Into<ElementId>,

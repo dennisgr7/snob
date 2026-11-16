@@ -8,16 +8,24 @@ mod common;
 
 use std::time::{Duration, UNIX_EPOCH};
 
-use common::{App, focused, open};
+use common::{App, disabled, focused, open};
 use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
-use gpui_kit::{AppContext as _, Role, TestAppContext, VisualTestContext, px};
+use gpui_kit::{
+    AppContext as _, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    PlatformInput, Point, Role, ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext, point,
+    px, size,
+};
 use snob_core::Pk;
 use snob_desktop::backend::scripted::{Asked, Scripted, account};
 use snob_desktop::state::flow::{Screen, Update};
+use snob_desktop::state::prefs::{Appearance, ThemeChoice};
 use snob_desktop::state::rest::QUIET_FOR;
 use snob_desktop::state::status::Status;
-use snob_desktop::system::{Event, Notice};
+use snob_desktop::system::{Event, Notice, Settings};
 use snob_desktop::theme::motion::PICTURE_ARRIVES;
+use snob_desktop::theme::tokens::Scheme;
+use snob_desktop::ui::look::Look;
+use snob_engine::storage::Kind;
 
 async fn at_home(cx: &mut TestAppContext, backend: Scripted) -> App {
     let app = open(cx, backend);
@@ -220,7 +228,10 @@ async fn the_settings_hold_the_log_s_switch_its_folder_and_the_report(cx: &mut T
         .await;
     assert_eq!(app.title(cx), ("Settings".to_string(), true));
     app.in_window(cx, |window, _| {
-        assert_eq!(window.find("settings-logs").role(), Some(Role::Heading));
+        for heading in ["settings-app", "settings-storage"] {
+            assert_eq!(window.find(heading).role(), Some(Role::Heading));
+        }
+        assert!(window.try_find("back").is_none(), "the rail goes back");
         let switch = window.find("settings-detailed");
         assert_eq!(switch.role(), Some(Role::Switch));
         assert_eq!(switch.label(), Some("Detailed logging"));
@@ -253,8 +264,187 @@ async fn the_settings_hold_the_log_s_switch_its_folder_and_the_report(cx: &mut T
         "Diagnostic report copied"
     );
 
-    app.click(cx, "back");
+    app.click(cx, "rail-home");
     app.until_screen(cx, |screen| *screen == Screen::Home).await;
+}
+
+async fn at_the_settings(cx: &mut TestAppContext, backend: Scripted) -> App {
+    let app = at_home(cx, backend).await;
+    app.press(cx, snob_desktop::ui::SETTINGS_KEYS);
+    app.until_screen(cx, |screen| *screen == Screen::Settings)
+        .await;
+    app
+}
+
+/// Whether the app is drawn dark, and the language its words are in.
+fn worn(app: &App, cx: &mut TestAppContext) -> (bool, &'static str) {
+    app.in_window(cx, |_, cx| {
+        let look = Look::now(cx);
+        (look.scheme == Scheme::Dark, look.texts.language())
+    })
+}
+
+#[gpui_kit::test]
+async fn a_theme_chosen_is_worn_kept_and_not_moved_by_the_system_s(cx: &mut TestAppContext) {
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    let app = at_the_settings(cx, backend.clone()).await;
+    app.in_window(cx, |window, _| {
+        assert_eq!(window.find("settings-theme").role(), Some(Role::RadioGroup));
+        let system = window.find("theme-system");
+        assert_eq!(system.role(), Some(Role::RadioButton));
+        assert_eq!(system.checked(), Some(true));
+        assert_eq!(window.find("theme-dark").checked(), Some(false));
+    });
+    assert_eq!(worn(&app, cx), (false, "en"));
+
+    app.click(cx, "theme-dark");
+    assert_eq!(worn(&app, cx), (true, "en"));
+    app.in_window(cx, |window, _| {
+        assert_eq!(window.find("theme-dark").checked(), Some(true));
+        assert_eq!(window.find("theme-system").checked(), Some(false));
+    });
+    let chose_dark = Appearance {
+        theme: ThemeChoice::Dark,
+        language: None,
+    };
+    assert!(
+        backend
+            .asked()
+            .contains(&Asked::RememberAppearance(chose_dark))
+    );
+
+    // The system turning light, then dark and light again, moves nothing.
+    for dark in [false, true, false] {
+        app.system.say(Event::Settings(Settings {
+            dark,
+            ..Settings::default()
+        }));
+        cx.run_until_parked();
+        assert_eq!(worn(&app, cx), (true, "en"), "the system said dark: {dark}");
+    }
+
+    app.click(cx, "theme-system");
+    assert_eq!(worn(&app, cx), (false, "en"), "the system's again");
+}
+
+#[gpui_kit::test]
+async fn a_language_is_chosen_from_its_list_and_every_word_follows(cx: &mut TestAppContext) {
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    let app = at_the_settings(cx, backend.clone()).await;
+    app.in_window(cx, |window, _| {
+        let field = window.find("settings-language");
+        assert_eq!(field.role(), Some(Role::ComboBox));
+        assert_eq!(field.label(), Some("Language: System language"));
+        assert_eq!(field.expanded(), Some(false));
+        assert!(window.try_find("settings-languages").is_none());
+    });
+
+    app.click(cx, "settings-language");
+    app.in_window(cx, |window, _| {
+        assert_eq!(window.find("settings-language").expanded(), Some(true));
+        assert_eq!(
+            window.find("settings-languages").role(),
+            Some(Role::ListBox)
+        );
+        let names: Vec<_> = (0..3usize)
+            .map(|at| {
+                let option = window.find(("settings-language-option", at));
+                assert_eq!(option.role(), Some(Role::ListBoxOption));
+                option.label().unwrap_or_default().to_string()
+            })
+            .collect();
+        assert_eq!(names, ["System language", "English", "Espa\u{f1}ol"]);
+    });
+    // Escape closes the list and chooses nothing.
+    app.press(cx, "escape");
+    assert!(!shown(&app, cx, "settings-languages"));
+
+    app.click(cx, "settings-language");
+    app.in_window(cx, |window, cx| {
+        window.click(("settings-language-option", 2usize), cx);
+    });
+    assert_eq!(worn(&app, cx), (false, "es"));
+    assert_eq!(app.title(cx).0, "Configuraci\u{f3}n");
+    assert!(!shown(&app, cx, "settings-languages"));
+    assert!(
+        backend
+            .asked()
+            .contains(&Asked::RememberAppearance(Appearance {
+                theme: ThemeChoice::System,
+                language: Some("es".to_string()),
+            }))
+    );
+}
+
+#[gpui_kit::test]
+async fn the_search_shows_the_settings_whose_words_hold_what_is_typed(cx: &mut TestAppContext) {
+    let app = at_the_settings(cx, Scripted::with(vec![account(42, "me", true)])).await;
+    app.click(cx, "settings-search");
+    app.in_window(cx, |window, cx| window.input("DARK", cx));
+    app.in_window(cx, |window, _| {
+        assert!(window.try_find("settings-theme").is_some());
+        assert!(window.try_find("settings-language").is_none());
+        assert!(
+            window.try_find("settings-storage").is_none(),
+            "no row of it matches"
+        );
+    });
+
+    app.in_window(cx, |window, cx| window.input(" printer", cx));
+    assert_eq!(
+        app.label_of(cx, "settings-none"),
+        "No setting matches \u{201c}DARK printer\u{201d}"
+    );
+}
+
+#[gpui_kit::test]
+async fn what_is_kept_is_measured_and_clearing_the_cache_measures_again(cx: &mut TestAppContext) {
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    backend.script(|script| {
+        script.storage(
+            &[
+                (Kind::Databases, 2 * 1024 * 1024),
+                (Kind::Cache, 3_250_586),
+                (Kind::Update, 0),
+            ],
+            5 * 1024 * 1024,
+        );
+    });
+    let app = at_the_settings(cx, backend.clone()).await;
+    assert!(backend.asked().contains(&Asked::Storage));
+    assert_eq!(
+        app.label_of(cx, "settings-storage-total"),
+        "snob keeps 5.1 MB on this computer"
+    );
+    app.in_window(cx, |window, _| {
+        assert!(
+            window.try_find("storage-update").is_none(),
+            "nothing is kept there"
+        );
+        assert!(window.try_find("storage-account-0").is_some());
+    });
+    assert!(!disabled(&app, cx, "settings-clear-cache"));
+
+    app.click(cx, "settings-clear-cache");
+    app.until(cx, |window, _| {
+        window
+            .try_find("storage-cache-note")
+            .is_some_and(|note| note.label() == Some("3.1 MB freed"))
+    })
+    .await;
+    cx.run_until_parked();
+    let asked = backend.asked();
+    let cleared_at = asked.iter().position(|a| *a == Asked::ClearCache).unwrap();
+    assert!(
+        asked[cleared_at..].contains(&Asked::Storage),
+        "measured again: {asked:?}"
+    );
+    assert_eq!(app.label_of(cx, "announcements"), "3.1 MB freed");
+    assert_eq!(app.label_of(cx, "storage-cache-note"), "3.1 MB freed");
+    assert!(
+        disabled(&app, cx, "settings-clear-cache"),
+        "nothing left to clear"
+    );
 }
 
 #[gpui_kit::test]
@@ -793,4 +983,83 @@ async fn looking_again_changes_nothing_while_an_account_is_being_added(cx: &mut 
         app.shell.read_with(cx, |shell, _| shell.shown().clone()),
         Screen::Start { back: true, .. }
     ));
+}
+
+/// Sends the window one event of the pointer's, at `x`, `y`.
+fn pointer(app: &App, cx: &mut TestAppContext, event: impl FnOnce(Point<Pixels>) -> PlatformInput) {
+    app.in_window(cx, |window, cx| {
+        let bounds = window.find("settings-list").bounds();
+        let at = point(
+            bounds.origin.x + bounds.size.width - px(13.),
+            bounds.origin.y + bounds.size.height * 0.3,
+        );
+        window.dispatch_event(event(at), cx);
+    });
+}
+
+#[gpui_kit::test]
+async fn the_outline_of_the_sections_shows_while_the_scrollbar_s_thumb_is_held(
+    cx: &mut TestAppContext,
+) {
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    backend.script(|script| {
+        let kinds: Vec<(Kind, u64)> = Kind::ALL.iter().map(|kind| (*kind, 4096)).collect();
+        script.storage(&kinds, 8192);
+    });
+    let app = at_the_settings(cx, backend).await;
+    cx.simulate_window_resize(app.window, size(px(900.), px(560.)));
+    // Turned, so the bar shows, and held as soon as it does. The bar sees
+    // the list scrolled from the second turn on.
+    for _ in 0..2 {
+        pointer(&app, cx, |position| {
+            PlatformInput::Scroll(ScrollEvent {
+                position,
+                delta: ScrollDelta::Pixels(point(px(0.), px(-30.))),
+                ..ScrollEvent::default()
+            })
+        });
+    }
+    assert!(
+        !shown(&app, cx, "settings-outline"),
+        "a wheel shows no outline"
+    );
+    pointer(&app, cx, |position| {
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position,
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        })
+    });
+    pointer(&app, cx, |position| {
+        PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        })
+    });
+    app.until(cx, |window, _| {
+        window
+            .try_find("settings-outline")
+            .is_some_and(|outline| outline.role() == Some(Role::Group))
+    })
+    .await;
+    assert_eq!(
+        app.label_of(cx, "settings-outline"),
+        "The sections of the settings"
+    );
+
+    pointer(&app, cx, |position| {
+        PlatformInput::MouseUp(MouseUpEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        })
+    });
+    app.until(cx, |window, _| {
+        window.try_find("settings-outline").is_none()
+    })
+    .await;
 }

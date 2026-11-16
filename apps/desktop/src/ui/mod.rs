@@ -16,6 +16,7 @@ pub mod palette;
 pub mod parts;
 pub mod rail;
 pub mod screens;
+pub mod scroll;
 pub mod shell;
 pub mod window;
 

@@ -13,12 +13,13 @@ use std::sync::{Arc, OnceLock};
 use snob_core::Pk;
 use snob_core::secret::Secret;
 use snob_desktop::backend::engine::Engine;
-use snob_desktop::backend::{Account, Backend, SignIn};
+use snob_desktop::backend::{Account, Backend, SignIn, Storage};
 use snob_desktop::runtime::Runtime;
 use snob_desktop::state::flow::{Found, Update};
 use snob_desktop::state::prefs::Prefs;
 use snob_engine::login::Failure;
 use snob_engine::sandbox::Sandbox;
+use snob_engine::storage::Kind;
 use snob_engine::{browser, log};
 use snob_fake_ig::world::{self, World};
 use tempfile::TempDir;
@@ -396,5 +397,50 @@ fn a_pasted_session_is_kept_as_the_browser_it_was_said_to_come_from() {
             }
         ),
         "a browser that is not installed is none: {outcome:?}"
+    );
+}
+
+#[test]
+fn what_is_kept_is_measured_for_the_accounts_signed_in_and_clearing_takes_the_cache_alone() {
+    let Some((_root, _sandbox, engine)) = backend() else {
+        return;
+    };
+    let me = signed_in(&engine, &session_id(world::ME, "kept"));
+    signed_in(&engine, &session_id(world::SOMEONE, "kept"));
+    engine
+        .sign_out(Pk::new(world::SOMEONE))
+        .blocking_recv()
+        .unwrap();
+
+    let cache = |storage: &Storage| {
+        storage
+            .kinds
+            .iter()
+            .find(|(kind, _)| *kind == Kind::Cache)
+            .map(|(_, size)| size.bytes)
+            .unwrap()
+    };
+    let storage = engine.storage().blocking_recv().unwrap();
+    assert_eq!(storage.kinds.len(), Kind::ALL.len());
+    assert!(cache(&storage) > 0, "the account's picture is kept there");
+    let named: Vec<_> = storage
+        .accounts
+        .iter()
+        .map(|held| (held.pk, held.username.as_deref()))
+        .collect();
+    assert_eq!(
+        named,
+        [(Pk::new(world::ME), Some("me"))],
+        "an account signed out is counted and not named"
+    );
+
+    let cleared = engine.clear_cache().blocking_recv().unwrap();
+    assert!(cleared.whole);
+    assert_eq!(cleared.freed.bytes, cache(&storage));
+    assert_eq!(cache(&engine.storage().blocking_recv().unwrap()), 0);
+    assert_eq!(
+        engine.load().blocking_recv().unwrap().found,
+        Found::SignedIn(me.named),
+        "the session stays"
     );
 }

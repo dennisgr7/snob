@@ -228,6 +228,8 @@ fn main() -> anyhow::Result<()> {
 
     #[cfg(feature = "testing")]
     let listed = value_of(&args, "--browsers").and_then(|count| count.parse().ok());
+    #[cfg(feature = "testing")]
+    let fixed_storage = args.iter().any(|arg| arg == "--fixed-storage");
     // Read once, before the window opens: it is drawn in the theme chosen
     // from its first frame.
     let prefs = Prefs::load(&paths);
@@ -281,6 +283,12 @@ fn main() -> anyhow::Result<()> {
         let backend = match listed {
             Some(count) => backend.listing_browsers(count),
             None => backend,
+        };
+        #[cfg(feature = "testing")]
+        let backend = if fixed_storage {
+            backend.fixing_storage()
+        } else {
+            backend
         };
         let backend = Arc::new(backend);
         let open = {

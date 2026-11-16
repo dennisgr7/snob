@@ -1,22 +1,19 @@
-//! The home screen, a title until there is something to put under it, and
-//! the settings, which for now are the log's: its detailed level, its
-//! folder, and the diagnostic report to paste into an issue.
-//!
-//! Both show the report of the last crash until the person has dealt with
-//! it. **Nothing of it is sent anywhere**: it can be read and copied here.
+//! The home screen, a title until there is something to put under it, the
+//! sections still to come, and the report of the last crash, which home and
+//! the settings show until the person has dealt with it. **Nothing of it is
+//! sent anywhere**: it can be read and copied here.
 
-use gpui_kit::base::{Button, TestSupportExt as _};
+use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Div, FontWeight, Role, Toggled, div, px};
+use gpui_kit::{AnyElement, Context, Div, FontWeight, Role, div, px};
 
 use super::column;
 use crate::state::flow::Place;
 use crate::theme::fonts::MONO;
 use crate::theme::tokens::shape;
 use crate::ui::assets;
-use crate::ui::frame::clock;
 use crate::ui::look::{Look, color, sp};
-use crate::ui::parts::{self, Kind, icon};
+use crate::ui::parts::{self, icon};
 use crate::ui::shell::{Phase, Shell};
 
 /// A card: something set apart inside the panel.
@@ -34,7 +31,7 @@ fn card(look: &Look) -> Div {
 }
 
 /// The report of the last crash, offered until it is dismissed.
-fn crash(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Option<Div> {
+pub(super) fn crash(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Option<Div> {
     let palette = look.palette;
     let report = shell.crash.clone()?;
     let open = shell.crash_open;
@@ -94,40 +91,22 @@ fn crash(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Option<Div>
                     .flex_wrap()
                     .gap(sp(10.))
                     .child(
-                        parts::button(
-                            "crash-view",
-                            look.tr("crash-view"),
-                            Kind::Secondary,
-                            true,
-                            look,
-                        )
-                        .aria_expanded(open)
-                        .on_click(cx.listener(|shell, _, _, cx| {
-                            shell.crash_open = !shell.crash_open;
-                            cx.notify();
-                        })),
+                        parts::small_button("crash-view", look.tr("crash-view"), true, look)
+                            .aria_expanded(open)
+                            .on_click(cx.listener(|shell, _, _, cx| {
+                                shell.crash_open = !shell.crash_open;
+                                cx.notify();
+                            })),
                     )
                     .child(
-                        parts::button(
-                            "crash-copy",
-                            look.tr("crash-copy"),
-                            Kind::Secondary,
-                            true,
-                            look,
-                        )
-                        .on_click(cx.listener(|shell, _, _, cx| shell.copy_the_crash(cx))),
+                        parts::small_button("crash-copy", look.tr("crash-copy"), true, look)
+                            .on_click(cx.listener(|shell, _, _, cx| shell.copy_the_crash(cx))),
                     )
                     .child(
-                        parts::button(
-                            "crash-dismiss",
-                            look.tr("crash-dismiss"),
-                            Kind::Secondary,
-                            true,
-                            look,
-                        )
-                        .on_click(cx.listener(|shell, _, window, cx| {
-                            shell.dismiss_the_crash(window, cx);
-                        })),
+                        parts::small_button("crash-dismiss", look.tr("crash-dismiss"), true, look)
+                            .on_click(cx.listener(|shell, _, window, cx| {
+                                shell.dismiss_the_crash(window, cx);
+                            })),
                     ),
             ),
     )
@@ -163,157 +142,4 @@ pub fn automations(shell: &mut Shell, phase: Phase, cx: &mut Context<Shell>) -> 
     let look = Look::now(cx).clone();
     let note = look.tr("automations-note");
     to_come(shell, Place::Automations, note, phase, &look)
-}
-
-pub fn settings(shell: &mut Shell, phase: Phase, cx: &mut Context<Shell>) -> AnyElement {
-    let look = Look::now(cx).clone();
-    let palette = look.palette;
-    let detailed_until = shell.backend().detailed_until();
-    let detailed = detailed_until.is_some();
-    let copied = shell.report_copied;
-
-    // The switch: its track and its thumb, and its state in words beside it.
-    let switch = Button::new("settings-detailed")
-        .role(Role::Switch)
-        .accessibility_label(look.tr("settings-detailed"))
-        .aria_toggled(if detailed {
-            Toggled::True
-        } else {
-            Toggled::False
-        })
-        .flex_none()
-        .w(px(46.))
-        .h(px(26.))
-        .p(px(2.))
-        .rounded_full()
-        .border_1()
-        .border_color(color(palette.control_line))
-        .bg(color(if detailed {
-            palette.accent
-        } else {
-            palette.panel
-        }))
-        .cursor_pointer()
-        .focus_visible(parts::focus_ring(&palette))
-        .justify_start()
-        .on_click(cx.listener(move |shell, _, _, cx| shell.set_detailed(!detailed, cx)))
-        .child(
-            div()
-                .size(px(20.))
-                .rounded_full()
-                .bg(color(if detailed {
-                    palette.on_accent
-                } else {
-                    palette.control_line
-                }))
-                .when(detailed, |thumb| thumb.ml(px(20.))),
-        );
-
-    let logs = card(&look)
-        .child(
-            div()
-                .id("settings-logs")
-                .test_support()
-                .role(Role::Heading)
-                .aria_level(2)
-                .aria_label(look.tr("settings-logs"))
-                .font_weight(FontWeight::BOLD)
-                .text_size(sp(16.))
-                .text_color(color(palette.text))
-                .child(look.tr("settings-logs")),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(sp(14.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(sp(2.))
-                        .child(
-                            div()
-                                .text_size(sp(14.5))
-                                .text_color(color(palette.text))
-                                .child(parts::said(
-                                    "settings-detailed-label",
-                                    look.tr("settings-detailed"),
-                                )),
-                        )
-                        .child(
-                            div()
-                                .text_size(sp(13.))
-                                .line_height(sp(19.))
-                                .text_color(color(palette.secondary))
-                                .child(parts::said(
-                                    "settings-detailed-note",
-                                    match detailed_until {
-                                        Some(until) => look.tr_with(
-                                            "settings-detailed-until",
-                                            &[("time", &clock(until))],
-                                        ),
-                                        None => look.tr("settings-detailed-note"),
-                                    },
-                                )),
-                        ),
-                )
-                .child(switch),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(sp(10.))
-                .child(
-                    parts::button(
-                        "settings-open-logs",
-                        look.tr("settings-open-logs"),
-                        Kind::Secondary,
-                        true,
-                        &look,
-                    )
-                    .on_click(cx.listener(|shell, _, _, cx| shell.open_the_logs(cx))),
-                )
-                .child(
-                    parts::button(
-                        "settings-copy-report",
-                        look.tr("settings-copy-report"),
-                        Kind::Secondary,
-                        true,
-                        &look,
-                    )
-                    .on_click(cx.listener(|shell, _, window, cx| {
-                        shell.copy_the_report(window, cx);
-                    })),
-                ),
-        )
-        // Said for as long as the screen is shown, not for two seconds.
-        .when(copied, |card| {
-            card.child(
-                div()
-                    .text_size(sp(13.))
-                    .text_color(color(palette.text))
-                    .child(parts::said(
-                        "settings-report-copied",
-                        look.tr("settings-report-copied"),
-                    )),
-            )
-        });
-
-    column(phase)
-        .child(parts::title(&shell.title, look.tr("settings-title"), &look))
-        .child(logs)
-        .children(crash(shell, &look, cx))
-        .child(
-            parts::button("back", look.tr("back"), Kind::Secondary, true, &look).on_click(
-                cx.listener(|shell, _, window, cx| {
-                    shell.go(Place::Home, window, cx);
-                }),
-            ),
-        )
-        .into_any_element()
 }

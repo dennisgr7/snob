@@ -89,6 +89,7 @@ pub fn render(
     let geometry = frame_shape::geometry(now.openness);
     let [top_left, top_right, bottom_right, bottom_left] = geometry.radii;
     let open = now.openness >= 1.0;
+    let itself = shell.scrolls_itself();
 
     div()
         .id("window")
@@ -121,11 +122,14 @@ pub fn render(
                 .id("content")
                 .absolute()
                 .inset_0()
-                .overflow_y_scroll()
-                .track_scroll(&shell.scroll)
+                // A screen that scrolls on its own holds the panel still.
+                .when(!itself, |content| {
+                    content.overflow_y_scroll().track_scroll(&shell.scroll)
+                })
                 .child(
                     div()
-                        .min_h_full()
+                        .when(itself, |inside| inside.h_full())
+                        .when(!itself, |inside| inside.min_h_full())
                         .flex()
                         .flex_col()
                         .pt(px(frame::BAND))
@@ -138,6 +142,7 @@ pub fn render(
                                 .test_support()
                                 .role(Role::Main)
                                 .flex_1()
+                                .min_h_0()
                                 .flex()
                                 .flex_col()
                                 .bg(color(palette.panel))

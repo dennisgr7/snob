@@ -14,7 +14,7 @@ use snob_core::secret::Secret;
 use snob_core::{Epoch, Pk};
 use snob_engine::app::Viewer;
 use snob_engine::login::{self, Agent, ByBrowser, Failure, Opened};
-use snob_engine::{browser, host, log, logout};
+use snob_engine::{browser, host, log, logout, storage};
 use snob_ig::pace::CancelToken;
 use snob_store::paths::AppPaths;
 use snob_store::registry::Registry;
@@ -22,7 +22,9 @@ use snob_store::secrets::SecretStore;
 use snob_store::viewer::Card;
 use tokio::sync::watch;
 
-use super::{Account, Answer, Backend, Browsers, Loaded, SignIn, answered};
+use super::{
+    Account, AccountStorage, Answer, Backend, Browsers, Cleared, Loaded, SignIn, Storage, answered,
+};
 use crate::report;
 use crate::runtime::Runtime;
 use crate::state::flow::{Found, Method, Named, Update};
@@ -41,6 +43,9 @@ pub struct Engine {
     /// are taken on.
     #[cfg(feature = "testing")]
     listed: Option<usize>,
+    /// Whether what is kept is said the same on every run, for pictures.
+    #[cfg(feature = "testing")]
+    fixed_storage: bool,
 }
 
 impl Engine {
@@ -60,6 +65,8 @@ impl Engine {
             about,
             #[cfg(feature = "testing")]
             listed: None,
+            #[cfg(feature = "testing")]
+            fixed_storage: false,
         }
     }
 
@@ -71,6 +78,44 @@ impl Engine {
     pub fn listing_browsers(mut self, count: usize) -> Self {
         self.listed = Some(count);
         self
+    }
+
+    /// Says the same sizes on every run, whatever is on disk, so a picture
+    /// of them is the same on every machine. **Only what is shown**:
+    /// clearing the cache still removes it.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn fixing_storage(mut self) -> Self {
+        self.fixed_storage = true;
+        self
+    }
+}
+
+/// What the test build says is kept with `fixed_storage`: a size for each
+/// kind, the update and the scratch left empty, and the accounts signed in.
+#[cfg(feature = "testing")]
+fn fixed(accounts: &[Account]) -> Storage {
+    use snob_engine::storage::Kind;
+    let size = |bytes: u64, files: u64| snob_store::disk::Size { bytes, files };
+    Storage {
+        kinds: vec![
+            (Kind::Databases, size(6_815_744, 4)),
+            (Kind::Cache, size(3_250_586, 212)),
+            (Kind::BrowserProfiles, size(51_904_512, 1_310)),
+            (Kind::Jobs, size(18_432, 3)),
+            (Kind::Logs, size(2_097_152, 5)),
+            (Kind::Update, size(0, 0)),
+            (Kind::Scratch, size(0, 0)),
+            (Kind::Other, size(41_984, 9)),
+        ],
+        accounts: accounts
+            .iter()
+            .map(|account| AccountStorage {
+                pk: account.named.pk,
+                username: account.named.username.clone(),
+                total: size(62_131_200, 1_520),
+            })
+            .collect(),
     }
 }
 
@@ -550,5 +595,53 @@ impl Backend for Engine {
                 crash.shown();
             }
         }));
+    }
+
+    fn storage(&self) -> Answer<Storage> {
+        let paths = self.paths.clone();
+        #[cfg(feature = "testing")]
+        let fixed_storage = self.fixed_storage;
+        self.runtime.run(move || async move {
+            let here = signed_in(&paths);
+            #[cfg(feature = "testing")]
+            if fixed_storage {
+                return fixed(&here);
+            }
+            let usage = storage::measure(&paths);
+            let accounts = here
+                .iter()
+                .filter_map(|account| {
+                    let pk = account.named.pk;
+                    let held = usage.accounts.iter().find(|held| held.pk == pk)?;
+                    Some(AccountStorage {
+                        pk,
+                        username: account.named.username.clone(),
+                        total: held.kinds.total(),
+                    })
+                })
+                .collect();
+            Storage {
+                kinds: usage.kinds.iter().collect(),
+                accounts,
+            }
+        })
+    }
+
+    fn clear_cache(&self) -> Answer<Cleared> {
+        let paths = self.paths.clone();
+        self.runtime.run(move || async move {
+            let cleared = storage::clear_cache(&paths, None);
+            tracing::info!(freed = cleared.freed.bytes, "the cache was cleared");
+            if let Some((at, e)) = &cleared.failure {
+                // Where, in the log alone, under the code it is logged as.
+                let error = anyhow::anyhow!("{}: {e}", at.display())
+                    .context("the cache could not be removed whole");
+                log::failed(&error);
+            }
+            Cleared {
+                freed: cleared.freed,
+                whole: cleared.failure.is_none(),
+            }
+        })
     }
 }

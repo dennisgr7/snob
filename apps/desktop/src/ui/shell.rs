@@ -25,11 +25,12 @@ use tokio::sync::watch;
 
 use super::look::Look;
 use super::{frame, screens};
-use crate::backend::{Account, Backend, Loaded, SignIn};
+use crate::backend::{Account, Backend, Cleared, Loaded, SignIn, Storage};
 use crate::state::commands::{self, Command};
 use crate::state::flow::{Effect, Event, Flow, Found, Method, Named, Place, Screen, Update};
 use crate::state::frame::{self as shape, Icon, Morph, Pill, SECTIONS};
 use crate::state::paste::{self, Field};
+use crate::state::prefs::{Appearance, ThemeChoice};
 use crate::state::rest::{self, Rest};
 use crate::state::status::{self, Band, Status};
 use crate::system::{self, System};
@@ -94,6 +95,24 @@ pub(crate) struct PasteForm {
     pub browser: usize,
     /// Whether the list of them is open.
     pub choosing: bool,
+    _watching: Subscription,
+}
+
+/// The settings while they are shown: what is typed in their search, where
+/// their list is scrolled, and whether the languages are listed. Goes with
+/// the screen.
+pub(crate) struct SettingsPage {
+    pub search: Entity<InputState>,
+    pub scroll: super::scroll::OutlinedScroll,
+    pub choosing_language: bool,
+    /// Whether the outline of the sections is coming or going, and since
+    /// when, by the executor's clock: none before the thumb was first held.
+    pub outline: Option<(bool, Instant)>,
+    /// What is kept, once measured.
+    pub storage: Option<Storage>,
+    /// Whether the cache is being cleared, and what clearing it last did.
+    pub clearing: bool,
+    pub cleared: Option<Cleared>,
     _watching: Subscription,
 }
 
@@ -199,6 +218,7 @@ pub struct Shell {
     /// The report of a crash nobody has been shown yet.
     pub(crate) crash: Option<String>,
     pub(crate) paste: Option<PasteForm>,
+    pub(crate) settings: Option<SettingsPage>,
     pub(crate) menu: Option<AccountMenu>,
     pub(crate) palette: Option<Palette>,
     /// What opens the menu, and where focus returns when it closes.
@@ -354,6 +374,7 @@ impl Shell {
             notice: None,
             crash: None,
             paste: None,
+            settings: None,
             menu: None,
             palette: None,
             account_button: cx.focus_handle(),
@@ -769,6 +790,12 @@ impl Shell {
             self.close_the_palette(window, cx);
         } else if self.paste.as_ref().is_some_and(|form| form.choosing) {
             self.toggle_the_browsers(cx);
+        } else if self
+            .settings
+            .as_ref()
+            .is_some_and(|page| page.choosing_language)
+        {
+            self.toggle_the_languages(cx);
         } else if self.signing_out.is_some() {
             self.keep_signed_in(window, cx);
         } else {
@@ -892,6 +919,165 @@ impl Shell {
         })
         .detach();
         cx.notify();
+    }
+
+    /// The settings' page, new: nothing typed, at the top.
+    fn settings_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> SettingsPage {
+        let placeholder = Look::now(cx).tr("settings-search");
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+        let watching = cx.subscribe_in(&search, window, |shell, _, event: &InputEvent, _, cx| {
+            if let InputEvent::Change = event
+                && let Some(page) = &shell.settings
+            {
+                // What is found is read from the top.
+                page.scroll.handle.set_offset(point(px(0.), px(0.)));
+                cx.notify();
+            }
+        });
+        self.measure(window, cx);
+        SettingsPage {
+            search,
+            scroll: super::scroll::OutlinedScroll::new(),
+            choosing_language: false,
+            outline: None,
+            storage: None,
+            clearing: false,
+            cleared: None,
+            _watching: watching,
+        }
+    }
+
+    /// Measures what is kept, for the settings shown.
+    fn measure(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let measuring = self.backend.storage();
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(storage) = measuring.await else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                if let Some(page) = &mut this.settings {
+                    page.storage = Some(storage);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Removes the cache, says what that freed, and measures again. The
+    /// account's own picture is kept there too: the accounts are read again.
+    pub(crate) fn clear_the_cache(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(page) = &mut self.settings else {
+            return;
+        };
+        if page.clearing {
+            return;
+        }
+        tracing::info!(action = "clear_cache", "action");
+        page.clearing = true;
+        page.cleared = None;
+        let clearing = self.backend.clear_cache();
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let cleared = clearing.await.ok();
+            this.update_in(cx, |this, window, cx| {
+                let Some(page) = &mut this.settings else {
+                    return;
+                };
+                page.clearing = false;
+                page.cleared = cleared;
+                let look = Look::now(cx).clone();
+                if let Some(cleared) = cleared {
+                    let said = super::screens::settings::cleared_words(cleared, &look);
+                    this.announce(said, cx);
+                }
+                this.measure(window, cx);
+                this.look_again(window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Whether the screen shown scrolls on its own, under a header that
+    /// stays: the panel then holds still.
+    pub(crate) fn scrolls_itself(&self) -> bool {
+        self.settings.is_some() && self.shown == Screen::Settings
+    }
+
+    /// Draws the app in `theme` from now on, whatever the system says, or
+    /// with [`ThemeChoice::System`] as the system says.
+    pub(crate) fn choose_theme(&mut self, theme: ThemeChoice, cx: &mut Context<Self>) {
+        let look = Look::now(cx).clone();
+        if look.chosen.theme == theme {
+            return;
+        }
+        tracing::info!(action = "choose_theme", ?theme, "action");
+        self.choose(
+            Appearance {
+                theme,
+                ..look.chosen.clone()
+            },
+            &look,
+            cx,
+        );
+    }
+
+    /// Speaks `language` from now on, or with none the system's.
+    pub(crate) fn choose_language(
+        &mut self,
+        language: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(page) = &mut self.settings {
+            page.choosing_language = false;
+        }
+        let look = Look::now(cx).clone();
+        if look.chosen.language == language {
+            cx.notify();
+            return;
+        }
+        tracing::info!(
+            action = "choose_language",
+            language = language.as_deref().unwrap_or("system"),
+            "action"
+        );
+        self.choose(
+            Appearance {
+                language,
+                ..look.chosen.clone()
+            },
+            &look,
+            cx,
+        );
+        let now = Look::now(cx).clone();
+        window.set_window_title(&now.tr("window-title"));
+        if let Some(page) = &self.settings {
+            let placeholder = now.tr("settings-search");
+            page.search.update(cx, |search, cx| {
+                search.set_placeholder(placeholder, window, cx);
+            });
+        }
+    }
+
+    /// Wears `chosen` over what the system says, and remembers it.
+    fn choose(&mut self, chosen: Appearance, look: &Look, cx: &mut Context<Self>) {
+        self.backend.remember_appearance(chosen.clone());
+        super::look::wear(
+            Look::chosen(look.settings.clone(), chosen, look.testing),
+            cx,
+        );
+        cx.notify();
+    }
+
+    /// Lists the languages under their field, or stops listing them.
+    pub(crate) fn toggle_the_languages(&mut self, cx: &mut Context<Self>) {
+        if let Some(page) = &mut self.settings {
+            page.choosing_language = !page.choosing_language;
+            cx.notify();
+        }
     }
 
     /// Turns the log's detailed level on or off.
@@ -1460,6 +1646,10 @@ impl Shell {
             Screen::Paste => Some(self.paste_form(window, cx)),
             _ => None,
         };
+        self.settings = match self.shown {
+            Screen::Settings => Some(self.settings_page(window, cx)),
+            _ => None,
+        };
         self.menu = None;
         self.signing_out = None;
 
@@ -1606,8 +1796,11 @@ impl Shell {
                     text_scale = settings.text_scale,
                     "the system's settings changed"
                 );
-                let testing = Look::now(cx).testing;
-                super::look::wear(Look::of(settings, testing), cx);
+                // **What was chosen over the system holds**: a theme chosen
+                // is not moved by the system's.
+                let now = Look::now(cx);
+                let (chosen, testing) = (now.chosen.clone(), now.testing);
+                super::look::wear(Look::chosen(settings, chosen, testing), cx);
             }
             system::Event::Sleeping => tracing::info!("the system is going to sleep"),
             system::Event::Woke { slept } => {

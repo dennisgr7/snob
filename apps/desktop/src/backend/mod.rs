@@ -13,7 +13,9 @@ use std::path::PathBuf;
 use snob_core::secret::Secret;
 use snob_core::{Epoch, Pk};
 use snob_engine::login::Failure;
+use snob_engine::storage::Kind;
 use snob_ig::pace::CancelToken;
+use snob_store::disk::Size;
 use tokio::sync::{oneshot, watch};
 
 use crate::state::flow::{Found, Method, Named, Update};
@@ -63,6 +65,33 @@ pub struct Browsers {
     pub found: Vec<String>,
     /// The one chosen the last time, when it is still installed.
     pub last: Option<String>,
+}
+
+/// What snob keeps on this computer, measured from its files' sizes alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Storage {
+    /// What each kind weighs, every account's included, in
+    /// [`Kind::ALL`]'s order.
+    pub kinds: Vec<(Kind, Size)>,
+    /// What each account signed in here holds, the one in use first. **Only
+    /// those**: what an account no longer signed in left is counted in the
+    /// kinds and not named.
+    pub accounts: Vec<AccountStorage>,
+}
+
+/// What one account signed in here holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountStorage {
+    pub pk: Pk,
+    pub username: Option<String>,
+    pub total: Size,
+}
+
+/// What clearing the cache freed, and whether all of it went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cleared {
+    pub freed: Size,
+    pub whole: bool,
 }
 
 /// How a sign-in ended.
@@ -151,6 +180,15 @@ pub trait Backend: Send + Sync + 'static {
 
     /// Marks the crash report [`Loaded::crash`] carried as shown.
     fn crash_shown(&self);
+
+    /// What snob keeps on this computer. **From metadata only**: no
+    /// database is opened.
+    fn storage(&self) -> Answer<Storage>;
+
+    /// Removes the cache of every account here, and nothing else
+    /// (`snob_engine::storage::clear_cache`): what a view showed at once,
+    /// which its requests fetch again.
+    fn clear_cache(&self) -> Answer<Cleared>;
 }
 
 /// An answer already known.
