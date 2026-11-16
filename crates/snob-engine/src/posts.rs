@@ -940,6 +940,24 @@ pub async fn read_tab(
     Ok((Fetched::Grid(grid), how))
 }
 
+/// The first page of the grid (`tab` `None`) or of a tab of `pk`, an
+/// account already resolved: what a profile page shows once the tab is
+/// shown, with no resolve of its own.
+pub async fn first_page(
+    client: &IgClient,
+    username: &str,
+    pk: snob_core::Pk,
+    tab: Option<ProfileTab>,
+) -> Result<Grid> {
+    let mut grid = Grid::of(username, tab, Some(pk));
+    let first = match tab {
+        None => client.profile_posts(username, None).await?,
+        Some(tab) => client.profile_tab(tab, pk, username, None).await?,
+    };
+    grid.take(first);
+    Ok(grid)
+}
+
 /// Reads `grid` on from its first page, each next one a step after the
 /// page before and past any rest the account's sitting owes, while fewer
 /// than `at_least` posts are held, or while fewer than `pages` were read and

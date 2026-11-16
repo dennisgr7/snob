@@ -7,21 +7,22 @@
 //! the registry's; what this file adds is which of them to call and how to
 //! say what came back to a screen.
 //!
-//! **A profile page is what `snob profile` reads, less the stories**: the
-//! profile (`App::profile_named`, which keeps it in the cache a page is
-//! drawn from at once next time), the highlights' tray when the profile
-//! says it has some, and a tab's first page once the tab is shown. Its
-//! lists are `engine::list`, the yes for another account's given in the
-//! app before it is called. Pictures come from the CDN into the account's
-//! cache, never from Instagram's API.
+//! **A profile page is what `snob profile` reads, less the stories**:
+//! `snob_engine::profile::read`, which keeps the profile in the cache a page
+//! is drawn from at once next time, and a tab's first page once the tab is
+//! shown (`posts::first_page`). Its lists are `engine::list`, the yes for
+//! another account's given in the app before it is called. Its largest
+//! picture is `snob pfp`'s (`profile::picture`). Pictures come from the CDN
+//! into the account's cache (`cache::Keeper`), never from Instagram's API.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use snob_core::secret::Secret;
 use snob_core::{Epoch, Pk};
 use snob_engine::app::Viewer;
+use snob_engine::cache::Drawing;
 use snob_engine::login::{self, Agent, ByBrowser, Failure, Opened};
 use snob_engine::{browser, host, log, logout, storage};
 use snob_ig::pace::CancelToken;
@@ -41,6 +42,14 @@ use crate::state::flow::{Found, Method, Named, Update};
 use crate::state::prefs::{Appearance, Placement, Prefs, Resume};
 use crate::state::profile::{Side, Tab};
 
+/// Where an account's largest picture is (`snob_engine::profile::picture`).
+#[derive(Clone)]
+struct Largest {
+    username: String,
+    fallback: Option<String>,
+    full_size: Option<String>,
+}
+
 /// The engine, for the data directory `paths` is.
 pub struct Engine {
     runtime: Arc<Runtime>,
@@ -50,9 +59,9 @@ pub struct Engine {
     files: Arc<log::Files>,
     /// What the system is, for a diagnostic report.
     about: String,
-    /// The address of each account's largest picture, as its profile last
-    /// named it: what the viewer fetches, with no request of its own.
-    addresses: Arc<Mutex<HashMap<Pk, String>>>,
+    /// Where each account's largest picture is, as its profile last named
+    /// it: what the viewer fetches, with no request of its own.
+    addresses: Arc<Mutex<HashMap<Pk, Largest>>>,
     /// How many browsers are listed, whichever machine a test's pictures
     /// are taken on.
     #[cfg(feature = "testing")]
@@ -326,14 +335,6 @@ fn writable(secrets: &SecretStore) -> anyhow::Result<SecretStore> {
     Ok(secrets.clone().using(usable))
 }
 
-/// The most a small picture of a page weighs: a cover or a post's, as the
-/// engine's own small pictures (`snob_engine::media`, 512 KiB).
-const SMALL_PICTURE: usize = 512 * 1024;
-
-/// The most an account's largest picture weighs: 1080 pixels square is
-/// some hundreds of kilobytes, and this leaves room for any.
-const LARGE_PICTURE: usize = 16 * 1024 * 1024;
-
 /// The account the views act as: the one in use.
 fn in_use(paths: &AppPaths) -> Option<Pk> {
     Registry::load(paths).ok()?.active
@@ -384,99 +385,6 @@ fn unread(paths: &AppPaths, viewer: Pk, error: &anyhow::Error) -> Unread {
         ExitCode::RateLimited | ExitCode::Challenge => Unread::Paused(paused(paths, viewer)),
         _ => Unread::Failed(log::failed(error)),
     }
-}
-
-/// `bytes` written as `name` in the account's cache, under `kind`: what a
-/// page draws, fetched again when the cache is cleared.
-fn kept_in_cache(
-    account: &snob_store::paths::AccountPaths,
-    kind: &str,
-    name: &str,
-    bytes: &[u8],
-) -> Option<PathBuf> {
-    account.create_cache_dir(kind).ok()?;
-    let file = account.cache_dir().join(kind).join(name);
-    match std::fs::write(&file, bytes) {
-        Ok(()) => Some(file),
-        Err(e) => {
-            tracing::debug!(error = %e, "a picture could not be kept");
-            None
-        }
-    }
-}
-
-/// A name made of what an account or a post is called, safe as a file's.
-fn file_name(said: &str) -> String {
-    let name: String = said
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    match name.trim_matches('.') {
-        "" => "picture".to_string(),
-        name => name.to_string(),
-    }
-}
-
-/// The picture at `address`, kept as `name` under `kind`, when it is one:
-/// one download from the CDN, which Instagram's pace does not count.
-async fn picture_kept(
-    client: &snob_ig::client::IgClient,
-    account: &snob_store::paths::AccountPaths,
-    kind: &str,
-    name: &str,
-    address: Option<&str>,
-    cap: usize,
-) -> Option<PathBuf> {
-    let address = address.filter(|address| !address.is_empty())?;
-    match client.download_capped(address, cap).await {
-        Ok(bytes) if image_kind(&bytes).is_some() => kept_in_cache(account, kind, name, &bytes),
-        Ok(_) => None,
-        // Not the error's own words: they can hold the address.
-        Err(_) => {
-            tracing::debug!(kind, "a picture could not be fetched");
-            None
-        }
-    }
-}
-
-/// Whether `bytes` are a picture Instagram serves, and which.
-fn image_kind(bytes: &[u8]) -> Option<&'static str> {
-    let webp = bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP");
-    match bytes {
-        [0xff, 0xd8, 0xff, ..] => Some("jpg"),
-        [0x89, b'P', b'N', b'G', ..] => Some("png"),
-        _ if webp => Some("webp"),
-        _ => None,
-    }
-}
-
-/// The largest picture of `pk` kept for the account in use, else its small
-/// one.
-fn largest_picture(paths: &AppPaths, viewer: Pk, pk: Pk) -> Option<PathBuf> {
-    let account = paths.account(viewer);
-    let full = account.cache_dir().join("full").join(format!("{pk}.jpg"));
-    if full.is_file() {
-        return Some(full);
-    }
-    small_picture(paths, viewer, pk)
-}
-
-/// The small picture of `pk` the account in use keeps: its own card's, or
-/// the cache's.
-fn small_picture(paths: &AppPaths, viewer: Pk, pk: Pk) -> Option<PathBuf> {
-    if pk == viewer {
-        let own = paths.account(viewer).viewer_picture();
-        if own.is_file() {
-            return Some(own);
-        }
-    }
-    snob_engine::cache::picture(paths, viewer, pk)
 }
 
 /// What a page shows of a list's account.
@@ -583,28 +491,6 @@ fn tile_of(post: &snob_engine::posts::Post, thumb: Option<PathBuf>) -> Tile {
         comments: post.comments,
         pinned: post.pinned,
     }
-}
-
-/// A file in `folder` named after `stem`, new: `stem.jpg`, then `stem
-/// (2).jpg` and on, so nothing there is replaced.
-fn new_file_in(folder: &Path, stem: &str, extension: &str) -> Option<(PathBuf, std::fs::File)> {
-    for n in 1..1000 {
-        let name = if n == 1 {
-            format!("{stem}.{extension}")
-        } else {
-            format!("{stem} ({n}).{extension}")
-        };
-        let path = folder.join(name);
-        match snob_engine::files::create_new(&path) {
-            Ok(file) => return Some((path, file)),
-            Err(_) if path.exists() => continue,
-            Err(e) => {
-                log::failed(&e);
-                return None;
-            }
-        }
-    }
-    None
 }
 
 impl Backend for Engine {
@@ -1035,7 +921,7 @@ impl Backend for Engine {
                 following: shown.following,
                 posts: shown.posts,
                 story_up: false,
-                picture: small_picture(&paths, viewer, who.pk),
+                picture: snob_engine::cache::picture(&paths, viewer, who.pk),
                 highlights: Vec::new(),
                 visible: None,
                 you_follow: shown.you_follow,
@@ -1049,101 +935,78 @@ impl Backend for Engine {
         let (paths, secrets) = (self.paths.clone(), self.secrets.clone());
         let addresses = Arc::clone(&self.addresses);
         self.runtime.run(move || async move {
-            let printable = snob_core::model::printable;
+            use snob_engine::profile::{self, MutualPolicy, Reads, Visibility};
             let (viewer, app) = opened(&paths, &secrets, None, None)?;
             let username = who.username.clone().ok_or(Unread::Nobody)?;
-            let info = app
-                .profile_named(&username, Some(who.pk))
-                .await
-                .map_err(|e| unread(&paths, viewer, &anyhow::Error::new(e)))?;
-            let own = info.id == viewer;
-            let is_private = info.is_private.unwrap_or(false);
-            let you_follow = info.followed_by_viewer.unwrap_or(false);
-            let visible = own || !is_private || you_follow;
-            let account = paths.account(viewer);
-            if let Some(largest) = info
-                .profile_pic_url_hd
-                .clone()
-                .or(info.profile_pic_url.clone())
-            {
-                addresses
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .insert(info.id, largest);
-            }
-            // The small picture, kept by the cache as any view keeps one.
-            let picture = match small_picture(&paths, viewer, info.id) {
-                Some(kept) => Some(kept),
-                None if info.anonymous_picture != Some(true) => {
-                    if let Some(address) = info.profile_pic_url.as_deref()
-                        && let Ok(bytes) =
-                            app.client().download_capped(address, SMALL_PICTURE).await
-                        && let Some(keeper) = app.cache()
-                    {
-                        keeper.picture(info.id, &bytes);
-                    }
-                    small_picture(&paths, viewer, info.id)
-                }
-                None => None,
+            // `snob profile`'s own read, less the stories.
+            let reads = Reads {
+                mutual: MutualPolicy::Defer,
+                stories: false,
             };
+            let read = profile::read(&app, &username, reads, Some(who.pk))
+                .await
+                .map_err(|e| unread(&paths, viewer, &e))?;
+            addresses
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(
+                    read.pk,
+                    Largest {
+                        username: read.username.clone(),
+                        fallback: read.pfp_url.clone(),
+                        full_size: read.pfp_full_size.clone(),
+                    },
+                );
+            let keeper = app.cache();
+            let picture = match snob_engine::cache::picture(&paths, viewer, read.pk) {
+                Some(kept) => Some(kept),
+                None if read.pfp_anonymous => None,
+                None => match (&keeper, read.pfp_small.as_deref()) {
+                    (Some(keeper), Some(address)) => {
+                        keeper.fetch_picture(app.client(), read.pk, address).await
+                    }
+                    _ => None,
+                },
+            };
+            let visible = matches!(read.highlights, Visibility::Shown(_));
             let mut highlights = Vec::new();
-            if visible && info.highlight_reel_count != Some(0) {
-                let tray = app
-                    .client()
-                    .highlights_tray(info.id, &info.username)
-                    .await
-                    .map_err(|e| unread(&paths, viewer, &anyhow::Error::new(e)))?;
+            if let Visibility::Shown(tray) = read.highlights {
                 for highlight in tray {
-                    let address = highlight
-                        .cover_media
-                        .as_ref()
-                        .and_then(|cover| cover.cropped_image_version.as_ref())
-                        .map(|version| version.url.clone());
-                    let name = format!("{}.jpg", file_name(&highlight.id));
-                    let cover = picture_kept(
-                        app.client(),
-                        &account,
-                        "highlights",
-                        &name,
-                        address.as_deref(),
-                        SMALL_PICTURE,
-                    )
-                    .await;
+                    let cover = match (&keeper, highlight.cover.as_deref()) {
+                        (Some(keeper), Some(address)) => {
+                            keeper
+                                .fetch_drawing(app.client(), Drawing::Cover, &highlight.id, address)
+                                .await
+                        }
+                        _ => None,
+                    };
                     highlights.push(Highlight {
                         id: highlight.id,
-                        title: printable(highlight.title.as_deref().unwrap_or("")),
+                        title: highlight.title,
                         cover,
                     });
                 }
             }
-            let said = |text: Option<&str>| text.map(printable).filter(|text| !text.is_empty());
             Ok(Profile {
                 named: Named {
-                    pk: info.id,
-                    username: said(Some(&info.username)),
+                    pk: read.pk,
+                    username: Some(read.username).filter(|name| !name.is_empty()),
                 },
-                full_name: said(info.full_name.as_deref()),
-                // A line at a time: a bio's line breaks are its author's.
-                biography: info
-                    .biography
-                    .as_deref()
-                    .map(|bio| bio.lines().map(printable).collect::<Vec<_>>().join("\n"))
-                    .filter(|bio| !bio.trim().is_empty()),
-                external_url: said(info.external_url.as_deref()),
-                category: said(info.category_name.as_deref()),
-                is_private,
-                is_verified: info.is_verified.unwrap_or(false),
-                followers: info.follower_count(),
-                following: info.following_count(),
-                posts: info.posts.map(|posts| posts.count),
-                // When the newest story was posted, zero for none: read off
-                // the profile, and no story is asked for.
-                story_up: visible && info.latest_reel_media.is_some_and(|at| at > 0),
+                full_name: read.full_name,
+                biography: read.biography,
+                external_url: read.external_url,
+                category: read.category,
+                is_private: read.is_private,
+                is_verified: read.is_verified,
+                followers: read.followers,
+                following: read.following,
+                posts: read.posts,
+                story_up: read.story_up,
                 picture,
                 highlights,
                 visible: Some(visible),
-                you_follow: (!own).then_some(you_follow),
-                follows_you: (!own).then(|| info.follows_viewer.unwrap_or(false)),
+                you_follow: read.relation.map(|relation| relation.you_follow),
+                follows_you: read.relation.map(|relation| relation.follows_you),
                 read: true,
             })
         })
@@ -1155,58 +1018,38 @@ impl Backend for Engine {
             use snob_ig::client::ProfileTab;
             let (viewer, app) = opened(&paths, &secrets, None, None)?;
             let username = who.username.clone().ok_or(Unread::Nobody)?;
-            let failed = |e: anyhow::Error| unread(&paths, viewer, &e);
-            let (posts, more) = match tab {
-                Tab::Posts => {
-                    let (grid, _) =
-                        snob_engine::posts::read_pages(app.client(), &username, 1, 0, &[])
-                            .await
-                            .map_err(failed)?;
-                    let more = grid.next.is_some();
-                    (grid.posts, more)
-                }
-                Tab::Reposts | Tab::Tagged => {
-                    let which = if tab == Tab::Reposts {
-                        ProfileTab::Reposts
-                    } else {
-                        ProfileTab::Tagged
-                    };
-                    let page = app
-                        .client()
-                        .profile_tab(which, who.pk, &username, None)
-                        .await
-                        .map_err(|e| failed(anyhow::Error::new(e)))?;
-                    let posts = page
-                        .posts
-                        .iter()
-                        .map(|media| snob_engine::posts::Post::from_media(media, ""))
-                        .collect();
-                    (posts, page.next.is_some())
-                }
+            let tab = match tab {
+                Tab::Posts => None,
+                Tab::Reposts => Some(ProfileTab::Reposts),
+                Tab::Tagged => Some(ProfileTab::Tagged),
             };
-            let account = paths.account(viewer);
-            let mut tiles = Vec::with_capacity(posts.len());
-            for post in &posts {
-                let address = post.items.first().and_then(|item| item.thumb.clone());
-                let name = format!("{}.jpg", file_name(&post.code));
-                let thumb = picture_kept(
-                    app.client(),
-                    &account,
-                    "posts",
-                    &name,
-                    address.as_deref(),
-                    SMALL_PICTURE,
-                )
-                .await;
+            let grid = snob_engine::posts::first_page(app.client(), &username, who.pk, tab)
+                .await
+                .map_err(|e| unread(&paths, viewer, &e))?;
+            let keeper = app.cache();
+            let mut tiles = Vec::with_capacity(grid.posts.len());
+            for post in &grid.posts {
+                let address = post.items.first().and_then(|item| item.thumb.as_deref());
+                let thumb = match (&keeper, address) {
+                    (Some(keeper), Some(address)) => {
+                        keeper
+                            .fetch_drawing(app.client(), Drawing::Thumb, &post.code, address)
+                            .await
+                    }
+                    _ => None,
+                };
                 tiles.push(tile_of(post, thumb));
             }
-            Ok(Tiles { tiles, more })
+            Ok(Tiles {
+                tiles,
+                more: grid.next.is_some(),
+            })
         })
     }
 
     fn full_picture(&self, who: Named) -> Answer<Option<PathBuf>> {
         let (paths, secrets) = (self.paths.clone(), self.secrets.clone());
-        let address = self
+        let largest = self
             .addresses
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1214,29 +1057,37 @@ impl Backend for Engine {
             .cloned();
         self.runtime.run(move || async move {
             let viewer = in_use(&paths)?;
-            let account = paths.account(viewer);
-            let kept = account
-                .cache_dir()
-                .join("full")
-                .join(format!("{}.jpg", who.pk));
-            if kept.is_file() {
+            let key = who.pk.to_string();
+            if let Some(kept) = snob_engine::cache::drawing(&paths, viewer, Drawing::Largest, &key)
+            {
                 return Some(kept);
             }
-            let Some(address) = address else {
-                return small_picture(&paths, viewer, who.pk);
+            let small = || snob_engine::cache::picture(&paths, viewer, who.pk);
+            let Some(largest) = largest else {
+                return small();
             };
             let (_, app) = opened(&paths, &secrets, None, None).ok()?;
-            let name = format!("{}.jpg", who.pk);
-            picture_kept(
+            // `snob pfp`'s own choice of picture.
+            let picture = snob_engine::profile::picture(
                 app.client(),
-                &account,
-                "full",
-                &name,
-                Some(&address),
-                LARGE_PICTURE,
+                who.pk,
+                &largest.username,
+                largest.fallback,
+                largest.full_size,
             )
-            .await
-            .or_else(|| small_picture(&paths, viewer, who.pk))
+            .await;
+            let kept = match (picture, app.cache()) {
+                (Ok(picture), Some(keeper)) => {
+                    keeper.drawing(Drawing::Largest, &key, &picture.bytes)
+                }
+                (Ok(_), None) => None,
+                // Not the error's own words: they can hold the address.
+                (Err(_), _) => {
+                    tracing::debug!("the largest picture was not fetched");
+                    None
+                }
+            };
+            kept.or_else(small)
         })
     }
 
@@ -1244,7 +1095,7 @@ impl Backend for Engine {
         let paths = self.paths.clone();
         self.runtime.run(move || async move {
             let viewer = in_use(&paths)?;
-            std::fs::read(largest_picture(&paths, viewer, who.pk)?).ok()
+            std::fs::read(snob_engine::cache::largest(&paths, viewer, who.pk)?).ok()
         })
     }
 
@@ -1253,10 +1104,17 @@ impl Backend for Engine {
         self.runtime.run(move || async move {
             use std::io::Write as _;
             let viewer = in_use(&paths)?;
-            let bytes = std::fs::read(largest_picture(&paths, viewer, who.pk)?).ok()?;
-            let extension = image_kind(&bytes).unwrap_or("jpg");
-            let stem = file_name(who.username.as_deref().unwrap_or("picture"));
-            let (path, mut file) = new_file_in(&folder, &stem, extension)?;
+            let bytes = std::fs::read(snob_engine::cache::largest(&paths, viewer, who.pk)?).ok()?;
+            let extension = snob_engine::media::extension_of(&bytes);
+            let stem = who.username.as_deref().unwrap_or("picture");
+            let (path, mut file) =
+                match snob_engine::files::create_numbered(&folder, stem, extension) {
+                    Ok(made) => made,
+                    Err(e) => {
+                        log::failed(&e);
+                        return None;
+                    }
+                };
             match file.write_all(&bytes) {
                 Ok(()) => Some(path),
                 Err(e) => {
@@ -1316,7 +1174,7 @@ impl Backend for Engine {
                 .map_err(|e| unread(&paths, viewer, &e))?;
             let people: Vec<Person> = users
                 .iter()
-                .map(|user| person(user, small_picture(&paths, viewer, user.pk)))
+                .map(|user| person(user, snob_engine::cache::picture(&paths, viewer, user.pk)))
                 .collect();
             walked.send_modify(|shown| shown.people = people.clone());
             Ok(Listed {
