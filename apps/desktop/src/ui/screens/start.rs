@@ -36,6 +36,7 @@ pub fn render(
                 full_name: None,
                 biography: None,
                 picture: None,
+                picture_kept_at: None,
                 active: false,
             });
         div()
@@ -49,7 +50,12 @@ pub fn render(
                     .test_support()
                     .role(Role::Image)
                     .aria_label(parts::photo_label(&account, &look))
-                    .child(parts::avatar(&account, 72., &look)),
+                    .child(parts::avatar(
+                        &account,
+                        72.,
+                        &look,
+                        parts::shown_of(shell.pictures_shown(), &account),
+                    )),
             )
             .child(
                 div()

@@ -36,6 +36,9 @@ pub struct Account {
     pub biography: Option<String>,
     /// Its small picture on disk, when one is kept.
     pub picture: Option<PathBuf>,
+    /// When that picture was written: a new one in the same place is told
+    /// from the one already drawn by it.
+    pub picture_kept_at: Option<std::time::SystemTime>,
     /// The account the app acts as.
     pub active: bool,
 }

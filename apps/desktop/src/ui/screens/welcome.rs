@@ -32,13 +32,17 @@ pub fn render(
         .find(|known| known.named.pk == account.pk)
         .cloned();
 
-    // The picture grows into place while the words rise under it; under
-    // "reduce motion" it is there at its size and only fades in.
+    // The picture pops into place, a touch past its size and back, while
+    // the words rise under it; under "reduce motion" it is there at its size
+    // and only fades in. A picture still being read when the welcome comes
+    // in arrives on its own once it is (`parts::avatar`).
     let grown = if look.settings.reduce_motion {
         PICTURE
     } else {
-        PICTURE * (0.9 + 0.1 * phase.presence)
+        let at = phase.presence.clamp(0.0, 1.0);
+        PICTURE * (0.86 + 0.14 * at + 0.06 * (std::f32::consts::PI * at).sin())
     };
+    let shown = shell.pictures_shown().clone();
     let picture = signed_in.map(|account| {
         div()
             .id("welcome-photo")
@@ -49,7 +53,12 @@ pub fn render(
             .flex()
             .items_center()
             .justify_center()
-            .child(parts::avatar(&account, grown, &look))
+            .child(parts::avatar(
+                &account,
+                grown,
+                &look,
+                parts::shown_of(&shown, &account),
+            ))
     });
 
     column(Phase { rise: 0.0, ..phase })

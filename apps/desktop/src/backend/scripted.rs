@@ -82,6 +82,7 @@ pub fn account(pk: u64, username: &str, active: bool) -> Account {
         full_name: Some(format!("Invented {username}")),
         biography: Some(format!("the invented bio of {username}")),
         picture: None,
+        picture_kept_at: None,
         active,
     }
 }

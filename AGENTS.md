@@ -483,9 +483,13 @@ compile; the session is an explicit header on the one client meant to carry it.
 - **An account's card** (`accounts/<pk>/viewer.json`, `snob_store::viewer`):
   its name, bio and the address of its small picture, kept from what a
   login's check was answered and **never asked for on its own**
-  (`login::validate_seeing`); the picture (the cache's `pictures/<pk>.jpg`)
-  is one download from the CDN, only for a view that shows it
-  (`snob_engine::viewer::picture`). Both go on a sign-out.
+  (`login::validate_seeing`), and read again from the browser's tab after
+  the app's login and its day's check of the session, which sends nothing
+  (`snob_engine::viewer::look_again`); the picture (the cache's
+  `pictures/<pk>.jpg`) is one download from the CDN when its address
+  changes, only for a view that shows it (`snob_engine::viewer::picture`).
+  The app draws the kept one at once, and a new one comes in once read.
+  Both go on a sign-out.
 - **The views' cache** (`accounts/<pk>/cache/`, `snob_store::cache`,
   `snob_engine::cache`): what the account was last shown of each account,
   by pk (`profiles/<pk>.json`: names, bio, counts, how the two stand), and

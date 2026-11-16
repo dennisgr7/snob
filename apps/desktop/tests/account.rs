@@ -6,16 +6,18 @@
 
 mod common;
 
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use common::{App, focused, open};
 use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{AppContext as _, Role, TestAppContext, VisualTestContext};
+use snob_core::Pk;
 use snob_desktop::backend::scripted::{Asked, Scripted, account};
 use snob_desktop::state::flow::{Screen, Update};
 use snob_desktop::state::rest::QUIET_FOR;
 use snob_desktop::state::status::Status;
 use snob_desktop::system::{Event, Notice};
+use snob_desktop::theme::motion::PICTURE_ARRIVES;
 
 async fn at_home(cx: &mut TestAppContext, backend: Scripted) -> App {
     let app = open(cx, backend);
@@ -477,6 +479,52 @@ async fn a_frame_drawn_wakes_the_app_before_it_is_looked_at(cx: &mut TestAppCont
     cx.executor().advance_clock(QUIET_FOR);
     cx.run_until_parked();
     assert!(app.system.is_resting(), "and it rests again once still");
+}
+
+/// How far `pk`'s picture has come in on the last frame.
+fn picture_in(app: &App, cx: &mut TestAppContext, pk: u64) -> Option<f32> {
+    app.in_window(cx, |_, _| ());
+    app.shell.read_with(cx, |shell, _| {
+        shell.pictures_shown().get(&Pk::new(pk)).copied()
+    })
+}
+
+#[gpui_kit::test]
+async fn a_picture_kept_is_drawn_at_once_and_a_new_one_comes_in(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("42.png");
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 40, 120, 255]))
+        .save(&file)
+        .unwrap();
+    let mut me = account(42, "me", true);
+    me.picture = Some(file.clone());
+    me.picture_kept_at = Some(UNIX_EPOCH + Duration::from_secs(1));
+    let backend = Scripted::with(vec![me.clone()]);
+    let app = open(cx, backend.clone());
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    cx.run_until_parked();
+    assert_eq!(
+        picture_in(&app, cx, 42),
+        Some(1.0),
+        "from the cache, at once"
+    );
+
+    // The day's check kept a new picture: the files say it was written again.
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([20, 140, 220, 255]))
+        .save(&file)
+        .unwrap();
+    me.picture_kept_at = Some(UNIX_EPOCH + Duration::from_secs(2));
+    backend.script(|script| {
+        script.accounts(vec![me.clone()]);
+    });
+    app.system.say(woke());
+    cx.run_until_parked();
+    let coming = picture_in(&app, cx, 42).unwrap();
+    assert!(coming < 1.0, "it comes in: {coming}");
+
+    cx.executor().advance_clock(PICTURE_ARRIVES);
+    cx.run_until_parked();
+    assert_eq!(picture_in(&app, cx, 42), Some(1.0));
 }
 
 /// What the palette lists, by name, and which row is chosen.

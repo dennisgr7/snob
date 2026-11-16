@@ -31,6 +31,10 @@ pub const WELCOME_ENTER: Duration = Duration::from_millis(600);
 pub const WELCOME_STAYS: Duration = Duration::from_millis(2800);
 
 /// One turn of the loading ring.
+/// How long a picture takes to come in once it is read, when it was not
+/// there at once: a fade and a small growth into its circle.
+pub const PICTURE_ARRIVES: Duration = Duration::from_millis(260);
+
 pub const RING_TURN: Duration = Duration::from_millis(1100);
 
 /// What a transition does, beside taking time.

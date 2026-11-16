@@ -339,7 +339,12 @@ fn account(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Option<An
                     .test_support()
                     .role(Role::Image)
                     .aria_label(parts::photo_label(account, look))
-                    .child(parts::avatar(account, size, look)),
+                    .child(parts::avatar(
+                        account,
+                        size,
+                        look,
+                        parts::shown_of(shell.pictures_shown(), account),
+                    )),
             )
             .into_any_element(),
     )

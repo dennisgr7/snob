@@ -5,9 +5,11 @@
 //! decided by the flow (`state::flow`) and done here, off the window's
 //! thread.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
@@ -200,6 +202,10 @@ pub struct Shell {
     stirred: Instant,
     /// Whether a look at the rest is already on its way.
     looking: bool,
+    /// Every account picture asked for, and how far each has come in on
+    /// this frame.
+    pictures: HashMap<PathBuf, Picture>,
+    pictures_in: crate::ui::parts::Shown,
 }
 
 impl Shell {
@@ -336,7 +342,96 @@ impl Shell {
             rest: Rest::default(),
             stirred: cx.background_executor().now(),
             looking: false,
+            pictures: HashMap::new(),
+            pictures_in: crate::ui::parts::Shown::new(),
         }
+    }
+
+    /// Starts reading and decoding each account's picture kept on disk, so
+    /// a screen that shows one draws it in its first frame, from the cache,
+    /// rather than an empty circle first. **A picture written again since it
+    /// was read is read again**, and comes in. Nothing is fetched: a picture
+    /// is a file of the account's, or nothing.
+    fn decode_the_pictures(&mut self, cx: &mut App) {
+        for account in &self.accounts {
+            let Some(path) = account.picture.clone() else {
+                continue;
+            };
+            let resource = Resource::from(path.clone());
+            match self.pictures.get_mut(&path) {
+                Some(known) if known.kept_at != account.picture_kept_at => {
+                    cx.remove_asset::<ImgResourceLoader>(&resource);
+                    *known = Picture {
+                        kept_at: account.picture_kept_at,
+                        arrival: Arrival::Reading,
+                    };
+                }
+                Some(_) => {}
+                None => {
+                    self.pictures.insert(
+                        path,
+                        Picture {
+                            kept_at: account.picture_kept_at,
+                            arrival: Arrival::Unseen,
+                        },
+                    );
+                }
+            }
+            let _ = cx.fetch_asset::<ImgResourceLoader>(&resource);
+        }
+    }
+
+    /// How far each account's picture has come in on this frame, asking for
+    /// another frame while one is coming in.
+    fn see_the_pictures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        let lasts = if Look::now(cx).settings.reduce_motion {
+            motion::FADE
+        } else {
+            motion::PICTURE_ARRIVES
+        };
+        // The splash draws no picture: one read under it is there at once.
+        let drawn = self.shown != Screen::Splash;
+        let mut coming = false;
+        self.pictures_in.clear();
+        for account in &self.accounts {
+            let Some(path) = &account.picture else {
+                continue;
+            };
+            let read = window
+                .use_asset::<ImgResourceLoader>(&Resource::from(path.clone()), cx)
+                .is_some();
+            let picture = self.pictures.entry(path.clone()).or_insert(Picture {
+                kept_at: account.picture_kept_at,
+                arrival: Arrival::Unseen,
+            });
+            picture.arrival = match (picture.arrival, read) {
+                (Arrival::Unseen, true) => Arrival::AtOnce,
+                (Arrival::Unseen, false) if !drawn => Arrival::Unseen,
+                (Arrival::Unseen | Arrival::Reading, false) => Arrival::Reading,
+                (Arrival::Reading, true) => Arrival::At(now),
+                (arrival, _) => arrival,
+            };
+            let shown = match picture.arrival {
+                Arrival::Unseen | Arrival::Reading => 0.0,
+                Arrival::AtOnce => 1.0,
+                Arrival::At(since) => {
+                    let at =
+                        now.saturating_duration_since(since).as_secs_f32() / lasts.as_secs_f32();
+                    coming |= at < 1.0;
+                    if at < 1.0 { motion::ease_out(at) } else { 1.0 }
+                }
+            };
+            self.pictures_in.insert(account.named.pk, shown);
+        }
+        if coming {
+            window.request_animation_frame();
+        }
+    }
+
+    /// How far each account's picture has come in on this frame.
+    pub fn pictures_shown(&self) -> &crate::ui::parts::Shown {
+        &self.pictures_in
     }
 
     /// Rests the app, or wakes it, as `state::rest` judges what is seen now.
@@ -781,7 +876,7 @@ impl Shell {
     fn loaded(&mut self, loaded: Loaded, window: &mut Window, cx: &mut Context<Self>) {
         self.accounts = loaded.accounts;
         // Under the splash's way out, so home's first frame has them.
-        decode_the_pictures(&self.accounts, cx);
+        self.decode_the_pictures(cx);
         self.crash = loaded.crash;
         let signed_in = matches!(loaded.found, Found::SignedIn(_));
         if signed_in {
@@ -828,7 +923,7 @@ impl Shell {
             (true, Found::SignedIn(now)) => {
                 let before = self.active().map(|account| account.named.pk);
                 self.accounts = loaded.accounts;
-                decode_the_pictures(&self.accounts, cx);
+                self.decode_the_pictures(cx);
                 if before != Some(now.pk) {
                     tracing::info!("the account in use was changed from outside the app");
                     self.quiet(Band::clear_pause, cx);
@@ -850,7 +945,7 @@ impl Shell {
             (false, Found::SignedIn(now)) if waiting => {
                 tracing::info!("somebody signed in from outside the app");
                 self.accounts = loaded.accounts;
-                decode_the_pictures(&self.accounts, cx);
+                self.decode_the_pictures(cx);
                 self.read_the_pause(window, cx);
                 self.happened(Event::SignedIn(now), window, cx);
             }
@@ -867,11 +962,14 @@ impl Shell {
         }
         let checking = self.backend.expired_session();
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Some(account)) = checking.await else {
+            let Ok(expired) = checking.await else {
                 return;
             };
-            this.update_in(cx, |this, window, cx| {
-                this.session_expired(account, window, cx);
+            this.update_in(cx, |this, window, cx| match expired {
+                Some(account) => this.session_expired(account, window, cx),
+                // A check that went out kept what the account's tab said
+                // of it, a new picture included: read from the files.
+                None => this.look_again(window, cx),
             })
             .ok();
         })
@@ -1215,7 +1313,7 @@ impl Shell {
                 }
                 self.accounts.retain(|other| other.named.pk != named.pk);
                 self.accounts.insert(0, account);
-                decode_the_pictures(&self.accounts, cx);
+                self.decode_the_pictures(cx);
                 self.read_the_pause(window, cx);
                 self.happened(Event::SignedIn(named), window, cx);
             }
@@ -1470,17 +1568,24 @@ impl Shell {
     }
 }
 
-/// Starts reading and decoding each account's picture kept on disk, into
-/// the cache every picture of it is drawn from, so a screen that shows one
-/// draws it in its first frame rather than an empty circle first. Nothing
-/// is fetched: a picture is a file of the account's, or nothing.
-fn decode_the_pictures(accounts: &[Account], cx: &mut App) {
-    for picture in accounts
-        .iter()
-        .filter_map(|account| account.picture.clone())
-    {
-        let _ = cx.fetch_asset::<ImgResourceLoader>(&Resource::from(picture));
-    }
+/// How a picture came to be drawn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Arrival {
+    /// Not asked for in a frame yet.
+    Unseen,
+    /// Asked for, and still being read.
+    Reading,
+    /// Read before the first frame that showed it: drawn at once.
+    AtOnce,
+    /// Read while a frame waited for it, at this moment: it comes in.
+    At(Instant),
+}
+
+/// A picture the app draws: when its file was written, and how it came.
+#[derive(Debug, Clone, Copy)]
+struct Picture {
+    kept_at: Option<SystemTime>,
+    arrival: Arrival,
 }
 
 impl Render for Shell {
@@ -1488,6 +1593,7 @@ impl Render for Shell {
         // A frame is something moving: the app wakes before it is drawn.
         self.stirred = cx.background_executor().now();
         self.judge_the_rest(window, cx);
+        self.see_the_pictures(window, cx);
         let phase = self.phase(window, cx);
         let screen: AnyElement = screens::render(self, phase, window, cx);
         frame::render(self, screen, window, cx)

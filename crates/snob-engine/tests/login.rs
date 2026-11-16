@@ -435,6 +435,67 @@ async fn a_login_keeps_what_its_check_showed_of_the_account_and_asks_nothing_mor
 }
 
 #[tokio::test]
+async fn a_look_again_from_the_tab_keeps_a_new_picture_and_asks_instagram_nothing() {
+    let (_root, sandbox) = sandbox();
+    let session = sessionid(world::ME, "look-again");
+    let account = sandbox.paths.account(Pk::new(world::ME));
+    paste(&sandbox, &session).await.unwrap();
+    // The card as a login long ago left it: another picture, and none kept.
+    let mut card = Card::load(&account).unwrap();
+    card.picture = Some("https://cdn.example.invalid/an-old-picture_n.jpg".into());
+    card.save(&account).unwrap();
+    let stored = stored_session(&sandbox, world::ME).unwrap();
+    let client = |page: bool| {
+        let client = snob_ig::client::IgClient::new(
+            stored.clone(),
+            snob_engine::app::pacer_saying_a_line(&account, CancelToken::default()).unwrap(),
+        )
+        .unwrap();
+        if page {
+            client.with_page(std::sync::Arc::new(snob_fake_ig::tab::TestTab::new(
+                world(),
+                &stored,
+            )))
+        } else {
+            client
+        }
+    };
+    let asked_instagram = || async {
+        asked_with(&session)
+            .await
+            .into_iter()
+            .filter(|path| !path.starts_with("/media/"))
+            .count()
+    };
+    let before = asked_instagram().await;
+
+    assert!(!snob_engine::viewer::look_again(&client(false), &account).await);
+    assert_eq!(
+        Card::load(&account).unwrap().picture.as_deref(),
+        Some("https://cdn.example.invalid/an-old-picture_n.jpg"),
+        "without a browser it would cost a request: the card stays"
+    );
+
+    assert!(snob_engine::viewer::look_again(&client(true), &account).await);
+    let card = Card::load(&account).unwrap();
+    assert_ne!(
+        card.picture.as_deref(),
+        Some("https://cdn.example.invalid/an-old-picture_n.jpg"),
+        "the tab's picture replaced the old one"
+    );
+    assert!(
+        std::fs::read(account.viewer_picture())
+            .unwrap()
+            .starts_with(b"\xff\xd8\xff")
+    );
+    assert!(
+        !snob_engine::viewer::look_again(&client(true), &account).await,
+        "the same picture is not fetched again"
+    );
+    assert_eq!(asked_instagram().await, before, "the document said it all");
+}
+
+#[tokio::test]
 async fn the_picture_is_fetched_once_and_goes_with_the_session() {
     let (_root, sandbox) = sandbox();
     let session = sessionid(world::ME, "picture");

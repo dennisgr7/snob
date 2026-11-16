@@ -59,7 +59,7 @@ fn item(id: &'static str, label: String, look: &Look) -> Button {
 
 /// Who the menu is about: the picture a little larger, the name, and the
 /// bio in three lines at most.
-fn header(account: &Account, look: &Look) -> Div {
+fn header(account: &Account, look: &Look, shown: &parts::Shown) -> Div {
     let palette = look.palette;
     let named = handle(&account.named);
     div()
@@ -73,7 +73,12 @@ fn header(account: &Account, look: &Look) -> Div {
                 .role(Role::Image)
                 .aria_label(parts::photo_label(account, look))
                 .flex_none()
-                .child(parts::avatar(account, 56., look)),
+                .child(parts::avatar(
+                    account,
+                    56.,
+                    look,
+                    parts::shown_of(shown, account),
+                )),
         )
         .child(
             div()
@@ -109,7 +114,7 @@ fn header(account: &Account, look: &Look) -> Div {
 }
 
 /// The pictures of the other accounts, one over the edge of the next.
-fn stack(others: &[&Account], look: &Look) -> Div {
+fn stack(others: &[&Account], look: &Look, shown: &parts::Shown) -> Div {
     let palette = look.palette;
     let more = others.len().saturating_sub(STACKED);
     div()
@@ -122,7 +127,12 @@ fn stack(others: &[&Account], look: &Look) -> Div {
                 .rounded_full()
                 .border_2()
                 .border_color(color(palette.panel))
-                .child(parts::avatar(other, 22., look))
+                .child(parts::avatar(
+                    other,
+                    22.,
+                    look,
+                    parts::shown_of(shown, other),
+                ))
         }))
         .when(more > 0, |stack| {
             stack.child(
@@ -150,6 +160,7 @@ pub fn render(
         return Vec::new();
     };
     let (trap, switching) = (menu.focus.clone(), menu.switching);
+    let shown = shell.pictures_shown().clone();
     let others: Vec<Account> = shell
         .accounts()
         .iter()
@@ -179,7 +190,7 @@ pub fn render(
             .aria_expanded(switching.is_some())
             .child(
                 // The pictures leave for their rows once the list is open.
-                stack(&stacked, look).when(switching.is_some(), |stack| stack.invisible()),
+                stack(&stacked, look, &shown).when(switching.is_some(), |stack| stack.invisible()),
             )
             .child(look.tr("account-switch"))
             .child(div().flex_1())
@@ -216,7 +227,12 @@ pub fn render(
                             .relative()
                             .top(px(rise))
                             .left(px(slide))
-                            .child(parts::avatar(other, 28., look)),
+                            .child(parts::avatar(
+                                other,
+                                28.,
+                                look,
+                                parts::shown_of(&shown, other),
+                            )),
                     )
                     .child(
                         div()
@@ -284,7 +300,7 @@ pub fn render(
     let items = div()
         .flex()
         .flex_col()
-        .child(header(&account, look))
+        .child(header(&account, look, &shown))
         .child(separator())
         .child(accounts_row)
         .children(listed)

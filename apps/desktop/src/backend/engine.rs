@@ -80,6 +80,9 @@ fn account_of(paths: &AppPaths, pk: Pk, username: Option<String>, active: bool) 
     let card = Card::load(&account).unwrap_or_default();
     let said = |text: Option<String>| text.filter(|text| !text.trim().is_empty());
     let picture = account.viewer_picture();
+    let kept_at = std::fs::metadata(&picture)
+        .and_then(|file| file.modified())
+        .ok();
     Account {
         named: Named {
             pk,
@@ -88,6 +91,7 @@ fn account_of(paths: &AppPaths, pk: Pk, username: Option<String>, active: bool) 
         full_name: said(card.full_name),
         biography: said(card.biography),
         picture: picture.is_file().then_some(picture),
+        picture_kept_at: kept_at,
         active,
     }
 }
@@ -150,16 +154,19 @@ fn paused(paths: &AppPaths, pk: Pk) -> Option<Epoch> {
     snob_engine::app::held_in(&budget, &account, now).map(|held| held.until_ms.to_epoch())
 }
 
-/// The account that just signed in, with its picture fetched when the
-/// browser its check went out from is still there to fetch it. **Not at any
-/// other time**: a start does not open a browser for a picture.
+/// The account that just signed in, with what the browser its check went
+/// out from says of it, its picture included, when the browser is still
+/// there (`viewer::look_again`): a check pushed back kept no card, and the
+/// tab's document says it for nothing. **Not at any other time but the
+/// day's check of the session**: a start does not open a browser for a
+/// picture.
 async fn done(paths: &AppPaths, secrets: &SecretStore, viewer: Viewer) -> SignIn {
     let account = paths.account(viewer.pk);
     let opened =
         snob_engine::app::App::open(&secrets.session_of(&account), &account, host::Front::quiet);
     match opened {
         Ok(Some(app)) => {
-            snob_engine::viewer::picture(app.client(), &account).await;
+            snob_engine::viewer::look_again(app.client(), &account).await;
         }
         Ok(None) => {}
         Err(e) => tracing::debug!(error = %e, "the account's picture was not fetched"),
@@ -453,6 +460,10 @@ impl Backend for Engine {
             match app.client().validate().await {
                 Ok(()) => {
                     Prefs::change(&paths, |prefs| prefs.note_checked(pk, now));
+                    // The tab the check went out from says the account's
+                    // name and picture for nothing: a new picture is fetched
+                    // here, and shown once the files are read again.
+                    snob_engine::viewer::look_again(app.client(), &account).await;
                     None
                 }
                 Err(snob_ig::error::IgError::SessionExpired) => found_dead(),

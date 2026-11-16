@@ -1,7 +1,8 @@
 //! The card of a signed-in account (`snob_store::viewer`): kept from what a
-//! login's check was answered, and its picture fetched once per picture.
-//! **Nothing here asks Instagram about the account**; the picture is one
-//! download from the CDN, and only for a view that shows it.
+//! login's check was answered, and from what the tab a later check of the
+//! session went out from says ([`look_again`]); its picture fetched once per
+//! picture. **Nothing here asks Instagram about the account**; the picture
+//! is one download from the CDN, and only for a view that shows it.
 
 use std::path::PathBuf;
 
@@ -29,6 +30,29 @@ pub fn keep(account: &AccountPaths, face: Face) {
     if let Err(e) = card.save(account) {
         tracing::debug!(error = %e, "the account's card could not be kept");
     }
+}
+
+/// What the account's tab says of it now, kept, and its picture fetched
+/// when that is a new one: after a login or a check of the session, from
+/// the browser it went out from, whose document says it **without a request
+/// of its own**. Without a browser the card is left as it is, since there it
+/// would be one, and only the picture it names is fetched. Returns whether a
+/// new picture was kept.
+pub async fn look_again(client: &IgClient, account: &AccountPaths) -> bool {
+    if client.has_page() {
+        match client.own_face().await {
+            Ok(Some((_, face))) => keep(account, face),
+            Ok(None) => {}
+            Err(e) => tracing::debug!(error = %e, "the tab did not say who the account is"),
+        }
+    }
+    let before = modified(&account.viewer_picture());
+    picture(client, account).await;
+    modified(&account.viewer_picture()) != before
+}
+
+fn modified(file: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(file).and_then(|m| m.modified()).ok()
 }
 
 /// The account's small picture on disk, fetched first when the one kept is

@@ -270,10 +270,22 @@ pub fn photo_label(account: &Account, look: &Look) -> String {
     }
 }
 
+/// How far each account's picture has come in (`Shell::pictures_shown`):
+/// from 0, still being read, to 1, there.
+pub type Shown = std::collections::HashMap<snob_core::Pk, f32>;
+
+/// How far `account`'s picture has come in: there when nobody said.
+pub fn shown_of(shown: &Shown, account: &Account) -> f32 {
+    shown.get(&account.named.pk).copied().unwrap_or(1.0)
+}
+
 /// An account's picture in a circle of `size` logical pixels: the picture
 /// kept on disk, or its initial on the accent while there is none or it does
-/// not load. **Not named here**: what holds it says whose picture it is.
-pub fn avatar(account: &Account, size: f32, look: &Look) -> Div {
+/// not load. While it is read the circle is a quiet tint, and it comes in
+/// as `shown` goes from 0 to 1: fading in, and growing into the circle
+/// unless motion is reduced. **Not named here**: what holds it says whose
+/// picture it is.
+pub fn avatar(account: &Account, size: f32, look: &Look, shown: f32) -> Div {
     let palette = look.palette;
     let letter = initial(account);
     let fallback = move || {
@@ -291,12 +303,28 @@ pub fn avatar(account: &Account, size: f32, look: &Look) -> Div {
     };
     let circle = div().size(px(size)).flex_none().rounded_full();
     match &account.picture {
-        Some(picture) => circle.child(
-            img(picture.clone())
-                .size(px(size))
-                .rounded_full()
-                .with_fallback(move || fallback().into_any_element()),
-        ),
+        Some(picture) => {
+            let shown = shown.clamp(0.0, 1.0);
+            let drawn = if look.settings.reduce_motion {
+                size
+            } else {
+                size * (0.86 + 0.14 * shown)
+            };
+            circle
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(shown < 1.0, |circle| {
+                    circle.bg(color_at(palette.text, 0.08 * (1.0 - shown)))
+                })
+                .child(
+                    img(picture.clone())
+                        .size(px(drawn))
+                        .rounded_full()
+                        .opacity(shown)
+                        .with_fallback(move || fallback().into_any_element()),
+                )
+        }
         None => circle.child(fallback()),
     }
 }
@@ -315,6 +343,7 @@ mod tests {
             full_name: full_name.map(str::to_string),
             biography: None,
             picture: None,
+            picture_kept_at: None,
             active: true,
         }
     }
