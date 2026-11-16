@@ -130,6 +130,11 @@ pub trait System {
     /// work nobody waits for runs in the system's efficient mode.
     fn attended(&self, attended: bool);
 
+    /// Runs the app's own process at the efficient end of what the system
+    /// offers while `resting`, and back (`state::rest`): never the browsers
+    /// or the command line it starts.
+    fn rest(&self, resting: bool);
+
     /// Starts the app again in place of this one: after an update.
     fn restart(&self, cx: &mut App);
 

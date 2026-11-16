@@ -33,6 +33,7 @@ pub struct Simulated {
     /// How many shutdown holds are in place now.
     held: Arc<AtomicUsize>,
     attended: Arc<AtomicBool>,
+    resting: Arc<AtomicBool>,
 }
 
 impl Simulated {
@@ -115,6 +116,11 @@ impl Simulated {
     pub fn is_attended(&self) -> bool {
         self.attended.load(Ordering::SeqCst)
     }
+
+    /// Whether the app said it rests.
+    pub fn is_resting(&self) -> bool {
+        self.resting.load(Ordering::SeqCst)
+    }
 }
 
 /// A hold on a shutdown, in place until dropped.
@@ -159,6 +165,10 @@ impl System for Simulated {
 
     fn attended(&self, attended: bool) {
         self.attended.store(attended, Ordering::SeqCst);
+    }
+
+    fn rest(&self, resting: bool) {
+        self.resting.store(resting, Ordering::SeqCst);
     }
 
     fn restart(&self, _: &mut App) {

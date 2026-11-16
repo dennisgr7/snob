@@ -16,6 +16,11 @@
 //!
 //! **Whatever the system refuses is left alone**, and logged: the browser is
 //! then as it was before any of this existed.
+//!
+//! A program with a window of its own rests the same way while nobody looks
+//! at it and nothing on it moves ([`this_program`]), and on Windows also at
+//! the lowest priority, which is what Task Manager's efficiency mode sets
+//! and marks with its leaf.
 
 /// What the browser runs as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +39,16 @@ impl Mode {
     }
 }
 
+/// This whole program, at rest or back: what the browser gets ([`Mode`]),
+/// and on Windows the priority Task Manager's efficiency mode sets with it,
+/// the one it had before given back. **On macOS nothing**: App Nap rests a
+/// window nobody sees on its own.
+pub fn this_program(mode: Mode) {
+    own(mode);
+    #[cfg(windows)]
+    windows::priority(mode);
+}
+
 #[cfg(windows)]
 pub(crate) use windows::{in_job, own};
 
@@ -45,14 +60,17 @@ pub(crate) use macos::{in_group, own};
 
 #[cfg(windows)]
 mod windows {
+    use std::sync::atomic::{AtomicU32, Ordering};
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
         JobObjectBasicProcessIdList, QueryInformationJobObject,
     };
+
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, OpenProcess, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-        PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
-        PROCESS_SET_INFORMATION, ProcessPowerThrottling, SetProcessInformation,
+        GetCurrentProcess, GetPriorityClass, IDLE_PRIORITY_CLASS, OpenProcess,
+        PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        PROCESS_POWER_THROTTLING_STATE, PROCESS_SET_INFORMATION, ProcessPowerThrottling,
+        SetPriorityClass, SetProcessInformation,
     };
 
     use super::Mode;
@@ -113,6 +131,36 @@ mod windows {
         // SAFETY: the pseudo-handle of the current process, which needs no
         // closing.
         set(unsafe { GetCurrentProcess() }, mode);
+    }
+
+    /// The priority this process had before it was lowered: none while it
+    /// is not.
+    static BEFORE: AtomicU32 = AtomicU32::new(0);
+
+    /// This process at the lowest priority, or back at the one it had.
+    pub(super) fn priority(mode: Mode) {
+        // SAFETY: the pseudo-handle of the current process, which needs no
+        // closing.
+        let this = unsafe { GetCurrentProcess() };
+        let class = match mode {
+            Mode::Eco => {
+                // SAFETY: as above; zero is a failure, and nothing is changed.
+                let now = unsafe { GetPriorityClass(this) };
+                if now == 0 || now == IDLE_PRIORITY_CLASS {
+                    return;
+                }
+                BEFORE.store(now, Ordering::SeqCst);
+                IDLE_PRIORITY_CLASS
+            }
+            Mode::Normal => match BEFORE.swap(0, Ordering::SeqCst) {
+                0 => return,
+                before => before,
+            },
+        };
+        // SAFETY: as above, with a priority class the system defines.
+        if unsafe { SetPriorityClass(this, class) } == 0 {
+            tracing::debug!(error = %std::io::Error::last_os_error(), ?mode, "the system would not set this process's priority");
+        }
     }
 
     /// EcoQoS on, or back to the system's choice: both masks clear.

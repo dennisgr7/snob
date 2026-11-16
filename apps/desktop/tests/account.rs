@@ -10,9 +10,10 @@ use std::time::Duration;
 
 use common::{App, focused, open};
 use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
-use gpui_kit::{Role, TestAppContext, VisualTestContext};
+use gpui_kit::{AppContext as _, Role, TestAppContext, VisualTestContext};
 use snob_desktop::backend::scripted::{Asked, Scripted, account};
 use snob_desktop::state::flow::{Screen, Update};
+use snob_desktop::state::rest::QUIET_FOR;
 use snob_desktop::state::status::Status;
 use snob_desktop::system::{Event, Notice};
 
@@ -434,6 +435,48 @@ async fn a_version_to_update_by_hand_is_said_by_the_system_to_somebody_not_looki
     assert_eq!(notified.len(), 1, "{notified:?}");
     assert_eq!(notified[0].about, Notice::UpdateReady);
     assert_eq!(notified[0].title, "A new version of snob is available");
+}
+
+#[gpui_kit::test]
+async fn the_app_rests_while_nobody_looks_and_nothing_moves_and_wakes_when_looked_at(
+    cx: &mut TestAppContext,
+) {
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    let app = open(cx, backend.clone());
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    cx.executor().advance_clock(Duration::from_secs(60));
+    cx.run_until_parked();
+    assert!(!app.system.is_resting(), "looked at, it never rests");
+
+    VisualTestContext::from_window(app.window, cx).deactivate_window();
+    cx.executor().advance_clock(QUIET_FOR / 2);
+    cx.run_until_parked();
+    assert!(!app.system.is_resting(), "not before the quiet");
+    cx.executor().advance_clock(QUIET_FOR);
+    cx.run_until_parked();
+    assert!(app.system.is_resting());
+
+    cx.update_window(app.window, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert!(!app.system.is_resting(), "awake as soon as it is looked at");
+}
+
+#[gpui_kit::test]
+async fn a_frame_drawn_wakes_the_app_before_it_is_looked_at(cx: &mut TestAppContext) {
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    let app = open(cx, backend.clone());
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    VisualTestContext::from_window(app.window, cx).deactivate_window();
+    cx.executor().advance_clock(QUIET_FOR * 2);
+    cx.run_until_parked();
+    assert!(app.system.is_resting());
+
+    app.in_window(cx, |_, _| ());
+    assert!(!app.system.is_resting(), "the pointer over it, an answer");
+    cx.executor().advance_clock(QUIET_FOR);
+    cx.run_until_parked();
+    assert!(app.system.is_resting(), "and it rests again once still");
 }
 
 /// What the palette lists, by name, and which row is chosen.

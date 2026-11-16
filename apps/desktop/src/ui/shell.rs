@@ -27,6 +27,7 @@ use crate::backend::{Account, Backend, Loaded, SignIn};
 use crate::state::commands::{self, Command};
 use crate::state::flow::{Effect, Event, Flow, Found, Method, Named, Screen, Update};
 use crate::state::paste::{self, Field};
+use crate::state::rest::{self, Rest};
 use crate::state::status::{self, Band, Status};
 use crate::system::{self, System};
 use crate::theme::motion;
@@ -192,6 +193,13 @@ pub struct Shell {
     /// Whether the diagnostic report was copied on this visit to the
     /// settings: said until the screen is left.
     pub(crate) report_copied: bool,
+    /// Whether the app rests (`state::rest`), and when anything last moved:
+    /// a frame drawn, the window looked at or away from. By the executor's
+    /// clock, which a test moves.
+    rest: Rest,
+    stirred: Instant,
+    /// Whether a look at the rest is already on its way.
+    looking: bool,
 }
 
 impl Shell {
@@ -271,6 +279,8 @@ impl Shell {
         // Looked at again: the command line may have signed somebody in or
         // out meanwhile.
         cx.observe_window_activation(window, |this, window, cx| {
+            this.stirred = cx.background_executor().now();
+            this.judge_the_rest(window, cx);
             if window.is_window_active() {
                 this.look_again(window, cx);
             }
@@ -323,7 +333,61 @@ impl Shell {
             signing_out: None,
             crash_open: false,
             report_copied: false,
+            rest: Rest::default(),
+            stirred: cx.background_executor().now(),
+            looking: false,
         }
+    }
+
+    /// Rests the app, or wakes it, as `state::rest` judges what is seen now.
+    fn judge_the_rest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let seen = rest::Seen {
+            looked_at: window.is_window_active(),
+            waited_on: self.browser.is_some(),
+            still_for: cx
+                .background_executor()
+                .now()
+                .saturating_duration_since(self.stirred),
+        };
+        loop {
+            match self.rest.judge(seen) {
+                rest::Next::Rest => self.system.rest(true),
+                rest::Next::Wake => self.system.rest(false),
+                rest::Next::LookIn(after) => {
+                    self.look_at_the_rest_in(after, window, cx);
+                    break;
+                }
+                rest::Next::Stay => break,
+            }
+        }
+    }
+
+    /// Judges the rest again `after` this long, unless a look is already on
+    /// its way: that one asks for the next.
+    fn look_at_the_rest_in(
+        &mut self,
+        after: Duration,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.looking {
+            return;
+        }
+        self.looking = true;
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(after).await;
+            this.update_in(cx, |this, window, cx| {
+                this.looking = false;
+                this.judge_the_rest(window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Whether the app rests now.
+    pub fn is_resting(&self) -> bool {
+        self.rest.is_resting()
     }
 
     /// The screen drawn.
@@ -1421,6 +1485,9 @@ fn decode_the_pictures(accounts: &[Account], cx: &mut App) {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A frame is something moving: the app wakes before it is drawn.
+        self.stirred = cx.background_executor().now();
+        self.judge_the_rest(window, cx);
         let phase = self.phase(window, cx);
         let screen: AnyElement = screens::render(self, phase, window, cx);
         frame::render(self, screen, window, cx)

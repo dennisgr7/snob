@@ -1047,7 +1047,8 @@ its version is the release's ("Release and packaging"). GPUI comes through
 - **What is shown is decided apart from how it is drawn** (`state/`): the
   screen and why (`flow.rs`), what the band says (`status.rs`), what a pasted
   ID is (`paste.rs`), what the palette offers (`commands.rs`), what is
-  remembered between runs (`prefs.rs`). No window, clock or network there.
+  remembered between runs (`prefs.rs`), and when the app rests
+  (`rest.rs`). No window, clock or network there.
 - **A view never calls an operating system** (`system/`): it reads `Settings`
   and takes `Event`s from one trait, which GPUI and Windows answer
   (`native.rs`, `windows.rs`) and a test speaks for (`simulated.rs`). One
@@ -1145,7 +1146,13 @@ pictures, one of the window when it failed, and the app's log.
 | System notifications | shown through GPUI; on macOS only from inside a bundle |
 | `cargo deny` for this workspace, packaging, signing, an installer | none |
 
-**At rest the app asks for no frame** and holds about 85 MiB. GPUI wakes
+**At rest the app asks for no frame** and holds about 85 MiB. **Not looked
+at and still for ten seconds, it rests** (`state/rest.rs`): its own process
+goes to EcoQoS and the lowest priority on Windows, which Task Manager marks
+with its efficiency leaf, and to `SCHED_BATCH` on Linux; macOS's App Nap
+does the same unasked (`power::qos::this_program`). It wakes before the
+next frame is drawn or the window is looked at; the browsers and the
+`snob` it starts keep their own rule. GPUI wakes
 every window on each refresh on Windows (its `VSyncProvider` thread),
 minimized or not: on a 164 Hz display a release build spends 0.9 to 1.2% of
 one processor there, some 10 ms a second, and a debug build 1.6%.
@@ -1194,7 +1201,9 @@ for byte):
 - `packaging/docker/Dockerfile` builds the cli edition into an image from a
   released binary checked against `SHA256SUMS`: Chromium, no root, no
   keyring (`--no-keyring`, `SNOB_MCP_KEY`), no self-update, data under
-  `/data`. No image is published.
+  `/data`. `release.yml`'s job `image` publishes it for each release, for
+  amd64 and arm64, as `ghcr.io/dennisgr7/snob:<version>` and `:latest`,
+  attested like the archives.
 
 Workflows pin every action to a commit SHA with its version in a comment, and
 start from `permissions: contents: read`. `claude.yml` and

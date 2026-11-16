@@ -200,6 +200,12 @@ impl System for Native {
         snob_engine::owner::attended(attended);
     }
 
+    fn rest(&self, resting: bool) {
+        use snob_engine::power::qos::{Mode, this_program};
+        tracing::debug!(resting, "the app rests");
+        this_program(if resting { Mode::Eco } else { Mode::Normal });
+    }
+
     fn restart(&self, cx: &mut App) {
         cx.restart();
     }
