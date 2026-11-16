@@ -202,7 +202,7 @@ fn logic() -> Vec<Outcome> {
 
 /// The screens a picture is taken of and an audit made of, and how each is
 /// reached from the screen before it.
-const SCREENS: [&str; 19] = [
+const SCREENS: [&str; 24] = [
     "start",
     "paste",
     "failed",
@@ -221,6 +221,11 @@ const SCREENS: [&str; 19] = [
     "automations",
     "automations-list",
     "automations-editor",
+    "profile",
+    "profile-split",
+    "viewer",
+    "people",
+    "list-question",
     "paste-browsers",
 ];
 
@@ -343,6 +348,46 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
                 scenarios::bounds(seen, "editor-canvas").is_ok()
             })
             .await?;
+        }
+        "profile" => {
+            // The account in use is `someone`.
+            let app = stage.app()?;
+            app.click("account").await?;
+            app.click("menu-profile").await?;
+            app.until_screen("profile").await?;
+            app.until("the profile read", scenarios::profile_read)
+                .await?;
+        }
+        "profile-split" => {
+            stage.app()?.click("profile-layout").await?;
+        }
+        "viewer" => {
+            // With a story up, the picture is chosen in the small menu.
+            let app = stage.app()?;
+            let seen = app.click("profile-picture").await?;
+            if seen
+                .nodes
+                .iter()
+                .any(|node| node.id == "profile-open-picture")
+            {
+                app.click("profile-open-picture").await?;
+            }
+        }
+        "people" => {
+            let app = stage.app()?;
+            app.press("escape").await?;
+            app.click("profile-followers").await?;
+            app.until_screen("people").await?;
+            app.until("the list read", scenarios::list_read).await?;
+        }
+        "list-question" => {
+            // Another account's profile, and its list asked about.
+            let app = stage.app()?;
+            app.click("person#0").await?;
+            app.until_screen("profile").await?;
+            app.until("the profile read", scenarios::profile_read)
+                .await?;
+            app.click("profile-followers").await?;
         }
         "palette" => {
             let app = stage.app()?;
@@ -506,6 +551,7 @@ fn acted_on(role: Option<&str>) -> bool {
                 | "Link"
                 | "ComboBox"
                 | "RadioButton"
+                | "Tab"
         )
     )
 }
@@ -648,7 +694,16 @@ async fn accessibility(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
             if over {
                 wanted.retain(|path| {
                     path.iter().any(|above| {
-                        ["account-menu", "sign-out", "palette", "forget"].contains(&above.as_str())
+                        [
+                            "account-menu",
+                            "sign-out",
+                            "palette",
+                            "forget",
+                            "photo-viewer",
+                            "profile-menu",
+                            "list-question",
+                        ]
+                        .contains(&above.as_str())
                     })
                 });
             }

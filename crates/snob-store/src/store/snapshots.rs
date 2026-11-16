@@ -427,6 +427,32 @@ pub fn members(conn: &Connection, id: i64) -> Result<Vec<User>, StoreError> {
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
+/// The users the walk of `account_pk`'s `kind` **this process** is making
+/// has saved so far, in the order Instagram served them, and how many the
+/// account declared: for a view that shows a list as it is read, from a
+/// connection of its own while the walk commits its pages. Empty when this
+/// process walks no such list.
+pub fn walking_here(
+    conn: &Connection,
+    account_pk: Pk,
+    kind: ListKind,
+) -> Result<(Vec<User>, Option<u64>), StoreError> {
+    let walking: Option<(i64, Option<i64>)> = conn
+        .query_row(
+            "SELECT id, declared_count FROM snapshots
+             WHERE account_pk = ?1 AND kind = ?2 AND complete = 0 AND claimed_by = ?3
+             ORDER BY started_at DESC, id DESC LIMIT 1",
+            params![pk_to_sql(account_pk), kind.as_str(), this_process()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((id, declared)) = walking else {
+        return Ok((Vec::new(), None));
+    };
+    let declared = declared.and_then(super::count_from_sql);
+    Ok((members(conn, id)?, declared))
+}
+
 /// Discards half-finished walks for this account and list. Called when starting
 /// a new one, so partials that no longer serve do not pile up.
 pub fn delete_partials(
@@ -638,6 +664,37 @@ mod tests {
                 .map(|s| s.id),
             Some(id),
             "and this process picks up its own work, which is what the window is for"
+        );
+    }
+
+    #[test]
+    fn a_walk_this_process_is_making_is_read_as_far_as_it_went_and_no_other_is() {
+        let mut db = base();
+        assert_eq!(
+            walking_here(db.conn(), Pk::new(1), ListKind::Followers).unwrap(),
+            (Vec::new(), None)
+        );
+        let id = begin(db.conn(), Pk::new(1), ListKind::Followers, Some(30))
+            .unwrap()
+            .id;
+        save_page(&mut db, id, &[user(10), user(11)], Some("next")).unwrap();
+        let (users, declared) = walking_here(db.conn(), Pk::new(1), ListKind::Followers).unwrap();
+        assert_eq!(users, [user(10), user(11)]);
+        assert_eq!(declared, Some(30));
+        assert!(
+            walking_here(db.conn(), Pk::new(1), ListKind::Following)
+                .unwrap()
+                .0
+                .is_empty(),
+            "another list"
+        );
+        claimed_by_somebody_else(&db, id, now());
+        assert!(
+            walking_here(db.conn(), Pk::new(1), ListKind::Followers)
+                .unwrap()
+                .0
+                .is_empty(),
+            "another process's walk"
         );
     }
 

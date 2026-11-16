@@ -20,6 +20,7 @@ use tokio::sync::{oneshot, watch};
 
 use crate::state::flow::{Found, Method, Named, Update};
 use crate::state::prefs::{Appearance, Placement};
+use crate::state::profile::{Side, Tab};
 
 pub mod engine;
 #[cfg(feature = "testing")]
@@ -221,6 +222,162 @@ pub trait Backend: Send + Sync + 'static {
     /// session, its browser, nor what paces it.** An account with a job or
     /// a run going is left alone and counted.
     fn forget_history(&self, only: Option<Pk>) -> Answer<Forgotten>;
+
+    /// What the account in use was last shown of `who`, at once: **read
+    /// from its cache, nothing sent** (`snob_engine::cache`). None when
+    /// nothing is kept.
+    fn profile_kept(&self, who: Named) -> Answer<Option<Profile>>;
+
+    /// `who`'s profile read now: the profile, and its highlights' tray when
+    /// it says it has some. **No story is read**: the profile says whether
+    /// one is up, and that is all a page shows of it.
+    fn profile(&self, who: Named) -> Answer<Result<Profile, Unread>>;
+
+    /// The first page of `who`'s `tab`, its small pictures on disk: one
+    /// request, asked once the tab is shown.
+    fn tiles(&self, who: Named, tab: Tab) -> Answer<Result<Tiles, Unread>>;
+
+    /// `who`'s picture at the largest size its profile names, on disk:
+    /// fetched from the CDN once, for the viewer. None when there is none.
+    fn full_picture(&self, who: Named) -> Answer<Option<PathBuf>>;
+
+    /// The bytes of the largest picture of `who` on disk, for the clipboard.
+    fn picture_bytes(&self, who: Named) -> Answer<Option<Vec<u8>>>;
+
+    /// Copies the largest picture of `who` on disk into `folder`, **the
+    /// system's downloads or one the person chose**, under a name of its
+    /// own that replaces nothing, and answers the file made.
+    fn save_picture(&self, who: Named, folder: PathBuf) -> Answer<Option<PathBuf>>;
+
+    /// Reads `owner`'s `side` list, telling `walked` what is read as each
+    /// page comes, until `stop`. **Another account's only after the person
+    /// said yes** (`state::profile::asks_first`): the view asks, and this is
+    /// the engine's list with that yes given in advance.
+    fn list(
+        &self,
+        owner: Named,
+        side: Side,
+        walked: watch::Sender<Walked>,
+        stop: CancelToken,
+    ) -> Answer<Result<Listed, Unread>>;
+}
+
+/// An account's profile, as its page shows it. Every string was made
+/// printable where it was read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Profile {
+    /// Its pk, and its username as Instagram spells it.
+    pub named: Named,
+    pub full_name: Option<String>,
+    pub biography: Option<String>,
+    pub external_url: Option<String>,
+    pub category: Option<String>,
+    pub is_private: bool,
+    pub is_verified: bool,
+    pub followers: Option<u64>,
+    pub following: Option<u64>,
+    pub posts: Option<u64>,
+    /// A story is up, as the profile says: **nothing of it is read**.
+    pub story_up: bool,
+    /// Its small picture on disk, when one is kept.
+    pub picture: Option<PathBuf>,
+    pub highlights: Vec<Highlight>,
+    /// Whether the viewer may see its posts, lists and highlights: not
+    /// known until it is read.
+    pub visible: Option<bool>,
+    /// How the viewer and the account stand, for another's.
+    pub you_follow: Option<bool>,
+    pub follows_you: Option<bool>,
+    /// Read now, rather than what was kept from an earlier read.
+    pub read: bool,
+}
+
+/// One highlight under a bio: its title and its cover on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Highlight {
+    pub id: String,
+    pub title: String,
+    pub cover: Option<PathBuf>,
+}
+
+/// What a post is, as its tile marks it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileKind {
+    Photo,
+    Video,
+    Reel,
+    /// A carousel, and how many items it holds.
+    Carousel(usize),
+}
+
+/// One post as a grid or a list shows it, from afar: it is not opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tile {
+    /// As its address carries it.
+    pub code: String,
+    pub kind: TileKind,
+    /// Its small picture on disk, when it came.
+    pub thumb: Option<PathBuf>,
+    /// The first line of its caption.
+    pub caption: Option<String>,
+    /// Whose it is, on a tab of other accounts' posts.
+    pub owner: Option<String>,
+    pub taken_at: Option<Epoch>,
+    pub likes: Option<u64>,
+    pub comments: Option<u64>,
+    pub pinned: bool,
+}
+
+/// The first page of a tab.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tiles {
+    pub tiles: Vec<Tile>,
+    /// There are more past it.
+    pub more: bool,
+}
+
+/// Why something was not read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unread {
+    /// Private, and the viewer does not follow it.
+    Hidden,
+    /// Instagram asked for a pause, until then when it said.
+    Paused(Option<Epoch>),
+    /// No account is signed in, or its session stopped working.
+    NoSession,
+    /// The account answers to nobody by that name.
+    Nobody,
+    /// Anything else, under the code it was logged as.
+    Failed(String),
+}
+
+/// One account of a list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Person {
+    pub named: Named,
+    pub full_name: Option<String>,
+    pub is_private: bool,
+    pub is_verified: bool,
+    /// Its small picture on disk, when the cache keeps one.
+    pub picture: Option<PathBuf>,
+}
+
+/// A list as far as it is read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Walked {
+    pub people: Vec<Person>,
+    /// How many the account says it holds, once known.
+    pub expected: Option<u64>,
+}
+
+/// A list once it is read, whole or as far as it went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub people: Vec<Person>,
+    /// It is the whole list.
+    pub whole: bool,
+    /// Served from what was stored on this date rather than read now.
+    pub stored_at: Option<Epoch>,
 }
 
 /// An answer already known.

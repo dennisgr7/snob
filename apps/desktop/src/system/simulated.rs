@@ -22,6 +22,8 @@ struct State {
     notified: Vec<Notification>,
     opened: Vec<PathBuf>,
     clipboard: Option<String>,
+    /// The bytes of the last picture put on the clipboard.
+    copied_image: Option<Vec<u8>>,
     holds: Vec<String>,
     restarts: usize,
 }
@@ -183,6 +185,29 @@ impl System for Simulated {
         }
         state.events = Some(said);
         heard
+    }
+
+    fn copy_image(&self, bytes: Vec<u8>, _: &mut App) {
+        self.state().copied_image = Some(bytes);
+    }
+
+    // A folder of the test's, never the person's.
+    fn downloads(&self) -> Option<PathBuf> {
+        Some(std::env::temp_dir().join("snob-test-downloads"))
+    }
+
+    // The person always cancels: no dialog is shown in a test.
+    fn choose_folder(&self, _: &mut App) -> tokio::sync::oneshot::Receiver<Option<PathBuf>> {
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let _ = answer.send(None);
+        answered
+    }
+}
+
+impl Simulated {
+    /// The bytes of the last picture put on the clipboard.
+    pub fn copied_image(&self) -> Option<Vec<u8>> {
+        self.state().copied_image.clone()
     }
 }
 

@@ -170,6 +170,7 @@ pub fn render(
         .children(super::menu::render(shell, &look, window, cx))
         .children(super::menu::sign_out_question(shell, &look, cx))
         .children(super::screens::settings::forget_question(shell, &look, cx))
+        .children(super::overlays::render(shell, &look, window, cx))
         .children(super::palette::render(shell, &look, cx))
         // What a screen reader is told that no control says: a status that
         // changed, an error, the welcome. Not drawn.

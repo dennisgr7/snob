@@ -1,14 +1,14 @@
 //! What the app asks of the operating system and what the system tells it,
 //! behind one trait: how the person set the machine up (theme, contrast,
 //! motion, transparency, text size), sleep and wake, a shutdown on its way,
-//! the network, notifications.
+//! the network, notifications, the clipboard and the folders files go to.
 //!
 //! **A view never calls Windows, macOS or a Linux desktop itself.** It reads
 //! [`Settings`] and takes [`Event`]s, which the test build's [`simulated`]
 //! system produces on demand, so a sleep of two hours or a shutdown is a line
 //! in a scenario and not something done to the machine.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui_kit::App;
@@ -141,6 +141,16 @@ pub trait System {
     /// Everything the system says from now on, to one listener: asked again,
     /// by a window opened again, the new one takes over.
     fn events(&self) -> mpsc::UnboundedReceiver<Event>;
+
+    /// Puts a picture on the clipboard: `bytes` of a PNG, a JPEG or a WebP.
+    fn copy_image(&self, bytes: Vec<u8>, cx: &mut App);
+
+    /// The person's folder for downloads, as the system names it.
+    fn downloads(&self) -> Option<PathBuf>;
+
+    /// Asks the person, in the system's own dialog, for a folder to put a
+    /// file in: none when they cancel.
+    fn choose_folder(&self, cx: &mut App) -> tokio::sync::oneshot::Receiver<Option<PathBuf>>;
 }
 
 #[cfg(test)]

@@ -1051,7 +1051,14 @@ opens on a rail of sections (home, search, automations). Home and search
 are a title until what a scan shows comes next; automations has an
 introduction shown once an account, a list with its search, and an editor
 whose canvas is moved and zoomed but holds nothing yet: **there is no
-backend for automations**, and nothing there runs.
+backend for automations**, and nothing there runs. From the account's menu
+(and the palette), the account's own **profile page**, the same page for
+any other account opened from one of its lists: the picture (large,
+zoomed, copied or saved from a viewer of its own), the names, the bio, the
+counters that open the two lists, the highlights and the first page of
+three tabs, laid out with the card above the posts or beside them. A
+list's rows come in as the walk reads them, and a list can move out to a
+window of its own.
 
 **A workspace of its own**, with its own `Cargo.lock`: GPUI brings some 500
 crates and does not build for musl. Build and test it from that directory;
@@ -1077,8 +1084,9 @@ its version is the release's ("Release and packaging"). GPUI comes through
   (`paste.rs`), what the palette offers (`commands.rs`), what the settings
   hold and what their search shows (`settings.rs`, `storage.rs`), what is
   remembered between runs (`prefs.rs`), when the app rests (`rest.rs`),
-  and the automations section (`automations.rs`). No window, clock or
-  network there.
+  the automations section (`automations.rs`), and how a profile is laid
+  out, zoomed and when its lists ask first (`profile.rs`). No window, clock
+  or network there.
 - **A theme or a language chosen holds whatever the system says**; the
   contrast is always the system's (`ui/look.rs`). **What is kept is measured
   from the files' sizes** and clearing it removes the cache alone
@@ -1114,6 +1122,15 @@ its version is the release's ("Release and packaging"). GPUI comes through
 - **No secret reaches the log, the diagnostic report or a file of the
   app's.** The report makes accounts anonymous and is copied by the person,
   never sent.
+- **A profile page reads what `snob profile` reads, less the stories**
+  (`Backend::profile`, `tiles`, `list`): a ring says a story is up and its
+  menu's "Open story" opens nothing, reads nothing and marks nothing as
+  seen. **Another account's list is asked about in the app's own question
+  before anything of it is sent**, and only a yes calls `engine::list`
+  (`state::profile::asks_first`). A post, a highlight and a story are not
+  opened; a row of a list shows a picture only when the cache already holds
+  one; the large picture comes from the CDN, never from the API. No follow
+  or unfollow is offered.
 - **A build without the feature `testing` has no test mode**: no
   `--test-root`, no simulated system, no control channel
   (`src/control.rs`). The harness's privacy suite reads both of these off

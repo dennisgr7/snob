@@ -7247,6 +7247,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "directories",
  "fluent-bundle",
  "gpui-kit",
  "image",

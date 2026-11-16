@@ -12,11 +12,12 @@ use snob_ig::pace::CancelToken;
 use tokio::sync::{oneshot, watch};
 
 use super::{
-    Account, AccountStorage, Answer, Backend, Browsers, Cleared, Forgotten, Loaded, SignIn,
-    Storage, answered,
+    Account, AccountStorage, Answer, Backend, Browsers, Cleared, Forgotten, Highlight, Listed,
+    Loaded, Person, Profile, SignIn, Storage, Tile, TileKind, Tiles, Unread, Walked, answered,
 };
 use crate::state::flow::{Found, Method, Named, Update};
 use crate::state::prefs::{Appearance, Placement};
+use crate::state::profile::{Side, Tab};
 
 /// What the backend was asked, in order. **Never the session ID itself**:
 /// only that one was handed over, and whether it was the one expected.
@@ -40,6 +41,12 @@ pub enum Asked {
     ClearCache(Option<Pk>),
     ForgetHistory(Option<Pk>),
     RememberIntroduced(Pk),
+    Profile(Pk),
+    Tiles(Pk, Tab),
+    FullPicture(Pk),
+    PictureBytes(Pk),
+    SavePicture(Pk),
+    List(Pk, Side),
 }
 
 type Held = Box<dyn FnOnce() + Send>;
@@ -81,6 +88,10 @@ struct State {
     busy: bool,
     /// The accounts remembered as past the automations' introduction.
     introduced: Vec<Pk>,
+    /// How many accounts each list holds; the people are invented.
+    list_size: usize,
+    /// The account whose profile answers as kept from the viewer.
+    private: Option<Pk>,
 }
 
 /// The scripted backend. Clones are the same backend.
@@ -133,6 +144,8 @@ impl Scripted {
             storage: Storage::default(),
             busy: false,
             introduced: Vec::new(),
+            list_size: 30,
+            private: None,
         })))
     }
 
@@ -167,8 +180,9 @@ impl Scripted {
         self.state().holding = true;
     }
 
-    /// From now on clearing the cache and forgetting history wait until
-    /// [`Self::release`]; everything else is answered.
+    /// From now on clearing the cache, forgetting history and the end of a
+    /// list's walk wait until [`Self::release`]; everything else is
+    /// answered.
     pub fn hold_the_work(&self) {
         self.state().holding_work = true;
     }
@@ -212,7 +226,10 @@ impl Scripted {
         };
         let held: Option<Held> = {
             let mut state = self.state();
-            let work = matches!(asked, Asked::ClearCache(_) | Asked::ForgetHistory(_));
+            let work = matches!(
+                asked,
+                Asked::ClearCache(_) | Asked::ForgetHistory(_) | Asked::List(..)
+            );
             state.asked.push(asked);
             if state.holding || (state.holding_work && work) {
                 state.held.push(Box::new(send));
@@ -352,6 +369,113 @@ impl Script<'_> {
     pub fn introduced(&mut self, pk: u64) -> &mut Self {
         self.0.introduced.push(pk.into());
         self
+    }
+    /// How many accounts every list holds.
+    pub fn list_size(&mut self, size: usize) -> &mut Self {
+        self.0.list_size = size;
+        self
+    }
+
+    /// The account `pk` is private, and the viewer does not follow it.
+    pub fn private(&mut self, pk: u64) -> &mut Self {
+        self.0.private = Some(pk.into());
+        self
+    }
+}
+
+/// The invented profile of `who`: an account signed in here says its own
+/// name and bio, `someone` (9001) has a story up and three highlights.
+pub fn profile_of(who: &Named, accounts: &[Account], private: Option<Pk>) -> Profile {
+    let username = who.username.clone().unwrap_or_else(|| who.pk.to_string());
+    let here = accounts.iter().find(|account| account.named.pk == who.pk);
+    let hidden = private == Some(who.pk);
+    let story_up = who.pk == Pk::new(9001);
+    let highlights = if hidden {
+        Vec::new()
+    } else {
+        ["Trips", "Food", "35mm"]
+            .into_iter()
+            .take(if story_up { 3 } else { 2 })
+            .enumerate()
+            .map(|(at, title)| Highlight {
+                id: format!("1790000000000000{at}"),
+                title: title.to_string(),
+                cover: None,
+            })
+            .collect()
+    };
+    Profile {
+        named: Named {
+            pk: who.pk,
+            username: Some(username.clone()),
+        },
+        full_name: here
+            .and_then(|account| account.full_name.clone())
+            .or_else(|| Some(format!("Invented {username}"))),
+        biography: here
+            .and_then(|account| account.biography.clone())
+            .or_else(|| Some(format!("the invented bio of {username}"))),
+        external_url: None,
+        category: None,
+        is_private: hidden,
+        is_verified: false,
+        followers: Some(1_234),
+        following: Some(567),
+        posts: Some(48),
+        story_up,
+        picture: here.and_then(|account| account.picture.clone()),
+        highlights,
+        visible: Some(!hidden),
+        you_follow: here.is_none().then_some(!hidden),
+        follows_you: here.is_none().then_some(true),
+        read: true,
+    }
+}
+
+/// The invented accounts of a list `size` long.
+fn people(size: usize) -> Vec<Person> {
+    (0..size)
+        .map(|n| Person {
+            named: Named {
+                pk: Pk::new(1000 + n as u64),
+                username: Some(format!("user{n}")),
+            },
+            full_name: Some(format!("Invented user{n}")),
+            is_private: n % 7 == 3,
+            is_verified: false,
+            picture: None,
+        })
+        .collect()
+}
+
+/// The invented first page of a tab: twelve posts, more past them.
+fn tiles(tab: Tab) -> Tiles {
+    let kinds = [
+        TileKind::Photo,
+        TileKind::Carousel(3),
+        TileKind::Reel,
+        TileKind::Video,
+    ];
+    let count = match tab {
+        Tab::Posts => 12,
+        Tab::Reposts => 5,
+        Tab::Tagged => 0,
+    };
+    Tiles {
+        tiles: (0..count)
+            .map(|n| Tile {
+                code: format!("C{n:02}invented"),
+                kind: kinds[n % kinds.len()],
+                thumb: None,
+                caption: Some(format!("an invented caption, number {n}")),
+                owner: (tab != Tab::Posts).then(|| format!("user{n}")),
+                taken_at: Some(Epoch::new(1_790_000_000 - n as i64 * 86_400)),
+                likes: Some(100 + n as u64 * 7),
+                comments: Some(n as u64),
+                pinned: tab == Tab::Posts && n == 0,
+            })
+            .collect(),
+        more: count == 12,
     }
 }
 
@@ -524,6 +648,92 @@ impl Backend for Scripted {
                 }
             }
             forgotten
+        })
+    }
+
+    // Not among what was asked: it reads files alone.
+    fn profile_kept(&self, who: Named) -> Answer<Option<Profile>> {
+        let state = self.state();
+        let kept = state
+            .accounts
+            .iter()
+            .any(|account| account.named.pk == who.pk)
+            .then(|| Profile {
+                read: false,
+                story_up: false,
+                highlights: Vec::new(),
+                visible: None,
+                ..profile_of(&who, &state.accounts, state.private)
+            });
+        answered(kept)
+    }
+
+    fn profile(&self, who: Named) -> Answer<Result<Profile, Unread>> {
+        self.answer(Asked::Profile(who.pk), move |state| {
+            Ok(profile_of(&who, &state.accounts, state.private))
+        })
+    }
+
+    fn tiles(&self, who: Named, tab: Tab) -> Answer<Result<Tiles, Unread>> {
+        self.answer(Asked::Tiles(who.pk, tab), move |state| {
+            if state.private == Some(who.pk) {
+                return Err(Unread::Hidden);
+            }
+            Ok(tiles(tab))
+        })
+    }
+
+    fn full_picture(&self, who: Named) -> Answer<Option<PathBuf>> {
+        self.answer(Asked::FullPicture(who.pk), move |state| {
+            state
+                .accounts
+                .iter()
+                .find(|account| account.named.pk == who.pk)
+                .and_then(|account| account.picture.clone())
+        })
+    }
+
+    fn picture_bytes(&self, who: Named) -> Answer<Option<Vec<u8>>> {
+        self.answer(Asked::PictureBytes(who.pk), |_| {
+            Some(b"\x89PNG invented".to_vec())
+        })
+    }
+
+    fn save_picture(&self, who: Named, folder: PathBuf) -> Answer<Option<PathBuf>> {
+        let name = format!("{}.jpg", who.username.as_deref().unwrap_or("picture"));
+        self.answer(Asked::SavePicture(who.pk), move |_| Some(folder.join(name)))
+    }
+
+    fn list(
+        &self,
+        owner: Named,
+        side: Side,
+        walked: watch::Sender<Walked>,
+        stop: CancelToken,
+    ) -> Answer<Result<Listed, Unread>> {
+        let all = people(self.state().list_size);
+        let expected = Some(all.len() as u64);
+        // The first page at once; the rest, and the end, when the answer is
+        // let go.
+        let first: Vec<Person> = all.iter().take(12).cloned().collect();
+        let _ = walked.send(Walked {
+            people: first,
+            expected,
+        });
+        self.answer(Asked::List(owner.pk, side), move |state| {
+            if state.private == Some(owner.pk) {
+                return Err(Unread::Hidden);
+            }
+            let whole = !stop.is_canceled();
+            let _ = walked.send(Walked {
+                people: all.clone(),
+                expected,
+            });
+            Ok(Listed {
+                people: all,
+                whole,
+                stored_at: None,
+            })
         })
     }
 

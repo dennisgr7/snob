@@ -51,6 +51,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # The language the system is set to, which GPUI does not say
 # (`system/native.rs`): one call per platform, and nothing else of it used.
 sys-locale = "0.3"
+# The person's downloads folder, where a picture is saved without asking
+# (`system/native.rs`): the version the store already links.
+directories = "6"
 
 # What Windows says and GPUI does not (`system/windows.rs`): a contrast
 # theme and animations (`UI_Accessibility`, `UI_WindowsAndMessaging`), the

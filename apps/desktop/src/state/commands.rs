@@ -19,6 +19,9 @@ pub enum Command {
     SignOut,
     OpenLogs,
     CopyReport,
+    /// The profile of the account in use: what its row in the account's
+    /// menu does.
+    Profile,
 }
 
 /// What can be done from `screen`, in the order it is listed; `others` are
@@ -42,6 +45,7 @@ pub fn offered(screen: &Screen, others: &[Pk]) -> Vec<Command> {
     commands.push(Command::AddAccount);
     commands.extend(others.iter().copied().map(Command::SwitchTo));
     commands.extend([Command::SignOut, Command::OpenLogs, Command::CopyReport]);
+    commands.push(Command::Profile);
     commands
 }
 
@@ -92,6 +96,7 @@ mod tests {
                 Command::SignOut,
                 Command::OpenLogs,
                 Command::CopyReport,
+                Command::Profile,
             ]
         );
         assert_eq!(

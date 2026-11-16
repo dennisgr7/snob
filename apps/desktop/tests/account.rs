@@ -89,7 +89,12 @@ async fn escape_closes_the_menu_and_focus_goes_back_to_what_opened_it(cx: &mut T
     assert!(shown(&app, cx, "account-menu"));
 
     // Tab stays inside the menu for as long as it is open.
-    let inside = ["menu-switch", "menu-settings", "menu-sign-out"];
+    let inside = [
+        "menu-profile",
+        "menu-switch",
+        "menu-settings",
+        "menu-sign-out",
+    ];
     for _ in 0..7 {
         app.press(cx, "tab");
         let on_an_item = inside.iter().any(|id| focused(&app, cx, id));
@@ -956,6 +961,7 @@ async fn the_palette_lists_what_the_screen_can_do_and_finds_it_by_typing(cx: &mu
                 "Sign out",
                 "Open the logs folder",
                 "Copy the diagnostic report",
+                "Your profile",
             ]
             .map(str::to_string)
             .to_vec(),
@@ -1040,7 +1046,7 @@ async fn the_palette_offers_the_two_ways_in_and_nothing_on_the_way(cx: &mut Test
 async fn the_arrows_walk_the_menu_around_its_ends(cx: &mut TestAppContext) {
     let app = at_home(cx, Scripted::with(vec![account(42, "me", true)])).await;
     app.click(cx, "account");
-    let items = ["menu-add", "menu-settings", "menu-sign-out"];
+    let items = ["menu-profile", "menu-add", "menu-settings", "menu-sign-out"];
     let on = |app: &App, cx: &mut TestAppContext| {
         items
             .iter()
@@ -1049,12 +1055,13 @@ async fn the_arrows_walk_the_menu_around_its_ends(cx: &mut TestAppContext) {
     };
 
     app.press(cx, "down");
+    assert_eq!(on(&app, cx), Some("menu-profile"));
+    app.press(cx, "down");
     assert_eq!(on(&app, cx), Some("menu-add"));
     app.press(cx, "down");
-    assert_eq!(on(&app, cx), Some("menu-settings"));
     app.press(cx, "down");
     app.press(cx, "down");
-    assert_eq!(on(&app, cx), Some("menu-add"), "around the end");
+    assert_eq!(on(&app, cx), Some("menu-profile"), "around the end");
     app.press(cx, "up");
     assert_eq!(on(&app, cx), Some("menu-sign-out"), "and back around it");
 }

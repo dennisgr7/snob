@@ -143,6 +143,23 @@ pub fn small_button(
         .child(label)
 }
 
+/// A [`small_button`] with a drawing before its words.
+pub fn small_icon_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    drawing: &'static str,
+    look: &Look,
+) -> Button {
+    let label = label.into();
+    plain_button(id, label.clone(), Kind::Secondary, true, look)
+        .h(sp(30.))
+        .px(sp(12.))
+        .gap(sp(6.))
+        .text_size(sp(13.))
+        .child(icon(drawing, 14.).text_color(color(look.palette.text)))
+        .child(label)
+}
+
 /// A choice of a few options side by side, one always on: a group a screen
 /// reader names, holding [`segment`]s.
 pub fn segmented(
@@ -207,6 +224,51 @@ pub fn segment(
             }
         })
         .child(label)
+}
+
+/// One option of a [`segmented`] choice drawn as `drawing` alone: named
+/// all the same, for whoever does not see the drawing.
+pub fn icon_segment(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    drawing: &'static str,
+    on: bool,
+    look: &Look,
+) -> Button {
+    let ink = if on {
+        look.palette.text
+    } else {
+        look.palette.secondary
+    };
+    let label = label.into();
+    Button::new(id)
+        .role(Role::RadioButton)
+        .accessibility_label(label)
+        .aria_toggled(if on {
+            gpui_kit::Toggled::True
+        } else {
+            gpui_kit::Toggled::False
+        })
+        .h(sp(28.))
+        .min_w(sp(32.))
+        .px(sp(8.))
+        .rounded(px(shape::CONTROL_RADIUS))
+        .border_1()
+        .focus_visible(focus_ring(&look.palette))
+        .cursor_pointer()
+        .map(|segment| {
+            let palette = look.palette;
+            if on {
+                segment
+                    .bg(color(palette.panel))
+                    .border_color(color(palette.control_line))
+            } else {
+                segment
+                    .border_color(gpui_kit::transparent_black())
+                    .hover(move |style| style.bg(color_at(palette.text, 0.06)))
+            }
+        })
+        .child(icon(drawing, 16.).text_color(color(ink)))
 }
 
 /// A button's shape and states, with nothing in it yet: what a button that

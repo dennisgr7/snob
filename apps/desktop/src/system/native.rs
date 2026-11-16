@@ -8,7 +8,7 @@
 //! on a system that set none.
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -216,6 +216,42 @@ impl System for Native {
             .borrow_mut()
             .take()
             .unwrap_or_else(|| self.says.listen())
+    }
+
+    fn copy_image(&self, bytes: Vec<u8>, cx: &mut App) {
+        use gpui_kit::{Image, ImageFormat};
+        let format = match bytes.as_slice() {
+            [0x89, b'P', b'N', b'G', ..] => ImageFormat::Png,
+            [b'R', b'I', b'F', b'F', ..] => ImageFormat::Webp,
+            _ => ImageFormat::Jpeg,
+        };
+        cx.write_to_clipboard(ClipboardItem::new_image(&Image::from_bytes(format, bytes)));
+    }
+
+    fn downloads(&self) -> Option<PathBuf> {
+        directories::UserDirs::new()?
+            .download_dir()
+            .map(Path::to_path_buf)
+    }
+
+    fn choose_folder(&self, cx: &mut App) -> tokio::sync::oneshot::Receiver<Option<PathBuf>> {
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let asked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: None,
+        });
+        cx.background_executor()
+            .spawn(async move {
+                let chosen = match asked.await {
+                    Ok(Ok(Some(mut paths))) => paths.pop(),
+                    _ => None,
+                };
+                let _ = answer.send(chosen);
+            })
+            .detach();
+        answered
     }
 }
 

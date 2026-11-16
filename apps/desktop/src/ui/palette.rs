@@ -43,6 +43,7 @@ pub fn label(command: Command, shell: &Shell, look: &Look) -> String {
         Command::SignOut => look.tr("account-sign-out"),
         Command::OpenLogs => look.tr("settings-open-logs"),
         Command::CopyReport => look.tr("settings-copy-report"),
+        Command::Profile => look.tr("account-profile"),
     }
 }
 
