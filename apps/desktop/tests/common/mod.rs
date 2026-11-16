@@ -29,7 +29,7 @@ pub struct App {
 pub fn open_with(cx: &mut TestAppContext, backend: Scripted, settings: Settings) -> App {
     let system = Simulated::new(settings);
     let (window, shell) = cx.update(|cx| {
-        ui::window::init(&system, true, cx);
+        ui::window::init(&system, Default::default(), true, cx);
         ui::window::open(Arc::new(backend.clone()), Rc::new(system.clone()), None, cx)
             .expect("the window opens")
     });

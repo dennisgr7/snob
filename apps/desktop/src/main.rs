@@ -17,7 +17,7 @@ use gpui_kit::QuitMode;
 use snob_desktop::backend::engine::Engine;
 use snob_desktop::instance::{self, Instance};
 use snob_desktop::runtime::Runtime;
-use snob_desktop::state::prefs::Prefs;
+use snob_desktop::state::prefs::{Placement, Prefs};
 use snob_desktop::system::native::Native;
 use snob_desktop::system::{Event, Settings, System};
 use snob_desktop::ui::assets::Assets;
@@ -228,6 +228,9 @@ fn main() -> anyhow::Result<()> {
 
     #[cfg(feature = "testing")]
     let listed = value_of(&args, "--browsers").and_then(|count| count.parse().ok());
+    // Read once, before the window opens: it is drawn in the theme chosen
+    // from its first frame.
+    let prefs = Prefs::load(&paths);
     let simulated = simulated(&args);
     let reopen: Rc<RefCell<Option<Opens>>> = Rc::default();
     let app = gpui_kit::application().with_assets(Assets);
@@ -250,7 +253,13 @@ fn main() -> anyhow::Result<()> {
         let ((system, activate), native, spoken) = system(simulated, cx);
         runtime.handle().spawn(instance::serve(listener, activate));
 
-        ui::window::init(&*system, testing, cx);
+        let chosen = prefs.appearance();
+        tracing::info!(
+            theme = ?chosen.theme,
+            language = chosen.language.as_deref().unwrap_or("system"),
+            "what was chosen over the system"
+        );
+        ui::window::init(&*system, chosen, testing, cx);
         let settings = system.settings();
         tracing::info!(
             dark = settings.dark,
@@ -275,9 +284,7 @@ fn main() -> anyhow::Result<()> {
         };
         let backend = Arc::new(backend);
         let open = {
-            let paths = paths.clone();
-            move |cx: &mut gpui_kit::App| {
-                let placement = Prefs::load(&paths).window;
+            move |placement: Option<Placement>, cx: &mut gpui_kit::App| {
                 let opened = ui::window::open(backend.clone(), system.clone(), placement, cx);
                 let (window, shell) = match opened {
                     Ok(opened) => opened,
@@ -301,13 +308,14 @@ fn main() -> anyhow::Result<()> {
                 Some((window, shell))
             }
         };
-        let Some((window, shell)) = open(cx) else {
+        let Some((window, shell)) = open(prefs.window, cx) else {
             cx.quit();
             return;
         };
         be_driven(&paths, &runtime, window, shell, spoken, cx);
+        let kept = paths.clone();
         *reopen.borrow_mut() = Some(Box::new(move |cx| {
-            open(cx);
+            open(Prefs::load(&kept).window, cx);
         }));
         // The browsers kept each session current while the app ran: the stored
         // copy learns what they kept before the process goes

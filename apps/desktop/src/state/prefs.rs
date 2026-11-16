@@ -1,5 +1,6 @@
 //! What the app remembers between runs that is the app's alone: where its
-//! window was, and the method chosen before a restart for an update.
+//! window was, the method chosen before a restart for an update, and the
+//! theme and language chosen in its settings.
 //! `desktop.json` in the data directory. **Nothing about an account is kept
 //! here**: sessions, lists and budgets are the engine's, in its own files.
 
@@ -63,6 +64,32 @@ impl Placement {
     }
 }
 
+/// The theme chosen: the system's, or one of the two whatever the system
+/// says.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeChoice {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemeChoice {
+    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+}
+
+/// How the person chose the app to look, over what the system says. **The
+/// contrast is always the system's**: it is asked for by somebody who needs
+/// it, and a choice made here must not take it away.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Appearance {
+    pub theme: ThemeChoice,
+    /// A language tag, or the system's language with none. One the app does
+    /// not speak reads as none.
+    pub language: Option<String>,
+}
+
 /// A method chosen, and when.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Resume {
@@ -90,6 +117,11 @@ pub struct Prefs {
     /// offered first the next time.
     #[serde(default)]
     pub browser: Option<String>,
+    #[serde(default)]
+    pub theme: ThemeChoice,
+    /// The language chosen, as a tag: the system's when there is none.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 /// An account's session, found to work at a moment.
@@ -159,6 +191,14 @@ impl Prefs {
         self.checked.push(Checked { pk, at: now });
     }
 
+    /// The theme and language chosen.
+    pub fn appearance(&self) -> Appearance {
+        Appearance {
+            theme: self.theme,
+            language: self.language.clone(),
+        }
+    }
+
     /// The method to go straight back to at `now`, when one was chosen
     /// shortly before.
     pub fn resumed(&self, now: Epoch) -> Option<Method> {
@@ -221,6 +261,8 @@ mod tests {
                 at: Epoch::new(1_790_000_000),
             }],
             browser: Some("Edge".to_string()),
+            theme: ThemeChoice::Dark,
+            language: Some("es".to_string()),
         };
         prefs.save(&paths);
         assert_eq!(Prefs::load(&paths), prefs);
@@ -231,6 +273,26 @@ mod tests {
 
         std::fs::write(file(&paths), b"{ not json").unwrap();
         assert_eq!(Prefs::load(&paths), Prefs::default());
+    }
+
+    #[test]
+    fn a_file_from_before_the_theme_was_chosen_reads_as_the_system_s() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::rooted_at(root.path());
+        paths.ensure_dirs().unwrap();
+        std::fs::write(
+            file(&paths),
+            br#"{"window":{"x":100,"y":80,"width":1100,"height":760},"browser":"Edge"}"#,
+        )
+        .unwrap();
+        let prefs = Prefs::load(&paths);
+        assert_eq!(prefs.browser.as_deref(), Some("Edge"), "the rest is kept");
+        assert_eq!(prefs.appearance(), Appearance::default());
+
+        Prefs::change(&paths, |prefs| prefs.theme = ThemeChoice::Light);
+        let text = std::fs::read_to_string(file(&paths)).unwrap();
+        assert!(text.contains(r#""theme": "light""#), "{text}");
+        assert_eq!(Prefs::load(&paths).theme, ThemeChoice::Light);
     }
 
     #[test]

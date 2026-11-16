@@ -26,7 +26,7 @@ use super::{Account, Answer, Backend, Browsers, Loaded, SignIn, answered};
 use crate::report;
 use crate::runtime::Runtime;
 use crate::state::flow::{Found, Method, Named, Update};
-use crate::state::prefs::{Placement, Prefs, Resume};
+use crate::state::prefs::{Appearance, Placement, Prefs, Resume};
 
 /// The engine, for the data directory `paths` is.
 pub struct Engine {
@@ -494,6 +494,16 @@ impl Backend for Engine {
         let paths = self.paths.clone();
         drop(self.runtime.run(move || async move {
             Prefs::change(&paths, |prefs| prefs.window = Some(placement));
+        }));
+    }
+
+    fn remember_appearance(&self, appearance: Appearance) {
+        let paths = self.paths.clone();
+        drop(self.runtime.run(move || async move {
+            Prefs::change(&paths, |prefs| {
+                prefs.theme = appearance.theme;
+                prefs.language = appearance.language;
+            });
         }));
     }
 

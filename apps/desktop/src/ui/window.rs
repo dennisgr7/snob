@@ -17,7 +17,7 @@ use gpui_kit::{
 use super::look::Look;
 use super::shell::Shell;
 use crate::backend::Backend;
-use crate::state::prefs::{FIRST_HEIGHT, FIRST_WIDTH, MIN_HEIGHT, MIN_WIDTH, Placement};
+use crate::state::prefs::{Appearance, FIRST_HEIGHT, FIRST_WIDTH, MIN_HEIGHT, MIN_WIDTH, Placement};
 use crate::system::System;
 use crate::theme::fonts;
 
@@ -25,14 +25,15 @@ use crate::theme::fonts;
 pub const APP_ID: &str = "dev.dennisgr7.snob";
 
 /// Everything the window needs before it opens: the toolkit, the fonts, the
-/// keys, and how the app looks on this system. Once, at the start.
-pub fn init(system: &dyn System, testing: bool, cx: &mut App) {
+/// keys, and how the app looks on this system with what was `chosen` over
+/// it, so its first frame is in the theme it stays in. Once, at the start.
+pub fn init(system: &dyn System, chosen: Appearance, testing: bool, cx: &mut App) {
     gpui_kit::init(cx);
     if let Err(e) = cx.text_system().add_fonts(fonts::all()) {
         tracing::error!(error = %e, "the app's fonts could not be loaded");
     }
     super::bind_keys(cx);
-    super::look::wear(Look::of(system.settings(), testing), cx);
+    super::look::wear(Look::chosen(system.settings(), chosen, testing), cx);
 }
 
 /// Where the window opens: where it was, when that is still on a display,

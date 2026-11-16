@@ -35,6 +35,20 @@ fn bundle(tag: &str, source: &str) -> Bundle {
     bundle
 }
 
+/// Whether the app speaks the language `tag` names (`es`, `en-GB`).
+pub fn speaks(tag: &str) -> bool {
+    let wanted = primary(tag);
+    LANGUAGES.iter().any(|(known, _)| *known == wanted)
+}
+
+/// The language of a tag, in lower case: `es` of `es_MX.UTF-8`.
+fn primary(tag: &str) -> String {
+    tag.split(['-', '_', '.'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
 /// The words of one language, with English under it.
 pub struct Texts {
     language: &'static str,
@@ -46,11 +60,7 @@ impl Texts {
     /// The words for a system set to `locale` (`es-ES`, `en_US.UTF-8`):
     /// that language when the app speaks it, English otherwise.
     pub fn of(locale: &str) -> Self {
-        let wanted = locale
-            .split(['-', '_', '.'])
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
+        let wanted = primary(locale);
         let chosen = LANGUAGES
             .iter()
             .skip(1)
@@ -218,6 +228,16 @@ mod tests {
             let texts = Texts::of(locale);
             assert_eq!(texts.language(), language, "{locale}");
             assert_eq!(texts.tr("start-title"), title, "{locale}");
+        }
+    }
+
+    #[test]
+    fn only_a_language_the_app_has_words_for_is_spoken() {
+        for tag in ["en", "es", "es-MX", "EN"] {
+            assert!(speaks(tag), "{tag}");
+        }
+        for tag in ["fr", "", "pt-BR"] {
+            assert!(!speaks(tag), "{tag}");
         }
     }
 

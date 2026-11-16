@@ -17,7 +17,7 @@ use snob_ig::pace::CancelToken;
 use tokio::sync::{oneshot, watch};
 
 use crate::state::flow::{Found, Method, Named, Update};
-use crate::state::prefs::Placement;
+use crate::state::prefs::{Appearance, Placement};
 
 pub mod engine;
 #[cfg(feature = "testing")]
@@ -124,6 +124,9 @@ pub trait Backend: Send + Sync + 'static {
 
     /// Remembers where the window is, to open there the next time.
     fn remember_window(&self, placement: Placement);
+
+    /// Remembers the theme and the language chosen, for the next start.
+    fn remember_appearance(&self, appearance: Appearance);
 
     /// Whether a newer version is out.
     fn check_for_update(&self) -> Answer<Update>;

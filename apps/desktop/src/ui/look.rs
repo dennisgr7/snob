@@ -1,13 +1,16 @@
-//! How the app looks now: the palette of the system's theme and contrast,
-//! the settings it follows, and the words of its language. **One value for
-//! the whole app**, swapped when the system changes a setting, so every view
-//! redraws with it and none keeps a color of its own.
+//! How the app looks now: the palette of the theme and the system's
+//! contrast, the settings it follows, and the words of its language. The
+//! theme and the language are the system's unless the person chose others
+//! in the settings. **One value for the whole app**, swapped when the system
+//! or a choice changes, so every view redraws with it and none keeps a color
+//! of its own.
 
 use std::sync::Arc;
 
 use gpui_kit::{App, Global, Hsla, Rems, Rgba, px, rems, rgb};
 
-use crate::i18n::Texts;
+use crate::i18n::{self, Texts};
+use crate::state::prefs::{Appearance, ThemeChoice};
 use crate::system::Settings;
 use crate::theme::fonts::{MONO, SANS};
 use crate::theme::motion::{self, Move};
@@ -17,8 +20,13 @@ use crate::theme::tokens::{Palette, Rgb, Scheme, shape};
 #[derive(Clone)]
 pub struct Look {
     pub palette: Palette,
+    /// The theme drawn: the one chosen, or the system's.
+    pub scheme: Scheme,
+    /// What the system says, whatever was chosen over it.
     pub settings: Settings,
     pub texts: Arc<Texts>,
+    /// What the person chose over the system.
+    pub chosen: Appearance,
     /// A test build says so in its band.
     pub testing: bool,
 }
@@ -26,16 +34,29 @@ pub struct Look {
 impl Global for Look {}
 
 impl Look {
+    /// The system's look, with nothing chosen over it.
     pub fn of(settings: Settings, testing: bool) -> Self {
-        let scheme = if settings.dark {
-            Scheme::Dark
-        } else {
-            Scheme::Light
+        Self::chosen(settings, Appearance::default(), testing)
+    }
+
+    /// The look of `chosen` over what the system says.
+    pub fn chosen(settings: Settings, chosen: Appearance, testing: bool) -> Self {
+        let dark = match chosen.theme {
+            ThemeChoice::System => settings.dark,
+            ThemeChoice::Light => false,
+            ThemeChoice::Dark => true,
+        };
+        let scheme = if dark { Scheme::Dark } else { Scheme::Light };
+        let texts = match chosen.language.as_deref() {
+            Some(tag) if i18n::speaks(tag) => Texts::of(tag),
+            _ => Texts::of(&settings.locale),
         };
         Self {
             palette: Palette::of(scheme, settings.more_contrast),
-            texts: Arc::new(Texts::of(&settings.locale)),
+            scheme,
+            texts: Arc::new(texts),
             settings,
+            chosen,
             testing,
         }
     }
@@ -95,6 +116,8 @@ pub fn wear(look: Look, cx: &mut App) {
     theme.popover = color(palette.panel);
     theme.popover_foreground = color(palette.text);
     theme.danger = color(palette.error);
+    // What the toolkit's own moves follow: its scrollbar's.
+    cx.set_reduce_motion(look.settings.reduce_motion);
     cx.set_global(look);
     cx.refresh_windows();
 }
@@ -140,6 +163,52 @@ mod tests {
         assert_eq!(look.palette, Palette::of(Scheme::Dark, true));
         assert_eq!(look.tr("start-title"), "Empecemos.");
         assert!(!look.translucent(), "more contrast is no transparency");
+    }
+
+    #[test]
+    fn a_theme_chosen_holds_whatever_the_system_says_and_the_system_s_follows_it() {
+        let system = |dark: bool, more_contrast: bool| Settings {
+            dark,
+            more_contrast,
+            locale: "es-ES".into(),
+            ..Settings::default()
+        };
+        let chose = |theme: ThemeChoice, language: Option<&str>| Appearance {
+            theme,
+            language: language.map(str::to_string),
+        };
+        let light = Look::chosen(system(true, false), chose(ThemeChoice::Light, None), false);
+        assert_eq!(light.scheme, Scheme::Light);
+        assert_eq!(light.palette, Palette::of(Scheme::Light, false));
+        assert!(light.settings.dark, "what the system says is kept");
+        let dark = Look::chosen(system(false, true), chose(ThemeChoice::Dark, None), false);
+        assert_eq!(
+            dark.palette,
+            Palette::of(Scheme::Dark, true),
+            "the contrast is the system's"
+        );
+        for dark in [false, true] {
+            let followed =
+                Look::chosen(system(dark, false), chose(ThemeChoice::System, None), false);
+            assert_eq!(followed.settings.dark, followed.scheme == Scheme::Dark);
+        }
+
+        let english = Look::chosen(
+            system(false, false),
+            chose(ThemeChoice::System, Some("en")),
+            false,
+        );
+        assert_eq!(english.texts.language(), "en");
+        let unspoken = Look::chosen(
+            system(false, false),
+            chose(ThemeChoice::System, Some("fr")),
+            false,
+        );
+        assert_eq!(
+            unspoken.texts.language(),
+            "es",
+            "a language the app lacks is the system's"
+        );
     }
 
     #[test]

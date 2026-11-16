@@ -13,7 +13,7 @@ use tokio::sync::{oneshot, watch};
 
 use super::{Account, Answer, Backend, Browsers, Loaded, SignIn, answered};
 use crate::state::flow::{Found, Method, Named, Update};
-use crate::state::prefs::Placement;
+use crate::state::prefs::{Appearance, Placement};
 
 /// What the backend was asked, in order. **Never the session ID itself**:
 /// only that one was handed over, and whether it was the one expected.
@@ -30,6 +30,7 @@ pub enum Asked {
     SetDetailed(bool),
     RememberMethod(Option<Method>),
     RememberWindow,
+    RememberAppearance(Appearance),
     DiagnosticReport,
     CrashShown,
 }
@@ -371,6 +372,12 @@ impl Backend for Scripted {
         let mut state = self.state();
         state.asked.push(Asked::RememberWindow);
         state.placed = Some(placement);
+    }
+
+    fn remember_appearance(&self, appearance: Appearance) {
+        self.state()
+            .asked
+            .push(Asked::RememberAppearance(appearance));
     }
 
     fn check_for_update(&self) -> Answer<Update> {
