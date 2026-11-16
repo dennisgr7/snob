@@ -301,6 +301,12 @@ pub fn render(
         .flex()
         .flex_col()
         .child(header(&account, look, &shown))
+        .child(
+            item("menu-profile", look.tr("account-profile"), look)
+                .child(icon(assets::PROFILE, 18.).text_color(color(palette.text)))
+                .child(look.tr("account-profile"))
+                .on_click(cx.listener(|shell, _, window, cx| shell.open_own_profile(window, cx))),
+        )
         .child(separator())
         .child(accounts_row)
         .children(listed)

@@ -9,6 +9,8 @@ use std::time::Duration;
 
 use snob_engine::login::Failure;
 
+use super::profile::Side;
+
 /// How a person chose to sign in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -89,16 +91,34 @@ pub enum Screen {
     Search,
     Automations,
     Settings,
+    /// An account's profile, the viewer's own or another's.
+    Profile(Named),
+    /// One of an account's lists, read as it is shown.
+    People {
+        owner: Named,
+        side: Side,
+    },
 }
 
 impl Screen {
     /// Whether this is a screen of an app somebody is signed in to: a
-    /// section or the settings.
+    /// section, the settings, or a page opened from them.
     pub fn signed_in(&self) -> bool {
         matches!(
             self,
-            Self::Home | Self::Search | Self::Automations | Self::Settings
+            Self::Home
+                | Self::Search
+                | Self::Automations
+                | Self::Settings
+                | Self::Profile(_)
+                | Self::People { .. }
         )
+    }
+
+    /// Whether this is a page opened from another screen, which "back"
+    /// returns to: a profile or a list.
+    pub fn is_a_page(&self) -> bool {
+        matches!(self, Self::Profile(_) | Self::People { .. })
     }
 }
 
@@ -170,6 +190,15 @@ pub enum Event {
     },
     /// The session of the account in use stopped working.
     Expired(Named),
+    /// To an account's profile, from wherever somebody signed in is.
+    OpenProfile(Named),
+    /// To one of an account's lists, once it may be read: **asked first
+    /// when it is not the viewer's own** (`state::profile::asks_first`),
+    /// and this comes only after the yes.
+    OpenList {
+        owner: Named,
+        side: Side,
+    },
 }
 
 /// Something to do beside showing a screen.
@@ -203,6 +232,9 @@ pub struct Flow {
     /// Whether an account is signed in and in use: what "back" from the
     /// start screen returns to.
     signed_in: bool,
+    /// The screens the page shown was opened from, the newest last: what
+    /// "back" returns to. Empty on a section and on the settings.
+    trail: Vec<Screen>,
 }
 
 impl Default for Flow {
@@ -211,6 +243,7 @@ impl Default for Flow {
             screen: Screen::Splash,
             update: Update::Unknown,
             signed_in: false,
+            trail: Vec::new(),
         }
     }
 }
@@ -223,6 +256,34 @@ impl Flow {
     /// What is known about a newer version, for the band.
     pub fn update(&self) -> Update {
         self.update
+    }
+
+    /// The section the screen shown belongs to: the section itself, or for
+    /// a page the section it was first opened from. None on the settings
+    /// and on the way in.
+    pub fn section(&self) -> Option<Place> {
+        Place::of(&self.screen).or_else(|| {
+            self.screen
+                .is_a_page()
+                .then(|| self.trail.first().and_then(Place::of))
+                .flatten()
+        })
+    }
+
+    /// Whether the page shown has somewhere to go back to.
+    pub fn can_go_back(&self) -> bool {
+        self.screen.is_a_page() && !self.trail.is_empty()
+    }
+
+    /// The screens the page shown was opened from, the newest last.
+    pub fn trail(&self) -> &[Screen] {
+        &self.trail
+    }
+
+    /// A page opened on top of the screen shown, which back returns to.
+    fn opened(&mut self, page: Screen) -> (Screen, Vec<Effect>) {
+        self.trail.push(self.screen.clone());
+        (page, Vec::new())
     }
 
     fn start(&self, expired: Option<Named>) -> Screen {
@@ -383,19 +444,45 @@ impl Flow {
 
             (Screen::Welcome(_), Event::Welcomed) => (Screen::Home, Vec::new()),
 
-            (screen, Event::Go(place)) if screen.signed_in() => (place.screen(), Vec::new()),
-            (screen, Event::OpenSettings) if screen.signed_in() => (Screen::Settings, Vec::new()),
-            (screen, Event::AddAccount) if screen.signed_in() => (self.start(None), Vec::new()),
+            // The same page again is no new page.
+            (Screen::Profile(shown), Event::OpenProfile(account)) if shown.pk == account.pk => {
+                return Vec::new();
+            }
+            (screen, Event::OpenProfile(account)) if screen.signed_in() => {
+                self.opened(Screen::Profile(account))
+            }
+            (screen, Event::OpenList { owner, side }) if screen.signed_in() => {
+                self.opened(Screen::People { owner, side })
+            }
+            (screen, Event::Back) if screen.is_a_page() => {
+                (self.trail.pop().unwrap_or(Screen::Home), Vec::new())
+            }
+
+            (screen, Event::Go(place)) if screen.signed_in() => {
+                self.trail.clear();
+                (place.screen(), Vec::new())
+            }
+            (screen, Event::OpenSettings) if screen.signed_in() => {
+                self.trail.clear();
+                (Screen::Settings, Vec::new())
+            }
+            (screen, Event::AddAccount) if screen.signed_in() => {
+                self.trail.clear();
+                (self.start(None), Vec::new())
+            }
 
             (screen, Event::SignedOut { next: Some(_) }) if screen.signed_in() => {
+                self.trail.clear();
                 (Screen::Home, Vec::new())
             }
             (screen, Event::SignedOut { next: None }) if screen.signed_in() => {
                 self.signed_in = false;
+                self.trail.clear();
                 (self.start(None), Vec::new())
             }
             (screen, Event::Expired(account)) if screen.signed_in() => {
                 self.signed_in = false;
+                self.trail.clear();
                 (self.start(Some(account)), Vec::new())
             }
 
@@ -764,5 +851,65 @@ mod tests {
             assert!(flow.on(late).is_empty());
             assert_eq!(flow.screen(), &Screen::Home);
         }
+    }
+
+    fn someone() -> Named {
+        Named {
+            pk: 9001.into(),
+            username: Some("someone".into()),
+        }
+    }
+
+    #[test]
+    fn a_profile_and_its_lists_go_back_the_way_they_came() {
+        let (mut flow, _) = after([loaded(Found::SignedIn(me()))]);
+        flow.on(Event::Go(Place::Search));
+        flow.on(Event::OpenProfile(me()));
+        assert_eq!(flow.screen(), &Screen::Profile(me()));
+        assert_eq!(flow.section(), Some(Place::Search), "still in its section");
+        assert!(flow.can_go_back());
+        flow.on(Event::OpenList {
+            owner: me(),
+            side: Side::Following,
+        });
+        flow.on(Event::OpenProfile(someone()));
+        assert_eq!(flow.screen(), &Screen::Profile(someone()));
+        assert_eq!(flow.trail().len(), 3);
+
+        flow.on(Event::Back);
+        assert!(matches!(flow.screen(), Screen::People { .. }));
+        flow.on(Event::Back);
+        assert_eq!(flow.screen(), &Screen::Profile(me()));
+        flow.on(Event::Back);
+        assert_eq!(flow.screen(), &Screen::Search);
+        assert!(!flow.can_go_back() && flow.trail().is_empty());
+    }
+
+    #[test]
+    fn the_same_profile_again_is_no_new_page_and_a_section_forgets_the_way() {
+        let (mut flow, _) = after([loaded(Found::SignedIn(me())), Event::OpenProfile(me())]);
+        flow.on(Event::OpenProfile(me()));
+        assert_eq!(flow.trail(), [Screen::Home]);
+        flow.on(Event::OpenProfile(someone()));
+        flow.on(Event::Go(Place::Automations));
+        assert_eq!(flow.screen(), &Screen::Automations);
+        assert!(flow.trail().is_empty());
+        flow.on(Event::OpenProfile(someone()));
+        flow.on(Event::OpenSettings);
+        assert!(flow.trail().is_empty());
+        assert_eq!(flow.section(), None);
+    }
+
+    #[test]
+    fn no_page_is_opened_before_somebody_is_signed_in_and_signing_out_forgets_the_way() {
+        let (mut flow, _) = after([loaded(Found::Nobody)]);
+        assert!(flow.on(Event::OpenProfile(me())).is_empty());
+        assert_eq!(flow.screen(), &start());
+
+        let (mut flow, _) = after([loaded(Found::SignedIn(me())), Event::OpenProfile(me())]);
+        assert!(Screen::Profile(me()).signed_in());
+        flow.on(Event::SignedOut { next: None });
+        assert_eq!(flow.screen(), &start());
+        assert!(flow.trail().is_empty());
     }
 }

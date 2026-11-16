@@ -48,6 +48,21 @@ icons! {
     BROWSER_CHROME = "browser-chrome.svg";
     BROWSER_EDGE = "browser-edge.svg";
     BROWSER_BRAVE = "browser-brave.svg";
+    PROFILE = "profile.svg";
+    GRID = "grid.svg";
+    LIST = "list.svg";
+    LAYOUT_STACKED = "layout-stacked.svg";
+    LAYOUT_SPLIT = "layout-split.svg";
+    MORE = "more.svg";
+    DOWNLOAD = "download.svg";
+    COPY = "copy.svg";
+    CLOSE = "close.svg";
+    NEW_WINDOW = "new-window.svg";
+    CAROUSEL = "carousel.svg";
+    VIDEO = "video.svg";
+    PHOTO = "photo.svg";
+    REPOST = "repost.svg";
+    MENTION = "mention.svg";
 }
 
 /// The drawing of the browser the engine calls `name`: its own mark, drawn
@@ -87,7 +102,7 @@ mod tests {
 
     #[test]
     fn every_drawing_named_is_built_in_and_is_a_drawing() {
-        assert_eq!(ALL.len(), 28);
+        assert_eq!(ALL.len(), 43);
         for (name, bytes) in ALL {
             let loaded = Assets.load(name).unwrap().expect("built in");
             assert_eq!(&*loaded, *bytes);

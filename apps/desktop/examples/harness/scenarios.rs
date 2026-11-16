@@ -179,7 +179,113 @@ pub fn all() -> Vec<Scenario> {
             no_secret_is_written
         ),
         scenario!("the keyboard alone signs in", "8", keyboard_alone),
+        scenario!(
+            "a profile, its lists and the consent another's asks",
+            "3 8",
+            profile_and_lists
+        ),
     ]
+}
+
+/// Whether a profile's first read has come: its first tab's posts, or why
+/// there are none.
+pub fn profile_read(seen: &Answer) -> bool {
+    seen.screen == "profile"
+        && seen.nodes.iter().any(|node| {
+            [
+                "profile-tile#0",
+                "profile-empty",
+                "profile-hidden",
+                "profile-tab-failed",
+            ]
+            .contains(&node.id.as_str())
+        })
+}
+
+/// Whether the list shown was read to its end.
+pub fn list_read(seen: &Answer) -> bool {
+    seen.screen == "people"
+        && seen.nodes.iter().any(|node| {
+            node.id == "people-progress"
+                && node
+                    .label
+                    .as_deref()
+                    .is_some_and(|said| said.ends_with("accounts"))
+        })
+}
+
+/// The account's own profile from its menu, its story's way in reading
+/// nothing, its own list read without a question, and another account's
+/// list asked about first: **a no sends nothing**, a yes reads it.
+async fn profile_and_lists(stage: &mut Stage<'_>) -> anyhow::Result<()> {
+    let world = stage.lab.world.clone();
+    stage.open().await?;
+    stage.sign_in(world::SOMEONE, "profile").await?;
+    let app = stage.app()?;
+    app.click("account").await?;
+    app.click("menu-profile").await?;
+    let seen = app.until("the own profile read", profile_read).await?;
+    let title = label(&seen, "title")?;
+    expect(title.contains("@someone"), || {
+        format!("the page's title is {title:?}")
+    })?;
+    // The fake Instagram's REST profile, which a build with no browser
+    // reads, says nothing of stories: the ring is shown only where the
+    // profile query is (`tests/profile.rs` has it on the script). Either
+    // way the picture opens, and no story is read.
+    let story = label(&seen, "profile-picture")?.ends_with("with a story");
+    let seen = app.click("profile-picture").await?;
+    if story {
+        expect(
+            seen.nodes
+                .iter()
+                .any(|node| node.id == "profile-open-story"),
+            || "a story up offers the story".to_string(),
+        )?;
+        app.click("profile-open-story").await?;
+        let seen = app.look().await?;
+        expect(seen.announced.contains("Nothing was read"), || {
+            format!("the story's way in said {:?}", seen.announced)
+        })?;
+    } else {
+        let viewer = node(&seen, "photo-viewer")?;
+        expect_eq(viewer.role.as_deref(), Some("Dialog"), "the picture large")?;
+        app.press("escape").await?;
+    }
+
+    app.click("profile-followers").await?;
+    let seen = app.until("the own followers read", list_read).await?;
+    expect(
+        !seen.nodes.iter().any(|node| node.id == "list-question"),
+        || "the own list asked a question".to_string(),
+    )?;
+    expect(
+        label(&seen, "person#0")?.starts_with("Open the profile of @"),
+        || "a row opens its profile".to_string(),
+    )?;
+
+    app.click("person#0").await?;
+    app.until("their profile read", profile_read).await?;
+    let before = world.search_surfaces().len();
+    let seen = app.click("profile-followers").await?;
+    let asked = node(&seen, "list-question")?;
+    expect_eq(asked.role.as_deref(), Some("AlertDialog"), "the question")?;
+    app.press("escape").await?;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let seen = app.look().await?;
+    expect_eq(seen.screen.as_str(), "profile", "a no stays on the profile")?;
+    expect_eq(
+        world.search_surfaces().len(),
+        before,
+        "followers pages asked after a no",
+    )?;
+
+    app.click("profile-followers").await?;
+    app.click("list-question-confirm").await?;
+    app.until("their followers read", list_read).await?;
+    expect(world.search_surfaces().len() > before, || {
+        "a yes read nothing".to_string()
+    })
 }
 
 async fn first_start(stage: &mut Stage<'_>) -> anyhow::Result<()> {

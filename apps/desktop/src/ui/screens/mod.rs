@@ -16,6 +16,8 @@ use crate::state::flow::{Method, Named, Place, Screen};
 mod failed;
 mod home;
 mod paste;
+pub mod people;
+pub mod profile;
 pub mod settings;
 mod splash;
 mod start;
@@ -95,6 +97,8 @@ pub fn render(
         Screen::Search => home::search(shell, phase, cx),
         Screen::Automations => home::automations(shell, phase, cx),
         Screen::Settings => settings::render(shell, phase, window, cx),
+        Screen::Profile(_) => profile::render(shell, phase, window, cx),
+        Screen::People { .. } => people::render(shell, phase, window, cx),
     }
 }
 

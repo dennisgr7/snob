@@ -4,7 +4,8 @@
 //! ([`paste`]), what the command palette offers ([`commands`]), what the
 //! settings hold and which of it a search shows ([`settings`]), what they
 //! say of what is kept ([`storage`]), what is remembered between runs
-//! ([`prefs`]), and when the app rests ([`rest`]).
+//! ([`prefs`]), when the app rests ([`rest`]), and how a profile page is
+//! laid out and what it reads without asking ([`profile`]).
 //! No window, no clock and no network in any of it.
 
 pub mod commands;
@@ -12,6 +13,7 @@ pub mod flow;
 pub mod frame;
 pub mod paste;
 pub mod prefs;
+pub mod profile;
 pub mod rest;
 pub mod settings;
 pub mod status;

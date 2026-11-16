@@ -38,6 +38,11 @@ use crate::state::status::{self, Band, Status};
 use crate::system::{self, System};
 use crate::theme::motion;
 
+mod pages;
+
+pub use pages::PeopleList;
+pub(crate) use pages::{Pages, PopupKind, TabRead, eased};
+
 /// How long the window rests before where it is gets remembered: a drag
 /// says it moved many times a second.
 const SETTLED_AFTER: Duration = Duration::from_millis(500);
@@ -187,6 +192,8 @@ fn name(screen: &Screen) -> &'static str {
         Screen::Search => "search",
         Screen::Automations => "automations",
         Screen::Settings => "settings",
+        Screen::Profile(_) => "profile",
+        Screen::People { .. } => "people",
     }
 }
 
@@ -211,6 +218,8 @@ fn event_name(event: &Event) -> &'static str {
         Event::AddAccount => "add_account",
         Event::SignedOut { .. } => "signed_out",
         Event::Expired(_) => "session_expired",
+        Event::OpenProfile(_) => "open_profile",
+        Event::OpenList { .. } => "open_list",
     }
 }
 
@@ -283,6 +292,9 @@ pub struct Shell {
     /// The rail's selection: the section it left, the one it is going to,
     /// and since when.
     pill: (Option<usize>, Option<usize>, Instant),
+    /// The profiles and lists the way back holds, and what is open over
+    /// them (`pages`).
+    pub(crate) pages: Pages,
 }
 
 impl Shell {
@@ -427,6 +439,7 @@ impl Shell {
             frame: Morph::still(shape::Shape::Closed),
             frame_since: cx.background_executor().now(),
             pill: (None, None, cx.background_executor().now()),
+            pages: Pages::default(),
         }
     }
 
@@ -450,7 +463,9 @@ impl Shell {
         let now = cx.background_executor().now();
         let reduce = Look::now(cx).settings.reduce_motion;
         let elapsed = now.saturating_duration_since(self.frame_since);
-        let selected = Place::of(self.flow.screen())
+        let selected = self
+            .flow
+            .section()
             .and_then(|place| Place::ALL.iter().position(|each| *each == place));
         if selected != self.pill.1 {
             self.pill = (self.pill.1, selected, now);
@@ -757,6 +772,7 @@ impl Shell {
         if !settled
             || self.signing_out.is_some()
             || asking
+            || self.a_page_overlay_is_open()
             || commands::offered(self.flow.screen(), &[]).is_empty()
         {
             return;
@@ -837,12 +853,16 @@ impl Shell {
             Command::SignOut => self.ask_to_sign_out(window, cx),
             Command::OpenLogs => self.open_the_logs(cx),
             Command::CopyReport => self.copy_the_report(window, cx),
+            Command::Profile => self.open_own_profile(window, cx),
         }
     }
 
     /// Closes whatever is open over the screen: the palette or the question
     /// first, then the menu.
     pub(crate) fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.palette.is_none() && self.dismiss_a_page_overlay(window, cx) {
+            return;
+        }
         if self.palette.is_some() {
             self.close_the_palette(window, cx);
         } else if self.paste.as_ref().is_some_and(|form| form.choosing) {
@@ -1183,7 +1203,7 @@ impl Shell {
     /// Whether the screen shown scrolls on its own, under a header that
     /// stays: the panel then holds still.
     pub(crate) fn scrolls_itself(&self) -> bool {
-        self.settings.is_some() && self.shown == Screen::Settings
+        (self.settings.is_some() && self.shown == Screen::Settings) || self.a_page_scrolls_itself()
     }
 
     /// Draws the app in `theme` from now on, whatever the system says, or
@@ -1816,7 +1836,8 @@ impl Shell {
         if *next == self.shown {
             return;
         }
-        if name(next) == name(&self.shown) && self.leaving.is_none() {
+        // A page of another account is another page: it comes in.
+        if name(next) == name(&self.shown) && self.leaving.is_none() && !next.is_a_page() {
             self.shown = next.clone();
             cx.notify();
             return;
@@ -1867,6 +1888,7 @@ impl Shell {
         };
         self.menu = None;
         self.signing_out = None;
+        self.settle_the_pages(window, cx);
 
         let look = Look::now(cx).clone();
         match &self.shown {
