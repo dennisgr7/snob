@@ -510,7 +510,20 @@ compile; the session is an explicit header on the one client meant to carry it.
   `storage::clear_cache` removes the cache and nothing else: never a
   session, a stored list or capture, `watch.toml`, `accounts.toml`, a job or
   its result, a log, a browser profile (each holds a session) or a
-  downloaded update.
+  downloaded update. The disk it is all on is asked its size and free room
+  (`snob_store::disk::volume`).
+- **Forgetting an account's history** (`snob_engine::storage::forget_history`)
+  deletes from its database what it walked and what the monitor made of it
+  (`snapshot_members`, `snapshots`, `watch_marks`, `watch_runs`,
+  `watch_deliveries`, `watch_renames`, `watch_renames_sent`, `watch_posts`,
+  `own_writes`, `username_history`, `accounts`, `users`), its jobs and their
+  results and its cache, then `VACUUM`s. **It keeps everything a rule reads
+  before sending**: `rate_budget`, `sitting`, `cooldowns`, `account_reads`,
+  `answers`, `mcp_acts`, `watch_post_marks` (and the account rows it names),
+  `watch_state` and `meta` (`snob_store::store::forget`, whose test fails on a
+  table in neither list), and the session, the browser profile, the card,
+  `accounts.toml`, `watch.toml` and `shared.db`. Refused while a job runs or
+  its `spend.lock` or jobs lock is held; it holds both while it works.
 - **One writer at a time**: `session.json` and `watch.toml` are replaced under a
   lock on `<temporary>.lock` (`paths::replace_private_alone`); `accounts.toml`
   changes only through `Registry::update`, under `accounts.toml.lock`.
@@ -925,6 +938,7 @@ Platform code compiles only on that OS's CI job:
 | `relay/`, `snob-mcp`'s `http/socket.rs` | | `peer_cred` against `geteuid` |
 | `power/` | power requests, EcoQoS | logind inhibitor, `SCHED_BATCH` (Linux); `caffeinate` (macOS) |
 | `snob-store/src/paths.rs` | the data directory's DACL | scratch root opened with `O_NOFOLLOW`, `0700` |
+| `snob-store/src/disk.rs` | `GetDiskFreeSpaceExW` | `statvfs` |
 | `snob_ig::awake` | `QueryUnbiasedInterruptTime` | |
 | `update/` | | `access(W_OK)`, `exec` |
 

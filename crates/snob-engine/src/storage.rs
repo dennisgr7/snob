@@ -1,5 +1,6 @@
-//! How much room what snob keeps takes, by kind and by account, and the one
-//! kind that can be cleared: the cache (`snob_store::cache`).
+//! How much room what snob keeps takes, by kind and by account, the one
+//! kind that can be cleared (the cache, `snob_store::cache`), and an
+//! account's history, which can be forgotten ([`forget_history`]).
 //!
 //! **Measuring opens nothing**: sizes come from metadata (`snob_store::disk`),
 //! so a database is never opened, for writing or at all. **Clearing removes
@@ -198,6 +199,93 @@ fn measure_accounts(paths: &AppPaths, usage: &mut Usage) {
     }
 }
 
+/// What [`forget_history`] gave back to the disk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Forgot {
+    pub freed: Size,
+}
+
+/// Why [`forget_history`] did nothing.
+#[derive(Debug)]
+pub enum NotForgotten {
+    /// A job of the account runs, or a run that may send for it holds its
+    /// `spend.lock` or its jobs lock: nothing is touched while it does.
+    Busy,
+    /// The disk or the database refused; what was done stays done.
+    Failed(anyhow::Error),
+}
+
+/// Forgets `pk`'s history: what its database holds of lists, captures,
+/// walks and the monitor's work (`snob_store::store::forget::FORGOTTEN`),
+/// its jobs and their results, and its views' cache. **What paces the
+/// account stays** (`forget::KEPT`: its budget, sitting, cooldown, accounts
+/// read in the last day, latest answers, agents' writes, when the monitor
+/// last read its posts), and so do its session, its browser profile, its
+/// card, `accounts.toml`, `watch.toml` and `shared.db`'s push-backs.
+///
+/// Refused while a job of the account runs or a run holds its `spend.lock`
+/// or its jobs lock, whose lock it holds while it works. Blocks on the disk.
+pub fn forget_history(paths: &AppPaths, pk: Pk) -> Result<Forgot, NotForgotten> {
+    let account = paths.account(pk);
+    if !account.dir().is_dir() {
+        return Ok(Forgot::default());
+    }
+    let failed = |e: std::io::Error| NotForgotten::Failed(e.into());
+    let Some(_spending) =
+        snob_store::paths::try_lock_file(&account.spend_lock()).map_err(failed)?
+    else {
+        return Err(NotForgotten::Busy);
+    };
+    let jobs = account.jobs_dir();
+    let _jobs_held = if jobs.is_dir() {
+        let Some(held) = snob_store::paths::try_lock_file(&jobs.join(".lock")).map_err(failed)?
+        else {
+            return Err(NotForgotten::Busy);
+        };
+        let now = snob_core::clock::now().get();
+        let seen = crate::jobs::all(&account, now).map_err(failed)?;
+        if seen.iter().any(|job| !job.status.is_over()) {
+            return Err(NotForgotten::Busy);
+        }
+        Some(held)
+    } else {
+        None
+    };
+
+    let weighed = || {
+        let database = entries(&account.dir())
+            .into_iter()
+            .filter(|(_, name)| name.starts_with("snob.db"))
+            .fold(Size::default(), |all, (path, _)| {
+                all.plus(disk::tree(&path))
+            });
+        database
+            .plus(disk::tree(&jobs))
+            .plus(snob_store::cache::size(&account))
+    };
+    let before = weighed();
+    if let Some(mut store) = snob_store::store::Store::open_existing(&account)
+        .map_err(|e| NotForgotten::Failed(e.into()))?
+    {
+        store
+            .forget_history()
+            .map_err(|e| NotForgotten::Failed(e.into()))?;
+    }
+    for (dir, _) in entries(&jobs) {
+        if dir.is_dir() {
+            std::fs::remove_dir_all(&dir).map_err(failed)?;
+        }
+    }
+    snob_store::cache::forget(&account).map_err(failed)?;
+    let after = weighed();
+    Ok(Forgot {
+        freed: Size {
+            bytes: before.bytes.saturating_sub(after.bytes),
+            files: before.files.saturating_sub(after.files),
+        },
+    })
+}
+
 /// The entries of `dir` with their names: none when it cannot be read.
 fn entries(dir: &Path) -> Vec<(PathBuf, String)> {
     let Ok(read) = std::fs::read_dir(dir) else {
@@ -254,6 +342,84 @@ mod tests {
     fn write(path: &Path, bytes: usize) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, vec![b'x'; bytes]).unwrap();
+    }
+
+    /// An account with a database holding a list and a budget, a session,
+    /// a browser profile, a job's result and a cache.
+    fn with_history(root: &Path) -> (AppPaths, snob_store::paths::AccountPaths) {
+        let paths = AppPaths::rooted_at(root);
+        let account = paths.account(Pk::new(42));
+        let store = snob_store::store::Store::open(&account).unwrap();
+        store
+            .conn()
+            .execute_batch(
+                "INSERT INTO users (pk, username, first_seen, last_seen) VALUES (42, 'me', 0, 0);
+                 INSERT INTO accounts (pk, is_self, added_at) VALUES (42, 1, 0);
+                 INSERT INTO snapshots (account_pk, kind, source, started_at)
+                   VALUES (42, 'followers', 'live', 0);
+                 INSERT INTO cooldowns (scope, until_ms, set_at_ms, reason)
+                   VALUES ('session', 9, 0, 'rate_limited');",
+            )
+            .unwrap();
+        drop(store);
+        write(&account.session_file(), 10);
+        write(
+            &paths
+                .browser_profile_for(Pk::new(42))
+                .join("Default/Cookies"),
+            500,
+        );
+        write(&account.jobs_dir().join("one").join("result.json"), 2000);
+        write(&account.cached_picture(Pk::new(7)), 40);
+        (paths, account)
+    }
+
+    fn count(account: &snob_store::paths::AccountPaths, table: &str) -> i64 {
+        let store = snob_store::store::Store::open(account).unwrap();
+        store
+            .conn()
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn forgetting_an_account_s_history_keeps_its_cooldown_session_and_browser() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, account) = with_history(root.path());
+
+        let forgot = forget_history(&paths, Pk::new(42)).unwrap();
+
+        assert!(forgot.freed.bytes >= 2040, "{forgot:?}");
+        assert_eq!(count(&account, "snapshots"), 0);
+        assert_eq!(count(&account, "cooldowns"), 1, "the cooldown stays");
+        assert!(account.session_file().exists());
+        assert!(
+            paths
+                .browser_profile_for(Pk::new(42))
+                .join("Default/Cookies")
+                .exists()
+        );
+        assert!(!account.jobs_dir().join("one").exists());
+        assert_eq!(snob_store::cache::size(&account).bytes, 0);
+    }
+
+    #[test]
+    fn a_run_holding_the_account_s_spend_lock_or_jobs_lock_stops_the_forgetting() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, account) = with_history(root.path());
+        for lock in [account.spend_lock(), account.jobs_dir().join(".lock")] {
+            let held = snob_store::paths::try_lock_file(&lock).unwrap().unwrap();
+            assert!(matches!(
+                forget_history(&paths, Pk::new(42)),
+                Err(NotForgotten::Busy)
+            ));
+            assert_eq!(count(&account, "snapshots"), 1, "nothing was touched");
+            assert!(account.jobs_dir().join("one").exists());
+            drop(held);
+        }
+        assert!(forget_history(&paths, Pk::new(42)).is_ok(), "once let go");
     }
 
     /// Two accounts, and a file of every kind snob keeps.

@@ -4,6 +4,7 @@
 pub mod accounts;
 pub mod answers;
 pub mod deliveries;
+pub mod forget;
 pub mod mcp_acts;
 mod migrations;
 pub mod own_writes;

@@ -261,7 +261,8 @@ url = "2"
 # saying why; the list of them is kept in one place, AGENTS.md "Platforms".
 # `snob-store` takes it for `geteuid` and the `O_DIRECTORY`/`O_NOFOLLOW` flags:
 # the scratch root is opened without following a link, made `0700` through
-# that descriptor, and asked who owns it (`paths.rs`).
+# that descriptor, and asked who owns it (`paths.rs`); and for `statvfs`, a
+# disk's size and free room (`disk.rs`).
 libc = "0.2"
 base64 = "0.23"
 # The monitor's configuration file. Reading only: the file is written by hand
@@ -290,7 +291,8 @@ zeroize = "1"
 # local accounts. And `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED`, because a query
 # against the live Windows Search index returned files out of the browser
 # profile -- where a second copy of the session sits during a login.
-# `paths::create_private_dir` carries both.
+# `paths::create_private_dir` carries both. The second feature also asks a
+# disk its size and free room (`GetDiskFreeSpaceExW`, `snob_store::disk`).
 #
 # `Win32_System_Threading`, `Win32_System_Pipes`, `Win32_System_JobObjects` and
 # `Win32_Security` are the Windows half of launching the browser on a pipe:
