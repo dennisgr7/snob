@@ -15,6 +15,12 @@ pub fn start_as(program: PathBuf) {
     let _ = PROGRAM.set(program);
 }
 
+/// Whether a front named the binary to start ([`start_as`]): an app that is
+/// not the command line has none of its hidden commands to run itself.
+pub fn was_named() -> bool {
+    PROGRAM.get().is_some()
+}
+
 /// The binary the engine starts for its own processes ([`start_as`]).
 pub fn program() -> std::io::Result<PathBuf> {
     match PROGRAM.get() {

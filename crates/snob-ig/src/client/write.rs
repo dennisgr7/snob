@@ -88,6 +88,7 @@ impl IgClient {
             .header("Origin", self.base.as_str().trim_end_matches('/'))
             .form(form);
 
+        self.plain_http_allowed()?;
         let response = request.send().await?;
         self.remember_claim(&response);
 

@@ -655,4 +655,26 @@ mod tests {
         assert!(local_limited(5).pacer().pay_for_sent().await.is_ok());
         assert_eq!(budget.charged.load(Ordering::Relaxed), 6);
     }
+
+    /// A client pointed at Instagram with no browser page refuses plain HTTP
+    /// unless the process chose it (`SNOB_NO_BROWSER`); one pointed at a
+    /// local server, as every test is, is let through. Checked without
+    /// sending anything.
+    #[test]
+    fn plain_http_to_instagram_is_refused_unless_chosen() {
+        use snob_core::session::{Session, SessionOrigin};
+
+        use crate::client::harness::{SID, UA};
+
+        let session = Session::from_sessionid(SID, UA, SessionOrigin::Paste).unwrap();
+        let live = IgClient::new(session, Pacer::unlimited()).unwrap();
+        assert!(live.is_live() && !live.has_page());
+        if page::plain_http_chosen() {
+            assert!(live.plain_http_allowed().is_ok());
+        } else {
+            assert!(matches!(live.plain_http_allowed(), Err(IgError::NoBrowser)));
+        }
+        let local = live.with_base_url(Url::parse("http://127.0.0.1:1").unwrap());
+        assert!(local.plain_http_allowed().is_ok());
+    }
 }

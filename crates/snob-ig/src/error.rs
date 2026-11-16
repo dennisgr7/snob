@@ -110,6 +110,12 @@ pub enum IgError {
     #[error("Instagram's page has not shown {0} yet, so nothing was sent; try again in a moment")]
     PageNotReady(String),
 
+    /// A request to instagram.com about to leave without a browser when the
+    /// process never chose that (`SNOB_NO_BROWSER`): refused before it left.
+    /// A defect in the program running the engine, never Instagram's answer.
+    #[error("snob refused to send a request to Instagram without its browser; nothing was sent")]
+    NoBrowser,
+
     #[error("canceled")]
     Canceled,
 

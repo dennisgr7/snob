@@ -283,6 +283,8 @@ impl App {
             username: session.username.clone(),
         };
         crate::sentences::act_as(viewer.clone());
+        // Before the client is built: it sends from the browsers.
+        crate::owner::ensure(paths);
 
         let db = Store::open(paths)?;
         // Retention, for the commands that are not the monitor.

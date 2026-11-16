@@ -264,7 +264,7 @@ fn main() -> anyhow::Result<()> {
         let backend = Engine::new(
             Arc::clone(&runtime),
             paths.clone(),
-            secrets,
+            secrets.clone(),
             (detail, files),
             about(),
         );
@@ -309,8 +309,21 @@ fn main() -> anyhow::Result<()> {
         *reopen.borrow_mut() = Some(Box::new(move |cx| {
             open(cx);
         }));
-        cx.on_app_quit(|_| async { tracing::info!("the app stopped") })
-            .detach();
+        // The browsers kept each session current while the app ran: the stored
+        // copy learns what they kept before the process goes
+        // (`headless::write_back`).
+        let leaving = (Arc::clone(&runtime), paths.clone(), secrets.clone());
+        cx.on_app_quit(move |_| {
+            let (runtime, paths, secrets) = leaving.clone();
+            async move {
+                let finished = runtime
+                    .handle()
+                    .spawn(async move { snob_engine::owner::finish(&secrets, &paths).await });
+                let _ = finished.await;
+                tracing::info!("the app stopped");
+            }
+        })
+        .detach();
     });
     Ok(())
 }

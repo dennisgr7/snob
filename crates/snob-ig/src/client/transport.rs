@@ -493,11 +493,23 @@ impl IgClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, IgError> {
+        self.plain_http_allowed()?;
         tokio::select! {
             biased;
             () = self.pacer.cancel_token().canceled() => Err(IgError::Canceled),
             response = request.send() => Ok(response?),
         }
+    }
+
+    /// **A request to Instagram leaves from a browser tab unless the process
+    /// chose otherwise** (`SNOB_NO_BROWSER`, "Transport" in AGENTS.md): a
+    /// program that never handed the engine its browsers is refused here,
+    /// instead of being told apart by Instagram over plain HTTP.
+    pub(super) fn plain_http_allowed(&self) -> Result<(), IgError> {
+        if self.page.is_none() && self.is_live() && !super::page::plain_http_chosen() {
+            return Err(IgError::NoBrowser);
+        }
+        Ok(())
     }
 
     /// The other half of [`IgClient::send_or_cancel`]: a server can stall

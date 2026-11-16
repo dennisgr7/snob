@@ -441,6 +441,8 @@ pub async fn finish(
     // is a login's own (`owner::signed_out`).
     account.admit_login(session.created_at, kept)?;
     host::info("Checking the session against Instagram...");
+    // The check goes out from the browsers, as every request does.
+    crate::owner::ensure(paths);
     let validated = login::validate_seeing(&mut session, pacer).await;
     let rejected = matches!(
         &validated,

@@ -212,6 +212,17 @@ pub fn send_every_request_from(factory: PageFactory) -> Result<(), PageFactory> 
     FACTORY.set(factory)
 }
 
+/// Whether a page factory is set at all, wherever the clients point.
+pub fn a_page_factory_is_set() -> bool {
+    FACTORY.get().is_some()
+}
+
+/// Whether the process chose to send without a browser (`SNOB_NO_BROWSER`:
+/// set, neither empty nor `0`).
+pub(crate) fn plain_http_chosen() -> bool {
+    std::env::var_os("SNOB_NO_BROWSER").is_some_and(|value| !value.is_empty() && value != "0")
+}
+
 /// Whether a client built now would send from a browser page, for a command
 /// that builds no client (`--dry-run`).
 pub fn a_client_would_use_a_page() -> bool {

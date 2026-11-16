@@ -106,6 +106,23 @@ pub fn install(paths: &AppPaths, start: Option<Vec<OsString>>) {
     let _ = snob_ig::client::page::send_every_request_from(factory);
 }
 
+/// [`install`] for whichever program runs the engine, from the engine's own
+/// doors (`App::open`, a login's check), so **no front has to remember it**:
+/// the owner the binary [`crate::exe::start_as`] names runs, or a browser of
+/// this process's own when none was named or `SNOB_NO_OWNER` is set. Nothing
+/// when `SNOB_NO_BROWSER` is set, and nothing over what a front installed
+/// first (the command line's, with its globals).
+pub fn ensure(paths: &AppPaths) {
+    if crate::headless::env_flag("SNOB_NO_BROWSER")
+        || snob_ig::client::page::a_page_factory_is_set()
+    {
+        return;
+    }
+    let start = (crate::exe::was_named() && !crate::headless::env_flag("SNOB_NO_OWNER"))
+        .then(|| vec![OsString::from(COMMAND)]);
+    install(paths, start);
+}
+
 /// Ends a run: leaves the owner's browsers to it and closes this process's
 /// own, then writes back what each held for the accounts this command sent
 /// as (`headless::write_back`).
