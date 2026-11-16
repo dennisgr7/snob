@@ -220,9 +220,9 @@ impl System for Native {
 
     fn copy_image(&self, bytes: Vec<u8>, cx: &mut App) {
         use gpui_kit::{Image, ImageFormat};
-        let format = match bytes.as_slice() {
-            [0x89, b'P', b'N', b'G', ..] => ImageFormat::Png,
-            [b'R', b'I', b'F', b'F', ..] => ImageFormat::Webp,
+        let format = match snob_engine::media::picture_type(&bytes) {
+            Some("image/png") => ImageFormat::Png,
+            Some("image/webp") => ImageFormat::Webp,
             _ => ImageFormat::Jpeg,
         };
         cx.write_to_clipboard(ClipboardItem::new_image(&Image::from_bytes(format, bytes)));

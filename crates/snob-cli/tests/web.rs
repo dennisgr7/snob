@@ -1222,16 +1222,22 @@ async fn stories_are_read_through_the_gallery_in_the_trays_order() {
 /// up asks the gallery once.
 #[tokio::test]
 async fn a_profile_with_no_story_up_sends_no_gallery_query() {
-    use snob_cli::commands::profile::{MutualPolicy, fetch};
+    use snob_cli::commands::profile::{MutualPolicy, Reads, fetch};
 
     let world = World::new();
     let server = world.serve_web().await;
     let tmp = tempfile::tempdir().unwrap();
     let app = app_on(&server, &world, tmp.path());
 
-    let profile = fetch(app.client(), "user1", common::ME, MutualPolicy::Defer, None)
-        .await
-        .unwrap();
+    let profile = fetch(
+        app.client(),
+        "user1",
+        common::ME,
+        Reads::all(MutualPolicy::Defer),
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(profile.username, "user1");
     let sent = queries_since(&server, 0).await;
     assert_eq!(
@@ -1244,7 +1250,7 @@ async fn a_profile_with_no_story_up_sends_no_gallery_query() {
         app.client(),
         "someone",
         common::ME,
-        MutualPolicy::Defer,
+        Reads::all(MutualPolicy::Defer),
         None,
     )
     .await

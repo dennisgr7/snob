@@ -202,7 +202,7 @@ fn letting_go(handed_over: bool, waited: Duration) -> Option<Duration> {
 
 /// What `mutex` guards, whether or not a thread panicked holding it: every
 /// value kept behind one here stays whole whatever panicked.
-pub(super) fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 

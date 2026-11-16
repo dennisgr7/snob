@@ -30,7 +30,6 @@ use snob_store::secrets::SecretStore;
 
 use crate::commands::common;
 use crate::commands::highlights::{Entry, Tray};
-use crate::commands::pfp::Picture;
 use crate::commands::profile::{Highlight, Profile, Visibility, badges};
 use crate::report;
 use crate::ui::accounts::{self, Browsed, Picked};
@@ -45,6 +44,7 @@ use crate::ui::people::Shelf;
 use crate::ui::preview;
 use crate::ui::theme::Role;
 use crate::ui::tui::{self, Tui};
+use snob_engine::profile::Picture;
 
 /// How long a stored list may serve a click without a question: the default
 /// `--max-age` gives the list commands.
@@ -92,7 +92,7 @@ fn card_rows_of(profile: &Profile, pictured: bool) -> Vec<CardRow> {
         rows.push(CardRow::Picture);
     }
     rows.push(CardRow::Actions);
-    if matches!(&profile.stories, Visibility::Shown(items) if !items.is_empty()) {
+    if matches!(&profile.stories, Some(Visibility::Shown(items)) if !items.is_empty()) {
         rows.push(CardRow::Stories);
     }
     if profile.mutual.as_ref().is_some_and(|m| m.count > 0) {
@@ -261,8 +261,8 @@ impl Media {
     /// tray the profile came with, nothing opened yet.
     fn of(profile: &Profile) -> Self {
         let stories = match &profile.stories {
-            Visibility::Shown(items) => items.clone(),
-            Visibility::Hidden => Vec::new(),
+            Some(Visibility::Shown(items)) => items.clone(),
+            Some(Visibility::Hidden) | None => Vec::new(),
         };
         let tray = Tray {
             username: profile.username.clone(),
@@ -290,7 +290,7 @@ impl Media {
 
 /// Whether the picture costs a request beyond the CDN's: only where the
 /// profile named no full-size picture and there is no page to have named it,
-/// which is when `commands::pfp::picture` asks the by-id endpoint.
+/// which is when `snob_engine::profile::picture` asks the by-id endpoint.
 fn picture_is_a_request(app: &App, profile: &Profile) -> bool {
     profile.pfp_full_size.is_none() && !app.client().has_page()
 }
@@ -1323,7 +1323,7 @@ async fn followed_by_open(
             "Walking the accounts you follow that follow @{}...",
             printable(&profile.username)
         );
-        let walked = crate::commands::profile::mutuals(
+        let walked = snob_engine::profile::mutuals(
             app.client(),
             profile.pk,
             &profile.username,
@@ -1405,10 +1405,10 @@ async fn pfp_keep(
 async fn ensure_pfp(app: &App, profile: &Profile, media: &mut Media) -> Result<()> {
     if media.pfp.is_none() {
         if profile.pfp_anonymous {
-            return Err(crate::commands::pfp::no_picture(&profile.username));
+            return Err(snob_engine::profile::no_picture(&profile.username));
         }
         media.pfp = Some(
-            crate::commands::pfp::picture(
+            snob_engine::profile::picture(
                 app.client(),
                 profile.pk,
                 &profile.username,
@@ -3042,13 +3042,13 @@ mod tests {
             followers: Some(1234),
             following: Some(567),
             posts: Some(128),
-            relation: Some(crate::commands::profile::Relation {
+            relation: Some(snob_engine::profile::Relation {
                 you_follow: true,
                 follows_you: false,
                 you_requested: false,
                 they_requested: true,
             }),
-            mutual: Some(crate::commands::profile::Mutual {
+            mutual: Some(snob_engine::profile::Mutual {
                 count: 33,
                 preview: vec!["ana".to_string()],
                 people: Vec::new(),
@@ -3064,7 +3064,9 @@ mod tests {
             pfp_url: None,
             pfp_full_size: None,
             pfp_anonymous: false,
-            stories: Visibility::Shown(vec![]),
+            pfp_small: None,
+            story_up: false,
+            stories: Some(Visibility::Shown(vec![])),
             read_at: Epoch::new(0),
         }
     }
@@ -3075,7 +3077,7 @@ mod tests {
     fn the_card_only_offers_what_the_profile_has() {
         let full = {
             let mut p = bare_profile();
-            p.stories = Visibility::Shown(vec![story()]);
+            p.stories = Some(Visibility::Shown(vec![story()]));
             p
         };
         assert_eq!(
@@ -3090,7 +3092,7 @@ mod tests {
         );
 
         let mut hidden = bare_profile();
-        hidden.stories = Visibility::Hidden;
+        hidden.stories = Some(Visibility::Hidden);
         hidden.highlights = Visibility::Hidden;
         hidden.mutual = None;
         assert_eq!(
@@ -3272,7 +3274,7 @@ mod tests {
     #[test]
     fn the_card_is_a_centered_column_with_one_voice_at_the_bottom() {
         let mut profile = bare_profile();
-        profile.stories = Visibility::Shown(vec![story()]);
+        profile.stories = Some(Visibility::Shown(vec![story()]));
         let rows = card_rows(&profile);
         let media = Media::of(&profile);
         let state = State {
@@ -3368,7 +3370,7 @@ mod tests {
     #[test]
     fn the_question_lands_where_the_eyes_are_and_the_card_stays_behind_it() {
         let mut profile = bare_profile();
-        profile.stories = Visibility::Shown(vec![story()]);
+        profile.stories = Some(Visibility::Shown(vec![story()]));
         let rows = card_rows(&profile);
         let media = Media::of(&profile);
         let state = State {
@@ -3631,7 +3633,7 @@ mod tests {
     #[test]
     fn the_card_a_list_opens_can_open_its_stories() {
         let mut profile = bare_profile();
-        profile.stories = Visibility::Shown(vec![story(), story()]);
+        profile.stories = Some(Visibility::Shown(vec![story(), story()]));
         let rows = viewing_rows(&profile);
         assert_eq!(&rows[..2], [CardRow::Picture, CardRow::Stories]);
         assert!(opens_in_a_list(CardRow::Picture) && opens_in_a_list(CardRow::Stories));
@@ -3821,7 +3823,7 @@ mod tests {
     #[test]
     fn a_short_terminal_gives_up_the_air_before_a_row() {
         let mut profile = with_a_bio("one\ntwo\nthree\nfour");
-        profile.stories = Visibility::Shown(vec![story()]);
+        profile.stories = Some(Visibility::Shown(vec![story()]));
         let rows = card_rows(&profile);
         let media = Media::of(&profile);
         let draw = |height: u16, row: usize| {

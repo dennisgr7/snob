@@ -138,6 +138,34 @@ pub fn create_new(path: &Path) -> Result<std::fs::File> {
     create_new_private(path).with_context(|| format!("could not create {}", path.display()))
 }
 
+/// [`create_new`] in `dir` under the first name free of `<stem>.<extension>`,
+/// `<stem> (2).<extension>` and on: a save into a folder a person chose,
+/// beside what is there and never over it. The stem passes [`usable_stem`].
+pub fn create_numbered(
+    dir: &Path,
+    stem: &str,
+    extension: &str,
+) -> Result<(PathBuf, std::fs::File)> {
+    usable_stem(stem)?;
+    for n in 1..1000 {
+        let name = match n {
+            1 => format!("{stem}.{extension}"),
+            n => format!("{stem} ({n}).{extension}"),
+        };
+        let path = dir.join(name);
+        match create_new_private(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => {
+                return Err(
+                    anyhow::Error::new(e).context(format!("could not create {}", path.display()))
+                );
+            }
+        }
+    }
+    Err(already_there(&format!("{stem}.{extension}")))
+}
+
 fn create_new_private(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -388,6 +416,19 @@ pub fn say_line(line: std::fmt::Arguments<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_numbered_save_goes_beside_what_is_there_and_never_over_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("someone.jpg"), b"kept").unwrap();
+        let (path, _) = create_numbered(dir.path(), "someone", "jpg").unwrap();
+        assert_eq!(path.file_name().unwrap(), "someone (2).jpg");
+        assert_eq!(
+            std::fs::read(dir.path().join("someone.jpg")).unwrap(),
+            b"kept"
+        );
+        assert!(create_numbered(dir.path(), "../x", "jpg").is_err());
+    }
 
     /// `snob pfp nul` must not report success on Windows while the picture
     /// goes to the null device, and the name comes from a server rather than

@@ -31,6 +31,7 @@ pub mod parent;
 pub mod pipe;
 pub mod posts;
 pub mod power;
+pub mod profile;
 pub mod random;
 pub mod relay;
 #[cfg(feature = "testing")]

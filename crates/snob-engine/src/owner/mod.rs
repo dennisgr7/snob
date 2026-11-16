@@ -28,6 +28,7 @@ use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::headless::lock;
 use crate::headless::write_back::Rotated;
 
 #[cfg(windows)]
@@ -506,11 +507,6 @@ impl Remote {
         }
         Some(heard)
     }
-}
-
-/// What `mutex` guards, whether or not a thread panicked holding it.
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// The page one client sends from: the owner, as the session the client was

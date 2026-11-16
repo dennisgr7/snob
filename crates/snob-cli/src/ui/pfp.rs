@@ -14,13 +14,13 @@ use snob_engine::files::ABANDONED_AFTER;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::commands::pfp::Picture;
 use crate::ui::accounts::{self, Browsed, Picked};
 use crate::ui::browser::input::{self, Action, next};
 use crate::ui::browser::scratch::Scratch;
 use crate::ui::help;
 use crate::ui::preview;
 use crate::ui::tui;
+use snob_engine::profile::Picture;
 
 /// Drives the row until the user leaves it, or picks another account to see
 /// the picture as. `note` is said on the first frame.
@@ -152,7 +152,8 @@ fn draw(frame: &mut Frame<'_>, picture: &Picture, viewer: &Viewer, note: &str, c
             [
                 Constraint::Length(4),
                 Constraint::Length(
-                    console::measure_text_width(&picture.source.label()).max(9) as u16
+                    console::measure_text_width(&crate::commands::pfp::label(&picture.source))
+                        .max(9) as u16,
                 ),
                 Constraint::Length(10),
             ],
@@ -168,7 +169,7 @@ fn picture_row(picture: &Picture, colors: bool) -> Row<'static> {
     let size = format!("({})", human_size(picture.bytes.len()));
     let mut cells = vec![
         Cell::from(picture.extension().to_string()),
-        Cell::from(picture.source.label()),
+        Cell::from(crate::commands::pfp::label(&picture.source)),
     ];
     cells.push(Cell::from(size).style(tui::paint(colors, tui::DIM)));
     Row::new(cells)
@@ -238,7 +239,7 @@ mod tests {
 
     #[test]
     fn the_frame_says_what_the_picture_is_and_how_to_take_it() {
-        let picture = Picture::for_tests("someone", vec![0u8; 243 * 1024]);
+        let picture = crate::commands::pfp::for_tests("someone", vec![0u8; 243 * 1024]);
         let mut terminal = Terminal::new(TestBackend::new(60, 6)).unwrap();
         terminal
             .draw(|frame| draw(frame, &picture, &tui::me(), "", false))

@@ -1,11 +1,13 @@
 //! What a view shows at once while the requests it makes anyway run: an
-//! account as the latest answer about it showed it ([`Shown`]), and its small
-//! picture, under `accounts/<viewer>/cache/`.
+//! account as the latest answer about it showed it ([`Shown`]), its small
+//! picture, and the other pictures a view drew ([`Drawing`]), under
+//! `accounts/<viewer>/cache/`.
 //!
 //! **Filled only from answers already paid for, never a reason to send or to
 //! skip a request** (AGENTS.md, "Local data"). **Kept by the account that saw
 //! it**: what a private account showed one viewer is in that viewer's
-//! directory, never another's. Found by pk, never by name. Everything here
+//! directory, never another's. An account is found by pk, never by name, a
+//! highlight by its id and a post by its code. Everything here
 //! can be fetched again, so it is swept by one rule ([`sweep`]) and removed
 //! whole ([`forget`]) by a sign-out, a purge and a clear.
 
@@ -21,6 +23,30 @@ use crate::paths::{self, AccountPaths};
 
 const PROFILES: &str = "profiles";
 const PICTURES: &str = "pictures";
+
+/// A picture a view drew besides an account's small one, kept under a name of
+/// its own and swept by the same rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Drawing {
+    /// An account's largest picture, by pk.
+    Largest,
+    /// A highlight's cover, by the highlight's id.
+    Cover,
+    /// A post's thumbnail, by the post's code.
+    Thumb,
+}
+
+impl Drawing {
+    const ALL: [Self; 3] = [Self::Largest, Self::Cover, Self::Thumb];
+
+    fn sub(self) -> &'static str {
+        match self {
+            Self::Largest => "full",
+            Self::Cover => "highlights",
+            Self::Thumb => "posts",
+        }
+    }
+}
 
 /// The most one kept account is read: a few short strings and numbers, and a
 /// bio Instagram holds to 150 characters.
@@ -106,6 +132,14 @@ impl AccountPaths {
         self.cache_dir().join(PICTURES).join(format!("{pk}.jpg"))
     }
 
+    /// The picture `drawing` named `key` (a pk, a highlight's id, a post's
+    /// code), under a name made safe for any file system.
+    pub fn cached_drawing(&self, drawing: Drawing, key: &str) -> PathBuf {
+        self.cache_dir()
+            .join(drawing.sub())
+            .join(format!("{}.jpg", file_key(key)))
+    }
+
     /// Where the account's own picture was kept before the cache held it.
     fn picture_before_the_cache(&self) -> PathBuf {
         self.dir().join("viewer.jpg")
@@ -143,6 +177,45 @@ pub fn picture(account: &AccountPaths, pk: Pk) -> Option<PathBuf> {
     file.is_file().then_some(file)
 }
 
+/// Keeps `picture` as the drawing named `key` that `account` was shown.
+/// `false`, and nothing written, when the account's directory is not there.
+pub fn keep_drawing(
+    account: &AccountPaths,
+    drawing: Drawing,
+    key: &str,
+    picture: &[u8],
+) -> std::io::Result<bool> {
+    let file = account.cached_drawing(drawing, key);
+    keep(account, drawing.sub(), &file, picture)
+}
+
+/// The drawing named `key` kept for `account`, when one is.
+pub fn drawing(account: &AccountPaths, drawing: Drawing, key: &str) -> Option<PathBuf> {
+    let file = account.cached_drawing(drawing, key);
+    file.is_file().then_some(file)
+}
+
+/// `key` as a file's name: what is not a letter, a digit, `.`, `_` or `-`
+/// becomes `_` (the colon of a highlight's `highlight:1` among them), and
+/// never a name starting with a dot, which [`sweep_at`] takes for a save's
+/// own file.
+fn file_key(key: &str) -> String {
+    let name: String = key
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    match name.trim_start_matches('.') {
+        "" => "_".to_string(),
+        name => name.to_string(),
+    }
+}
+
 /// Writes `contents` at `file` in the cache's `sub`, and sweeps when it adds
 /// an entry rather than renewing one.
 fn keep(account: &AccountPaths, sub: &str, file: &Path, contents: &[u8]) -> std::io::Result<bool> {
@@ -178,7 +251,10 @@ pub fn sweep(account: &AccountPaths) {
 
 fn sweep_at(account: &AccountPaths, now: SystemTime, kept_for: Duration, at_most: u64) {
     let mut found: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
-    for sub in [PROFILES, PICTURES] {
+    let subs = [PROFILES, PICTURES]
+        .into_iter()
+        .chain(Drawing::ALL.map(Drawing::sub));
+    for sub in subs {
         let Ok(entries) = std::fs::read_dir(account.cache_dir().join(sub)) else {
             continue;
         };
@@ -360,6 +436,32 @@ mod tests {
             "the oldest past the size"
         );
         assert!(picture(&account, Pk::new(3)).is_none(), "too old");
+    }
+
+    #[test]
+    fn a_drawing_is_kept_under_a_safe_name_and_swept_with_the_rest() {
+        let root = tempfile::tempdir().unwrap();
+        let account = account(root.path(), 42);
+        assert!(keep_drawing(&account, Drawing::Cover, "highlight:1", b"\xff\xd8\xff").unwrap());
+        let kept = drawing(&account, Drawing::Cover, "highlight:1").unwrap();
+        assert_eq!(kept.file_name().unwrap(), "highlight_1.jpg");
+        assert_eq!(drawing(&account, Drawing::Thumb, "highlight:1"), None);
+        assert_eq!(file_key("..x"), "x");
+        assert_eq!(file_key(""), "_");
+
+        std::fs::File::options()
+            .write(true)
+            .open(&kept)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(3600))
+            .unwrap();
+        sweep_at(
+            &account,
+            SystemTime::now(),
+            Duration::from_secs(60),
+            u64::MAX,
+        );
+        assert_eq!(drawing(&account, Drawing::Cover, "highlight:1"), None);
     }
 
     #[test]

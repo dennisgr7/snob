@@ -1,12 +1,12 @@
-//! `snob pfp`: saves an account's profile picture at the best size Instagram serves over the web.
+//! `snob pfp`: saves an account's profile picture at the best size Instagram serves over the web
+//! (`snob_engine::profile::picture`).
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use snob_core::model::printable;
 use snob_engine::app::{App, Viewer};
 use snob_engine::engine::target;
 use snob_engine::exit::ExitCode;
-use snob_ig::client::IgClient;
-use snob_ig::model::{Via, WebProfileInfo};
+pub use snob_engine::profile::{Picture, Source, picture_named as fetch};
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
@@ -46,7 +46,7 @@ pub async fn run(args: PfpArgs, store: SecretStore, paths: &AccountPaths) -> Res
 
     // Said before the file is written, so a smaller picture is not a caveat
     // tacked onto "Written to ...".
-    picture.source.announce();
+    announce(&picture.source);
     if args.json {
         return tell(&picture, args.output.as_deref(), args.embed);
     }
@@ -206,183 +206,43 @@ async fn browse(
     .await
 }
 
-pub struct Picture {
-    /// As Instagram spells it, not as it was typed.
-    pub(crate) username: String,
-    url: String,
-    pub(crate) bytes: Vec<u8>,
-    /// Which of the two pictures arrived. The command exists for one of them.
-    pub(crate) source: Source,
-}
-
+/// A picture the viewer's tests can hold without a fetch.
 #[cfg(test)]
-impl Picture {
-    /// A picture the viewer's tests can hold without a fetch.
-    pub(crate) fn for_tests(username: &str, bytes: Vec<u8>) -> Self {
-        Self {
-            username: username.into(),
-            url: String::new(),
-            bytes,
-            source: Source::FullSize { size: None },
-        }
-    }
-}
-
-impl Picture {
-    /// Names the file after what actually arrived rather than after the URL.
-    pub(crate) fn extension(&self) -> &'static str {
-        snob_engine::media::extension_of(&self.bytes)
-    }
-}
-
-/// Reports the size rather than the contents: a derived one would spell out a
-/// megabyte of pixels into whatever printed it.
-impl std::fmt::Debug for Picture {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Picture")
-            .field("username", &self.username)
-            .field("url", &self.url)
-            .field("bytes", &self.bytes.len())
-            .field("source", &self.source)
-            .finish()
-    }
-}
-
-/// The network half, kept apart from the session and the filesystem so a test
-/// can drive it against a mock server.
-pub async fn fetch(
-    client: &IgClient,
-    typed: &str,
-    known: Option<snob_core::Pk>,
-) -> Result<Picture> {
-    let profile = client.profile_named(target::clean(typed), known).await?;
-    if profile.anonymous_picture == Some(true) {
-        return Err(no_picture(&profile.username));
-    }
-    let full_size = full_size_of(&profile);
-    picture(
-        client,
-        profile.id,
-        &profile.username,
-        profile.profile_pic_url_hd.or(profile.profile_pic_url),
-        full_size,
-    )
-    .await
-}
-
-/// The full-size picture's address, when the profile read carries it: the web
-/// client's profile query answers it (`hd_profile_pic_url_info`), with no size.
-pub(crate) fn full_size_of(profile: &WebProfileInfo) -> Option<String> {
-    if profile.via == Via::Graph {
-        profile.profile_pic_url_hd.clone()
-    } else {
-        None
-    }
-}
-
-/// What is said for an account with no picture of its own: the default
-/// avatar is not worth downloading.
-pub(crate) fn no_picture(username: &str) -> anyhow::Error {
-    anyhow!("@{} has no profile picture", printable(username))
-}
-
-/// The half after the name is resolved: the choice of URL and the picture
-/// itself.
-pub(crate) async fn picture(
-    client: &IgClient,
-    pk: snob_core::Pk,
-    username: &str,
-    fallback: Option<String>,
-    full_size: Option<String>,
-) -> Result<Picture> {
-    if let Some(url) = full_size {
-        let bytes = client.download(&url).await?;
-        return Ok(Picture {
-            username: username.to_string(),
-            url,
-            bytes,
-            source: Source::FullSize { size: None },
-        });
-    }
-    // Otherwise, without a browser, the full-size picture comes from the by-id endpoint,
-    // so this spends a request on it.
-    let (full_size, why_not) = if client.has_page() {
-        (
-            None,
-            Some("the profile named no full-size picture".to_string()),
-        )
-    } else {
-        match client.user_info(pk).await {
-            Ok(info) => (info.and_then(|i| i.hd_profile_pic_url_info), None),
-            Err(e) => (None, Some(e.to_string())),
-        }
-    };
-
-    // Accounts that never set a picture have none of these, and the default
-    // avatar is not worth downloading.
-    let (url, source) = match full_size {
-        Some(p) => (
-            p.url,
-            Source::FullSize {
-                size: p.width.zip(p.height),
-            },
-        ),
-        None => match fallback {
-            Some(url) => (url, Source::Smaller { why: why_not }),
-            None => return Err(no_picture(username)),
-        },
-    };
-
-    // The CDN is not Instagram's API and does not count against its budget.
-    let bytes = client.download(&url).await?;
-    Ok(Picture {
-        username: username.to_string(),
-        url,
+pub(crate) fn for_tests(username: &str, bytes: Vec<u8>) -> Picture {
+    Picture {
+        username: username.into(),
+        url: String::new(),
         bytes,
-        source,
-    })
-}
-
-/// Which of the two pictures this is.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Source {
-    /// The profile query carried it, with no size, or the by-id endpoint
-    /// answered. The size is what it declared, not what was measured:
-    /// nothing here decodes the image.
-    FullSize { size: Option<(u32, u32)> },
-    /// What the profile page offers, which is the one thing this command exists
-    /// not to hand back.
-    Smaller { why: Option<String> },
-}
-
-impl Source {
-    /// What the viewer's row calls the picture: the size when the by-id
-    /// endpoint declared one, and an honest word for the fallback.
-    pub(crate) fn label(&self) -> String {
-        match self {
-            Self::FullSize { size: Some((w, h)) } => format!("{w}x{h}"),
-            Self::FullSize { size: None } => "full size".to_string(),
-            Self::Smaller { .. } => "the smaller profile-page size".to_string(),
-        }
+        source: Source::FullSize { size: None },
     }
+}
 
-    /// What to tell the user before the file is written, if anything.
-    ///
-    /// Said **before** the write, so it does not read as a caveat attached to
-    /// "Written to picture.jpg" after the fact.
-    fn announce(&self) {
-        match self {
-            Self::FullSize { size: Some((w, h)) } => ui::info(&format!("Full size: {w}x{h}.")),
-            Self::FullSize { size: None } => {}
-            Self::Smaller { why } => {
-                let mut line = "the full-size picture could not be found, so this is the \
-                                smaller picture the profile page serves"
-                    .to_string();
-                if let Some(why) = why {
-                    line.push_str(&format!(" ({why})"));
-                }
-                ui::warn(&line);
+/// What the viewer's row calls the picture: the size when the by-id
+/// endpoint declared one, and an honest word for the fallback.
+pub(crate) fn label(source: &Source) -> String {
+    match source {
+        Source::FullSize { size: Some((w, h)) } => format!("{w}x{h}"),
+        Source::FullSize { size: None } => "full size".to_string(),
+        Source::Smaller { .. } => "the smaller profile-page size".to_string(),
+    }
+}
+
+/// What to tell the user before the file is written, if anything.
+///
+/// Said **before** the write, so it does not read as a caveat attached to
+/// "Written to picture.jpg" after the fact.
+fn announce(source: &Source) {
+    match source {
+        Source::FullSize { size: Some((w, h)) } => ui::info(&format!("Full size: {w}x{h}.")),
+        Source::FullSize { size: None } => {}
+        Source::Smaller { why } => {
+            let mut line = "the full-size picture could not be found, so this is the \
+                            smaller picture the profile page serves"
+                .to_string();
+            if let Some(why) = why {
+                line.push_str(&format!(" ({why})"));
             }
+            ui::warn(&line);
         }
     }
 }
@@ -391,12 +251,23 @@ impl Source {
 mod tests {
     use snob_core::budget::{RateBudget, RateBudgetError};
     use snob_core::session::{Session, SessionOrigin};
+    use snob_ig::client::IgClient;
     use snob_ig::pace::Pacer;
     use url::Url;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+
+    /// A picture the tests can hold without a fetch.
+    fn picture_for_tests(username: &str, bytes: Vec<u8>) -> Picture {
+        Picture {
+            username: username.into(),
+            url: String::new(),
+            bytes,
+            source: Source::FullSize { size: None },
+        }
+    }
 
     /// `--json` saves the picture under the account and a digest of it, so a
     /// changed picture is a new file and the same one is not written twice,
@@ -405,7 +276,7 @@ mod tests {
     fn a_picture_told_as_a_document_is_named_after_its_digest_and_saved_once() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("kept");
-        let first = Picture::for_tests("someone", JPEG.to_vec());
+        let first = picture_for_tests("someone", JPEG.to_vec());
         let saved = save_named(&first, &dir).unwrap();
         let name = saved["file"].as_str().unwrap().to_string();
         assert!(
@@ -423,7 +294,7 @@ mod tests {
 
         let mut other = JPEG.to_vec();
         other.push(1);
-        let changed = save_named(&Picture::for_tests("someone", other), &dir).unwrap();
+        let changed = save_named(&picture_for_tests("someone", other), &dir).unwrap();
         assert_ne!(changed["file"], saved["file"]);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
 
@@ -438,7 +309,7 @@ mod tests {
         assert!(embedded["pictures"][0]["data"].is_string());
 
         // What is no picture, or too large, is a missing entry, not an error.
-        let big = Picture::for_tests("someone", {
+        let big = picture_for_tests("someone", {
             let mut bytes = JPEG.to_vec();
             bytes.resize(600 * 1024, 0);
             bytes
@@ -653,7 +524,7 @@ mod tests {
         let picture = Picture {
             // Deliberately disagreeing with the bytes: the URL must not decide.
             url: "https://cdn.example/x/abc.webp?stp=dst-jpg".into(),
-            ..Picture::for_tests("someone", JPEG.to_vec())
+            ..for_tests("someone", JPEG.to_vec())
         };
         assert_eq!(picture.extension(), "jpg");
     }

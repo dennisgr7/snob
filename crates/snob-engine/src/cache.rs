@@ -4,24 +4,25 @@
 //!
 //! **The cache adds no request and takes none away.** It is filled where an
 //! answer already arrives: a profile read ([`crate::app::App::profile_named`]),
-//! a counter poll (`engine::freshness`), a picture a view already downloaded
-//! ([`Keeper::picture`]). Nothing reads it to decide whether to ask: a view
-//! shows it, then shows what the request answered. There is no rule for when
-//! to refresh it, since nothing refreshes it but those answers.
+//! a counter poll (`engine::freshness`), a picture a view downloads from the
+//! CDN for itself ([`Keeper::fetch_picture`], [`Keeper::fetch_drawing`]).
+//! Nothing reads it to decide whether to ask: a view shows it, then shows
+//! what the request answered. There is no rule for when to refresh it, since
+//! nothing refreshes it but those answers.
 
 use std::path::PathBuf;
 
 use snob_core::model::printable;
 use snob_core::session::Session;
 use snob_core::{Epoch, Pk};
+use snob_ig::client::IgClient;
 use snob_ig::model::{Counters, WebProfileInfo};
+pub use snob_store::cache::Drawing;
 use snob_store::cache::{self, Shown};
 use snob_store::paths::{AccountPaths, AppPaths};
-use snob_store::store::Store;
 use snob_store::viewer::Card;
 
-use crate::app::Viewer;
-use crate::media::{MAX_SMALL_PICTURE, picture_type};
+use crate::media::{MAX_LARGE_PICTURE, MAX_SMALL_PICTURE, picture_type};
 
 /// What `viewer` was last shown of account `pk`, at once: none when nothing is
 /// kept. For the viewer's own account, what its card says fills what the
@@ -44,28 +45,27 @@ pub fn shown(paths: &AppPaths, viewer: Pk, pk: Pk) -> Option<Shown> {
     }
 }
 
-/// The small picture of `pk` that `viewer` was last shown, when one is kept.
+/// The small picture of `pk` that `viewer` was last shown, when one is kept:
+/// for the viewer's own account, its card's first (`viewer::picture`).
 pub fn picture(paths: &AppPaths, viewer: Pk, pk: Pk) -> Option<PathBuf> {
-    cache::picture(&paths.account(viewer), pk)
+    let account = paths.account(viewer);
+    if pk == viewer {
+        let own = account.viewer_picture();
+        if own.is_file() {
+            return Some(own);
+        }
+    }
+    cache::picture(&account, pk)
 }
 
-/// The pk `viewer` last saw under the name `typed`, from what is stored here:
-/// the session's own name, then the account's database, **opened read-only**
-/// (`Store::read_existing`). For a view entered by a name, which finds what
-/// the cache holds by pk.
-pub fn known(paths: &AppPaths, viewer: &Viewer, typed: &str) -> Option<Pk> {
-    let account = paths.account(viewer.pk);
-    let db = match Store::read_existing(&account) {
-        Ok(Some(db)) => db,
-        Ok(None) => Store::in_memory().ok()?,
-        Err(e) => {
-            tracing::debug!(error = %e, "the account's database could not be read");
-            return None;
-        }
-    };
-    crate::engine::target::known_pk_in(viewer, &db, typed)
-        .ok()
-        .flatten()
+/// The drawing named `key` that `viewer` was last shown, when one is kept.
+pub fn drawing(paths: &AppPaths, viewer: Pk, drawing: Drawing, key: &str) -> Option<PathBuf> {
+    cache::drawing(&paths.account(viewer), drawing, key)
+}
+
+/// The largest picture of `pk` kept for `viewer`, else its small one.
+pub fn largest(paths: &AppPaths, viewer: Pk, pk: Pk) -> Option<PathBuf> {
+    drawing(paths, viewer, Drawing::Largest, &pk.to_string()).or_else(|| picture(paths, viewer, pk))
 }
 
 /// Keeps what answers showed one account, for as long as its session may
@@ -147,6 +147,48 @@ impl Keeper {
         }
     }
 
+    /// The small picture of `pk` at `address`, downloaded for a view that
+    /// shows it ([`Self::picture`]): the file kept, when there is one.
+    pub async fn fetch_picture(&self, client: &IgClient, pk: Pk, address: &str) -> Option<PathBuf> {
+        let bytes = downloaded(client, address, MAX_SMALL_PICTURE).await?;
+        self.picture(pk, &bytes);
+        cache::picture(&self.account, pk)
+    }
+
+    /// The drawing named `key` at `address`, downloaded for a view that
+    /// draws it and kept as the small picture is: the file kept, when there
+    /// is one.
+    pub async fn fetch_drawing(
+        &self,
+        client: &IgClient,
+        drawing: Drawing,
+        key: &str,
+        address: &str,
+    ) -> Option<PathBuf> {
+        let cap = match drawing {
+            Drawing::Largest => MAX_LARGE_PICTURE,
+            Drawing::Cover | Drawing::Thumb => MAX_SMALL_PICTURE,
+        };
+        let bytes = downloaded(client, address, cap).await?;
+        self.drawing(drawing, key, &bytes)
+    }
+
+    /// Keeps the drawing named `key` **a view already downloaded**: what is
+    /// not a picture is not kept. The file kept, when there is one.
+    pub fn drawing(&self, drawing: Drawing, key: &str, bytes: &[u8]) -> Option<PathBuf> {
+        if picture_type(bytes).is_none() || !self.may_keep() {
+            return None;
+        }
+        match cache::keep_drawing(&self.account, drawing, key, bytes) {
+            Ok(true) => cache::drawing(&self.account, drawing, key),
+            Ok(false) => None,
+            Err(e) => {
+                tracing::debug!(error = %e, "a picture could not be kept");
+                None
+            }
+        }
+    }
+
     fn merge(&self, pk: Pk, newer: Shown) {
         if !self.may_keep() {
             return;
@@ -160,6 +202,22 @@ impl Keeper {
             .updated_by(newer);
         if let Err(e) = cache::save(&self.account, pk, &kept) {
             tracing::debug!(error = %e, "what an answer showed could not be kept");
+        }
+    }
+}
+
+/// The bytes at `address` on the CDN, at most `cap` of them: one download,
+/// which Instagram's pace does not count.
+async fn downloaded(client: &IgClient, address: &str, cap: usize) -> Option<Vec<u8>> {
+    if address.is_empty() {
+        return None;
+    }
+    match client.download_capped(address, cap).await {
+        Ok(bytes) => Some(bytes),
+        // Not the error's own words: they can hold the address.
+        Err(_) => {
+            tracing::debug!("a picture could not be fetched");
+            None
         }
     }
 }
