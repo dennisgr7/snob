@@ -600,19 +600,19 @@ pub fn gather(standing: &Standing<'_>, query: &ListQuery, kinds: &[ListKind]) ->
     })
 }
 
-/// The budget of an account with nothing spent, for a test or a caller with
-/// no database: both buckets at rest.
-pub fn at_rest() -> (Bucket, Bucket) {
-    let most = |emission: i64, burst: i64| u32::try_from(burst / emission + 1).unwrap_or(u32::MAX);
-    (
-        Bucket::at_rest(most(PACE_EMISSION_MS, PACE_BURST_MS)),
-        Bucket::at_rest(most(DAILY_EMISSION_MS, DAILY_BURST_MS)),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The budget of an account with nothing spent: both buckets at rest.
+    fn at_rest() -> (Bucket, Bucket) {
+        let most =
+            |emission: i64, burst: i64| u32::try_from(burst / emission + 1).unwrap_or(u32::MAX);
+        (
+            Bucket::at_rest(most(PACE_EMISSION_MS, PACE_BURST_MS)),
+            Bucket::at_rest(most(DAILY_EMISSION_MS, DAILY_BURST_MS)),
+        )
+    }
 
     const NOW: Epoch = Epoch::new(1_800_000_000);
     const HOUR: Duration = Duration::from_secs(3600);

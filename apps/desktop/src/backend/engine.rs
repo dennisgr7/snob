@@ -319,11 +319,8 @@ async fn done(paths: &AppPaths, secrets: &SecretStore, viewer: Viewer) -> SignIn
     // start would show, shown from the welcome on rather than once the
     // files are read again.
     let username = viewer.username.filter(|name| !name.is_empty()).or_else(|| {
-        Registry::load(paths)
-            .ok()?
-            .get(viewer.pk)
-            .map(|account| account.username.clone())
-            .filter(|name| !name.is_empty())
+        let registry = Registry::load(paths).ok()?;
+        snob_engine::account::username(&registry, viewer.pk).map(str::to_string)
     });
     SignIn::Done(account_of(paths, viewer.pk, username, true))
 }
@@ -615,10 +612,9 @@ impl Backend for Engine {
             };
             let renewing = renewing.map(|pk| Viewer {
                 pk,
-                username: Registry::load(&paths)
-                    .ok()
-                    .and_then(|registry| registry.get(pk).map(|a| a.username.clone()))
-                    .filter(|name| !name.is_empty()),
+                username: Registry::load(&paths).ok().and_then(|registry| {
+                    snob_engine::account::username(&registry, pk).map(str::to_string)
+                }),
             });
             let stored = match writable(&secrets) {
                 Ok(secrets) => {

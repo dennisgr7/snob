@@ -15,6 +15,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WNDCLASSW, WS_OVERLAPPED,
 };
 
+use crate::pipe::wide;
+
 /// How long the window holds the end of the session for the browsers to
 /// close: inside the five seconds or so Windows waits for an answer.
 const PATIENCE: Duration = Duration::from_millis(4_500);
@@ -62,10 +64,6 @@ pub(super) fn closed() {
     if let Some(Some(ending)) = OWNERS.get() {
         ending.closed();
     }
-}
-
-fn wide(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain(Some(0)).collect()
 }
 
 /// A window of its own, on a thread of its own, and what it wakes: the window
