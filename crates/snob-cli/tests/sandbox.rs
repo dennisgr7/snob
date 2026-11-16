@@ -1887,6 +1887,136 @@ async fn an_item_number_nobody_has_is_refused() {
     assert_eq!(media, 0, "a refused set still fetched media");
 }
 
+/// `-d --json` tells what became of each story as one document, and names
+/// each file after the story's id, so a name stays one story's whatever
+/// number the tray gives it later; asked again, nothing is fetched twice.
+#[tokio::test]
+async fn stories_saved_as_a_document_are_named_after_their_ids() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    with_downloadable_stories(&instagram).await;
+    log_in(tmp.path(), &instagram);
+    let here = here(&tmp);
+    let args = ["stories", "me", "-d", "all", "--json", "-o", "kept"];
+
+    let out = snob_from(&here, tmp.path(), &instagram, &args);
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    let told = json(&out);
+    assert_eq!(told["username"], "me");
+    let saved = told["saved"].as_array().expect("what was saved");
+    assert_eq!(saved.len(), 2, "{told}");
+    assert_eq!(saved[0]["file"], "me-story-1.jpg");
+    assert_eq!(saved[0]["pk"], "1");
+    assert_eq!(saved[0]["kind"], "photo");
+    assert_eq!(saved[0]["already"], false);
+    assert_eq!(saved[1]["file"], "me-story-2.mp4");
+    assert_eq!(told["failed"], serde_json::json!([]));
+    assert_eq!(told["left"], serde_json::json!([]));
+    assert_eq!(
+        std::fs::read(here.join("kept").join("me-story-1.jpg")).unwrap(),
+        b"\xff\xd8\xff\xe0 a picture"
+    );
+
+    let again = json(&snob_from(&here, tmp.path(), &instagram, &args));
+    assert_eq!(again["saved"][0]["already"], true, "{again}");
+    assert_eq!(again["bytes"], 0, "{again}");
+
+    // Bounded: a call that may fetch no bytes starts no file, and says so.
+    let bounded = snob_from(
+        &here,
+        tmp.path(),
+        &instagram,
+        &[
+            "stories",
+            "me",
+            "-d",
+            "1,2",
+            "--json",
+            "--save-at-most=1",
+            "-o",
+            "bounded",
+        ],
+    );
+    assert!(
+        bounded.status.success(),
+        "{}{}",
+        stdout(&bounded),
+        stderr(&bounded)
+    );
+    let told = json(&bounded);
+    assert_eq!(told["saved"].as_array().map(Vec::len), Some(1), "{told}");
+    assert_eq!(told["left"][0]["item"], 2, "{told}");
+    assert_eq!(told["left"][0]["why"], "bytes", "{told}");
+
+    // The files cannot go where the document goes.
+    let refused = snob_from(
+        &here,
+        tmp.path(),
+        &instagram,
+        &["stories", "me", "-d", "1", "--json", "-o", "-"],
+    );
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("cannot go there too"),
+        "{}",
+        stderr(&refused)
+    );
+}
+
+/// The same for the items of one highlight, which takes its number; a
+/// whole tray is no document of items.
+#[tokio::test]
+async fn highlight_items_saved_as_a_document_are_named_after_their_ids() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    with_downloadable_highlights(&instagram).await;
+    log_in(tmp.path(), &instagram);
+    let here = here(&tmp);
+
+    let out = snob_from(
+        &here,
+        tmp.path(),
+        &instagram,
+        &["highlights", "me", "1", "-d", "2", "--json", "-o", "kept"],
+    );
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    let told = json(&out);
+    assert_eq!(told["highlight"]["number"], 1, "{told}");
+    assert_eq!(told["highlight"]["id"], "highlight:100", "{told}");
+    assert_eq!(told["saved"][0]["item"], 2, "{told}");
+    assert_eq!(told["saved"][0]["file"], "me-highlight-2.mp4", "{told}");
+    assert_eq!(
+        std::fs::read(here.join("kept").join("me-highlight-2.mp4")).unwrap(),
+        b"\x00\x00\x00\x18ftypisom a clip"
+    );
+
+    let whole = snob_from(
+        &here,
+        tmp.path(),
+        &instagram,
+        &["highlights", "me", "-d", "all", "--json", "-o", "kept"],
+    );
+    assert!(!whole.status.success());
+    assert!(
+        stderr(&whole).contains("give its number"),
+        "{}",
+        stderr(&whole)
+    );
+
+    let none = snob_from(
+        &here,
+        tmp.path(),
+        &instagram,
+        &["highlights", "me", "9", "-d", "all", "--json", "-o", "kept"],
+    );
+    assert!(!none.status.success());
+    assert!(
+        stderr(&none).contains("there is no highlight 9"),
+        "{}",
+        stderr(&none)
+    );
+}
+
 /// One number with `-o` is the single-download contract: `-o` names the
 /// file, and naming it again replaces it, because the name was typed.
 #[tokio::test]

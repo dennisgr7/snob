@@ -110,6 +110,27 @@ fn a_download_is_a_line_the_command_line_takes() {
 }
 
 #[test]
+fn a_trays_download_is_a_line_the_command_line_takes() {
+    for (tool, args) in [
+        ("snob_stories_download", json!({})),
+        (
+            "snob_stories_download",
+            json!({"account": "someone", "items": [1, 3]}),
+        ),
+        (
+            "snob_highlights_download",
+            json!({"account": "someone", "highlight": 2}),
+        ),
+        (
+            "snob_highlights_download",
+            json!({"account": "someone", "highlight": 2, "items": [2, 1]}),
+        ),
+    ] {
+        taken(planned(tool, args).args);
+    }
+}
+
+#[test]
 fn a_write_checked_ahead_is_a_line_the_command_line_takes() {
     let follow = planned("snob_follow", json!({"account": "someone"}));
     taken(follow.ahead_line(3).unwrap());

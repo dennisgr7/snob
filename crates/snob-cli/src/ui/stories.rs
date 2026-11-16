@@ -653,6 +653,7 @@ mod tests {
 
     fn story(mentions: &[&str]) -> Story {
         Story {
+            pk: "1".into(),
             kind: Kind::Photo,
             taken_at: Epoch::new(1_700_000_000),
             expiring_at: None,

@@ -302,6 +302,20 @@ pub fn reader(
     Ok(app)
 }
 
+/// Refuses, before anything is opened, `--json` with `-o -`: the document is
+/// what standard output carries, so the files cannot go there too.
+pub fn refuse_json_to_stdout(output: Option<&std::path::Path>) -> Result<()> {
+    if output.is_some_and(snob_engine::files::is_stdout) {
+        return Err(ExitError::new(
+            ExitCode::Error,
+            "--json prints what was saved on standard output, so the files cannot go there \
+             too: give -o a directory",
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// The account a read names, or with no name the viewer's own, like the list
 /// commands.
 pub async fn target_or_own(app: &App, target: Option<&str>) -> Result<String> {

@@ -390,7 +390,10 @@ const DOWNLOADS_SAID: &str = " snob_post_download saves a post's photos and vide
                               on the machine snob runs on, in a directory the person chose, \
                               and answers with their names: a file is named after its post's \
                               code, and one already there is not fetched again, so the \
-                              directory itself says which posts you have.";
+                              directory itself says which posts you have. \
+                              snob_stories_download and snob_highlights_download do the same \
+                              for stories, which go after a day, and for a highlight's \
+                              items, each file named after its item's id.";
 
 /// What the server's instructions say of the writes, and only when it was
 /// started with `--allow-writes`: a server that offers no write has no cap

@@ -839,6 +839,7 @@ mod tests {
             items: items.map(|n| {
                 (0..n)
                     .map(|_| Story {
+                        pk: "1".into(),
                         kind: Kind::Photo,
                         taken_at: Epoch::new(1_700_000_000),
                         expiring_at: None,

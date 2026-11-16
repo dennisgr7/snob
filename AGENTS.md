@@ -611,6 +611,7 @@ prints a client's snippet and never writes it.
 | `snob_stories`, `snob_highlights` | `stories`, `highlights` | no | always |
 | `snob_snapshots`, `snob_changes` | stored captures; nothing sent | no | always |
 | `snob_post_download` | `post --download` into `--downloads-dir` | no (the client's prompt) | with `--downloads-dir` |
+| `snob_stories_download`, `snob_highlights_download` | `stories -d`, `highlights <n> -d`, with `--json`, into `--downloads-dir` | no | with `--downloads-dir` |
 | `snob_follow`, `snob_unfollow` | `follow`, `unfollow` | yes | with `--allow-writes` |
 | `snob_logout` | `logout --only=<name>` | yes, naming the account | always |
 | `snob_accounts` | `account list --json` | no | with `--any-account` |
@@ -657,6 +658,7 @@ depends on the server's flags alone.
 | A job's wait in a call | 20 s default, at most 50; a task's 5 s | `tools::WAIT_SECONDS`, `MOST_WAIT_SECONDS`, `tasks::WAIT_SECONDS` |
 | Posts named in `until` | 24 | `tools::MOST_UNTIL` |
 | One download call | 1 GiB or 2 min, then no new file | `tools::SAVE_AT_MOST`, `SAVE_WITHIN` |
+| Items named in a post's download; in a tray's | 20; 100 | `tools::MOST_ITEMS`, `MOST_TRAY_ITEMS` |
 | Small pictures | 512 KiB each, 4 MiB a listing | `media::MAX_SMALL_PICTURE`, `MOST_SMALL_PICTURES` |
 | Agents' writes on an account | 10 in any 24 h by default, at most 99 | `mcp_acts::WRITES_A_DAY`, `MOST_WRITES_A_DAY` |
 
@@ -692,8 +694,13 @@ runs nothing, takes no permit and is not counted.
 - **Files only into the directory the person named** (`--downloads-dir`, which
   must exist), under the names every download gets, and **none written over**
   (`media::save_named`). A push-back ends the run (`media::ends_the_run`).
-  Stories and highlights are not saved for an agent yet (their names are tray
-  positions).
+  **Stories and highlights are saved by their ids**: `stories -d --json` and
+  `highlights <n> -d --json` (`output::media::Telling`,
+  `media::save_telling`) name a file `<user>-story-<pk>` or
+  `<user>-highlight-<pk>` (`media::stable_stem`), never by a tray position,
+  which moves as stories come and go and would make a name another story's. The
+  command line's own `-d` keeps `<user>-<number>`. A highlight is one number a
+  call: a whole tray is not a document of items.
 - A post is told apart by `pk` and `code`; `until` stops a grid at the first
   page holding a post the reader has (`posts::reached`, never a pinned one).
   Comments, replies and changes come back bounded, with what was left out
