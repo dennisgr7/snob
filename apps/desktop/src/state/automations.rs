@@ -1,0 +1,726 @@
+//! The automations section, apart from how it is drawn: whether an account
+//! is still owed its introduction, which automations a search shows, the
+//! editor's canvas (how far it is moved and zoomed), and the grid that
+//! drifts behind the introduction.
+//!
+//! **The introduction is shown once an account**: "Get started" is
+//! remembered for the account in use (`prefs::Prefs::introduced`), and an
+//! account signed in later is shown it in its turn.
+//!
+//! **Nothing here runs an automation, and nothing is kept of one**: there is
+//! no backend for them yet, so the list is empty and the editor's canvas
+//! holds no node.
+//!
+//! **No window and no clock**: a moment is handed in as how long something
+//! has run, and every move ends in a fixed state but the grid's drift, which
+//! is decoration and stops whenever the window is not looked at.
+
+use std::f64::consts::TAU;
+use std::time::Duration;
+
+use snob_core::Pk;
+
+use super::settings::fold;
+use crate::theme::motion;
+
+/// The accounts that have been shown the introduction and went past it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Introduced(Vec<Pk>);
+
+impl Introduced {
+    pub fn new(pks: Vec<Pk>) -> Self {
+        let mut introduced = Self::default();
+        introduced.merge(&pks);
+        introduced
+    }
+
+    /// Whether the account `pk` is still owed the introduction. Nobody
+    /// signed in is owed nothing.
+    pub fn owed_to(&self, pk: Option<Pk>) -> bool {
+        pk.is_some_and(|pk| !self.0.contains(&pk))
+    }
+
+    /// Notes that `pk` went past the introduction, and says whether that
+    /// is new, which is when it is to be remembered.
+    pub fn begun(&mut self, pk: Pk) -> bool {
+        if self.0.contains(&pk) {
+            return false;
+        }
+        self.0.push(pk);
+        true
+    }
+
+    /// Adds what a second read of what is remembered found. **Nothing is
+    /// taken away**: a "Get started" not yet written down is not undone by
+    /// a read that came first.
+    pub fn merge(&mut self, pks: &[Pk]) {
+        for pk in pks {
+            self.begun(*pk);
+        }
+    }
+}
+
+/// What the section shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    /// What automations are, and "Get started", once an account.
+    Intro,
+    /// The automations, a search among them and "Create".
+    List,
+    /// The canvas a new automation is drawn on.
+    Editor,
+}
+
+/// The stage shown to an account owed the introduction or not, with the
+/// editor open or not.
+pub fn stage(owed: bool, editing: bool) -> Stage {
+    match (owed, editing) {
+        (true, _) => Stage::Intro,
+        (false, true) => Stage::Editor,
+        (false, false) => Stage::List,
+    }
+}
+
+/// An automation, as the list shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Automation {
+    pub name: String,
+}
+
+/// The automations `typed` asks for, in their order: those whose name holds
+/// every word typed, whatever the case and the accents (as the settings
+/// are searched, `settings::shown`). Nothing typed shows every one.
+pub fn shown<'a>(all: &'a [Automation], typed: &str) -> Vec<&'a Automation> {
+    let wanted = fold(typed);
+    all.iter()
+        .filter(|automation| super::commands::matches(&fold(&automation.name), &wanted))
+        .collect()
+}
+
+/// The least the canvas is zoomed to: a quarter, where a flow of a dozen
+/// steps still fits a small window.
+pub const ZOOM_MIN: f32 = 0.25;
+/// The most: twice, past which a step's words are larger than anything
+/// needs.
+pub const ZOOM_MAX: f32 = 2.0;
+
+/// The zooms the buttons go through, as a browser's do, so that a press
+/// lands on a round number whatever the wheel did before it.
+const ZOOM_STEPS: [f32; 12] = [
+    0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0,
+];
+
+/// How much one logical pixel of the wheel zooms: a notch of three lines of
+/// 20 pixels is some 13%.
+const WHEEL_ZOOMS: f32 = 0.002;
+
+/// The distance between two dots of the canvas's grid, in the canvas's own
+/// units, at a zoom of 1.
+pub const GRID: f32 = 24.0;
+
+/// The least distance between two dots on the screen: zoomed out further,
+/// every other dot is left out, so the grid never turns into a gray.
+const LEAST_GAP: f32 = 12.0;
+
+/// How far an arrow key moves the canvas, in logical pixels.
+pub const ARROW_PANS: f32 = 48.0;
+
+/// Where the canvas is moved and how far it is zoomed: a point of the
+/// canvas at `world` is drawn at `pan + world * zoom` from the middle of
+/// what shows it. **It has no edge**: it is moved as far as anybody likes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Canvas {
+    pan: (f32, f32),
+    zoom: f32,
+}
+
+impl Default for Canvas {
+    /// Its origin in the middle, at its own size.
+    fn default() -> Self {
+        Self {
+            pan: (0.0, 0.0),
+            zoom: 1.0,
+        }
+    }
+}
+
+impl Canvas {
+    pub fn zoom(&self) -> f32 {
+        self.zoom
+    }
+
+    /// How far its origin is from the middle of what shows it, in logical
+    /// pixels.
+    pub fn pan(&self) -> (f32, f32) {
+        self.pan
+    }
+
+    /// The zoom as a person reads it: a whole percentage.
+    pub fn percent(&self) -> u32 {
+        (self.zoom * 100.0).round() as u32
+    }
+
+    /// Moved by `by` logical pixels, the way the pointer went.
+    #[must_use]
+    pub fn panned(self, by: (f32, f32)) -> Self {
+        if !(by.0.is_finite() && by.1.is_finite()) {
+            return self;
+        }
+        Self {
+            pan: (self.pan.0 + by.0, self.pan.1 + by.1),
+            ..self
+        }
+    }
+
+    /// Zoomed by `factor` around `at`, a point measured from the middle of
+    /// what shows the canvas: **what is under it stays under it**, as long
+    /// as the zoom is inside its bounds.
+    #[must_use]
+    pub fn zoomed_at(self, factor: f32, at: (f32, f32)) -> Self {
+        if !(factor.is_finite() && factor > 0.0 && at.0.is_finite() && at.1.is_finite()) {
+            return self;
+        }
+        self.zoomed_to(self.zoom * factor, at)
+    }
+
+    /// At the zoom `zoom`, held inside its bounds, around `at`.
+    #[must_use]
+    pub fn zoomed_to(self, zoom: f32, at: (f32, f32)) -> Self {
+        let zoom = zoom.clamp(ZOOM_MIN, ZOOM_MAX);
+        let kept = zoom / self.zoom;
+        Self {
+            pan: (
+                at.0 - (at.0 - self.pan.0) * kept,
+                at.1 - (at.1 - self.pan.1) * kept,
+            ),
+            zoom,
+        }
+    }
+
+    /// One step in, around the middle: the next round zoom above.
+    #[must_use]
+    pub fn zoomed_in(self) -> Self {
+        let next = ZOOM_STEPS
+            .iter()
+            .copied()
+            .find(|step| *step > self.zoom + 0.005)
+            .unwrap_or(ZOOM_MAX);
+        self.zoomed_to(next, (0.0, 0.0))
+    }
+
+    /// One step out, around the middle: the next round zoom below.
+    #[must_use]
+    pub fn zoomed_out(self) -> Self {
+        let next = ZOOM_STEPS
+            .iter()
+            .rev()
+            .copied()
+            .find(|step| *step < self.zoom - 0.005)
+            .unwrap_or(ZOOM_MIN);
+        self.zoomed_to(next, (0.0, 0.0))
+    }
+
+    /// Back at its own size, where it is.
+    #[must_use]
+    pub fn at_its_size(self) -> Self {
+        self.zoomed_to(1.0, (0.0, 0.0))
+    }
+
+    pub fn can_zoom_in(&self) -> bool {
+        self.zoom < ZOOM_MAX
+    }
+
+    pub fn can_zoom_out(&self) -> bool {
+        self.zoom > ZOOM_MIN
+    }
+
+    /// Where the point `world` of the canvas is drawn, from the middle of
+    /// what shows it.
+    pub fn on_screen(&self, world: (f32, f32)) -> (f32, f32) {
+        (
+            self.pan.0 + world.0 * self.zoom,
+            self.pan.1 + world.1 * self.zoom,
+        )
+    }
+
+    /// The grid's dots on a view `size` big: how far apart they are and
+    /// where the first one is from its top left corner, both in logical
+    /// pixels. Every other dot goes as long as they would be closer than
+    /// [`LEAST_GAP`].
+    pub fn grid(&self, size: (f32, f32)) -> Grid {
+        let mut gap = GRID * self.zoom;
+        while gap < LEAST_GAP {
+            gap *= 2.0;
+        }
+        // The origin's place from the top left, and the first dot left of
+        // and above the view's corner.
+        let origin = (size.0 / 2.0 + self.pan.0, size.1 / 2.0 + self.pan.1);
+        Grid {
+            gap,
+            first: (origin.0.rem_euclid(gap), origin.1.rem_euclid(gap)),
+        }
+    }
+
+    /// The canvas `through` of the way from `self` to `to`, from 0 to 1:
+    /// zoomed at an even pace to the eye, which is evenly in proportion,
+    /// and moved in a line.
+    #[must_use]
+    pub fn toward(self, to: Self, through: f32) -> Self {
+        let at = through.clamp(0.0, 1.0);
+        Self {
+            pan: (
+                self.pan.0 + (to.pan.0 - self.pan.0) * at,
+                self.pan.1 + (to.pan.1 - self.pan.1) * at,
+            ),
+            zoom: self.zoom * (to.zoom / self.zoom).powf(at),
+        }
+    }
+}
+
+/// How much a turn of the wheel of `by` logical pixels zooms: in when
+/// turned up (positive), out when turned down, the same proportion either
+/// way.
+pub fn wheel_factor(by: f32) -> f32 {
+    if by.is_finite() {
+        (by * WHEEL_ZOOMS).exp()
+    } else {
+        1.0
+    }
+}
+
+/// The canvas's grid on a view: see [`Canvas::grid`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Grid {
+    pub gap: f32,
+    pub first: (f32, f32),
+}
+
+/// The canvas on its way from one place to another after a button moved
+/// it, `INTERACTION` long; a wheel or a drag moves it at once.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Glide {
+    pub from: Canvas,
+    pub to: Canvas,
+}
+
+impl Glide {
+    /// A canvas still at `canvas`.
+    pub fn still(canvas: Canvas) -> Self {
+        Self {
+            from: canvas,
+            to: canvas,
+        }
+    }
+
+    /// Where the canvas is `elapsed` into the glide; at once under
+    /// "reduce motion".
+    pub fn at(&self, elapsed: Duration, reduce: bool) -> Canvas {
+        if reduce || self.from == self.to {
+            return self.to;
+        }
+        let through = elapsed.as_secs_f32() / motion::INTERACTION.as_secs_f32();
+        self.from.toward(self.to, motion::ease_out(through))
+    }
+
+    /// Whether it still moves `elapsed` into the glide.
+    pub fn moving(&self, elapsed: Duration, reduce: bool) -> bool {
+        !reduce && self.from != self.to && elapsed < motion::INTERACTION
+    }
+}
+
+/// The side of a cell of the grid behind the introduction, in logical
+/// pixels.
+pub const CELL: f32 = 44.0;
+
+/// How fast that grid drifts, in logical pixels a second: down and to the
+/// right, slowly enough to be read as calm rather than as something to
+/// follow.
+const DRIFT: (f64, f64) = (7.0, 3.5);
+
+/// How long a wave of light takes to cross one of its lengths, and how long
+/// that length is: one every nine seconds or so.
+const WAVE_EVERY: f64 = 9.0;
+const WAVE_LENGTH: f64 = 420.0;
+
+/// How long the grid has drifted: it runs while it is shown and looked at,
+/// and holds still otherwise, **taking up where it stopped** rather than
+/// jumping by the time it was not looked at.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Drift {
+    /// What it ran before it last stopped.
+    carried: Duration,
+    /// When it last started, on the clock handed in.
+    since: Option<Duration>,
+}
+
+impl Drift {
+    /// How long it has run at `now`, a reading of any clock that only goes
+    /// forward, `running` or not from now on.
+    pub fn at(&mut self, now: Duration, running: bool) -> Duration {
+        let ran = self.carried
+            + self
+                .since
+                .map_or(Duration::ZERO, |since| now.saturating_sub(since));
+        match (running, self.since) {
+            (true, None) => self.since = Some(now),
+            (false, Some(_)) => {
+                self.carried = ran;
+                self.since = None;
+            }
+            _ => {}
+        }
+        ran
+    }
+}
+
+/// One stroke of the grid: a thin rectangle, in logical pixels from the
+/// view's top left, and how much of the grid's ink it takes, from 0 to 1.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Stroke {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub ink: f32,
+}
+
+/// A crossing of the grid lit by a passing wave: where, and how much.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spark {
+    pub x: f32,
+    pub y: f32,
+    pub ink: f32,
+}
+
+/// The grid behind the introduction on a view `size` big, `ran` into its
+/// drift: one stroke a side of each cell, **fainter toward the view's edges
+/// and under the words** around `middle`, and brighter where a slow wave of
+/// light passes; and the crossings the crest of the wave lights.
+pub fn drifting_grid(
+    size: (f32, f32),
+    middle: (f32, f32),
+    ran: Duration,
+) -> (Vec<Stroke>, Vec<Spark>) {
+    let (width, height) = size;
+    if !(width > 0.0 && height > 0.0 && width.is_finite() && height.is_finite()) {
+        return (Vec::new(), Vec::new());
+    }
+    // In seconds as an `f64`, each phase taken round its period: an `f32`
+    // of a day's seconds would step visibly from frame to frame.
+    let seconds = ran.as_secs_f64();
+    let cell = f64::from(CELL);
+    let shift = (
+        ((seconds * DRIFT.0) % cell) as f32,
+        ((seconds * DRIFT.1) % cell) as f32,
+    );
+    let wave = ((seconds % WAVE_EVERY) / WAVE_EVERY * TAU) as f32;
+    let light = |x: f32, y: f32| {
+        let along = (f64::from(x) * 0.8 + f64::from(y) * 0.6) / WAVE_LENGTH * TAU;
+        0.5 + 0.5 * ((along as f32) - wave).cos()
+    };
+    let reach = (width.max(1.0) * 0.62, height.max(1.0) * 0.62);
+    let seen = |x: f32, y: f32| {
+        let from = (((x - middle.0) / reach.0).powi(2) + ((y - middle.1) / reach.1).powi(2)).sqrt();
+        let edge = 1.0 - smoothstep(0.45, 1.0, from);
+        let words = 0.45 + 0.55 * smoothstep(0.05, 0.4, from);
+        edge * words
+    };
+
+    let columns = (width / CELL).ceil() as usize + 2;
+    let rows = (height / CELL).ceil() as usize + 2;
+    let line_x = |at: usize| shift.0 - CELL + at as f32 * CELL;
+    let line_y = |at: usize| shift.1 - CELL + at as f32 * CELL;
+    let mut strokes = Vec::with_capacity(columns * rows * 2);
+    let mut sparks = Vec::new();
+    for column in 0..columns {
+        for row in 0..rows {
+            let (x, y) = (line_x(column), line_y(row));
+            // The cell's left side and its top, each lit at its middle.
+            for (stroke, (mid_x, mid_y)) in [
+                (
+                    Stroke {
+                        x: x - 0.5,
+                        y,
+                        width: 1.0,
+                        height: CELL,
+                        ink: 0.0,
+                    },
+                    (x, y + CELL / 2.0),
+                ),
+                (
+                    Stroke {
+                        x,
+                        y: y - 0.5,
+                        width: CELL,
+                        height: 1.0,
+                        ink: 0.0,
+                    },
+                    (x + CELL / 2.0, y),
+                ),
+            ] {
+                let ink = seen(mid_x, mid_y) * (0.35 + 0.65 * light(mid_x, mid_y));
+                if ink > 0.01 {
+                    strokes.push(Stroke { ink, ..stroke });
+                }
+            }
+            let crest = (light(x, y) - 0.86) / 0.14;
+            if crest > 0.0 {
+                let ink = crest * crest * seen(x, y);
+                if ink > 0.02 {
+                    sparks.push(Spark { x, y, ink });
+                }
+            }
+        }
+    }
+    (strokes, sparks)
+}
+
+/// Hermite's step from 0 at `from` to 1 at `to`.
+fn smoothstep(from: f32, to: f32, at: f32) -> f32 {
+    let t = ((at - from) / (to - from)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECS: fn(u64) -> Duration = Duration::from_secs;
+
+    fn near(one: f32, other: f32) -> bool {
+        (one - other).abs() < 1e-3
+    }
+
+    #[test]
+    fn the_introduction_is_owed_once_to_each_account_and_to_nobody_signed_out() {
+        let (me, other) = (Pk::new(42), Pk::new(9001));
+        let mut introduced = Introduced::default();
+        assert!(introduced.owed_to(Some(me)));
+        assert!(!introduced.owed_to(None), "nobody is owed anything");
+
+        assert!(introduced.begun(me), "new: to be remembered");
+        assert!(!introduced.owed_to(Some(me)));
+        assert!(!introduced.begun(me), "and only once");
+        assert!(introduced.owed_to(Some(other)), "each account its own");
+
+        // A read of what was remembered from before the press takes
+        // nothing away.
+        introduced.merge(&[other]);
+        assert!(!introduced.owed_to(Some(me)) && !introduced.owed_to(Some(other)));
+        assert_eq!(Introduced::new(vec![me, me]), {
+            let mut once = Introduced::default();
+            once.begun(me);
+            once
+        });
+    }
+
+    #[test]
+    fn the_introduction_comes_before_the_list_and_the_editor() {
+        assert_eq!(stage(true, false), Stage::Intro);
+        assert_eq!(stage(true, true), Stage::Intro);
+        assert_eq!(stage(false, false), Stage::List);
+        assert_eq!(stage(false, true), Stage::Editor);
+    }
+
+    #[test]
+    fn a_search_finds_automations_by_every_word_of_their_name() {
+        let all: Vec<Automation> = [
+            "Watch new followers",
+            "Daily report",
+            "Unfollowers to Slack",
+        ]
+        .into_iter()
+        .map(|name| Automation {
+            name: name.to_string(),
+        })
+        .collect();
+        let names = |typed: &str| -> Vec<&str> {
+            shown(&all, typed)
+                .into_iter()
+                .map(|automation| automation.name.as_str())
+                .collect()
+        };
+        assert_eq!(names("").len(), 3, "nothing typed shows every one");
+        assert_eq!(names("  ").len(), 3);
+        assert_eq!(
+            names("FOLLOW"),
+            ["Watch new followers", "Unfollowers to Slack"]
+        );
+        assert_eq!(
+            names("slack unfollow"),
+            ["Unfollowers to Slack"],
+            "in any order"
+        );
+        assert_eq!(
+            names("r\u{e9}port"),
+            ["Daily report"],
+            "with or without accents"
+        );
+        assert!(names("weekly").is_empty());
+    }
+
+    #[test]
+    fn the_wheel_zooms_around_the_pointer_and_keeps_what_is_under_it() {
+        let canvas = Canvas::default().panned((30.0, -12.0));
+        let pointer = (120.0, 80.0);
+        // The point of the canvas under the pointer, before and after.
+        let under = |canvas: &Canvas| {
+            (
+                (pointer.0 - canvas.pan().0) / canvas.zoom(),
+                (pointer.1 - canvas.pan().1) / canvas.zoom(),
+            )
+        };
+        let before = under(&canvas);
+        let zoomed = canvas.zoomed_at(wheel_factor(120.0), pointer);
+        assert!(zoomed.zoom() > 1.0, "turned up, it zooms in");
+        let after = under(&zoomed);
+        assert!(
+            near(before.0, after.0) && near(before.1, after.1),
+            "{before:?} {after:?}"
+        );
+        assert!(canvas.zoomed_at(wheel_factor(-120.0), pointer).zoom() < 1.0);
+        assert!(
+            near(wheel_factor(60.0) * wheel_factor(-60.0), 1.0),
+            "in and out by as much"
+        );
+    }
+
+    #[test]
+    fn the_zoom_stays_inside_its_bounds_and_the_buttons_land_on_round_numbers() {
+        let mut canvas = Canvas::default();
+        for _ in 0..50 {
+            canvas = canvas.zoomed_at(wheel_factor(500.0), (10.0, 10.0));
+        }
+        assert_eq!(canvas.zoom(), ZOOM_MAX);
+        assert!(!canvas.can_zoom_in());
+        for _ in 0..50 {
+            canvas = canvas.zoomed_at(wheel_factor(-500.0), (10.0, 10.0));
+        }
+        assert_eq!(canvas.zoom(), ZOOM_MIN);
+        assert!(!canvas.can_zoom_out() && canvas.can_zoom_in());
+
+        let at_its_size = Canvas::default();
+        assert_eq!(at_its_size.zoomed_in().percent(), 110);
+        assert_eq!(at_its_size.zoomed_out().percent(), 90);
+        let odd = at_its_size.zoomed_at(1.37, (0.0, 0.0));
+        assert_eq!(odd.zoomed_in().percent(), 150);
+        assert_eq!(odd.zoomed_out().percent(), 125);
+        assert_eq!(odd.at_its_size().percent(), 100);
+        assert_eq!(
+            Canvas::default().zoomed_to(9.0, (0.0, 0.0)).zoom(),
+            ZOOM_MAX
+        );
+        // Nonsense moves nothing.
+        assert_eq!(at_its_size.zoomed_at(f32::NAN, (0.0, 0.0)), at_its_size);
+        assert_eq!(at_its_size.zoomed_at(0.0, (0.0, 0.0)), at_its_size);
+        assert_eq!(at_its_size.panned((f32::INFINITY, 0.0)), at_its_size);
+    }
+
+    #[test]
+    fn the_canvas_moves_as_far_as_the_pointer_and_has_no_edge() {
+        let mut canvas = Canvas::default();
+        for _ in 0..1000 {
+            canvas = canvas.panned((500.0, -500.0));
+        }
+        assert_eq!(canvas.pan(), (500_000.0, -500_000.0));
+        assert_eq!(canvas.on_screen((0.0, 0.0)), canvas.pan());
+        let zoomed = Canvas::default().zoomed_to(2.0, (0.0, 0.0));
+        assert_eq!(zoomed.on_screen((10.0, -5.0)), (20.0, -10.0));
+    }
+
+    #[test]
+    fn the_grid_follows_the_canvas_and_never_crowds() {
+        let size = (800.0, 600.0);
+        let grid = Canvas::default().grid(size);
+        assert_eq!(grid.gap, GRID);
+        // The origin, in the middle, is on a dot.
+        assert!(near((400.0 - grid.first.0) % grid.gap, 0.0));
+        let moved = Canvas::default().panned((5.0, 0.0)).grid(size);
+        assert!(near(moved.first.0, (grid.first.0 + 5.0) % grid.gap));
+        for zoom in [ZOOM_MIN, 0.3, 0.5, 0.7, 1.0, 1.6, ZOOM_MAX] {
+            let grid = Canvas::default().zoomed_to(zoom, (0.0, 0.0)).grid(size);
+            assert!(grid.gap >= LEAST_GAP, "{zoom}: {}", grid.gap);
+            assert!(grid.first.0 >= 0.0 && grid.first.0 < grid.gap);
+            assert!(grid.first.1 >= 0.0 && grid.first.1 < grid.gap);
+        }
+    }
+
+    #[test]
+    fn a_button_glides_the_canvas_and_ends_where_it_was_sent() {
+        let from = Canvas::default();
+        let to = from.zoomed_in();
+        let glide = Glide { from, to };
+        assert_eq!(glide.at(Duration::ZERO, false), from);
+        let half = glide.at(motion::INTERACTION / 2, false).zoom();
+        assert!(half > 1.0 && half < to.zoom(), "{half}");
+        assert_eq!(glide.at(motion::INTERACTION, false), to);
+        assert!(glide.moving(motion::INTERACTION / 2, false));
+        assert!(!glide.moving(motion::INTERACTION, false));
+        assert_eq!(
+            glide.at(Duration::ZERO, true),
+            to,
+            "at once with less motion"
+        );
+        assert!(!glide.moving(Duration::ZERO, true));
+        assert!(!Glide::still(to).moving(Duration::ZERO, false));
+    }
+
+    #[test]
+    fn the_drift_holds_still_while_not_looked_at_and_takes_up_where_it_stopped() {
+        let mut drift = Drift::default();
+        assert_eq!(drift.at(SECS(100), true), Duration::ZERO);
+        assert_eq!(drift.at(SECS(103), true), SECS(3));
+        // Looked away from at 105, back at 160.
+        assert_eq!(drift.at(SECS(105), false), SECS(5));
+        assert_eq!(
+            drift.at(SECS(140), false),
+            SECS(5),
+            "nothing moves meanwhile"
+        );
+        assert_eq!(drift.at(SECS(160), true), SECS(5), "no jump");
+        assert_eq!(drift.at(SECS(162), true), SECS(7));
+        // A clock read out of order costs nothing.
+        assert_eq!(drift.at(SECS(150), true), SECS(5));
+    }
+
+    #[test]
+    fn the_grid_drifts_slowly_and_fades_toward_the_edges() {
+        let size = (1000.0, 700.0);
+        let middle = (500.0, 350.0);
+        let (still, sparks) = drifting_grid(size, middle, Duration::ZERO);
+        assert!(!still.is_empty());
+        for stroke in &still {
+            assert!((0.0..=1.0).contains(&stroke.ink), "{stroke:?}");
+        }
+        for spark in &sparks {
+            assert!((0.0..=1.0).contains(&spark.ink), "{spark:?}");
+        }
+        // Faint at the corners, more there half way out.
+        let ink_near = |strokes: &[Stroke], x: f32, y: f32| {
+            strokes
+                .iter()
+                .filter(|stroke| (stroke.x - x).abs() < CELL && (stroke.y - y).abs() < CELL)
+                .map(|stroke| stroke.ink)
+                .fold(0.0, f32::max)
+        };
+        assert!(ink_near(&still, 5.0, 5.0) < 0.05);
+        assert!(ink_near(&still, 230.0, 350.0) > ink_near(&still, 5.0, 5.0));
+
+        // A second later every line has moved by less than a cell's tenth
+        // of the way, and the same again after a day.
+        for at in [0, 86_400] {
+            let one = drifting_grid(size, middle, SECS(at));
+            let next = drifting_grid(size, middle, SECS(at) + SECS(1));
+            let x = |strokes: &[Stroke]| {
+                strokes
+                    .iter()
+                    .find(|stroke| stroke.width == 1.0)
+                    .map(|stroke| stroke.x.rem_euclid(CELL))
+                    .unwrap()
+            };
+            let moved = (x(&next.0) - x(&one.0)).rem_euclid(CELL);
+            assert!(moved > 0.0 && moved < CELL / 4.0, "{moved} after {at} s");
+        }
+        assert!(drifting_grid((0.0, 0.0), middle, SECS(1)).0.is_empty());
+    }
+}

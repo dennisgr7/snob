@@ -344,6 +344,7 @@ impl Backend for Engine {
                 accounts,
                 crash,
                 resume: prefs.resumed(snob_core::clock::now()),
+                introduced: prefs.introduced,
             }
         })
     }
@@ -618,6 +619,17 @@ impl Backend for Engine {
             Prefs::change(&paths, |prefs| {
                 prefs.theme = appearance.theme;
                 prefs.language = appearance.language;
+            });
+        }));
+    }
+
+    fn remember_introduced(&self, pk: Pk) {
+        let paths = self.paths.clone();
+        drop(self.runtime.run(move || async move {
+            Prefs::change(&paths, |prefs| {
+                if !prefs.introduced.contains(&pk) {
+                    prefs.introduced.push(pk);
+                }
             });
         }));
     }

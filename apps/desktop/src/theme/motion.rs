@@ -1,7 +1,9 @@
 //! How long things move, and how: short, ending slowly, and replaced by a
 //! brief fade where the system asks for less motion. **Every animation ends
 //! in a fixed state**; nothing loops but the loading ring, which says that
-//! something is going on and keeps turning either way.
+//! something is going on and keeps turning either way, and the grid behind
+//! the automations' introduction, which is decoration: it drifts only while
+//! the window is looked at, and never under "reduce motion".
 
 use std::time::Duration;
 

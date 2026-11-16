@@ -28,6 +28,7 @@ use tokio::sync::watch;
 use super::look::Look;
 use super::{frame, screens};
 use crate::backend::{Account, Backend, Cleared, Forgotten, Loaded, SignIn, Storage};
+use crate::state::automations::Introduced;
 use crate::state::commands::{self, Command};
 use crate::state::flow::{Effect, Event, Flow, Found, Method, Named, Place, Screen, Update};
 use crate::state::frame::{self as shape, Icon, Morph, Pill, SECTIONS};
@@ -283,6 +284,10 @@ pub struct Shell {
     /// The rail's selection: the section it left, the one it is going to,
     /// and since when.
     pill: (Option<usize>, Option<usize>, Instant),
+    /// The automations section while it is shown (`ui::automations`).
+    pub(crate) automations: Option<super::automations::Page>,
+    /// The accounts that went past the automations' introduction.
+    pub(crate) introduced: Introduced,
 }
 
 impl Shell {
@@ -367,6 +372,9 @@ impl Shell {
             if window.is_window_active() {
                 this.look_again(window, cx);
             }
+            if this.automations.is_some() {
+                cx.notify();
+            }
         })
         .detach();
 
@@ -427,6 +435,8 @@ impl Shell {
             frame: Morph::still(shape::Shape::Closed),
             frame_since: cx.background_executor().now(),
             pill: (None, None, cx.background_executor().now()),
+            automations: None,
+            introduced: Introduced::default(),
         }
     }
 
@@ -468,6 +478,18 @@ impl Shell {
             pill,
             selected,
         }
+    }
+
+    /// How far right of the window's middle the panel's middle is now: what
+    /// a screen moves something left by to center it on the window, under
+    /// the brand, rather than in the panel beside the rail.
+    pub(crate) fn panel_off_center(&self, cx: &App) -> f32 {
+        let elapsed = cx
+            .background_executor()
+            .now()
+            .saturating_duration_since(self.frame_since);
+        let geometry = shape::geometry(self.frame.openness(elapsed));
+        (geometry.left - geometry.right) / 2.0
     }
 
     /// Starts reading and decoding each account's picture kept on disk, so
@@ -861,6 +883,8 @@ impl Shell {
             self.toggle_the_languages(window, cx);
         } else if self.signing_out.is_some() {
             self.keep_signed_in(window, cx);
+        } else if self.menu.is_none() && self.is_editing() {
+            self.leave_the_editor(window, cx);
         } else {
             self.close_the_menu(window, cx);
         }
@@ -1183,7 +1207,8 @@ impl Shell {
     /// Whether the screen shown scrolls on its own, under a header that
     /// stays: the panel then holds still.
     pub(crate) fn scrolls_itself(&self) -> bool {
-        self.settings.is_some() && self.shown == Screen::Settings
+        (self.settings.is_some() && self.shown == Screen::Settings)
+            || (self.automations.is_some() && self.shown == Screen::Automations)
     }
 
     /// Draws the app in `theme` from now on, whatever the system says, or
@@ -1337,6 +1362,7 @@ impl Shell {
     }
 
     fn loaded(&mut self, loaded: Loaded, window: &mut Window, cx: &mut Context<Self>) {
+        self.introduced.merge(&loaded.introduced);
         self.accounts = loaded.accounts;
         // Under the splash's way out, so home's first frame has them.
         self.decode_the_pictures(cx);
@@ -1382,6 +1408,7 @@ impl Shell {
     /// somebody signed in from the command line.
     fn found_again(&mut self, loaded: Loaded, window: &mut Window, cx: &mut Context<Self>) {
         let waiting = matches!(self.flow.screen(), Screen::Start { back: false, .. });
+        self.introduced.merge(&loaded.introduced);
         match (self.is_signed_in(), loaded.found) {
             (true, Found::SignedIn(now)) => {
                 let before = self.active().map(|account| account.named.pk);
@@ -1863,6 +1890,10 @@ impl Shell {
         };
         self.settings = match self.shown {
             Screen::Settings => Some(self.settings_page(window, cx)),
+            _ => None,
+        };
+        self.automations = match self.shown {
+            Screen::Automations => Some(super::automations::Page::new(window, cx)),
             _ => None,
         };
         self.menu = None;

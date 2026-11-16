@@ -1,8 +1,10 @@
 //! What the app remembers between runs that is the app's alone: where its
-//! window was, the method chosen before a restart for an update, and the
-//! theme and language chosen in its settings.
-//! `desktop.json` in the data directory. **Nothing about an account is kept
-//! here**: sessions, lists and budgets are the engine's, in its own files.
+//! window was, the method chosen before a restart for an update, the theme
+//! and language chosen in its settings, and which accounts were shown
+//! the automations' introduction (`state::automations::Introduced`).
+//! `desktop.json` in the data directory. **Nothing of an account's own is
+//! kept here**, only what the app showed it: sessions, lists and budgets are
+//! the engine's, in its own files.
 
 use std::io::Read as _;
 use std::path::PathBuf;
@@ -122,6 +124,10 @@ pub struct Prefs {
     /// The language chosen, as a tag: the system's when there is none.
     #[serde(default)]
     pub language: Option<String>,
+    /// The accounts that went past the automations' introduction, which is
+    /// shown once an account.
+    #[serde(default)]
+    pub introduced: Vec<snob_core::Pk>,
 }
 
 /// An account's session, found to work at a moment.
@@ -269,6 +275,7 @@ mod tests {
             browser: Some("Edge".to_string()),
             theme: ThemeChoice::Dark,
             language: Some("es".to_string()),
+            introduced: vec![42.into()],
         };
         prefs.save(&paths);
         assert_eq!(Prefs::load(&paths), prefs);
@@ -294,6 +301,7 @@ mod tests {
         let prefs = Prefs::load(&paths);
         assert_eq!(prefs.browser.as_deref(), Some("Edge"), "the rest is kept");
         assert_eq!(prefs.appearance(), Appearance::default());
+        assert!(prefs.introduced.is_empty(), "nobody was introduced yet");
 
         Prefs::change(&paths, |prefs| prefs.theme = ThemeChoice::Light);
         let text = std::fs::read_to_string(file(&paths)).unwrap();

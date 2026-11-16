@@ -4,9 +4,11 @@
 //! ([`paste`]), what the command palette offers ([`commands`]), what the
 //! settings hold and which of it a search shows ([`settings`]), what they
 //! say of what is kept ([`storage`]), what is remembered between runs
-//! ([`prefs`]), and when the app rests ([`rest`]).
+//! ([`prefs`]), when the app rests ([`rest`]), and the automations section:
+//! its introduction, its list and its editor's canvas ([`automations`]).
 //! No window, no clock and no network in any of it.
 
+pub mod automations;
 pub mod commands;
 pub mod flow;
 pub mod frame;

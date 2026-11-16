@@ -39,6 +39,7 @@ pub enum Asked {
     Storage,
     ClearCache(Option<Pk>),
     ForgetHistory(Option<Pk>),
+    RememberIntroduced(Pk),
 }
 
 type Held = Box<dyn FnOnce() + Send>;
@@ -78,6 +79,8 @@ struct State {
     storage: Storage,
     /// Whether forgetting finds a job of every account running.
     busy: bool,
+    /// The accounts remembered as past the automations' introduction.
+    introduced: Vec<Pk>,
 }
 
 /// The scripted backend. Clones are the same backend.
@@ -129,6 +132,7 @@ impl Scripted {
             window: None,
             storage: Storage::default(),
             busy: false,
+            introduced: Vec::new(),
         })))
     }
 
@@ -343,6 +347,12 @@ impl Script<'_> {
         self.0.resume = Some(method);
         self
     }
+
+    /// An account remembered as past the automations' introduction.
+    pub fn introduced(&mut self, pk: u64) -> &mut Self {
+        self.0.introduced.push(pk.into());
+        self
+    }
 }
 
 /// What a sign-in that ended well leaves signed in.
@@ -368,6 +378,7 @@ impl Backend for Scripted {
             accounts: state.accounts.clone(),
             crash: state.crash.clone(),
             resume: state.resume,
+            introduced: state.introduced.clone(),
         })
     }
 
@@ -452,6 +463,14 @@ impl Backend for Scripted {
         self.state()
             .asked
             .push(Asked::RememberAppearance(appearance));
+    }
+
+    fn remember_introduced(&self, pk: Pk) {
+        let mut state = self.state();
+        state.asked.push(Asked::RememberIntroduced(pk));
+        if !state.introduced.contains(&pk) {
+            state.introduced.push(pk);
+        }
     }
 
     fn storage(&self) -> Answer<Storage> {

@@ -1047,8 +1047,11 @@ computer: the disk it is on, and each account's, signed in or not, with
 its cache to clear and its history to delete after a question. A clearing
 or a deletion is the shell's and runs on in the engine whatever screen is
 shown. Once somebody is signed in the frame
-opens on a rail of sections (home, search, automations); each is a title
-until what a scan shows comes next.
+opens on a rail of sections (home, search, automations). Home and search
+are a title until what a scan shows comes next; automations has an
+introduction shown once an account, a list with its search, and an editor
+whose canvas is moved and zoomed but holds nothing yet: **there is no
+backend for automations**, and nothing there runs.
 
 **A workspace of its own**, with its own `Cargo.lock`: GPUI brings some 500
 crates and does not build for musl. Build and test it from that directory;
@@ -1073,8 +1076,9 @@ its version is the release's ("Release and packaging"). GPUI comes through
   (`frame.rs`), what the band says (`status.rs`), what a pasted ID is
   (`paste.rs`), what the palette offers (`commands.rs`), what the settings
   hold and what their search shows (`settings.rs`, `storage.rs`), what is
-  remembered between runs (`prefs.rs`), and when the app rests
-  (`rest.rs`). No window, clock or network there.
+  remembered between runs (`prefs.rs`), when the app rests (`rest.rs`),
+  and the automations section (`automations.rs`). No window, clock or
+  network there.
 - **A theme or a language chosen holds whatever the system says**; the
   contrast is always the system's (`ui/look.rs`). **What is kept is measured
   from the files' sizes** and clearing it removes the cache alone

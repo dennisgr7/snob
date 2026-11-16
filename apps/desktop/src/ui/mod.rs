@@ -1,6 +1,7 @@
 //! The window: the frame every screen is in ([`frame`]) and its rail of
 //! sections ([`rail`]), the screens ([`screens`]), what they are built from ([`parts`]), and the one view
-//! that holds them and does what they ask ([`shell`]).
+//! that holds them and does what they ask ([`shell`]), with what the
+//! automations section holds while it is shown ([`automations`]).
 //!
 //! **A view draws what the state says and says what the person did.** What
 //! follows from it is decided in `state` and done by the shell, so a screen
@@ -9,6 +10,7 @@
 use gpui_kit::{App, KeyBinding, actions};
 
 pub mod assets;
+pub mod automations;
 pub mod frame;
 pub mod look;
 pub mod menu;

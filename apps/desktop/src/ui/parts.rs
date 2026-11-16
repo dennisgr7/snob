@@ -209,8 +209,9 @@ pub fn segment(
         .child(label)
 }
 
-/// A button's shape and states, with nothing in it yet.
-fn plain_button(
+/// A button's shape and states, with nothing in it yet: what a button that
+/// shows a drawing beside its words is built from.
+pub fn plain_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     kind: Kind,

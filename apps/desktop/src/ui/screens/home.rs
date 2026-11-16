@@ -1,5 +1,6 @@
 //! The home screen, a title until there is something to put under it, the
-//! sections still to come, and the report of the last crash, which home and
+//! search still to come, each with its title at the top left as the
+//! settings have theirs, and the report of the last crash, which home and
 //! the settings show until the person has dealt with it. **Nothing of it is
 //! sent anywhere**: it can be read and copied here.
 
@@ -7,7 +8,6 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Div, FontWeight, Role, div, px};
 
-use super::column;
 use crate::state::flow::Place;
 use crate::theme::fonts::MONO;
 use crate::theme::tokens::shape;
@@ -112,34 +112,40 @@ pub(super) fn crash(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> 
     )
 }
 
-pub fn home(shell: &mut Shell, phase: Phase, cx: &mut Context<Shell>) -> AnyElement {
-    let look = Look::now(cx).clone();
-    column(phase)
-        .child(parts::title(&shell.title, look.tr("home-title"), &look))
-        .children(crash(shell, &look, cx))
-        .into_any_element()
+/// A section's page: its title at the top left, where the settings have
+/// theirs, and what it holds under it, at the place its coming or going has
+/// it.
+pub(super) fn page(shell: &mut Shell, title: String, phase: Phase, look: &Look) -> Div {
+    div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(sp(16.))
+        .px(sp(32.))
+        .pt(sp(26.))
+        .pb(sp(40.))
+        .relative()
+        .top(px(phase.rise))
+        .opacity(phase.presence)
+        .child(parts::title(&shell.title, title, look).text_left())
 }
 
-/// A section that is not ready yet: its title, and what it will hold.
-fn to_come(shell: &mut Shell, place: Place, note: String, phase: Phase, look: &Look) -> AnyElement {
-    column(phase)
-        .child(parts::title(
-            &shell.title,
-            super::section_title(place, look),
-            look,
-        ))
-        .child(parts::paragraph("section-note", note, look))
+pub fn home(shell: &mut Shell, phase: Phase, cx: &mut Context<Shell>) -> AnyElement {
+    let look = Look::now(cx).clone();
+    page(shell, look.tr("home-title"), phase, &look)
+        .children(crash(shell, &look, cx))
         .into_any_element()
 }
 
 pub fn search(shell: &mut Shell, phase: Phase, cx: &mut Context<Shell>) -> AnyElement {
     let look = Look::now(cx).clone();
-    let note = look.tr("search-note");
-    to_come(shell, Place::Search, note, phase, &look)
-}
-
-pub fn automations(shell: &mut Shell, phase: Phase, cx: &mut Context<Shell>) -> AnyElement {
-    let look = Look::now(cx).clone();
-    let note = look.tr("automations-note");
-    to_come(shell, Place::Automations, note, phase, &look)
+    let title = super::section_title(Place::Search, &look);
+    page(shell, title, phase, &look)
+        .child(
+            parts::paragraph("section-note", look.tr("search-note"), &look)
+                .max_w(sp(560.))
+                .text_left(),
+        )
+        .into_any_element()
 }

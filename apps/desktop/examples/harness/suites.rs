@@ -202,7 +202,7 @@ fn logic() -> Vec<Outcome> {
 
 /// The screens a picture is taken of and an audit made of, and how each is
 /// reached from the screen before it.
-const SCREENS: [&str; 17] = [
+const SCREENS: [&str; 19] = [
     "start",
     "paste",
     "failed",
@@ -219,6 +219,8 @@ const SCREENS: [&str; 17] = [
     "settings-forget",
     "search",
     "automations",
+    "automations-list",
+    "automations-editor",
     "paste-browsers",
 ];
 
@@ -325,6 +327,22 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
             let app = stage.app()?;
             app.click("rail-automations").await?;
             app.until_screen("automations").await?;
+        }
+        "automations-list" => {
+            let app = stage.app()?;
+            app.click("automations-begin").await?;
+            app.until("the list of automations", |seen| {
+                scenarios::bounds(seen, "automations-create").is_ok()
+            })
+            .await?;
+        }
+        "automations-editor" => {
+            let app = stage.app()?;
+            app.click("automations-create").await?;
+            app.until("the editor", |seen| {
+                scenarios::bounds(seen, "editor-canvas").is_ok()
+            })
+            .await?;
         }
         "palette" => {
             let app = stage.app()?;

@@ -179,6 +179,11 @@ pub fn all() -> Vec<Scenario> {
             no_secret_is_written
         ),
         scenario!("the keyboard alone signs in", "8", keyboard_alone),
+        scenario!(
+            "the automations are introduced once an account",
+            "2 3",
+            automations_introduced_once
+        ),
     ]
 }
 
@@ -989,4 +994,78 @@ fn files_holding(root: &Path, needle: &str, whole: &str) -> Vec<PathBuf> {
         }
     }
     holding
+}
+
+/// The middle of `id` across the window.
+fn middle_of(seen: &Answer, id: &str) -> anyhow::Result<f32> {
+    let (left, _, width, _) = bounds(seen, id)?;
+    Ok(left + width / 2.0)
+}
+
+async fn automations_introduced_once(stage: &mut Stage<'_>) -> anyhow::Result<()> {
+    stage.open().await?;
+    stage.sign_in(world::ME, "automations").await?;
+    let app = stage.app()?;
+    app.click("rail-automations").await?;
+    app.until_screen("automations").await?;
+    let seen = app
+        .until("the introduction", |seen| {
+            node(seen, "automations-begin").is_ok()
+        })
+        .await?;
+    expect_eq(label(&seen, "title")?.as_str(), "Automations", "the title")?;
+    // Under the brand, on the window's middle, not the panel's.
+    let (title, brand) = (middle_of(&seen, "title")?, middle_of(&seen, "brand")?);
+    expect((title - brand).abs() < 1.0, || {
+        format!("the title's middle is at {title}, the brand's at {brand}")
+    })?;
+
+    app.click("automations-begin").await?;
+    app.until("the list", |seen| node(seen, "automations-create").is_ok())
+        .await?;
+
+    // Not again, after a restart.
+    let app = stage.open().await?;
+    app.until_screen("home").await?;
+    app.click("rail-automations").await?;
+    app.until_screen("automations").await?;
+    let seen = app
+        .until("the list", |seen| node(seen, "automations-create").is_ok())
+        .await?;
+    expect(node(&seen, "automations-begin").is_err(), || {
+        "the introduction came back after a restart".to_string()
+    })?;
+
+    // The editor: the wheel zooms its canvas, Escape comes back.
+    app.click("automations-create").await?;
+    let seen = app
+        .until("the editor", |seen| node(seen, "editor-canvas").is_ok())
+        .await?;
+    expect_eq(
+        label(&seen, "title")?.as_str(),
+        "New automation",
+        "the editor's title",
+    )?;
+    let (left, top, width, height) = bounds(&seen, "editor-canvas")?;
+    app.point(
+        left + width / 2.0,
+        top + height / 2.0,
+        Pointing::Wheel(-240.0),
+    )
+    .await?;
+    let seen = app
+        .until("the canvas zoomed", |seen| {
+            label(seen, "editor-zoom-reset").is_ok_and(|said| !said.starts_with("Zoom at 100 "))
+        })
+        .await?;
+    expect(
+        label(&seen, "editor-zoom-reset")?.starts_with("Zoom at 1"),
+        || "turned up, the wheel did not zoom in".to_string(),
+    )?;
+    app.press("escape").await?;
+    app.until("the list again", |seen| {
+        node(seen, "automations-create").is_ok()
+    })
+    .await
+    .map(drop)
 }

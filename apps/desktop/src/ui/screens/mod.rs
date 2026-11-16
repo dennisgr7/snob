@@ -13,6 +13,7 @@ use super::look::{Look, sp};
 use super::shell::{Phase, Shell};
 use crate::state::flow::{Method, Named, Place, Screen};
 
+mod automations;
 mod failed;
 mod home;
 mod paste;
@@ -93,7 +94,7 @@ pub fn render(
         Screen::Welcome(account) => welcome::render(shell, account, phase, cx),
         Screen::Home => home::home(shell, phase, cx),
         Screen::Search => home::search(shell, phase, cx),
-        Screen::Automations => home::automations(shell, phase, cx),
+        Screen::Automations => automations::render(shell, phase, window, cx),
         Screen::Settings => settings::render(shell, phase, window, cx),
     }
 }

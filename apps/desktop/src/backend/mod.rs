@@ -55,6 +55,8 @@ pub struct Loaded {
     pub crash: Option<String>,
     /// The method chosen shortly before a restart for an update.
     pub resume: Option<Method>,
+    /// The accounts that went past the automations' introduction.
+    pub introduced: Vec<Pk>,
 }
 
 /// The browsers a pasted session can be said to come from.
@@ -208,6 +210,10 @@ pub trait Backend: Send + Sync + 'static {
     /// and nothing else (`snob_engine::storage::clear_cache`): what a view
     /// showed at once, which its requests fetch again.
     fn clear_cache(&self, only: Option<Pk>) -> Answer<Cleared>;
+
+    /// Remembers that `pk` went past the automations' introduction, which
+    /// is not shown to it again.
+    fn remember_introduced(&self, pk: Pk);
 
     /// Forgets the history of `only`, or with `None` of every account with
     /// a directory here (`snob_engine::storage::forget_history`): its lists,
