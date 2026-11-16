@@ -110,9 +110,116 @@ fn a_download_is_a_line_the_command_line_takes() {
 }
 
 #[test]
+fn a_trays_download_is_a_line_the_command_line_takes() {
+    for (tool, args) in [
+        ("snob_stories_download", json!({})),
+        (
+            "snob_stories_download",
+            json!({"account": "someone", "items": [1, 3]}),
+        ),
+        (
+            "snob_highlights_download",
+            json!({"account": "someone", "highlight": 2}),
+        ),
+        (
+            "snob_highlights_download",
+            json!({"account": "someone", "highlight": 2, "items": [2, 1]}),
+        ),
+    ] {
+        taken(planned(tool, args).args);
+    }
+}
+
+#[test]
+fn a_profile_picture_is_a_line_the_command_line_takes() {
+    for args in [
+        json!({"account": "someone"}),
+        json!({"account": "@someone", "save": true}),
+    ] {
+        taken(planned("snob_pfp", args).args);
+    }
+}
+
+#[test]
+fn a_session_check_is_a_line_the_command_line_takes() {
+    for args in [json!({}), json!({"offline": true})] {
+        taken(planned("snob_whoami", args).args);
+    }
+}
+
+#[test]
+fn a_scan_and_an_aged_list_are_lines_the_command_line_and_a_job_take() {
+    for (tool, args) in [
+        ("snob_scan", json!({})),
+        (
+            "snob_scan",
+            json!({"account": "@someone", "mode": "refresh", "max_pages": 2}),
+        ),
+        ("snob_scan", json!({"account": "x", "max_age": "6h"})),
+        ("snob_scan", json!({"account": "x", "mode": "stored"})),
+        ("snob_scan", json!({"account": "x", "dry_run": true})),
+        ("snob_list", json!({"list": "fans", "max_age": "2d"})),
+        (
+            "snob_list",
+            json!({"list": "fans", "dry_run": true, "max_age": "2d"}),
+        ),
+    ] {
+        taken(planned(tool, args).args);
+    }
+    // The walks run as jobs, whose command line allows a few flags only.
+    for (tool, args) in [
+        (
+            "snob_scan",
+            json!({"account": "someone", "max_age": "6h", "max_pages": 3}),
+        ),
+        ("snob_scan", json!({})),
+        ("snob_list", json!({"list": "fans", "max_age": "6h"})),
+    ] {
+        let walk = planned(tool, args.clone());
+        // A yes is only given to a call that asked.
+        let yes = walk.ask.is_some().then_some(&BY_CHAT);
+        let line = walk.start_line(tool, args.as_object().unwrap(), None, yes);
+        let after = line.iter().position(|arg| arg == "--").unwrap();
+        let checked = snob_cli::jobs::argv::check(&line[after + 1..]);
+        assert!(checked.is_ok(), "{tool} {args}: {:?}", checked.err());
+        // And the check that runs before the person is asked.
+        let ahead = walk.check_line();
+        let after = ahead.iter().position(|arg| arg == "--").unwrap();
+        assert!(snob_cli::jobs::argv::check(&ahead[after + 1..]).is_ok());
+    }
+}
+
+#[test]
 fn a_write_checked_ahead_is_a_line_the_command_line_takes() {
     let follow = planned("snob_follow", json!({"account": "someone"}));
     taken(follow.ahead_line(3).unwrap());
+}
+
+#[test]
+fn a_filtered_list_is_a_line_the_command_line_takes() {
+    let filtered = json!({
+        "list": "fans",
+        "account": "x",
+        "hide": ["verified", "no_pfp"],
+        "only": ["private"],
+    });
+    let walk = planned("snob_list", filtered.clone());
+    taken(walk.args.clone());
+    // And as a job's command, which allows only a few flags.
+    let line = walk.start_line(
+        "snob_list",
+        filtered.as_object().unwrap(),
+        None,
+        Some(&BY_CHAT),
+    );
+    let after = line.iter().position(|arg| arg == "--").unwrap();
+    assert!(snob_cli::jobs::argv::check(&line[after + 1..]).is_ok());
+
+    let stored = planned(
+        "snob_list",
+        json!({"list": "friends", "mode": "stored", "hide": ["private"]}),
+    );
+    taken(stored.args);
 }
 
 #[test]

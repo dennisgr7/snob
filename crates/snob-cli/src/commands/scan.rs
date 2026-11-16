@@ -76,6 +76,7 @@ pub async fn run(args: ScanArgs, store: SecretStore, paths: &AccountPaths) -> Re
     let (filter, destination, browses) = common::prepare(&args.filter, &args.output, &args.browse)?;
 
     let mut app = common::open(&args.walk, &store.session_of(paths), paths)?;
+    common::record_agent_act(&mut app, &args.agent, "scan", args.target.as_deref(), None)?;
 
     let explicit_target = args.target.is_some();
     let viewer = app.viewer().clone();

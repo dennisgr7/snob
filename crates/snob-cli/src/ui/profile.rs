@@ -3106,6 +3106,7 @@ mod tests {
 
     fn story() -> Story {
         Story {
+            pk: "1".into(),
             kind: snob_engine::media::Kind::Photo,
             taken_at: Epoch::new(0),
             expiring_at: None,

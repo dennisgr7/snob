@@ -390,7 +390,10 @@ const DOWNLOADS_SAID: &str = " snob_post_download saves a post's photos and vide
                               on the machine snob runs on, in a directory the person chose, \
                               and answers with their names: a file is named after its post's \
                               code, and one already there is not fetched again, so the \
-                              directory itself says which posts you have.";
+                              directory itself says which posts you have. \
+                              snob_stories_download and snob_highlights_download do the same \
+                              for stories, which go after a day, and for a highlight's \
+                              items, each file named after its item's id.";
 
 /// What the server's instructions say of the writes, and only when it was
 /// started with `--allow-writes`: a server that offers no write has no cap
@@ -433,7 +436,8 @@ impl ServerHandler for Server {
                  as far as the first of them.{downloads} \
                  To look at what an account posted, ask for pictures: a small picture of \
                  each post, item, story or highlight comes back as an image, a video's \
-                 cover for a video. Reading a post, a story or a highlight never tells its \
+                 cover for a video, and snob_pfp an account's profile picture. Reading a \
+                 post, a story or a highlight never tells its \
                  owner you looked. \
                  A long list comes back a page at a time: total is how many accounts the list \
                  has, count how many the call hands back (at most limit when one was \
@@ -848,7 +852,7 @@ impl Server {
             return refusal(
                 "result_gone",
                 "a job's result is kept for a day after its walk ended, and this one's is \
-                 gone; call snob_list again for the list",
+                 gone; call snob_list or snob_scan again",
             );
         }
         let mut told = job::with_id(answer::from(&job::plan_of(doc, offset), walk), doc);

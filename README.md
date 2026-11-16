@@ -348,16 +348,20 @@ It prints what to add to that client's configuration.
 | Tool | What it does | Asks you first |
 |---|---|---|
 | `snob_status` | the status: budget, cooldown, stored lists | no |
-| `snob_list` | followers, following, unfollowers, fans, friends | for another account's lists |
+| `snob_list` | followers, following, unfollowers, fans, friends, optionally filtered (verified, private, no picture) | for another account's lists |
+| `snob_whoami` | whether the stored session still works, checked with Instagram unless told not to | no |
+| `snob_scan` | the five counts of an account's lists and who you both follow | for another account's lists |
 | `snob_job`, `snob_jobs`, `snob_job_cancel` | check on, list and stop a walk running as a job | no |
 | `snob_profile` | a profile | no |
 | `snob_posts` | the posts on a grid, or a profile's reels, tagged posts and reposts | no |
 | `snob_post` | one post or reel, with more pages of its comments and the replies under them | no |
 | `snob_post_likers` | who liked a post | yes |
 | `snob_stories`, `snob_highlights` | the stories an account has up, the highlights it keeps | no |
+| `snob_pfp` | an account's profile picture, to look at, and saved with `--downloads-dir` | no |
 | `snob_snapshots`, `snob_changes` | the captures earlier walks stored, and what changed between two of them | no |
 | `snob_follow`, `snob_unfollow` | follow and unfollow, with `--allow-writes` | yes |
 | `snob_post_download` | save a post's photos and videos, with `--downloads-dir` | no |
+| `snob_stories_download`, `snob_highlights_download` | save the stories an account has up, or what one highlight holds, with `--downloads-dir` | no |
 | `snob_logout` | sign one account out of snob | yes, naming the account |
 | `snob_accounts` | the accounts signed in here, with `--any-account` | no |
 
@@ -410,9 +414,12 @@ it, up to 99); what you type in a terminal is not counted.
 
 ### Downloads
 
-With `--downloads-dir <dir>`, the agent can save a post's photos and videos into
-that directory: the agent names the post, never a path, the files get the names
-snob gives every download, and none already there is written over.
+With `--downloads-dir <dir>`, the agent can save a post's photos and videos, the
+stories an account has up, and what a highlight holds into that directory: the
+agent names the post, the account or the highlight, never a path, the files get
+the names snob gives every download (a story's or a highlight item's after its
+id, so the name keeps meaning the same story), and none already there is
+written over.
 
 ### Several accounts
 

@@ -27,6 +27,9 @@ use crate::ui;
 
 pub async fn run(args: StoriesArgs, store: SecretStore, paths: &AccountPaths) -> Result<ExitCode> {
     args.action.refuse_stdout_download_early()?;
+    if args.tell.json {
+        common::refuse_json_to_stdout(args.action.output.as_deref())?;
+    }
     let app = common::reader(&store, paths, args.action.interactive, false)?;
     let typed = common::target_or_own(&app, args.target.as_deref()).await?;
 
@@ -35,6 +38,27 @@ pub async fn run(args: StoriesArgs, store: SecretStore, paths: &AccountPaths) ->
 
     if app.cancel().is_canceled() {
         return Ok(ExitCode::Interrupted);
+    }
+
+    // `--json` requires `-d`, so a selection is there. Before the empty tray's
+    // shortcut: a program asked for a document, and `-d all` of none is an
+    // empty one.
+    if args.tell.json
+        && let Some(selection) = args.action.selection()
+    {
+        let about =
+            serde_json::Map::from_iter([("username".to_string(), stories.username.clone().into())]);
+        return crate::output::media::Telling {
+            about,
+            username: &stories.username,
+            kind: "story",
+            items: &stories.items,
+            selection,
+            destination: args.action.output.as_deref(),
+            bounds: args.tell.bounds(),
+        }
+        .run(app.client(), |number| no_such_story(&stories, number))
+        .await;
     }
 
     if stories.items.is_empty() {
@@ -179,6 +203,7 @@ pub(crate) fn story_from(item: &ReelItem) -> Story {
         .map(|v| v.url.clone());
 
     Story {
+        pk: printable(&item.pk),
         kind,
         taken_at: item.taken_at,
         expiring_at: item.expiring_at,
@@ -239,6 +264,7 @@ fn as_json(stories: &Stories, format: Format) -> Result<String> {
         .map(|(index, story)| {
             serde_json::json!({
                 "number": index + 1,
+                "pk": story.pk,
                 "kind": story.kind.label(),
                 "taken_at": story.taken_at,
                 "expiring_at": story.expiring_at,
@@ -371,6 +397,7 @@ mod tests {
     /// zone.
     fn two_stories() -> Stories {
         let story = |kind, mentions: &[&str]| Story {
+            pk: format!("30{}", mentions.len()),
             kind,
             taken_at: Epoch::new(1_773_576_000),
             expiring_at: None,
@@ -407,9 +434,9 @@ mod tests {
     fn the_json_is_the_rows_or_the_rows_inside_their_account() {
         let stories = two_stories();
         let rows = [
-            serde_json::json!({"number": 1, "kind": "photo", "taken_at": 1_773_576_000,
+            serde_json::json!({"number": 1, "pk": "302", "kind": "photo", "taken_at": 1_773_576_000,
                 "expiring_at": null, "mentions": ["a", "b"], "url": "https://cdn.example/2"}),
-            serde_json::json!({"number": 2, "kind": "video", "taken_at": 1_773_576_000,
+            serde_json::json!({"number": 2, "pk": "300", "kind": "video", "taken_at": 1_773_576_000,
                 "expiring_at": null, "mentions": [], "url": "https://cdn.example/0"}),
         ];
         let lines: Vec<serde_json::Value> = as_json(&stories, Format::Ndjson)

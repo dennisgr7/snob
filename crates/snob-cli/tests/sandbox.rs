@@ -1887,6 +1887,136 @@ async fn an_item_number_nobody_has_is_refused() {
     assert_eq!(media, 0, "a refused set still fetched media");
 }
 
+/// `-d --json` tells what became of each story as one document, and names
+/// each file after the story's id, so a name stays one story's whatever
+/// number the tray gives it later; asked again, nothing is fetched twice.
+#[tokio::test]
+async fn stories_saved_as_a_document_are_named_after_their_ids() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    with_downloadable_stories(&instagram).await;
+    log_in(tmp.path(), &instagram);
+    let here = here(&tmp);
+    let args = ["stories", "me", "-d", "all", "--json", "-o", "kept"];
+
+    let out = snob_from(&here, tmp.path(), &instagram, &args);
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    let told = json(&out);
+    assert_eq!(told["username"], "me");
+    let saved = told["saved"].as_array().expect("what was saved");
+    assert_eq!(saved.len(), 2, "{told}");
+    assert_eq!(saved[0]["file"], "me-story-1.jpg");
+    assert_eq!(saved[0]["pk"], "1");
+    assert_eq!(saved[0]["kind"], "photo");
+    assert_eq!(saved[0]["already"], false);
+    assert_eq!(saved[1]["file"], "me-story-2.mp4");
+    assert_eq!(told["failed"], serde_json::json!([]));
+    assert_eq!(told["left"], serde_json::json!([]));
+    assert_eq!(
+        std::fs::read(here.join("kept").join("me-story-1.jpg")).unwrap(),
+        b"\xff\xd8\xff\xe0 a picture"
+    );
+
+    let again = json(&snob_from(&here, tmp.path(), &instagram, &args));
+    assert_eq!(again["saved"][0]["already"], true, "{again}");
+    assert_eq!(again["bytes"], 0, "{again}");
+
+    // Bounded: a call that may fetch no bytes starts no file, and says so.
+    let bounded = snob_from(
+        &here,
+        tmp.path(),
+        &instagram,
+        &[
+            "stories",
+            "me",
+            "-d",
+            "1,2",
+            "--json",
+            "--save-at-most=1",
+            "-o",
+            "bounded",
+        ],
+    );
+    assert!(
+        bounded.status.success(),
+        "{}{}",
+        stdout(&bounded),
+        stderr(&bounded)
+    );
+    let told = json(&bounded);
+    assert_eq!(told["saved"].as_array().map(Vec::len), Some(1), "{told}");
+    assert_eq!(told["left"][0]["item"], 2, "{told}");
+    assert_eq!(told["left"][0]["why"], "bytes", "{told}");
+
+    // The files cannot go where the document goes.
+    let refused = snob_from(
+        &here,
+        tmp.path(),
+        &instagram,
+        &["stories", "me", "-d", "1", "--json", "-o", "-"],
+    );
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("cannot go there too"),
+        "{}",
+        stderr(&refused)
+    );
+}
+
+/// The same for the items of one highlight, which takes its number; a
+/// whole tray is no document of items.
+#[tokio::test]
+async fn highlight_items_saved_as_a_document_are_named_after_their_ids() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    with_downloadable_highlights(&instagram).await;
+    log_in(tmp.path(), &instagram);
+    let here = here(&tmp);
+
+    let out = snob_from(
+        &here,
+        tmp.path(),
+        &instagram,
+        &["highlights", "me", "1", "-d", "2", "--json", "-o", "kept"],
+    );
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    let told = json(&out);
+    assert_eq!(told["highlight"]["number"], 1, "{told}");
+    assert_eq!(told["highlight"]["id"], "highlight:100", "{told}");
+    assert_eq!(told["saved"][0]["item"], 2, "{told}");
+    assert_eq!(told["saved"][0]["file"], "me-highlight-2.mp4", "{told}");
+    assert_eq!(
+        std::fs::read(here.join("kept").join("me-highlight-2.mp4")).unwrap(),
+        b"\x00\x00\x00\x18ftypisom a clip"
+    );
+
+    let whole = snob_from(
+        &here,
+        tmp.path(),
+        &instagram,
+        &["highlights", "me", "-d", "all", "--json", "-o", "kept"],
+    );
+    assert!(!whole.status.success());
+    assert!(
+        stderr(&whole).contains("give its number"),
+        "{}",
+        stderr(&whole)
+    );
+
+    let none = snob_from(
+        &here,
+        tmp.path(),
+        &instagram,
+        &["highlights", "me", "9", "-d", "all", "--json", "-o", "kept"],
+    );
+    assert!(!none.status.success());
+    assert!(
+        stderr(&none).contains("there is no highlight 9"),
+        "{}",
+        stderr(&none)
+    );
+}
+
 /// One number with `-o` is the single-download contract: `-o` names the
 /// file, and naming it again replaces it, because the name was typed.
 #[tokio::test]
@@ -1973,9 +2103,9 @@ async fn a_highlight_is_listed_with_the_entry_it_is() {
             "username": "me",
             "highlight": {"number": 1, "id": "highlight:100", "title": "trip"},
             "items": [
-                {"number": 1, "kind": "photo", "taken_at": 1_600_000_000,
+                {"number": 1, "pk": "1", "kind": "photo", "taken_at": 1_600_000_000,
                  "mentions": [], "url": format!("{base}/big.jpg")},
-                {"number": 2, "kind": "video", "taken_at": 1_600_001_000,
+                {"number": 2, "pk": "2", "kind": "video", "taken_at": 1_600_001_000,
                  "mentions": [], "url": format!("{base}/clip.mp4")},
             ],
         })
@@ -7087,6 +7217,282 @@ async fn an_agent_saves_a_posts_files_where_the_server_was_told() {
     );
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(!missing.exists());
+}
+
+/// The stories an account has up are saved where the server was told, each
+/// named after the story's id and not its place in the tray, and asking again
+/// fetches nothing twice; no address of a file is handed back.
+#[cfg(feature = "mcp")]
+#[tokio::test]
+async fn an_agent_saves_stories_by_their_ids_where_the_server_was_told() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    with_downloadable_stories(&instagram).await;
+    log_in(tmp.path(), &instagram);
+    let into = tmp.path().join("for the agent");
+    std::fs::create_dir(&into).unwrap();
+    let mut client = McpClient::start(
+        tmp.path(),
+        &instagram,
+        &["--downloads-dir", into.to_str().unwrap()],
+    )
+    .await;
+
+    // No argument names a place.
+    for wrong in [
+        serde_json::json!({ "output": tmp.path().to_str().unwrap() }),
+        serde_json::json!({ "items": [0] }),
+        serde_json::json!({ "account": "--output=." }),
+    ] {
+        let told = client.call("snob_stories_download", wrong).await;
+        assert_eq!(told["isError"], true, "{told}");
+        assert_eq!(
+            told["structuredContent"]["error"]["code"], "invalid_arguments",
+            "{told}"
+        );
+    }
+
+    let done = client
+        .call("snob_stories_download", serde_json::json!({}))
+        .await;
+    assert_eq!(done["isError"], false, "{done}");
+    let told = &done["structuredContent"];
+    assert_eq!(told["username"], "me", "{done}");
+    let names: Vec<&str> = told["saved"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|saved| saved["file"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["me-story-1.jpg", "me-story-2.mp4"], "{done}");
+    assert_eq!(told["saved"][1]["pk"], "2", "{done}");
+    assert_eq!(told["saved"][1]["kind"], "video", "{done}");
+    assert_eq!(
+        std::fs::read(into.join("me-story-1.jpg")).unwrap(),
+        b"\xff\xd8\xff\xe0 a picture"
+    );
+    let text = done.to_string();
+    assert!(
+        !text.contains("/big.jpg") && !text.contains("/clip.mp4"),
+        "{text}"
+    );
+    assert_eq!(std::fs::read_dir(&into).unwrap().count(), 2);
+
+    let again = client
+        .call("snob_stories_download", serde_json::json!({ "items": [2] }))
+        .await;
+    assert_eq!(again["isError"], false, "{again}");
+    let saved = &again["structuredContent"]["saved"];
+    assert_eq!(saved.as_array().map(Vec::len), Some(1), "{again}");
+    assert_eq!(saved[0]["already"], true, "{again}");
+    assert_eq!(fetched(&instagram, "/big.jpg").await, 1);
+    assert_eq!(fetched(&instagram, "/clip.mp4").await, 1);
+}
+
+/// What a highlight holds is saved the same way, by the highlight's number in
+/// the tray, which a call has to give.
+#[cfg(feature = "mcp")]
+#[tokio::test]
+async fn an_agent_saves_a_highlights_items_by_their_ids() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    with_downloadable_highlights(&instagram).await;
+    log_in(tmp.path(), &instagram);
+    let into = tmp.path().join("for the agent");
+    std::fs::create_dir(&into).unwrap();
+    let mut client = McpClient::start(
+        tmp.path(),
+        &instagram,
+        &["--downloads-dir", into.to_str().unwrap()],
+    )
+    .await;
+
+    for wrong in [
+        serde_json::json!({ "account": "me" }),
+        serde_json::json!({ "highlight": 1 }),
+    ] {
+        let told = client.call("snob_highlights_download", wrong).await;
+        assert_eq!(told["isError"], true, "{told}");
+    }
+    let done = client
+        .call(
+            "snob_highlights_download",
+            serde_json::json!({ "account": "me", "highlight": 1, "items": [2] }),
+        )
+        .await;
+    assert_eq!(done["isError"], false, "{done}");
+    let told = &done["structuredContent"];
+    assert_eq!(told["highlight"]["number"], 1, "{done}");
+    assert_eq!(told["saved"][0]["file"], "me-highlight-2.mp4", "{done}");
+    assert_eq!(
+        std::fs::read(into.join("me-highlight-2.mp4")).unwrap(),
+        b"\x00\x00\x00\x18ftypisom a clip"
+    );
+    assert_eq!(std::fs::read_dir(&into).unwrap().count(), 1);
+}
+
+/// A profile picture comes back as an image, from every server, and is saved
+/// only by one given a directory, once.
+#[cfg(feature = "mcp")]
+#[tokio::test]
+async fn an_agent_looks_at_a_profile_picture_and_saves_it_where_it_was_told() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    let base = instagram.uri();
+    Mock::given(method("GET"))
+        .and(url_path("/api/v1/users/web_profile_info/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"data":{{"user":{{"id":"{PK}","username":"me",
+                "profile_pic_url_hd":"{base}/big.jpg",
+                "edge_followed_by":{{"count":3}},"edge_follow":{{"count":2}}}}}}}}"#
+        )))
+        .with_priority(1)
+        .mount(&instagram)
+        .await;
+    serve_media(&instagram).await;
+    log_in(tmp.path(), &instagram);
+
+    let mut plain = McpClient::start(tmp.path(), &instagram, &[]).await;
+    assert_eq!(
+        plain
+            .call(
+                "snob_pfp",
+                serde_json::json!({ "account": "me", "save": true })
+            )
+            .await["isError"],
+        true
+    );
+    let seen = plain
+        .call("snob_pfp", serde_json::json!({ "account": "me" }))
+        .await;
+    assert_eq!(seen["isError"], false, "{seen}");
+    assert_eq!(seen["structuredContent"]["username"], "me", "{seen}");
+    assert_eq!(seen["structuredContent"]["saved"], serde_json::Value::Null);
+    let image = seen["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|block| block["type"] == "image")
+        .unwrap_or_else(|| panic!("the picture as an image: {seen}"));
+    assert_eq!(image["mimeType"], "image/jpeg", "{seen}");
+    assert!(
+        !seen["structuredContent"].to_string().contains("/big.jpg"),
+        "{seen}"
+    );
+    drop(plain);
+
+    let into = tmp.path().join("for the agent");
+    std::fs::create_dir(&into).unwrap();
+    let mut client = McpClient::start(
+        tmp.path(),
+        &instagram,
+        &["--downloads-dir", into.to_str().unwrap()],
+    )
+    .await;
+    let saved = client
+        .call(
+            "snob_pfp",
+            serde_json::json!({ "account": "me", "save": true }),
+        )
+        .await;
+    assert_eq!(saved["isError"], false, "{saved}");
+    let file = saved["structuredContent"]["saved"]["file"]
+        .as_str()
+        .unwrap();
+    assert!(file.starts_with("me-") && file.ends_with(".jpg"), "{saved}");
+    assert_eq!(saved["structuredContent"]["saved"]["already"], false);
+    assert_eq!(
+        std::fs::read(into.join(file)).unwrap(),
+        b"\xff\xd8\xff\xe0 a picture"
+    );
+    let again = client
+        .call(
+            "snob_pfp",
+            serde_json::json!({ "account": "me", "save": true }),
+        )
+        .await;
+    assert_eq!(
+        again["structuredContent"]["saved"]["already"], true,
+        "{again}"
+    );
+    assert_eq!(std::fs::read_dir(&into).unwrap().count(), 1);
+}
+
+/// The session check is an answer, stored or live, and says nothing of where
+/// the session is kept.
+#[cfg(feature = "mcp")]
+#[tokio::test]
+async fn an_agent_asks_whether_the_session_still_works() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    log_in(tmp.path(), &instagram);
+    let mut client = McpClient::start(tmp.path(), &instagram, &[]).await;
+
+    let stored = client
+        .call("snob_whoami", serde_json::json!({ "offline": true }))
+        .await;
+    assert_eq!(stored["isError"], false, "{stored}");
+    let told = &stored["structuredContent"];
+    assert_eq!(told["username"], "me", "{stored}");
+    assert_eq!(told["alive"], serde_json::Value::Null, "{stored}");
+    assert_eq!(told["not_checked"], "offline", "{stored}");
+    assert!(told.get("storage_path").is_none(), "{stored}");
+
+    let live = client.call("snob_whoami", serde_json::json!({})).await;
+    assert_eq!(live["isError"], false, "{live}");
+    assert_eq!(live["structuredContent"]["alive"], true, "{live}");
+    assert!(
+        live["structuredContent"].get("storage_path").is_none(),
+        "{live}"
+    );
+}
+
+/// A scan is a job like the lists it is made of: answered inline when it
+/// ends within the wait, with the five counts and the job it ran as.
+#[cfg(feature = "mcp")]
+#[tokio::test]
+async fn an_agent_scans_an_account_as_a_job() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    log_in(tmp.path(), &instagram);
+    let jobs = Jobs {
+        root: tmp.path(),
+        instagram: &instagram,
+    };
+    let mut client = McpClient::start(tmp.path(), &instagram, &[]).await;
+
+    let scanned = client.call("snob_scan", serde_json::json!({})).await;
+    assert_eq!(scanned["isError"], false, "{scanned}");
+    let told = &scanned["structuredContent"];
+    assert_eq!(told["counts"]["followers"], 3, "{scanned}");
+    assert_eq!(told["counts"]["following"], 2, "{scanned}");
+    let id = told["job_id"].as_str().expect("the job it ran as");
+    assert!(snob_store::paths::JobId::parse(id).is_some(), "{id}");
+    let listed = jobs.ask(&["list", "--all", "--json"]);
+    assert_eq!(listed["jobs"][0]["tool"], "snob_scan", "{listed}");
+    assert_eq!(listed["jobs"][0]["command"], "scan", "{listed}");
+
+    // From what is stored, nothing is sent.
+    let before = instagram.received_requests().await.unwrap().len();
+    let stored = client
+        .call("snob_scan", serde_json::json!({ "mode": "stored" }))
+        .await;
+    assert_eq!(stored["isError"], false, "{stored}");
+    assert_eq!(stored["structuredContent"]["counts"]["followers"], 3);
+    assert_eq!(
+        instagram.received_requests().await.unwrap().len(),
+        before,
+        "a stored scan sent something"
+    );
+
+    // Another account's lists ask first.
+    let asked = client
+        .call("snob_scan", serde_json::json!({ "account": "someoneelse" }))
+        .await;
+    assert_eq!(
+        asked["structuredContent"]["status"], "confirmation_required",
+        "{asked}"
+    );
 }
 
 /// An agent sees the accounts signed in here, and says which one a call

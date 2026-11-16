@@ -93,6 +93,17 @@ pub async fn run(
     {
         return Err(whole_highlights_to_stdout());
     }
+    if args.tell.json {
+        common::refuse_json_to_stdout(args.action.output.as_deref())?;
+        if args.highlight.is_none() {
+            return Err(ExitError::new(
+                ExitCode::Error,
+                "--json tells what is saved of the items of one highlight: give its number, \
+                 as in \"snob highlights someone 2 -d all --json -o <directory>\"",
+            )
+            .into());
+        }
+    }
     let app = common::reader(&store, paths, args.action.interactive, false)?;
     let typed = common::target_or_own(&app, args.target.as_deref()).await?;
 
@@ -110,7 +121,17 @@ pub async fn run(
             // A document for a script reading JSON, as the empty tray below
             // writes one, with `null` where `profile` puts it for the same
             // answer: not "has none", but "not shown".
-            if args.action.selection().is_none() && !args.action.interactive {
+            if args.tell.json {
+                // The document a program asked for, with `null` where the
+                // listing puts it for the same answer.
+                crate::ui::say!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "username": username,
+                        "highlights": null,
+                    }))?
+                );
+            } else if args.action.selection().is_none() && !args.action.interactive {
                 let destination = args.action.output.as_deref();
                 let format =
                     common::checked_format(args.list.format, destination, "a highlight listing")?;
@@ -129,7 +150,9 @@ pub async fn run(
         return Ok(ExitCode::Interrupted);
     }
 
-    if tray.entries.is_empty() {
+    // With `--json` an empty tray falls through to the refusal of the
+    // highlight's number below: a program asked for one highlight's items.
+    if tray.entries.is_empty() && !args.tell.json {
         ui::info(&format!(
             "@{} has no highlights.",
             printable(&tray.username)
@@ -262,6 +285,30 @@ async fn inside_one(
     let items = items_of_entry(app.client(), tray, &tray.entries[number - 1]).await?;
     if app.cancel().is_canceled() {
         return Ok(ExitCode::Interrupted);
+    }
+    // Before the empty highlight's shortcut: a program asked for a document.
+    if args.tell.json
+        && let Some(selection) = args.action.selection()
+    {
+        let entry = &tray.entries[number - 1];
+        let about = serde_json::Map::from_iter([
+            ("username".to_string(), tray.username.clone().into()),
+            (
+                "highlight".to_string(),
+                serde_json::json!({ "number": number, "id": entry.id, "title": entry.title }),
+            ),
+        ]);
+        return crate::output::media::Telling {
+            about,
+            username: &tray.username,
+            kind: "highlight",
+            items: &items,
+            selection,
+            destination: args.action.output.as_deref(),
+            bounds: args.tell.bounds(),
+        }
+        .run(app.client(), |n| no_such_item(tray, number, &items, n))
+        .await;
     }
     if items.is_empty() {
         ui::info(&empty_highlight(tray, number));
@@ -651,6 +698,7 @@ fn items_json(tray: &Tray, number: usize, items: &[Story], format: Format) -> Re
         .map(|(index, story)| {
             serde_json::json!({
                 "number": index + 1,
+                "pk": story.pk,
                 "kind": story.kind.label(),
                 "taken_at": story.taken_at,
                 "mentions": story.mentions,
@@ -765,6 +813,7 @@ mod tests {
 
     fn items() -> Vec<Story> {
         let story = |kind, mentions: &[&str]| Story {
+            pk: format!("30{}", mentions.len()),
             kind,
             taken_at: Epoch::new(1_773_576_000),
             expiring_at: None,
@@ -837,9 +886,9 @@ mod tests {
         );
 
         let rows = [
-            serde_json::json!({"number": 1, "kind": "photo", "taken_at": 1_773_576_000,
+            serde_json::json!({"number": 1, "pk": "302", "kind": "photo", "taken_at": 1_773_576_000,
                 "mentions": ["a", "b"], "url": "https://cdn.example/2"}),
-            serde_json::json!({"number": 2, "kind": "video", "taken_at": 1_773_576_000,
+            serde_json::json!({"number": 2, "pk": "300", "kind": "video", "taken_at": 1_773_576_000,
                 "mentions": [], "url": "https://cdn.example/0"}),
         ];
         let items = items();

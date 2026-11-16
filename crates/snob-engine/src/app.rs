@@ -124,6 +124,21 @@ pub fn held_elsewhere() -> anyhow::Error {
     .into()
 }
 
+/// What [`App::open`] does for a run given `--spend-alone`, for a command that
+/// builds no `App` and sends a request of its own (`whoami`): the account's
+/// `spend.lock`, taken before the request, refused as [`held_elsewhere`] while
+/// another run holds it, and `None` when the run was not given the flag. Held
+/// as long as the file is.
+pub fn hold_alone(paths: &AccountPaths) -> Result<Option<std::fs::File>> {
+    if !SPEND_ALONE.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(None);
+    }
+    paths.ensure_dirs()?;
+    Ok(Some(
+        snob_store::paths::try_lock_file(&paths.spend_lock())?.ok_or_else(held_elsewhere)?,
+    ))
+}
+
 /// `pacer` with the announcement the single-request commands, `login` and
 /// `whoami`, want: one line on standard error, because there is nothing for a
 /// bar to count.

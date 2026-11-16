@@ -106,6 +106,9 @@ pub async fn run(
                 report::opening(&snob_engine::sentences::held_until(&held))
             );
         } else {
+            // Under `--spend-alone`, as every command that sends is: this one
+            // builds no `App` to take it.
+            let _alone = snob_engine::app::hold_alone(paths)?;
             let client = IgClient::new(session.clone(), pacer)?;
             match client.whoami().await {
                 Ok(identity) => {

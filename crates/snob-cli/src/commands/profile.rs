@@ -950,6 +950,7 @@ mod tests {
 
     fn story() -> Story {
         Story {
+            pk: "1".into(),
             kind: snob_engine::media::Kind::Photo,
             taken_at: Epoch::new(0),
             expiring_at: None,
@@ -1179,6 +1180,7 @@ mod tests {
             cover: Some("https://cdn.example/cover.jpg".into()),
         }]);
         profile.stories = Visibility::Shown(vec![Story {
+            pk: "1".into(),
             kind: snob_engine::media::Kind::Photo,
             taken_at: Epoch::new(1_773_576_000),
             expiring_at: Some(Epoch::new(1_773_662_400)),

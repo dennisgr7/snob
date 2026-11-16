@@ -12,6 +12,7 @@ expression: "as_json(&stories, Format::Json).unwrap()"
         "b"
       ],
       "number": 1,
+      "pk": "302",
       "taken_at": 1773576000,
       "url": "https://cdn.example/2"
     },
@@ -20,6 +21,7 @@ expression: "as_json(&stories, Format::Json).unwrap()"
       "kind": "video",
       "mentions": [],
       "number": 2,
+      "pk": "300",
       "taken_at": 1773576000,
       "url": "https://cdn.example/0"
     }

@@ -241,10 +241,11 @@ pub fn standing(doc: &Value, cancel: bool) -> (Answer, String) {
         });
         let said = if walked(doc) {
             "The job is lost. The list it walked can be read again once its claim frees \
-             (claim_frees_at); a snob_list call before then is refused as walked_elsewhere."
+             (claim_frees_at); a snob_list or snob_scan call before then is refused as \
+             walked_elsewhere."
         } else {
             "The job is lost before its walk started. Nothing was read and its lists are free: \
-             a snob_list call starts a new walk now."
+             a snob_list or snob_scan call starts a new walk now."
         }
         .to_string();
         return (
@@ -289,7 +290,7 @@ pub fn standing(doc: &Value, cancel: bool) -> (Answer, String) {
             "The walk goes on as job {id}{left}. Call snob_job with \"job_id\": \"{id}\" to hear \
              how it is going; it waits up to wait_seconds for the walk to end, and then answers \
              with its result. snob_job_cancel stops it and keeps what it read. The same \
-             snob_list call made again is answered with this job; another walk of this account \
+             call made again is answered with this job; another walk of this account \
              is refused while it runs."
         );
         if doc.get("detached").and_then(Value::as_str)

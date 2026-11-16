@@ -147,3 +147,67 @@ pub(crate) async fn download_selected(
     }
     Ok(ExitCode::Ok)
 }
+
+/// `-d --json`: the items `selection` names saved into `destination`, a
+/// directory (the working one when none is given), each under a name made of
+/// what it is ([`snob_engine::media::stable_stem`], so it keeps it when the
+/// tray changes), and what became of each printed as one document: `about`
+/// first, then what [`snob_engine::media::save_telling`] says.
+pub(crate) struct Telling<'a> {
+    pub about: serde_json::Map<String, serde_json::Value>,
+    pub username: &'a str,
+    /// `story` or `highlight`: the word in each file's name.
+    pub kind: &'a str,
+    pub items: &'a [Story],
+    pub selection: DownloadSelection,
+    pub destination: Option<&'a Path>,
+    pub bounds: snob_engine::posts::Bounds,
+}
+
+impl Telling<'_> {
+    pub(crate) async fn run(
+        self,
+        client: &IgClient,
+        no_such: impl Fn(usize) -> anyhow::Error,
+    ) -> Result<ExitCode> {
+        use snob_engine::media::{MAX_STORY_BYTES, Named, Told, save_telling, stable_stem};
+
+        let numbers = numbers_of(self.selection, self.items.len(), no_such)?;
+        let files: Vec<Told> = numbers
+            .iter()
+            .filter_map(|&number| {
+                let story = self.items.get(number.checked_sub(1)?)?;
+                Some(Told {
+                    file: Named {
+                        number,
+                        stem: stable_stem(self.username, self.kind, &story.pk),
+                        url: story.url.clone(),
+                        what: format!("{} {number}", self.kind),
+                        cap: MAX_STORY_BYTES,
+                        best: None,
+                        ffmpeg: None,
+                    },
+                    pk: story.pk.clone(),
+                    kind: story.kind,
+                })
+            })
+            .collect();
+        let total = files.len();
+        let dir = self.destination.unwrap_or(Path::new("."));
+        let (told, failed) = save_telling(client, files, dir, self.bounds).await?;
+        let mut document = self.about;
+        document.extend(told);
+        ui::say!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::Value::Object(document))?
+        );
+        if failed > 0 {
+            return Err(snob_engine::exit::ExitError::new(
+                ExitCode::Error,
+                format!("{failed} of {total} files could not be downloaded"),
+            )
+            .into());
+        }
+        Ok(ExitCode::Ok)
+    }
+}

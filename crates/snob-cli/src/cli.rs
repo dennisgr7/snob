@@ -1239,6 +1239,9 @@ pub struct ScanArgs {
 
     #[command(flatten)]
     pub walk: WalkArgs,
+
+    #[command(flatten)]
+    pub agent: AgentArgs,
 }
 
 /// The list commands' way into the account browser. One definition, like
@@ -2001,6 +2004,20 @@ pub struct PfpArgs {
     /// Download the picture and exit, even on a terminal
     #[arg(long, conflicts_with = "interactive")]
     pub no_interactive: bool,
+
+    /// Print what was fetched as one JSON document on standard output instead
+    /// of the picture: the account, whether it is the full-size picture, its
+    /// size in bytes and, with -o, the file's name. -o is then a directory,
+    /// made when it is not there, and the file is named after the account and
+    /// a digest of the picture (someone-<digest>), so a changed picture is a
+    /// new file and one already saved is not written again
+    #[arg(long, conflicts_with = "interactive")]
+    pub json: bool,
+
+    /// With --json, put the picture itself in the document, in base64, when
+    /// it weighs at most 512 KiB
+    #[arg(long, requires = "json")]
+    pub embed: bool,
 }
 
 impl PfpArgs {
@@ -2009,7 +2026,9 @@ impl PfpArgs {
         browse_decision(
             self.interactive,
             self.no_interactive,
-            self.output.is_some(),
+            // The document is the printed form, as a destination is the
+            // downloaded one.
+            self.output.is_some() || self.json,
             attending,
         )
     }
@@ -2190,6 +2209,40 @@ pub struct MediaListArgs {
     pub small_pictures: bool,
 }
 
+/// How a download of a tray's items is told, for a reader of the answer
+/// rather than of the directory: a script, and `snob mcp`, which runs a
+/// download for an agent this way.
+#[derive(Args, Debug)]
+pub struct SaveTellingArgs {
+    /// With -d, print what was saved as one JSON document on standard
+    /// output: each file's name, size and the item's id, what failed, and
+    /// where they are. -o is then a directory, made when it is not there, and
+    /// each file is named after its item's id (someone-story-<id>), which
+    /// keeps its name when the tray changes
+    #[arg(long, requires = "download")]
+    pub json: bool,
+
+    /// With --json, start no further file once this many bytes were fetched;
+    /// the answer lists what was left, and asking again saves it
+    #[arg(long, requires = "json", value_name = "BYTES")]
+    pub save_at_most: Option<u64>,
+
+    /// With --json, start no further file once the downloads have taken this
+    /// long (30s, 2m); a file already started is finished
+    #[arg(long, requires = "json", value_name = "DURATION", value_parser = duration)]
+    pub save_within: Option<std::time::Duration>,
+}
+
+impl SaveTellingArgs {
+    /// What the download stops at ([`snob_engine::posts::Bounds`]).
+    pub fn bounds(&self) -> snob_engine::posts::Bounds {
+        snob_engine::posts::Bounds {
+            bytes: self.save_at_most,
+            within: self.save_within,
+        }
+    }
+}
+
 #[derive(Args, Debug)]
 pub struct StoriesArgs {
     /// Account whose stories to show. Defaults to your own.
@@ -2201,6 +2254,9 @@ pub struct StoriesArgs {
 
     #[command(flatten)]
     pub list: MediaListArgs,
+
+    #[command(flatten)]
+    pub tell: SaveTellingArgs,
 }
 
 #[derive(Args, Debug)]
@@ -2221,6 +2277,11 @@ pub struct HighlightsArgs {
 
     #[command(flatten)]
     pub list: MediaListArgs,
+
+    // `--json` needs a highlight's number: it tells what is saved of the
+    // items of one (`commands::highlights::run` refuses it otherwise).
+    #[command(flatten)]
+    pub tell: SaveTellingArgs,
 }
 
 #[derive(Args, Debug)]

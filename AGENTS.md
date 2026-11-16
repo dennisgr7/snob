@@ -606,15 +606,19 @@ prints a client's snippet and never writes it.
 | Tool | Runs | Asks a yes | Offered |
 |---|---|---|---|
 | `snob_status` | `status` | no | always |
-| `snob_list` | a list or crossing; a walk runs as a job | another account's lists | always |
+| `snob_list` | a list or crossing, filtered by `--hide`/`--only` (`verified`, `private`, `no-pfp`), with `--max-age` (a minute to a year, only in mode `auto`); a walk runs as a job (all three are the job's allowed flags too) | another account's lists | always |
+| `snob_scan` | `scan`: the five counts of both lists and `followed_by` (cut to one answer, `answer::bounded_scan`); a walk runs as a job, `dry_run` and `stored` inline | another account's lists | always |
+| `snob_whoami` | `whoami --json`, `--offline` sends nothing; a dead session is an answer (exit 3, 4, 5 too), `storage_path` left out | no | always |
 | `snob_job`, `snob_jobs`, `snob_job_cancel` | `__job show`, `list`, `cancel` | no | always |
 | `snob_profile` | `profile`, inline | no | always |
 | `snob_posts` | a grid or tab, at most 3 pages | no | always |
 | `snob_post` | a post, its comments and replies | no | always |
 | `snob_post_likers` | `likers` | yes | always |
 | `snob_stories`, `snob_highlights` | `stories`, `highlights` | no | always |
+| `snob_pfp` | `pfp --json --embed`, and `--output=<downloads dir>` with `save` | no | always (`save` with `--downloads-dir`) |
 | `snob_snapshots`, `snob_changes` | stored captures; nothing sent | no | always |
 | `snob_post_download` | `post --download` into `--downloads-dir` | no (the client's prompt) | with `--downloads-dir` |
+| `snob_stories_download`, `snob_highlights_download` | `stories -d`, `highlights <n> -d`, with `--json`, into `--downloads-dir` | no | with `--downloads-dir` |
 | `snob_follow`, `snob_unfollow` | `follow`, `unfollow` | yes | with `--allow-writes` |
 | `snob_logout` | `logout --only=<name>` | yes, naming the account | always |
 | `snob_accounts` | `account list --json` | no | with `--any-account` |
@@ -661,6 +665,7 @@ depends on the server's flags alone.
 | A job's wait in a call | 20 s default, at most 50; a task's 5 s | `tools::WAIT_SECONDS`, `MOST_WAIT_SECONDS`, `tasks::WAIT_SECONDS` |
 | Posts named in `until` | 24 | `tools::MOST_UNTIL` |
 | One download call | 1 GiB or 2 min, then no new file | `tools::SAVE_AT_MOST`, `SAVE_WITHIN` |
+| Items named in a post's download; in a tray's | 20; 100 | `tools::MOST_ITEMS`, `MOST_TRAY_ITEMS` |
 | Small pictures | 512 KiB each, 4 MiB a listing | `media::MAX_SMALL_PICTURE`, `MOST_SMALL_PICTURES` |
 | Agents' writes on an account | 10 in any 24 h by default, at most 99 | `mcp_acts::WRITES_A_DAY`, `MOST_WRITES_A_DAY` |
 
@@ -679,7 +684,8 @@ runs nothing, takes no permit and is not counted.
   when it ends within `wait_seconds`, else with its `job_id`. One job per
   account. A client that declared MCP Tasks gets a task with the job's id
   (`tasks.rs`), unless the call names `as_account`. People start the same job
-  with `--background`.
+  with `--background`. **`scan` is one too** (`jobs::argv::check` takes it, with
+  both lists as its claim), though a person has no `--background` for it.
 - **A finished job's list is held by the server that handed back a page of it**
   (`pages.rs`, under the job and the account the call acts as), so the
   `snob_job` pages after it start no child; a server that signs an account out
@@ -692,12 +698,21 @@ runs nothing, takes no permit and is not counted.
   posts, stories and highlights; `pfp_url` is left out of every account,
   `answer::LEFT_OUT`).
   Pictures asked for (`pictures: true`) come back as MCP image content, never a
-  video.
+  video; `snob_pfp` hands back the profile picture the same way (`pfp --json
+  --embed`: a picture over `MAX_SMALL_PICTURE` is a `missing` entry), saved into
+  `--downloads-dir` as `<user>-<digest>` (`media::short_digest`) only with
+  `save`, so a changed picture is a new file and the same one is not written
+  again.
 - **Files only into the directory the person named** (`--downloads-dir`, which
   must exist), under the names every download gets, and **none written over**
   (`media::save_named`). A push-back ends the run (`media::ends_the_run`).
-  Stories and highlights are not saved for an agent yet (their names are tray
-  positions).
+  **Stories and highlights are saved by their ids**: `stories -d --json` and
+  `highlights <n> -d --json` (`output::media::Telling`,
+  `media::save_telling`) name a file `<user>-story-<pk>` or
+  `<user>-highlight-<pk>` (`media::stable_stem`), never by a tray position,
+  which moves as stories come and go and would make a name another story's. The
+  command line's own `-d` keeps `<user>-<number>`. A highlight is one number a
+  call: a whole tray is not a document of items.
 - A post is told apart by `pk` and `code`; `until` stops a grid at the first
   page holding a post the reader has (`posts::reached`, never a pinned one).
   Comments, replies and changes come back bounded, with what was left out

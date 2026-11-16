@@ -56,6 +56,9 @@ impl Kind {
 /// One story or highlight item, reduced to what a listing and a download need.
 #[derive(Debug, Clone)]
 pub struct Story {
+    /// Instagram's id for the item, which keeps it apart from every other
+    /// however the tray changes. Filtered: it came off somebody else's profile.
+    pub pk: String,
     pub kind: Kind,
     pub taken_at: Epoch,
     pub expiring_at: Option<Epoch>,
@@ -732,6 +735,148 @@ pub fn default_name(dir: &Path, username: &str, number: usize, extension: &str) 
     files::default_path(dir, &format!("{}-{number}", printable(username)), extension)
 }
 
+/// The stem a story or a highlight's item is saved under when what became of
+/// the download is told as a document ([`save_telling`]):
+/// `<username>-<kind>-<pk>`.
+///
+/// **Named by what the item is, not by where it stands**: a tray's numbers
+/// move as stories are added and expire, so a name built on one would later
+/// be another story's, and a reader that comes back to the same directory
+/// would take it for a file it has.
+pub fn stable_stem(username: &str, kind: &str, pk: &str) -> String {
+    let pk: String = pk.chars().filter(char::is_ascii_alphanumeric).collect();
+    format!("{}-{kind}-{pk}", printable(username))
+}
+
+/// One file of a download told as a document ([`save_telling`]), with what
+/// its listing says of it.
+#[derive(Debug, Clone)]
+pub struct Told {
+    pub file: Named,
+    pub pk: String,
+    pub kind: Kind,
+}
+
+/// Saves `files` into the directory `dir`, one after another, and answers with
+/// what became of each, as the keys of a document the caller completes with
+/// what it is about, and with how many failed:
+///
+/// - `directory`: where the files are, absolute;
+/// - `saved`: each file there, by its number in the listing: its `file` name,
+///   its `bytes`, its `kind` and its `pk`, and `already` when an earlier run
+///   had saved it and nothing was fetched;
+/// - `failed`: the items that could not be fetched, each with `why`;
+/// - `left`: the items not started because a bound of `bounds` was reached,
+///   each with `why` (`bytes` or `time`): asking again saves them, since those
+///   already there are not fetched twice;
+/// - `bytes`: what this run fetched.
+///
+/// For a caller that reads the answer rather than a directory (`stories -d
+/// --json`, which `snob mcp` runs for an agent); `posts::save_telling` is the
+/// same for a post's items.
+pub async fn save_telling(
+    client: &IgClient,
+    files: Vec<Told>,
+    dir: &Path,
+    bounds: crate::posts::Bounds,
+) -> Result<(serde_json::Map<String, serde_json::Value>, usize)> {
+    std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
+    let directory = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let started = std::time::Instant::now();
+    let (mut saved, mut failed, mut left) = (Vec::new(), Vec::new(), Vec::new());
+    let mut fetched: u64 = 0;
+    for Told { file, pk, kind } in files {
+        if client.pacer().cancel_token().is_canceled() {
+            return Err(ExitError::new(ExitCode::Interrupted, "stopped").into());
+        }
+        let past = if bounds.bytes.is_some_and(|most| fetched >= most) {
+            Some("bytes")
+        } else if bounds.within.is_some_and(|most| started.elapsed() >= most) {
+            Some("time")
+        } else {
+            None
+        };
+        if let Some(why) = past {
+            left.push(serde_json::json!({ "item": file.number, "why": why }));
+            continue;
+        }
+        match save_file(client, &file, &directory).await {
+            Ok(kept) => {
+                let (path, already) = match kept {
+                    Saved::Now(path) => (path, false),
+                    Saved::Already(path) => (path, true),
+                };
+                let bytes = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+                if !already {
+                    fetched = fetched.saturating_add(bytes);
+                }
+                saved.push(serde_json::json!({
+                    "item": file.number,
+                    "pk": pk,
+                    "kind": kind.label(),
+                    "file": path.file_name().map(|name| name.to_string_lossy().into_owned()),
+                    "bytes": bytes,
+                    "already": already,
+                }));
+            }
+            Err(e) if was_canceled(&e) => {
+                return Err(ExitError::new(ExitCode::Interrupted, "stopped").into());
+            }
+            // A push-back, or the cooldown it started: the run ends, with no
+            // further file asked for.
+            Err(e) if stopped_the_run(&e) => return Err(e),
+            Err(e) => failed.push(serde_json::json!({
+                "item": file.number,
+                "why": without_addresses(&e.to_string()),
+            })),
+        }
+    }
+    let failures = failed.len();
+    let mut document = serde_json::Map::new();
+    document.insert("directory".into(), directory.to_string_lossy().into());
+    document.insert("saved".into(), saved.into());
+    document.insert("failed".into(), failed.into());
+    document.insert("left".into(), left.into());
+    document.insert("bytes".into(), fetched.into());
+    Ok((document, failures))
+}
+
+/// Twelve hex digits of the SHA-256 of `bytes`: what tells one picture from
+/// another in a file's name (`pfp --json`), so a changed picture is a new file
+/// and one already saved is not saved again.
+pub fn short_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest as _, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// A picture of `bytes`, as an entry of a document's `pictures`
+/// ([`small_pictures`]) for a reader that looks: `of` is the number it goes
+/// by, and one that is no picture, or weighs more than a listing's small
+/// picture may ([`MAX_SMALL_PICTURE`]), is a `missing` entry that says so.
+pub fn picture_entry(of: usize, bytes: &[u8]) -> serde_json::Value {
+    use base64::Engine as _;
+
+    let Some(mime) = picture_type(bytes) else {
+        return serde_json::json!({ "of": of, "missing": "what came is not a picture" });
+    };
+    if bytes.len() > MAX_SMALL_PICTURE {
+        return serde_json::json!({
+            "of": of,
+            "missing": "it is larger than an answer carries; it can be saved instead",
+        });
+    }
+    serde_json::json!({
+        "of": of,
+        "mime": mime,
+        "bytes": bytes.len(),
+        "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -896,6 +1041,7 @@ mod tests {
     #[test]
     fn a_number_past_the_listing_names_no_file() {
         let story = Story {
+            pk: "1".into(),
             kind: Kind::Photo,
             taken_at: Epoch::default(),
             expiring_at: None,

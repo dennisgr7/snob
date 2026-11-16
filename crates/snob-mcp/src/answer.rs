@@ -83,13 +83,13 @@ fn agent_hint(reason: &str) -> Option<&'static str> {
              stopped (its id is in the message); call this again then"
         }
         "nothing_stored" => {
-            "nothing of this list is stored yet: call snob_list again without offset and with \
-             mode \"auto\" to read it"
+            "nothing of this list is stored yet: call snob_list (or snob_scan) again without \
+             offset and with mode \"auto\" to read it"
         }
         "stored_moments" => {
-            "the two stored lists were read too far apart to be crossed: call snob_list again \
-             without offset and with mode \"auto\" (not \"stored\"), so both lists are checked \
-             against the account"
+            "the two stored lists were read too far apart to be crossed: call snob_list (or \
+             snob_scan) again without offset and with mode \"auto\" (not \"stored\"), so both \
+             lists are checked against the account"
         }
         "busy" => {
             "another call that reaches Instagram is running for this account, and one runs \
@@ -137,6 +137,12 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
     }
     if is_changes(plan) {
         finished.json = finished.json.take().map(bounded_changes);
+    }
+    if plan.args.first().map(String::as_str) == Some("scan") {
+        finished.json = finished.json.take().map(bounded_scan);
+    }
+    if plan.args.first().map(String::as_str) == Some("whoami") {
+        finished.json = finished.json.take().map(without_session_path);
     }
     if is_a_post(plan) {
         finished.json = finished.json.take().map(bounded_post);
@@ -998,14 +1004,53 @@ fn last_lines(said: &str) -> String {
     lines[lines.len().saturating_sub(6)..].join("\n")
 }
 
+/// What an agent is told when [`bounded_scan`] left accounts out.
+const SCAN_CUT: &str = "The accounts you follow that follow this one are cut to what fits one \
+                        answer: count says how many there are, and snob_profile names them";
+
+/// A scan's `followed_by.accounts` held to what one answer carries, as a page
+/// of a list is ([`PAGE`], [`PAGE_BYTES`]): its `count` still says how many
+/// there are, and `cut` says the list is not all of them.
+fn bounded_scan(mut document: Value) -> Value {
+    let Some(accounts) = document
+        .pointer_mut("/followed_by/accounts")
+        .and_then(Value::as_array_mut)
+    else {
+        return document;
+    };
+    let (mut bytes, mut keep) = (0, 0);
+    for account in accounts.iter() {
+        bytes += account.to_string().len();
+        if keep >= PAGE || bytes > PAGE_BYTES {
+            break;
+        }
+        keep += 1;
+    }
+    if keep < accounts.len() {
+        accounts.truncate(keep);
+        document["followed_by"]["cut"] = json!(SCAN_CUT);
+    }
+    document
+}
+
+/// What `whoami` says of where the session is kept, a path on this machine
+/// that no tool hands to an agent, left out; `storage` says which store it is.
+fn without_session_path(mut document: Value) -> Value {
+    if let Some(fields) = document.as_object_mut() {
+        fields.remove("storage_path");
+    }
+    document
+}
+
 /// Whether `plan` is one of the commands about posts, stories or
 /// highlights (`snob_posts`, `snob_post`, `snob_post_likers`,
-/// `snob_post_download`, `snob_stories`, `snob_highlights`), whose answers
+/// `snob_post_download`, `snob_stories`, `snob_highlights`, their downloads and
+/// `snob_pfp`), whose answers
 /// lose their media addresses ([`without_media_addresses`]).
 fn shows_media(plan: &Plan) -> bool {
     matches!(
         plan.args.first().map(String::as_str),
-        Some("posts" | "post" | "likers" | "stories" | "highlights")
+        Some("posts" | "post" | "likers" | "stories" | "highlights" | "pfp")
     )
 }
 
@@ -1105,6 +1150,113 @@ mod tests {
         assert!(kept.len() <= PAGE_BYTES && kept.len() > PAGE_BYTES - 3);
         assert!(kept.ends_with('\u{2192}'));
         assert!(told["cut"].is_string());
+    }
+
+    /// A scan's mutual followers are held to what one answer carries, with
+    /// their count intact and their pictures' addresses left out.
+    #[test]
+    fn a_scans_followed_by_is_cut_to_one_answer_and_keeps_its_count() {
+        let scan = Plan {
+            args: vec!["scan".into()],
+            ..plan(&[ExitCode::Ok])
+        };
+        let accounts: Vec<Value> = (0..450)
+            .map(|n| json!({ "pk": n.to_string(), "username": format!("u{n}"), "pfp_url": "x" }))
+            .collect();
+        let told = from(
+            &scan,
+            finished(
+                ExitCode::Ok,
+                Some(json!({
+                    "target": "someone",
+                    "counts": { "followers": 1 },
+                    "followed_by": { "count": 450, "accounts": accounts, "taken_at": 1 },
+                })),
+                None,
+            ),
+        );
+        let shown = told.body["followed_by"]["accounts"].as_array().unwrap();
+        assert_eq!(shown.len(), PAGE);
+        assert_eq!(told.body["followed_by"]["count"], 450);
+        assert!(told.body["followed_by"]["cut"].is_string());
+        assert!(shown[0].get("pfp_url").is_none());
+        assert_eq!(told.body["counts"]["followers"], 1);
+
+        let few = from(
+            &scan,
+            finished(
+                ExitCode::Ok,
+                Some(json!({ "followed_by": { "count": 1, "accounts": [{ "pk": "1" }] } })),
+                None,
+            ),
+        );
+        assert!(few.body["followed_by"].get("cut").is_none());
+        // Nothing to cut when the account has none: a null, as it came.
+        let none = from(
+            &scan,
+            finished(ExitCode::Ok, Some(json!({ "followed_by": null })), None),
+        );
+        assert!(none.body["followed_by"].is_null());
+    }
+
+    /// A session that does not answer is an answer with its error beside it,
+    /// and the file it is kept in is no business of an agent's.
+    #[test]
+    fn a_dead_session_is_an_answer_without_the_path_it_is_kept_at() {
+        let whoami = Plan {
+            args: vec!["whoami".into(), "--json".into()],
+            ..plan(&[ExitCode::Ok, ExitCode::NoSession])
+        };
+        let said = json!({
+            "pk": "42",
+            "username": "me",
+            "storage": "file",
+            "storage_path": "/home/me/.local/share/snob-ig/session.json",
+            "alive": false,
+            "error": { "code": "no_session", "message": "the session expired" },
+        });
+        let told = from(&whoami, finished(ExitCode::NoSession, Some(said), None));
+        assert!(!told.failed, "{}", told.body);
+        assert_eq!(told.body["alive"], false);
+        assert_eq!(told.body["exit"], "no_session");
+        assert_eq!(told.body["error"]["hint"], SIGN_IN);
+        assert!(told.body.get("storage_path").is_none(), "{}", told.body);
+        assert_eq!(told.body["storage"], "file");
+    }
+
+    /// A profile picture told as a document leaves it as an image, and what is
+    /// said of it stays: where it was saved, and no address.
+    #[test]
+    fn a_profile_picture_goes_out_as_an_image_beside_what_is_said_of_it() {
+        let pfp = Plan {
+            args: vec!["pfp".into()],
+            ..plan(&[ExitCode::Ok])
+        };
+        let told = from(
+            &pfp,
+            finished(
+                ExitCode::Ok,
+                Some(json!({
+                    "username": "someone",
+                    "full_size": true,
+                    "width": 1080,
+                    "height": 1080,
+                    "bytes": 3,
+                    "saved": { "directory": "/srv/kept", "file": "someone-abc.jpg", "already": false },
+                    "pictures": [{ "of": 1, "mime": "image/jpeg", "bytes": 3, "data": "QUJD" }],
+                })),
+                None,
+            ),
+        );
+        assert!(!told.failed, "{}", told.body);
+        assert_eq!(told.pictures.len(), 1);
+        assert_eq!(
+            told.pictures[0].image,
+            Some(("image/jpeg".to_string(), "QUJD".to_string()))
+        );
+        assert!(!told.body.to_string().contains("QUJD"));
+        assert_eq!(told.body["saved"]["file"], "someone-abc.jpg");
+        assert_eq!(told.body["pictures"][0]["mime"], "image/jpeg");
     }
 
     /// A listing's small pictures leave its JSON as images, each with the

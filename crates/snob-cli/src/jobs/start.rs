@@ -125,8 +125,8 @@ pub async fn start(
     // What it would cost, said with the job; nothing is sent to know it, and
     // a job is still started when it cannot be told.
     let estimate = crate::commands::dry_run::estimate_for(
-        &checked.list.walk,
-        &checked.list.target,
+        &checked.walk,
+        &checked.typed,
         &secrets,
         account,
         checked.kinds,
@@ -295,7 +295,7 @@ fn refused_in_cooldown(
     let Some(held) = snob_engine::app::held_in(&budget, account, now) else {
         return Ok(());
     };
-    let query = crate::commands::common::query(&checked.list.target, &checked.list.walk);
+    let query = crate::commands::common::query(&checked.typed, &checked.walk);
     for &kind in checked.kinds {
         snob_engine::engine::cooldown::stored(&store, account.pk(), &query, kind, &held)?;
     }
