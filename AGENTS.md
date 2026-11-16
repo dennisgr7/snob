@@ -67,7 +67,7 @@ Rust 2024, resolver 3. Dependencies point one way:
 | `snob-core` | The domain: `Pk`, the models (the JSON contract), set arithmetic, the monitor's diff and schedule, webhook signing and the one constant-time comparison (`watch::sign::same`), `Secret`, `Session`, the `RateBudget` trait and cooldown policy, `clock`. | Do I/O: no file, database, network or directory (`clock` excepted). |
 | `snob-ig` | The Instagram web client: `client/`, `web.rs`, `allowlist.rs`, `pager.rs`, `pace.rs`, `graphql.rs`, `error.rs` (classifying answers), `http.rs` (the only place `reqwest` is configured). | Touch SQLite or the keyring, or drive a browser (it only defines the page's request shapes). |
 | `snob-store` | SQLite (`store/`, migrations in `store/sql/`), paths, the secret store, `accounts.toml`, `watch.toml`, the layout's migration, the views' cache (`cache.rs`) and what files weigh (`disk.rs`). | Hold domain logic. |
-| `snob-engine` | What a desktop app links in process: `app.rs` (`App`), `engine/` (cache, consent, cooldown, walks, estimates, monitor), the browser (`headless/`, `cdp/`, `pipe.rs`, `owner/`), jobs' state and supervisor (`jobs/`), signing in (`login.rs`, which hands back a `Stored` and tells a failure apart with `failure_of`) and out (`logout.rs`), the account's card (`viewer.rs`), what a view shows at once (`cache.rs`) and what is kept on disk (`storage.rs`), `relay/`, `update/`, reading and saving posts and stories (`posts.rs`, `media.rs`, `files.rs`), `ffmpeg.rs`, `watch/webhook.rs`, `exit.rs`, `log.rs` (the filter every program logs through, and an app's log in files), and `sentences.rs` (the plain sentences of its refusals). `host.rs` is what it is handed: a `Progress` and an `Ask` per run (`host::Front`, given to `App::open`), and a sink for notices. | Depend on `clap`, `console`, `indicatif`, `ratatui`, `crossterm`, `dialoguer`, or on `snob-mcp`/`snob-cli`; ask anybody anything itself; decide how anything looks. |
+| `snob-engine` | What a desktop app links in process: `app.rs` (`App`), `engine/` (cache, consent, cooldown, walks, estimates, monitor), the browser (`headless/`, `cdp/`, `pipe.rs`, `owner/`), jobs' state and supervisor (`jobs/`), signing in (`login.rs`, which hands back a `Stored` and tells a failure apart with `failure_of`) and out (`logout.rs`), the account's card (`viewer.rs`), what a view shows at once (`cache.rs`) and what is kept on disk (`storage.rs`), `relay/`, `update/`, an account's page and its picture as every front reads them (`profile.rs`), reading and saving posts and stories (`posts.rs`, `media.rs`, `files.rs`), `ffmpeg.rs`, `watch/webhook.rs`, `exit.rs`, `log.rs` (the filter every program logs through, and an app's log in files), and `sentences.rs` (the plain sentences of its refusals). `host.rs` is what it is handed: a `Progress` and an `Ask` per run (`host::Front`, given to `App::open`), and a sink for notices. | Depend on `clap`, `console`, `indicatif`, `ratatui`, `crossterm`, `dialoguer`, or on `snob-mcp`/`snob-cli`; ask anybody anything itself; decide how anything looks. |
 | `snob-mcp` | `snob mcp`: the server over stdio and, with its `http` feature, over HTTP (`http.rs`); its key (`key.rs`), `snob mcp config` (`config.rs`), its arguments (`args.rs`). | Build an Instagram client or open a database; depend on `snob-cli`, its tests included (the lines it builds are parsed in `crates/snob-cli/tests/mcp_lines.rs`). |
 | `snob-cli` | The `snob` binary and its library: `cli.rs`, `main.rs`, `commands/`, `output/`, `report.rs`, `progress.rs` (the bars), `front.rs` (what it hands the engine), `ui/`, and the clap-tied half of jobs (`jobs/argv.rs`, `jobs/start.rs`). It names what it uses of the engine and of the server by their own crates (`snob_engine::`, `snob_mcp::`). | |
 | `snob-fake-ig` | The fake Instagram the tests talk to (`world.rs`) and a tab on it with no browser (`tab.rs`). Never published. | Depend on anything above `snob-ig`; be named outside `[dev-dependencies]` by a crate that ships (`layers.rs`). |
@@ -493,11 +493,14 @@ compile; the session is an explicit header on the one client meant to carry it.
 - **The views' cache** (`accounts/<pk>/cache/`, `snob_store::cache`,
   `snob_engine::cache`): what the account was last shown of each account,
   by pk (`profiles/<pk>.json`: names, bio, counts, how the two stand), and
-  the small pictures it was shown (`pictures/<pk>.jpg`), so a view shows the
+  the small pictures it was shown (`pictures/<pk>.jpg`), and the other
+  pictures a view drew (`cache::Drawing`: an account's largest, a
+  highlight's cover, a post's thumbnail), so a view shows the
   last known values at once while its usual requests run. **It adds no
   request and takes none away**: filled only where an answer already
-  arrives (`App::profile_named`, which a list's resolve and the monitor read
-  through; the counter poll; a picture a view downloaded, `Keeper::picture`),
+  arrives (`App::profile_named`, which a list's resolve, a profile read and
+  the monitor read through; the counter poll; a picture a view downloads
+  from the CDN, `Keeper::fetch_picture` and `fetch_drawing`),
   never read to decide whether to ask, so it has no refresh rule. **Kept by
   the account that saw it**, so what a private account showed one account
   is never another's; nothing is kept once the session is signed out, and
