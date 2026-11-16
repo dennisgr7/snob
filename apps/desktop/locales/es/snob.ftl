@@ -103,6 +103,7 @@ welcome = Te damos la bienvenida, { $account }.
 
 ## Inicio y configuración
 
+rail = Secciones
 home-title = Inicio
 search-title = Buscar
 search-note = Busca una cuenta, sus publicaciones y sus listas. Aún no está lista.

@@ -104,6 +104,7 @@ welcome = Welcome, { $account }.
 
 ## Home and settings
 
+rail = Sections
 home-title = Home
 search-title = Search
 search-note = Look up an account, its posts and its lists. Not ready yet.

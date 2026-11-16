@@ -32,6 +32,9 @@ icons! {
     BACK = "back.svg";
     ADD = "add.svg";
     SETTINGS = "settings.svg";
+    HOME = "home.svg";
+    SEARCH = "search.svg";
+    AUTOMATIONS = "automations.svg";
     SIGN_OUT = "sign-out.svg";
     WINDOW_MINIMIZE = "window-minimize.svg";
     WINDOW_MAXIMIZE = "window-maximize.svg";
@@ -84,7 +87,7 @@ mod tests {
 
     #[test]
     fn every_drawing_named_is_built_in_and_is_a_drawing() {
-        assert_eq!(ALL.len(), 25);
+        assert_eq!(ALL.len(), 28);
         for (name, bytes) in ALL {
             let loaded = Assets.load(name).unwrap().expect("built in");
             assert_eq!(&*loaded, *bytes);

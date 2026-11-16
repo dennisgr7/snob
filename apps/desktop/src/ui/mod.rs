@@ -1,5 +1,5 @@
-//! The window: the frame every screen is in ([`frame`]), the screens
-//! ([`screens`]), what they are built from ([`parts`]), and the one view
+//! The window: the frame every screen is in ([`frame`]) and its rail of
+//! sections ([`rail`]), the screens ([`screens`]), what they are built from ([`parts`]), and the one view
 //! that holds them and does what they ask ([`shell`]).
 //!
 //! **A view draws what the state says and says what the person did.** What
@@ -14,6 +14,7 @@ pub mod look;
 pub mod menu;
 pub mod palette;
 pub mod parts;
+pub mod rail;
 pub mod screens;
 pub mod shell;
 pub mod window;

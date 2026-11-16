@@ -17,6 +17,7 @@ use snob_desktop::backend::scripted::{Asked, Scripted, account};
 use snob_desktop::state::flow::{Method, Screen, Update, Updating};
 use snob_desktop::state::status::Status;
 use snob_desktop::system::{Event, Settings};
+use snob_desktop::theme::tokens::frame::{RAIL, SIDE};
 use snob_desktop::theme::tokens::{Palette, Scheme};
 use snob_desktop::ui::look::Look;
 use snob_engine::login::Failure;
@@ -81,27 +82,82 @@ async fn an_account_signed_in_already_goes_straight_home_with_its_picture_in_the
 }
 
 #[gpui_kit::test]
-async fn the_frame_is_the_same_on_every_screen_and_says_it_is_a_test_build(
+async fn the_frame_holds_the_panel_on_four_sides_on_the_way_in_and_says_it_is_a_test_build(
     cx: &mut TestAppContext,
 ) {
     let app = open(cx, Scripted::with(Vec::new()));
     let framed = |window: &mut Window| {
         let band = window.find("band");
-        let panel = window.find("panel");
+        let panel = window.find("panel").bounds();
         assert_eq!(band.role(), Some(Role::Banner));
-        assert_eq!(panel.role(), Some(Role::Main));
+        assert_eq!(window.find("panel").role(), Some(Role::Main));
         assert_eq!(band.bounds().size.height, px(42.));
-        assert_eq!(
-            panel.bounds().origin.y,
-            px(42.),
-            "the panel starts under the band"
-        );
+        assert_eq!(panel.origin.y, px(42.), "the panel starts under the band");
+        let viewport = window.viewport_size();
+        assert_eq!(panel.origin.x, px(SIDE));
+        assert_eq!(panel.right(), viewport.width - px(SIDE));
+        assert_eq!(panel.bottom(), viewport.height - px(SIDE));
+        assert!(window.try_find("rail").is_none(), "no sections yet");
         assert_eq!(window.find("brand").label(), Some("snob."));
         assert_eq!(window.find("test-badge").label(), Some("TEST"));
     };
     app.in_window(cx, |window, _| framed(window));
     app.until_screen(cx, start()).await;
     app.in_window(cx, |window, _| framed(window));
+}
+
+#[gpui_kit::test]
+async fn a_start_already_signed_in_draws_the_frame_open_from_its_first_home_frame(
+    cx: &mut TestAppContext,
+) {
+    let app = open(cx, Scripted::with(vec![account(42, "me", true)]));
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    // The first frame home is drawn in, with no time let pass.
+    app.in_window(cx, |window, _| {
+        let panel = window.find("panel").bounds();
+        let viewport = window.viewport_size();
+        assert_eq!(panel.origin.x, px(RAIL), "the rail at its left");
+        assert_eq!(panel.right(), viewport.width, "against the window's right");
+        assert_eq!(panel.bottom(), viewport.height, "and its bottom");
+        let rail = window.find("rail");
+        assert_eq!(rail.role(), Some(Role::Navigation));
+        assert_eq!(rail.label(), Some("Sections"));
+    });
+}
+/// Where the panel's left edge is now.
+fn panel_left(app: &App, cx: &mut TestAppContext) -> f32 {
+    app.in_window(cx, |window, _| {
+        f32::from(window.find("panel").bounds().origin.x)
+    })
+}
+
+#[gpui_kit::test]
+async fn the_frame_opens_once_somebody_is_welcomed_and_closes_to_add_an_account(
+    cx: &mut TestAppContext,
+) {
+    let app = open(cx, Scripted::with(Vec::new()));
+    app.until_screen(cx, start()).await;
+    app.click(cx, "start-browser");
+    app.until_screen(cx, |screen| matches!(screen, Screen::Welcome(_)))
+        .await;
+    assert_eq!(panel_left(&app, cx), SIDE, "closed for the welcome");
+
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    app.until(cx, |window, _| {
+        window.find("panel").bounds().origin.x == px(RAIL)
+    })
+    .await;
+    app.in_window(cx, |window, _| {
+        assert!(window.find("rail-home").visible());
+    });
+
+    app.click(cx, "account");
+    app.click(cx, "menu-add");
+    app.until_screen(cx, start()).await;
+    app.until(cx, |window, _| {
+        window.find("panel").bounds().origin.x == px(SIDE) && window.try_find("rail").is_none()
+    })
+    .await;
 }
 
 #[gpui_kit::test]

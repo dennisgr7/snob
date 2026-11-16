@@ -10,7 +10,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use common::{App, focused, open};
 use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
-use gpui_kit::{AppContext as _, Role, TestAppContext, VisualTestContext};
+use gpui_kit::{AppContext as _, Role, TestAppContext, VisualTestContext, px};
 use snob_core::Pk;
 use snob_desktop::backend::scripted::{Asked, Scripted, account};
 use snob_desktop::state::flow::{Screen, Update};
@@ -668,6 +668,59 @@ async fn the_arrows_walk_the_menu_around_its_ends(cx: &mut TestAppContext) {
     assert_eq!(on(&app, cx), Some("menu-add"), "around the end");
     app.press(cx, "up");
     assert_eq!(on(&app, cx), Some("menu-sign-out"), "and back around it");
+}
+
+#[gpui_kit::test]
+async fn the_rail_goes_to_each_section_and_says_which_one_the_app_is_in(cx: &mut TestAppContext) {
+    let app = at_home(cx, Scripted::with(vec![account(42, "me", true)])).await;
+    let chosen = |app: &App, cx: &mut TestAppContext| {
+        app.in_window(cx, |window, _| {
+            ["rail-home", "rail-search", "rail-automations"]
+                .into_iter()
+                .filter(|id| window.find(*id).selected() == Some(true))
+                .collect::<Vec<_>>()
+        })
+    };
+    app.in_window(cx, |window, _| {
+        for (id, name) in [
+            ("rail-home", "Home"),
+            ("rail-search", "Search"),
+            ("rail-automations", "Automations"),
+        ] {
+            let button = window.find(id);
+            assert_eq!(button.role(), Some(Role::Button));
+            assert_eq!(button.label(), Some(name));
+            let size = button.bounds().size;
+            assert!(size.width >= px(24.) && size.height >= px(24.));
+        }
+    });
+    assert_eq!(chosen(&app, cx), ["rail-home"]);
+
+    app.click(cx, "rail-search");
+    app.until_screen(cx, |screen| *screen == Screen::Search)
+        .await;
+    assert_eq!(app.title(cx), ("Search".to_string(), true));
+    assert_eq!(chosen(&app, cx), ["rail-search"]);
+
+    // And with the keyboard: Tab comes to the rail, which the arrows do not
+    // need to be walked.
+    let mut presses = 0;
+    while !focused(&app, cx, "rail-automations") {
+        app.press(cx, "tab");
+        presses += 1;
+        assert!(presses < 8, "Tab never comes to the rail");
+    }
+    app.press(cx, "enter");
+    app.until_screen(cx, |screen| *screen == Screen::Automations)
+        .await;
+
+    // The settings are none of them.
+    app.press(cx, snob_desktop::ui::SETTINGS_KEYS);
+    app.until_screen(cx, |screen| *screen == Screen::Settings)
+        .await;
+    assert!(chosen(&app, cx).is_empty());
+    app.click(cx, "rail-home");
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
 }
 
 /// The window left for another and looked at again.

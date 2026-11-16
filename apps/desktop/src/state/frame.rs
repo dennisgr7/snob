@@ -192,8 +192,6 @@ pub struct Geometry {
     pub bottom: f32,
     /// The panel's corners: top left, top right, bottom right, bottom left.
     pub radii: [f32; 4],
-    /// How wide the rail is drawn.
-    pub rail: f32,
 }
 
 /// Where the panel is at `openness`: held on four sides at 0, against the
@@ -207,7 +205,6 @@ pub fn geometry(openness: f32) -> Geometry {
         right: frame::SIDE * closed,
         bottom: frame::SIDE * closed,
         radii: [frame::PANEL_RADIUS, round, round, round],
-        rail: frame::RAIL * open,
     }
 }
 
@@ -395,15 +392,17 @@ mod tests {
     fn open_the_panel_meets_the_window_and_leaves_the_rail_its_width() {
         let closed = geometry(0.0);
         assert_eq!(
-            (closed.left, closed.right, closed.bottom, closed.rail),
-            (frame::SIDE, frame::SIDE, frame::SIDE, 0.0)
+            (closed.left, closed.right, closed.bottom),
+            (frame::SIDE, frame::SIDE, frame::SIDE)
         );
         assert_eq!(closed.radii, [frame::PANEL_RADIUS; 4]);
         let open = geometry(1.0);
         assert_eq!(
-            (open.left, open.right, open.bottom, open.rail),
-            (frame::RAIL, 0.0, 0.0, frame::RAIL)
+            (open.left, open.right, open.bottom),
+            (frame::RAIL, 0.0, 0.0)
         );
+        let half = geometry(0.5);
+        assert!(half.left > frame::SIDE && half.left < frame::RAIL);
         assert_eq!(open.radii, [frame::PANEL_RADIUS, 0.0, 0.0, 0.0]);
     }
 

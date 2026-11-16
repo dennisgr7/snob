@@ -28,6 +28,7 @@ use super::{frame, screens};
 use crate::backend::{Account, Backend, Loaded, SignIn};
 use crate::state::commands::{self, Command};
 use crate::state::flow::{Effect, Event, Flow, Found, Method, Named, Place, Screen, Update};
+use crate::state::frame::{self as shape, Icon, Morph, Pill, SECTIONS};
 use crate::state::paste::{self, Field};
 use crate::state::rest::{self, Rest};
 use crate::state::status::{self, Band, Status};
@@ -59,6 +60,16 @@ impl Phase {
         rise: 0.0,
         scale: 1.0,
     };
+}
+
+/// The frame as it is drawn on this frame: how open, how far each of the
+/// rail's icons has come in, and where the selection is.
+pub(crate) struct FrameNow {
+    pub openness: f32,
+    pub icons: [Icon; SECTIONS],
+    pub pill: Option<Pill>,
+    /// The section the app is in, whose button is the one chosen.
+    pub selected: Option<usize>,
 }
 
 /// The field a session ID is pasted into, for as long as its screen is
@@ -209,6 +220,13 @@ pub struct Shell {
     /// this frame.
     pictures: HashMap<PathBuf, Picture>,
     pictures_in: crate::ui::parts::Shown,
+    /// The frame's shape and its way between them (`state::frame`), since
+    /// when, by the executor's clock.
+    frame: Morph,
+    frame_since: Instant,
+    /// The rail's selection: the section it left, the one it is going to,
+    /// and since when.
+    pill: (Option<usize>, Option<usize>, Instant),
 }
 
 impl Shell {
@@ -347,6 +365,49 @@ impl Shell {
             looking: false,
             pictures: HashMap::new(),
             pictures_in: crate::ui::parts::Shown::new(),
+            frame: Morph::still(shape::Shape::Closed),
+            frame_since: cx.background_executor().now(),
+            pill: (None, None, cx.background_executor().now()),
+        }
+    }
+
+    /// Sends the frame toward the shape `screen` is drawn in, from wherever
+    /// it is: nothing when it is going there already.
+    fn aim_the_frame(&mut self, screen: &Screen, cx: &App) {
+        let shape = shape::shape_of(screen);
+        if self.frame.to() == shape {
+            return;
+        }
+        let now = cx.background_executor().now();
+        let elapsed = now.saturating_duration_since(self.frame_since);
+        let reduce = Look::now(cx).settings.reduce_motion;
+        self.frame = self.frame.toward(shape, elapsed, reduce);
+        self.frame_since = now;
+    }
+
+    /// The frame on this frame, asking for the next one while anything of
+    /// it moves.
+    pub(crate) fn frame_now(&mut self, window: &mut Window, cx: &App) -> FrameNow {
+        let now = cx.background_executor().now();
+        let reduce = Look::now(cx).settings.reduce_motion;
+        let elapsed = now.saturating_duration_since(self.frame_since);
+        let selected = Place::of(self.flow.screen())
+            .and_then(|place| Place::ALL.iter().position(|each| *each == place));
+        if selected != self.pill.1 {
+            self.pill = (self.pill.1, selected, now);
+        }
+        let (from, to, since) = self.pill;
+        let sliding = now.saturating_duration_since(since);
+        let pill = shape::pill(from, to, sliding, reduce);
+        let settled = shape::pill(from, to, motion::INTERACTION, reduce);
+        if self.frame.moving(elapsed) || pill != settled {
+            window.request_animation_frame();
+        }
+        FrameNow {
+            openness: self.frame.openness(elapsed),
+            icons: std::array::from_fn(|at| self.frame.icon(at, elapsed)),
+            pill,
+            selected,
         }
     }
 
@@ -1359,6 +1420,13 @@ impl Shell {
             cx.notify();
             return;
         }
+        // The frame changes shape as the screen shown leaves; under "reduce
+        // motion" at once, once it has (`enter`). **The first screen after
+        // the splash is drawn in its shape**: nothing opens at a start.
+        let next = next.clone();
+        if self.shown != Screen::Splash && !Look::now(cx).settings.reduce_motion {
+            self.aim_the_frame(&next, cx);
+        }
         if self.leaving.is_some() {
             // One is on its way out already: what comes in is the newest.
             return;
@@ -1376,7 +1444,14 @@ impl Shell {
 
     fn enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.leaving = None;
-        self.shown = self.flow.screen().clone();
+        let before = std::mem::replace(&mut self.shown, self.flow.screen().clone());
+        if before == Screen::Splash {
+            self.frame = Morph::still(shape::shape_of(&self.shown));
+            self.frame_since = cx.background_executor().now();
+        } else {
+            let shown = self.shown.clone();
+            self.aim_the_frame(&shown, cx);
+        }
         self.entered = Instant::now();
         self.scroll.set_offset(point(px(0.), px(0.)));
         tracing::info!(screen = name(&self.shown), "screen");

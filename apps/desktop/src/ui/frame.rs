@@ -1,6 +1,12 @@
-//! The frame every screen is in: the gray that holds the panel, and its top
+//! The frame every screen is in: the gray that holds the panel, its top
 //! band with the status, the brand in its middle, the account and the
-//! window's own buttons.
+//! window's own buttons, and once somebody is signed in the rail of sections
+//! at its left.
+//!
+//! **Four sides only on the way in.** On the screens before anybody is
+//! signed in the frame holds the panel on every side; once somebody is, it
+//! opens (`state::frame`): the panel meets the window's right and bottom and
+//! the frame left of it is the rail.
 //!
 //! **The band stays and the panel scrolls under it.** It is opaque while
 //! nothing is under it and lets a little through once something is, with no
@@ -23,6 +29,7 @@ use super::assets;
 use super::look::{Look, color, color_at, sp};
 use super::parts::{self, icon};
 use super::shell::Shell;
+use crate::state::frame as frame_shape;
 use crate::state::status::Status;
 use crate::theme::fonts::{MONO, SANS};
 use crate::theme::tokens::{Rgb, frame, shape};
@@ -78,6 +85,10 @@ pub fn render(
     let palette = look.palette;
     let language = look.texts.language();
     let announced = shell.announced.clone();
+    let now = shell.frame_now(window, cx);
+    let geometry = frame_shape::geometry(now.openness);
+    let [top_left, top_right, bottom_right, bottom_left] = geometry.radii;
+    let open = now.openness >= 1.0;
 
     div()
         .id("window")
@@ -103,6 +114,8 @@ pub fn render(
         .font_family(SANS)
         .text_size(sp(15.))
         .text_color(color(palette.text))
+        // Before the panel, so Tab comes to the sections first.
+        .children(super::rail::render(&now, &look, cx))
         .child(
             div()
                 .id("content")
@@ -116,8 +129,9 @@ pub fn render(
                         .flex()
                         .flex_col()
                         .pt(px(frame::BAND))
-                        .px(px(frame::SIDE))
-                        .pb(px(frame::SIDE))
+                        .pl(px(geometry.left))
+                        .pr(px(geometry.right))
+                        .pb(px(geometry.bottom))
                         .child(
                             div()
                                 .id("panel")
@@ -127,10 +141,21 @@ pub fn render(
                                 .flex()
                                 .flex_col()
                                 .bg(color(palette.panel))
-                                .rounded(px(frame::PANEL_RADIUS))
+                                .rounded_tl(px(top_left))
+                                .rounded_tr(px(top_right))
+                                .rounded_br(px(bottom_right))
+                                .rounded_bl(px(bottom_left))
                                 .overflow_hidden()
+                                // Outlined where the frame is around it: on
+                                // every side, or, open, where the rail and
+                                // the band are.
                                 .when(look.settings.more_contrast, |panel| {
-                                    panel.border_1().border_color(color(palette.line))
+                                    let panel = panel.border_color(color(palette.line));
+                                    if open {
+                                        panel.border_t_1().border_l_1()
+                                    } else {
+                                        panel.border_1()
+                                    }
                                 })
                                 .child(screen),
                         ),
