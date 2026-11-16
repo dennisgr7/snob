@@ -348,7 +348,7 @@ It prints what to add to that client's configuration.
 | Tool | What it does | Asks you first |
 |---|---|---|
 | `snob_status` | the status: budget, cooldown, stored lists | no |
-| `snob_list` | followers, following, unfollowers, fans, friends | for another account's lists |
+| `snob_list` | followers, following, unfollowers, fans, friends, optionally filtered (verified, private, no picture) | for another account's lists |
 | `snob_job`, `snob_jobs`, `snob_job_cancel` | check on, list and stop a walk running as a job | no |
 | `snob_profile` | a profile | no |
 | `snob_posts` | the posts on a grid, or a profile's reels, tagged posts and reposts | no |

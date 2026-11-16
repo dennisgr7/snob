@@ -137,6 +137,33 @@ fn a_write_checked_ahead_is_a_line_the_command_line_takes() {
 }
 
 #[test]
+fn a_filtered_list_is_a_line_the_command_line_takes() {
+    let filtered = json!({
+        "list": "fans",
+        "account": "x",
+        "hide": ["verified", "no_pfp"],
+        "only": ["private"],
+    });
+    let walk = planned("snob_list", filtered.clone());
+    taken(walk.args.clone());
+    // And as a job's command, which allows only a few flags.
+    let line = walk.start_line(
+        "snob_list",
+        filtered.as_object().unwrap(),
+        None,
+        Some(&BY_CHAT),
+    );
+    let after = line.iter().position(|arg| arg == "--").unwrap();
+    assert!(snob_cli::jobs::argv::check(&line[after + 1..]).is_ok());
+
+    let stored = planned(
+        "snob_list",
+        json!({"list": "friends", "mode": "stored", "hide": ["private"]}),
+    );
+    taken(stored.args);
+}
+
+#[test]
 fn what_a_job_is_started_with_is_a_command_a_job_may_run() {
     let arguments = json!({"list": "fans", "account": "x", "wait_seconds": 45, "offset": 0});
     let walk = planned("snob_list", arguments.clone());
