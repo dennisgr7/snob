@@ -202,7 +202,7 @@ fn logic() -> Vec<Outcome> {
 
 /// The screens a picture is taken of and an audit made of, and how each is
 /// reached from the screen before it.
-const SCREENS: [&str; 10] = [
+const SCREENS: [&str; 14] = [
     "start",
     "paste",
     "failed",
@@ -212,8 +212,19 @@ const SCREENS: [&str; 10] = [
     "sign-out",
     "settings",
     "palette",
+    "settings-search",
+    "settings-storage",
+    "search",
+    "automations",
     "paste-browsers",
 ];
+
+/// The settings' keys.
+const SETTINGS_KEYS: &str = if cfg!(target_os = "macos") {
+    "cmd-,"
+} else {
+    "ctrl-,"
+};
 
 /// Takes the app from one of [`SCREENS`] to the next.
 async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
@@ -255,13 +266,42 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
         "settings" => {
             let app = stage.app()?;
             app.press("escape").await?;
-            app.press(if cfg!(target_os = "macos") {
-                "cmd-,"
-            } else {
-                "ctrl-,"
-            })
-            .await?;
+            app.press(SETTINGS_KEYS).await?;
             app.until_screen("settings").await?;
+        }
+        "settings-search" => {
+            let app = stage.app()?;
+            app.press("escape").await?;
+            app.click("settings-search").await?;
+            app.type_in("cach").await?;
+        }
+        "settings-storage" => {
+            // Come again, nothing typed, and turned down to what is kept.
+            let app = stage.app()?;
+            app.click("rail-home").await?;
+            app.until_screen("home").await?;
+            app.press(SETTINGS_KEYS).await?;
+            let seen = app.until_screen("settings").await?;
+            let (left, top, width, height) = crate::scenarios::bounds(&seen, "settings-list")?;
+            app.point(
+                left + width / 2.0,
+                top + height / 2.0,
+                snob_desktop::control::Pointing::Wheel(330.0),
+            )
+            .await?;
+            // The scrollbar shown by the turn has gone again: a picture
+            // taken while it fades would never be the same twice.
+            tokio::time::sleep(Duration::from_millis(2300)).await;
+        }
+        "search" => {
+            let app = stage.app()?;
+            app.click("rail-search").await?;
+            app.until_screen("search").await?;
+        }
+        "automations" => {
+            let app = stage.app()?;
+            app.click("rail-automations").await?;
+            app.until_screen("automations").await?;
         }
         "palette" => {
             stage
@@ -369,6 +409,7 @@ async fn visual(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
     let start = Start {
         instagram: Some(lab.instagram.clone()),
         reduce_motion: true,
+        fixed_storage: true,
         ..Start::default()
     };
     let mut stage = match stage(lab, &asked.out, "visual", start) {
@@ -415,7 +456,14 @@ fn acted_on(role: Option<&str>) -> bool {
     matches!(
         role,
         Some(
-            "Button" | "MenuItem" | "Switch" | "TextInput" | "PasswordInput" | "Link" | "ComboBox"
+            "Button"
+                | "MenuItem"
+                | "Switch"
+                | "TextInput"
+                | "PasswordInput"
+                | "Link"
+                | "ComboBox"
+                | "RadioButton"
         )
     )
 }
@@ -533,7 +581,9 @@ async fn accessibility(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
         let walked = async {
             let app = stage.app()?;
             let seen = look_like(app, USUAL).await?;
-            let mut wanted: Vec<String> = seen
+            // By where each is, as well as its id: two text fields have the
+            // toolkit's id for their line of text.
+            let mut wanted: Vec<Vec<String>> = seen
                 .nodes
                 .iter()
                 .filter(|node| {
@@ -542,7 +592,7 @@ async fn accessibility(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
                         && node.disabled != Some(true)
                         && !node.id.starts_with("window-")
                 })
-                .map(|node| node.id.clone())
+                .map(|node| [node.inside.clone(), vec![node.id.clone()]].concat())
                 .collect();
             // What is under an open menu or question is out of reach on
             // purpose.
@@ -554,12 +604,9 @@ async fn accessibility(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
                     )
             });
             if over {
-                wanted.retain(|id| {
-                    seen.nodes.iter().any(|node| {
-                        node.id == *id
-                            && node.inside.iter().any(|above| {
-                                ["account-menu", "sign-out", "palette"].contains(&above.as_str())
-                            })
+                wanted.retain(|path| {
+                    path.iter().any(|above| {
+                        ["account-menu", "sign-out", "palette"].contains(&above.as_str())
                     })
                 });
             }
@@ -577,13 +624,20 @@ async fn accessibility(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
             let presses = stops * 2 + 4;
             for _ in 0..presses {
                 let seen = app.press("tab").await?;
-                wanted.retain(|id| !node(&seen, id).is_ok_and(|node| node.focused == Some(true)));
+                wanted.retain(|path| {
+                    !seen.nodes.iter().any(|node| {
+                        node.focused == Some(true)
+                            && node.id == path[path.len() - 1]
+                            && node.inside == path[..path.len() - 1]
+                    })
+                });
                 if wanted.is_empty() {
                     break;
                 }
             }
             expect(wanted.is_empty(), || {
-                format!("Tab never comes to {wanted:?}")
+                let ids: Vec<&String> = wanted.iter().filter_map(|path| path.last()).collect();
+                format!("Tab never comes to {ids:?}")
             })
         }
         .await;

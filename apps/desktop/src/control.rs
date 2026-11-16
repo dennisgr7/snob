@@ -48,8 +48,29 @@ pub enum Request {
     Capture { to: PathBuf },
     /// Makes the window this large, in logical pixels.
     Resize { width: f32, height: f32 },
+    /// Does one thing with the pointer at `x`, `y`, in logical pixels of
+    /// the window: what a drag is made of, one step at a time, so a test
+    /// can look at the window with the button still held.
+    Pointer { x: f32, y: f32, act: Pointing },
     /// Closes the app.
     Quit,
+}
+
+/// What the pointer does.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pointing {
+    /// Moves there, no button held.
+    Move,
+    /// Presses the left button there.
+    Down,
+    /// Moves there with the left button held.
+    Drag,
+    /// Lets the left button go there.
+    Up,
+    /// Turns the wheel there by this many logical pixels, down when
+    /// positive.
+    Wheel(f32),
 }
 
 /// What a test has the system say.
@@ -113,6 +134,10 @@ pub struct Answer {
     pub opened: Vec<PathBuf>,
     /// How many times the app asked to be started again.
     pub restarts: usize,
+    /// Whether the app is drawn dark, by the system's theme or one chosen.
+    pub dark: bool,
+    /// The language the app's words are in.
+    pub language: String,
 }
 
 /// A request on its way to the window's thread, and where its answer goes.
@@ -205,6 +230,8 @@ impl Driven {
                 crate::ui::frame::status_line(status, crate::ui::look::Look::now(cx)).1
             }),
             announced: shell.announced.to_string(),
+            dark: crate::ui::look::Look::now(cx).scheme == crate::theme::tokens::Scheme::Dark,
+            language: crate::ui::look::Look::now(cx).texts.language().to_string(),
             ..Answer::default()
         };
         if let Some(system) = &self.system {
@@ -323,6 +350,49 @@ impl Driven {
                 }
                 None => Err("the system is the real one: nothing speaks for it".to_string()),
             },
+            Request::Pointer { x, y, act } => self
+                .window
+                .update(cx, |_, window, cx| {
+                    use gpui_kit::{
+                        Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+                        PlatformInput, ScrollDelta, ScrollEvent, point,
+                    };
+                    let position = point(px(x), px(y));
+                    let modifiers = Modifiers::default();
+                    window.render_frame(cx);
+                    let event = match act {
+                        Pointing::Move | Pointing::Drag => {
+                            PlatformInput::MouseMove(MouseMoveEvent {
+                                position,
+                                pressed_button: (act == Pointing::Drag)
+                                    .then_some(MouseButton::Left),
+                                modifiers,
+                            })
+                        }
+                        Pointing::Down => PlatformInput::MouseDown(MouseDownEvent {
+                            button: MouseButton::Left,
+                            position,
+                            modifiers,
+                            click_count: 1,
+                            first_mouse: false,
+                        }),
+                        Pointing::Up => PlatformInput::MouseUp(MouseUpEvent {
+                            button: MouseButton::Left,
+                            position,
+                            modifiers,
+                            click_count: 1,
+                        }),
+                        Pointing::Wheel(by) => PlatformInput::Scroll(ScrollEvent {
+                            position,
+                            delta: ScrollDelta::Pixels(point(px(0.), px(-by))),
+                            modifiers,
+                            ..ScrollEvent::default()
+                        }),
+                    };
+                    window.dispatch_event(event, cx);
+                    window.render_frame(cx);
+                })
+                .map_err(|e| e.to_string()),
             Request::Capture { to } => self
                 .window
                 .update(cx, |_, window, cx| {

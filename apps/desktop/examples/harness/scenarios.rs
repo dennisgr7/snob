@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail};
-use snob_desktop::control::{Answer, Said};
+use snob_desktop::control::{Answer, Pointing, Said};
 use snob_fake_ig::world::{self, World};
 
 use crate::drive::{Driven, Start, expect, expect_eq, label, node};
@@ -132,6 +132,27 @@ pub fn all() -> Vec<Scenario> {
             "the account menu and the settings",
             "3 9",
             menu_and_settings
+        ),
+        scenario!(
+            "the frame opens on the sections and closes to add an account",
+            "2 3",
+            frame_and_sections
+        ),
+        scenario!(
+            "a theme and a language chosen are kept",
+            "1 9",
+            theme_and_language
+        ),
+        scenario!("the settings are searched", "9", settings_search),
+        scenario!(
+            "clearing the cache keeps the session",
+            "9 10",
+            clearing_the_cache
+        ),
+        scenario!(
+            "the outline shows while the scrollbar is dragged",
+            "9",
+            outline_while_dragging
         ),
         scenario!("switching between two accounts", "3", switch_accounts),
         scenario!("signing out asks first", "3", signing_out),
@@ -387,8 +408,211 @@ async fn menu_and_settings(stage: &mut Stage<'_>) -> anyhow::Result<()> {
     expect(!report.contains("@me"), || {
         "the report names the account".to_string()
     })?;
-    app.click("back").await?;
+    app.click("rail-home").await?;
     app.until_screen("home").await.map(drop)
+}
+
+/// Opens the settings by their keys.
+async fn to_the_settings(app: &mut Driven) -> anyhow::Result<Answer> {
+    app.press(if cfg!(target_os = "macos") {
+        "cmd-,"
+    } else {
+        "ctrl-,"
+    })
+    .await?;
+    app.until_screen("settings").await
+}
+
+async fn frame_and_sections(stage: &mut Stage<'_>) -> anyhow::Result<()> {
+    let app = stage.open().await?;
+    let seen = app.until_screen("start").await?;
+    expect(node(&seen, "rail").is_err(), || {
+        "a rail before anybody is signed in".to_string()
+    })?;
+    stage.sign_in(world::ME, "frame").await?;
+    let app = stage.app()?;
+    let seen = app
+        .until("the frame open", |seen| {
+            bounds(seen, "panel").is_ok_and(|(left, _, width, _)| {
+                left >= 63.0 && (left + width - seen.window[0]).abs() < 1.0
+            })
+        })
+        .await?;
+    expect_eq(
+        node(&seen, "rail")?.role.as_deref(),
+        Some("Navigation"),
+        "the rail's role",
+    )?;
+    expect_eq(
+        label(&seen, "rail-home")?.as_str(),
+        "Home",
+        "the first section's name",
+    )?;
+
+    // By the pointer, then by the keyboard alone.
+    app.click("rail-search").await?;
+    app.until_screen("search").await?;
+    let mut pressed = 0;
+    loop {
+        let seen = app.press("tab").await?;
+        if node(&seen, "rail-automations")?.focused == Some(true) {
+            break;
+        }
+        pressed += 1;
+        if pressed > 12 {
+            bail!("Tab never reached the rail");
+        }
+    }
+    app.press("enter").await?;
+    app.until_screen("automations").await?;
+
+    // Adding an account closes the frame around the start screen.
+    app.click("account").await?;
+    app.click("menu-add").await?;
+    app.until_screen("start").await?;
+    app.until("the rail gone", |seen| node(seen, "rail").is_err())
+        .await?;
+    app.click("back").await?;
+    app.until_screen("home").await?;
+    app.until("the rail back", |seen| node(seen, "rail").is_ok())
+        .await
+        .map(drop)
+}
+
+async fn theme_and_language(stage: &mut Stage<'_>) -> anyhow::Result<()> {
+    stage.open().await?;
+    stage.sign_in(world::ME, "theme").await?;
+    let app = stage.app()?;
+    let seen = to_the_settings(app).await?;
+    expect_eq(seen.dark, false, "the system's light")?;
+    expect_eq(
+        node(&seen, "theme-system")?.checked,
+        Some(true),
+        "the system's theme chosen",
+    )?;
+
+    let seen = app.click("theme-dark").await?;
+    expect_eq(seen.dark, true, "dark once chosen")?;
+    app.say(Said::Dark(false)).await?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let seen = app.look().await?;
+    expect_eq(seen.dark, true, "the system's light does not move it")?;
+
+    let seen = app.click("settings-language").await?;
+    expect_eq(
+        node(&seen, "settings-language")?.expanded,
+        Some(true),
+        "the languages listed",
+    )?;
+    app.click("settings-language-option#2").await?;
+    let seen = app
+        .until("the words in Spanish", |seen| seen.language == "es")
+        .await?;
+    expect_eq(
+        label(&seen, "title")?.as_str(),
+        "Configuraci\u{f3}n",
+        "the title in Spanish",
+    )?;
+
+    // Kept for the next start, whatever the system says then.
+    let app = stage.open().await?;
+    let seen = app.until_screen("home").await?;
+    expect_eq(seen.dark, true, "dark after a restart")?;
+    expect_eq(seen.language.as_str(), "es", "Spanish after a restart")
+}
+
+async fn settings_search(stage: &mut Stage<'_>) -> anyhow::Result<()> {
+    stage.open().await?;
+    stage.sign_in(world::ME, "search").await?;
+    let app = stage.app()?;
+    to_the_settings(app).await?;
+    app.click("settings-search").await?;
+    let seen = app.type_in("cach").await?;
+    expect(node(&seen, "settings-clear-cache").is_ok(), || {
+        "the cache is not found by its name".to_string()
+    })?;
+    expect(node(&seen, "settings-theme").is_err(), || {
+        "the theme is shown for \"cach\"".to_string()
+    })?;
+    let seen = app.type_in("zzz").await?;
+    expect_eq(
+        label(&seen, "settings-none")?.as_str(),
+        "No setting matches \u{201c}cachzzz\u{201d}",
+        "what is said when nothing matches",
+    )
+}
+
+async fn clearing_the_cache(stage: &mut Stage<'_>) -> anyhow::Result<()> {
+    stage.open().await?;
+    stage.sign_in(world::ME, "cache").await?;
+    let app = stage.app()?;
+    let account = app.paths.account(snob_core::Pk::new(world::ME));
+    let cache = account.cache_dir();
+    expect(cache.exists(), || {
+        "the account's picture was kept nowhere".to_string()
+    })?;
+    to_the_settings(app).await?;
+    // Found by its name, so its line is in view whatever the window's size.
+    app.click("settings-search").await?;
+    app.type_in("cache").await?;
+    app.until("what is kept measured", |seen| {
+        node(seen, "settings-clear-cache").is_ok_and(|button| button.disabled != Some(true))
+    })
+    .await?;
+    app.click("settings-clear-cache").await?;
+    let seen = app
+        .until("the cache cleared", |seen| {
+            label(seen, "storage-cache-note").is_ok_and(|note| note.ends_with("freed"))
+        })
+        .await?;
+    expect(
+        std::fs::read_dir(&cache).map_or(true, |mut left| left.next().is_none()),
+        || "files are left in the cache".to_string(),
+    )?;
+    expect_eq(seen.screen.as_str(), "settings", "still in the settings")?;
+    expect(account.dir().exists(), || {
+        "the account's directory went with the cache".to_string()
+    })?;
+    // The session stays: a start goes home.
+    let app = stage.open().await?;
+    app.until_screen("home").await.map(drop)
+}
+
+async fn outline_while_dragging(stage: &mut Stage<'_>) -> anyhow::Result<()> {
+    stage.open().await?;
+    stage.sign_in(world::ME, "outline").await?;
+    let app = stage.app()?;
+    app.resize(900.0, 560.0).await?;
+    let seen = to_the_settings(app).await?;
+    let (left, top, width, height) = bounds(&seen, "settings-list")?;
+    // The thumb, under the top of a list scrolled a little.
+    let (x, y) = (left + width - 13.0, top + height * 0.3);
+    for _ in 0..2 {
+        app.point(left + width / 2.0, y, Pointing::Wheel(30.0))
+            .await?;
+    }
+    let seen = app.point(x, y, Pointing::Move).await?;
+    expect(node(&seen, "settings-outline").is_err(), || {
+        "the outline shows without a drag".to_string()
+    })?;
+    app.point(x, y, Pointing::Down).await?;
+    let seen = app
+        .until("the outline shown", |seen| {
+            node(seen, "settings-outline").is_ok()
+        })
+        .await?;
+    expect_eq(
+        node(&seen, "settings-outline")?.role.as_deref(),
+        Some("Group"),
+        "the outline's role",
+    )?;
+    app.point(x, y + 40.0, Pointing::Drag).await?;
+    app.point(x, y + 40.0, Pointing::Up).await?;
+    app.until("the outline gone", |seen| {
+        node(seen, "settings-outline").is_err()
+    })
+    .await
+    .map(drop)
 }
 
 async fn switch_accounts(stage: &mut Stage<'_>) -> anyhow::Result<()> {

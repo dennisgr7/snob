@@ -6,7 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow, bail};
-use snob_desktop::control::{Answer, CONTROL, Node, Request, Said};
+use snob_desktop::control::{Answer, CONTROL, Node, Pointing, Request, Said};
 use snob_engine::local_socket::{self, Stream};
 use snob_store::paths::AppPaths;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, ReadHalf, WriteHalf};
@@ -27,6 +27,9 @@ pub struct Start {
     /// How many browsers the app lists, whatever this machine has: one,
     /// unless a scenario is about choosing among several.
     pub browsers: usize,
+    /// Whether what is kept is said the same on every run, for pictures;
+    /// clearing the cache stays real.
+    pub fixed_storage: bool,
 }
 
 /// The app, running.
@@ -60,6 +63,7 @@ fn arguments(root: &Path, start: &Start) -> Vec<String> {
         (start.dark, "--dark"),
         (start.more_contrast, "--more-contrast"),
         (start.reduce_motion, "--reduce-motion"),
+        (start.fixed_storage, "--fixed-storage"),
     ] {
         if on {
             args.push(name.to_string());
@@ -240,6 +244,11 @@ impl Driven {
 
     pub async fn resize(&mut self, width: f32, height: f32) -> anyhow::Result<Answer> {
         self.ask(Request::Resize { width, height }).await
+    }
+
+    /// Does one thing with the pointer, at `x`, `y` of the window.
+    pub async fn point(&mut self, x: f32, y: f32, act: Pointing) -> anyhow::Result<Answer> {
+        self.ask(Request::Pointer { x, y, act }).await
     }
 
     /// Everything the app logged so far, oldest first.
