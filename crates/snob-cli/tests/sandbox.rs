@@ -2103,9 +2103,9 @@ async fn a_highlight_is_listed_with_the_entry_it_is() {
             "username": "me",
             "highlight": {"number": 1, "id": "highlight:100", "title": "trip"},
             "items": [
-                {"number": 1, "kind": "photo", "taken_at": 1_600_000_000,
+                {"number": 1, "pk": "1", "kind": "photo", "taken_at": 1_600_000_000,
                  "mentions": [], "url": format!("{base}/big.jpg")},
-                {"number": 2, "kind": "video", "taken_at": 1_600_001_000,
+                {"number": 2, "pk": "2", "kind": "video", "taken_at": 1_600_001_000,
                  "mentions": [], "url": format!("{base}/clip.mp4")},
             ],
         })

@@ -813,7 +813,7 @@ mod tests {
 
     fn items() -> Vec<Story> {
         let story = |kind, mentions: &[&str]| Story {
-            pk: "1".into(),
+            pk: format!("30{}", mentions.len()),
             kind,
             taken_at: Epoch::new(1_773_576_000),
             expiring_at: None,
@@ -886,9 +886,9 @@ mod tests {
         );
 
         let rows = [
-            serde_json::json!({"number": 1, "kind": "photo", "taken_at": 1_773_576_000,
+            serde_json::json!({"number": 1, "pk": "302", "kind": "photo", "taken_at": 1_773_576_000,
                 "mentions": ["a", "b"], "url": "https://cdn.example/2"}),
-            serde_json::json!({"number": 2, "kind": "video", "taken_at": 1_773_576_000,
+            serde_json::json!({"number": 2, "pk": "300", "kind": "video", "taken_at": 1_773_576_000,
                 "mentions": [], "url": "https://cdn.example/0"}),
         ];
         let items = items();
