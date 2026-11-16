@@ -1000,12 +1000,13 @@ fn last_lines(said: &str) -> String {
 
 /// Whether `plan` is one of the commands about posts, stories or
 /// highlights (`snob_posts`, `snob_post`, `snob_post_likers`,
-/// `snob_post_download`, `snob_stories`, `snob_highlights`), whose answers
+/// `snob_post_download`, `snob_stories`, `snob_highlights`, their downloads and
+/// `snob_pfp`), whose answers
 /// lose their media addresses ([`without_media_addresses`]).
 fn shows_media(plan: &Plan) -> bool {
     matches!(
         plan.args.first().map(String::as_str),
-        Some("posts" | "post" | "likers" | "stories" | "highlights")
+        Some("posts" | "post" | "likers" | "stories" | "highlights" | "pfp")
     )
 }
 
@@ -1105,6 +1106,41 @@ mod tests {
         assert!(kept.len() <= PAGE_BYTES && kept.len() > PAGE_BYTES - 3);
         assert!(kept.ends_with('\u{2192}'));
         assert!(told["cut"].is_string());
+    }
+
+    /// A profile picture told as a document leaves it as an image, and what is
+    /// said of it stays: where it was saved, and no address.
+    #[test]
+    fn a_profile_picture_goes_out_as_an_image_beside_what_is_said_of_it() {
+        let pfp = Plan {
+            args: vec!["pfp".into()],
+            ..plan(&[ExitCode::Ok])
+        };
+        let told = from(
+            &pfp,
+            finished(
+                ExitCode::Ok,
+                Some(json!({
+                    "username": "someone",
+                    "full_size": true,
+                    "width": 1080,
+                    "height": 1080,
+                    "bytes": 3,
+                    "saved": { "directory": "/srv/kept", "file": "someone-abc.jpg", "already": false },
+                    "pictures": [{ "of": 1, "mime": "image/jpeg", "bytes": 3, "data": "QUJD" }],
+                })),
+                None,
+            ),
+        );
+        assert!(!told.failed, "{}", told.body);
+        assert_eq!(told.pictures.len(), 1);
+        assert_eq!(
+            told.pictures[0].image,
+            Some(("image/jpeg".to_string(), "QUJD".to_string()))
+        );
+        assert!(!told.body.to_string().contains("QUJD"));
+        assert_eq!(told.body["saved"]["file"], "someone-abc.jpg");
+        assert_eq!(told.body["pictures"][0]["mime"], "image/jpeg");
     }
 
     /// A listing's small pictures leave its JSON as images, each with the

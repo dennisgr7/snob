@@ -21,6 +21,9 @@ pub async fn run(args: PfpArgs, store: SecretStore, paths: &AccountPaths) -> Res
     // `-o -` on a terminal is refused before the profile is read and the
     // picture fetched, not after.
     snob_engine::files::stdout_download_ahead(args.output.as_deref(), Some(1))?;
+    if args.json {
+        common::refuse_json_to_stdout(args.output.as_deref())?;
+    }
 
     // No bar: three requests do not need one, and the picture goes to standard
     // output when there is no `-o`.
@@ -44,6 +47,9 @@ pub async fn run(args: PfpArgs, store: SecretStore, paths: &AccountPaths) -> Res
     // Said before the file is written, so a smaller picture is not a caveat
     // tacked onto "Written to ...".
     picture.source.announce();
+    if args.json {
+        return tell(&picture, args.output.as_deref(), args.embed);
+    }
 
     // Worked out before the bytes are moved into the payload: the name comes
     // from what actually arrived, not from the URL.
@@ -78,6 +84,69 @@ pub async fn run(args: PfpArgs, store: SecretStore, paths: &AccountPaths) -> Res
         None => output::write_rendered(&rendered, None)?,
     }
     Ok(ExitCode::Ok)
+}
+
+/// `--json`: what was fetched, as one document on standard output, the picture
+/// saved first when `-o` names a directory ([`save_named`]).
+fn tell(picture: &Picture, directory: Option<&std::path::Path>, embed: bool) -> Result<ExitCode> {
+    let saved = directory.map(|dir| save_named(picture, dir)).transpose()?;
+    ui::say!(
+        "{}",
+        serde_json::to_string_pretty(&document(picture, saved, embed))?
+    );
+    Ok(ExitCode::Ok)
+}
+
+/// The document `--json` prints: `pictures` holds the picture itself only
+/// with `embed` ([`snob_engine::media::picture_entry`]).
+fn document(picture: &Picture, saved: Option<serde_json::Value>, embed: bool) -> serde_json::Value {
+    let (width, height) = match &picture.source {
+        Source::FullSize { size: Some((w, h)) } => (Some(*w), Some(*h)),
+        _ => (None, None),
+    };
+    let mut document = serde_json::json!({
+        "username": picture.username,
+        "full_size": matches!(picture.source, Source::FullSize { .. }),
+        "width": width,
+        "height": height,
+        "bytes": picture.bytes.len(),
+        "saved": saved,
+    });
+    if embed {
+        document["pictures"] =
+            serde_json::json!([snob_engine::media::picture_entry(1, &picture.bytes)]);
+    }
+    document
+}
+
+/// The picture saved into `dir`, a directory made when it is not there, under
+/// `<account>-<digest>` and never over a file that is ([`tell`]): what is
+/// said of it is where it is, and `already` when an earlier run saved the same
+/// picture, which is not written again.
+fn save_named(picture: &Picture, dir: &std::path::Path) -> Result<serde_json::Value> {
+    use anyhow::Context as _;
+
+    std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
+    let directory = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let stem = format!(
+        "{}-{}",
+        printable(&picture.username),
+        snob_engine::media::short_digest(&picture.bytes)
+    );
+    let name = format!("{stem}.{}", picture.extension());
+    let already = directory.join(&name).is_file();
+    if !already {
+        let name = snob_engine::files::default_path(&directory, &stem, picture.extension())?;
+        output::write_new(
+            &Rendered::Bytes(picture.bytes.clone()),
+            &directory.join(name),
+        )?;
+    }
+    Ok(serde_json::json!({
+        "directory": directory.to_string_lossy(),
+        "file": name,
+        "already": already,
+    }))
 }
 
 /// The viewer, as the account the command runs as and then as each account it
@@ -328,6 +397,54 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+
+    /// `--json` saves the picture under the account and a digest of it, so a
+    /// changed picture is a new file and the same one is not written twice,
+    /// and tells where, with the picture itself only when asked.
+    #[test]
+    fn a_picture_told_as_a_document_is_named_after_its_digest_and_saved_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("kept");
+        let first = Picture::for_tests("someone", JPEG.to_vec());
+        let saved = save_named(&first, &dir).unwrap();
+        let name = saved["file"].as_str().unwrap().to_string();
+        assert!(
+            name.starts_with("someone-") && name.ends_with(".jpg"),
+            "{name}"
+        );
+        assert_eq!(saved["already"], false);
+        assert_eq!(std::fs::read(dir.join(&name)).unwrap(), JPEG);
+
+        let again = save_named(&first, &dir).unwrap();
+        assert_eq!(
+            (again["file"].as_str(), again["already"].as_bool()),
+            (Some(name.as_str()), Some(true))
+        );
+
+        let mut other = JPEG.to_vec();
+        other.push(1);
+        let changed = save_named(&Picture::for_tests("someone", other), &dir).unwrap();
+        assert_ne!(changed["file"], saved["file"]);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+
+        let told = document(&first, Some(saved), false);
+        assert_eq!(told["username"], "someone");
+        assert_eq!(told["bytes"], JPEG.len());
+        assert!(told.get("pictures").is_none(), "no picture unless asked");
+        let embedded = document(&first, None, true);
+        assert_eq!(embedded["saved"], serde_json::Value::Null);
+        assert_eq!(embedded["pictures"][0]["mime"], "image/jpeg");
+        assert_eq!(embedded["pictures"][0]["of"], 1);
+        assert!(embedded["pictures"][0]["data"].is_string());
+
+        // What is no picture, or too large, is a missing entry, not an error.
+        let big = Picture::for_tests("someone", {
+            let mut bytes = JPEG.to_vec();
+            bytes.resize(600 * 1024, 0);
+            bytes
+        });
+        assert!(document(&big, None, true)["pictures"][0]["missing"].is_string());
+    }
 
     const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
     const SID: &str = "42%3AAbCdEfGh%3A20";

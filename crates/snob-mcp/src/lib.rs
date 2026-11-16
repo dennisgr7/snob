@@ -436,7 +436,8 @@ impl ServerHandler for Server {
                  as far as the first of them.{downloads} \
                  To look at what an account posted, ask for pictures: a small picture of \
                  each post, item, story or highlight comes back as an image, a video's \
-                 cover for a video. Reading a post, a story or a highlight never tells its \
+                 cover for a video, and snob_pfp an account's profile picture. Reading a \
+                 post, a story or a highlight never tells its \
                  owner you looked. \
                  A long list comes back a page at a time: total is how many accounts the list \
                  has, count how many the call hands back (at most limit when one was \

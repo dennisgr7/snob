@@ -609,6 +609,7 @@ prints a client's snippet and never writes it.
 | `snob_post` | a post, its comments and replies | no | always |
 | `snob_post_likers` | `likers` | yes | always |
 | `snob_stories`, `snob_highlights` | `stories`, `highlights` | no | always |
+| `snob_pfp` | `pfp --json --embed`, and `--output=<downloads dir>` with `save` | no | always (`save` with `--downloads-dir`) |
 | `snob_snapshots`, `snob_changes` | stored captures; nothing sent | no | always |
 | `snob_post_download` | `post --download` into `--downloads-dir` | no (the client's prompt) | with `--downloads-dir` |
 | `snob_stories_download`, `snob_highlights_download` | `stories -d`, `highlights <n> -d`, with `--json`, into `--downloads-dir` | no | with `--downloads-dir` |
@@ -690,7 +691,11 @@ runs nothing, takes no permit and is not counted.
   posts, stories and highlights; `pfp_url` is left out of every account,
   `answer::LEFT_OUT`).
   Pictures asked for (`pictures: true`) come back as MCP image content, never a
-  video.
+  video; `snob_pfp` hands back the profile picture the same way (`pfp --json
+  --embed`: a picture over `MAX_SMALL_PICTURE` is a `missing` entry), saved into
+  `--downloads-dir` as `<user>-<digest>` (`media::short_digest`) only with
+  `save`, so a changed picture is a new file and the same one is not written
+  again.
 - **Files only into the directory the person named** (`--downloads-dir`, which
   must exist), under the names every download gets, and **none written over**
   (`media::save_named`). A push-back ends the run (`media::ends_the_run`).

@@ -2001,6 +2001,20 @@ pub struct PfpArgs {
     /// Download the picture and exit, even on a terminal
     #[arg(long, conflicts_with = "interactive")]
     pub no_interactive: bool,
+
+    /// Print what was fetched as one JSON document on standard output instead
+    /// of the picture: the account, whether it is the full-size picture, its
+    /// size in bytes and, with -o, the file's name. -o is then a directory,
+    /// made when it is not there, and the file is named after the account and
+    /// a digest of the picture (someone-<digest>), so a changed picture is a
+    /// new file and one already saved is not written again
+    #[arg(long, conflicts_with = "interactive")]
+    pub json: bool,
+
+    /// With --json, put the picture itself in the document, in base64, when
+    /// it weighs at most 512 KiB
+    #[arg(long, requires = "json")]
+    pub embed: bool,
 }
 
 impl PfpArgs {
@@ -2009,7 +2023,9 @@ impl PfpArgs {
         browse_decision(
             self.interactive,
             self.no_interactive,
-            self.output.is_some(),
+            // The document is the printed form, as a destination is the
+            // downloaded one.
+            self.output.is_some() || self.json,
             attending,
         )
     }

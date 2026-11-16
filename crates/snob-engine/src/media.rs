@@ -841,6 +841,18 @@ pub async fn save_telling(
     Ok((document, failures))
 }
 
+/// Twelve hex digits of the SHA-256 of `bytes`: what tells one picture from
+/// another in a file's name (`pfp --json`), so a changed picture is a new file
+/// and one already saved is not saved again.
+pub fn short_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest as _, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 /// A picture of `bytes`, as an entry of a document's `pictures`
 /// ([`small_pictures`]) for a reader that looks: `of` is the number it goes
 /// by, and one that is no picture, or weighs more than a listing's small

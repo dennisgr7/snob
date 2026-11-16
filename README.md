@@ -355,6 +355,7 @@ It prints what to add to that client's configuration.
 | `snob_post` | one post or reel, with more pages of its comments and the replies under them | no |
 | `snob_post_likers` | who liked a post | yes |
 | `snob_stories`, `snob_highlights` | the stories an account has up, the highlights it keeps | no |
+| `snob_pfp` | an account's profile picture, to look at, and saved with `--downloads-dir` | no |
 | `snob_snapshots`, `snob_changes` | the captures earlier walks stored, and what changed between two of them | no |
 | `snob_follow`, `snob_unfollow` | follow and unfollow, with `--allow-writes` | yes |
 | `snob_post_download` | save a post's photos and videos, with `--downloads-dir` | no |

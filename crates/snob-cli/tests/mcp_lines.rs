@@ -131,6 +131,16 @@ fn a_trays_download_is_a_line_the_command_line_takes() {
 }
 
 #[test]
+fn a_profile_picture_is_a_line_the_command_line_takes() {
+    for args in [
+        json!({"account": "someone"}),
+        json!({"account": "@someone", "save": true}),
+    ] {
+        taken(planned("snob_pfp", args).args);
+    }
+}
+
+#[test]
 fn a_write_checked_ahead_is_a_line_the_command_line_takes() {
     let follow = planned("snob_follow", json!({"account": "someone"}));
     taken(follow.ahead_line(3).unwrap());
