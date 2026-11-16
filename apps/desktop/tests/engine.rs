@@ -218,6 +218,39 @@ fn accounts_are_changed_between_and_signed_out_one_at_a_time() {
     assert_eq!(engine.load().blocking_recv().unwrap().found, Found::Nobody);
 }
 
+/// What happened on a real machine: Instagram pushed back on the login's
+/// second request, the one that reads the name, so the session came back
+/// with none, and the welcome and the menu named the account by its number
+/// until the files were read again. A sign-in in a pause, whose check is
+/// skipped, comes back the same way, and is how it is made here.
+#[test]
+fn a_sign_in_whose_check_read_no_name_is_named_as_the_list_of_accounts_names_it() {
+    use snob_core::budget::RateBudget as _;
+
+    let Some((_root, sandbox, engine)) = backend() else {
+        return;
+    };
+    signed_in(&engine, &session_id(world::ME, "named"));
+    engine.sign_out(Pk::new(world::ME)).blocking_recv().unwrap();
+
+    let account = sandbox.paths.account(Pk::new(world::ME));
+    let _schema = snob_store::store::Store::open(&account).unwrap();
+    snob_store::store::rate_budget::SqliteRateBudget::open(&account)
+        .unwrap()
+        .start_cooldown("rate_limit", std::time::Duration::from_secs(3600))
+        .unwrap();
+
+    let again = signed_in(&engine, &session_id(world::ME, "named-again"));
+
+    assert_eq!(again.named.username.as_deref(), Some("me"));
+    let loaded = engine.load().blocking_recv().unwrap();
+    assert_eq!(
+        loaded.accounts.first().map(|account| &account.named),
+        Some(&again.named),
+        "the same name a start reads from the files"
+    );
+}
+
 #[test]
 fn an_account_whose_session_was_found_dead_is_asked_back_by_name() {
     let Some((_root, sandbox, engine)) = backend() else {

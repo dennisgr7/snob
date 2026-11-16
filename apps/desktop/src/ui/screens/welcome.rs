@@ -8,7 +8,6 @@ use gpui_kit::{AnyElement, Context, FontWeight, Role, div, px};
 
 use super::{column, handle};
 use crate::state::flow::Named;
-use crate::theme::fonts::MONO;
 use crate::ui::look::{Look, color, sp};
 use crate::ui::parts;
 use crate::ui::shell::{Phase, Shell};
@@ -33,8 +32,13 @@ pub fn render(
         .find(|known| known.named.pk == account.pk)
         .cloned();
 
-    // The picture grows into place while the words rise under it.
-    let grown = PICTURE * (0.9 + 0.1 * phase.presence);
+    // The picture grows into place while the words rise under it; under
+    // "reduce motion" it is there at its size and only fades in.
+    let grown = if look.settings.reduce_motion {
+        PICTURE
+    } else {
+        PICTURE * (0.9 + 0.1 * phase.presence)
+    };
     let picture = signed_in.map(|account| {
         div()
             .id("welcome-photo")
@@ -63,7 +67,6 @@ pub fn render(
                 .flex()
                 .flex_wrap()
                 .justify_center()
-                .font_family(MONO)
                 .font_weight(FontWeight::MEDIUM)
                 .text_size(sp(22.))
                 .line_height(sp(30.))

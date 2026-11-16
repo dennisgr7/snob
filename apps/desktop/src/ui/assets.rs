@@ -20,7 +20,6 @@ macro_rules! icons {
 }
 
 icons! {
-    RING = "ring.svg";
     OFFLINE = "offline.svg";
     PAUSED = "paused.svg";
     RESUMING = "resuming.svg";
@@ -85,7 +84,7 @@ mod tests {
 
     #[test]
     fn every_drawing_named_is_built_in_and_is_a_drawing() {
-        assert_eq!(ALL.len(), 26);
+        assert_eq!(ALL.len(), 25);
         for (name, bytes) in ALL {
             let loaded = Assets.load(name).unwrap().expect("built in");
             assert_eq!(&*loaded, *bytes);

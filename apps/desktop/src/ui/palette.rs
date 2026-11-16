@@ -16,7 +16,6 @@ use super::parts;
 use super::screens::handle;
 use super::shell::Shell;
 use crate::state::commands::Command;
-use crate::theme::fonts::MONO;
 use crate::theme::tokens::{frame, shape};
 
 /// How wide the palette is, at the default text size.
@@ -91,7 +90,6 @@ pub fn render(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<An
                 .child(div().flex_1())
                 .children(keys.map(|keys| {
                     div()
-                        .font_family(MONO)
                         .text_size(sp(12.))
                         .text_color(color(colors.secondary))
                         .child(keys)

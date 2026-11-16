@@ -16,7 +16,6 @@ use super::parts::{self, Kind, icon};
 use super::screens::handle;
 use super::shell::Shell;
 use crate::backend::Account;
-use crate::theme::fonts::MONO;
 use crate::theme::motion;
 use crate::theme::tokens::{frame, shape};
 
@@ -85,7 +84,6 @@ fn header(account: &Account, look: &Look) -> Div {
                 .gap(sp(2.))
                 .child(
                     div()
-                        .font_family(MONO)
                         .font_weight(FontWeight::BOLD)
                         .text_size(sp(15.))
                         .text_color(color(palette.text))
@@ -130,7 +128,6 @@ fn stack(others: &[&Account], look: &Look) -> Div {
             stack.child(
                 div()
                     .ml(sp(4.))
-                    .font_family(MONO)
                     .text_size(sp(12.))
                     .text_color(color(palette.secondary))
                     .child(look.tr_with("account-more", &[("count", &more.to_string())])),
@@ -229,7 +226,6 @@ pub fn render(
                             .opacity(at)
                             .child(
                                 div()
-                                    .font_family(MONO)
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_size(sp(14.))
                                     .truncate()
@@ -301,7 +297,6 @@ pub fn render(
                 .child(div().flex_1())
                 .child(
                     div()
-                        .font_family(MONO)
                         .text_size(sp(12.))
                         .text_color(color(palette.secondary))
                         .child(shortcut),
@@ -371,7 +366,6 @@ pub fn sign_out_question(
                 .role(Role::Heading)
                 .aria_level(2)
                 .aria_label(question.clone())
-                .font_family(MONO)
                 .font_weight(FontWeight::BOLD)
                 .text_size(sp(18.))
                 .line_height(sp(26.))

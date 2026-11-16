@@ -46,7 +46,6 @@ fn tutorial(look: &Look) -> Div {
                 .role(Role::Heading)
                 .aria_level(2)
                 .aria_label(look.tr("paste-tutorial-title"))
-                .font_family(MONO)
                 .font_weight(FontWeight::MEDIUM)
                 .text_size(sp(14.))
                 .text_color(color(palette.text))
@@ -248,7 +247,6 @@ pub fn render(
             .gap(sp(10.))
             .child(
                 div()
-                    .font_family(MONO)
                     .font_weight(FontWeight::MEDIUM)
                     .text_size(sp(13.))
                     .text_color(color(palette.text))
@@ -277,6 +275,7 @@ pub fn render(
                                     // What a password is to a screen reader: said
                                     // to be there, never read out.
                                     .content_type(InputContentType::Password)
+                                    .font_family(MONO)
                                     .disabled(checking)
                                     .large()
                                     .on_paste(move |_, _, cx| {

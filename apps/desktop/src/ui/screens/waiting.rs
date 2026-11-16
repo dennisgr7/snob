@@ -8,7 +8,6 @@ use gpui_kit::{AnyElement, Context, Role, Window, div, px, relative};
 
 use super::column;
 use crate::state::flow::{Event, Updating};
-use crate::theme::fonts::MONO;
 use crate::theme::tokens::shape;
 use crate::ui::look::{Look, color, sp};
 use crate::ui::parts::{self, Kind};
@@ -64,7 +63,6 @@ pub fn updating(
                 )
                 .child(
                     div()
-                        .font_family(MONO)
                         .text_size(sp(14.))
                         .text_color(color(palette.text))
                         .child(said),

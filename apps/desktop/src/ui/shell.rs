@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Context, Entity, FocusHandle, Pixels, ScrollHandle, SharedString,
-    Subscription, Window, point, px,
+    AnyElement, App, Context, Entity, FocusHandle, ImgResourceLoader, Pixels, Resource,
+    ScrollHandle, SharedString, Subscription, Window, point, px,
 };
 use snob_core::secret::Secret;
 use snob_core::{Epoch, Pk};
@@ -716,6 +716,8 @@ impl Shell {
 
     fn loaded(&mut self, loaded: Loaded, window: &mut Window, cx: &mut Context<Self>) {
         self.accounts = loaded.accounts;
+        // Under the splash's way out, so home's first frame has them.
+        decode_the_pictures(&self.accounts, cx);
         self.crash = loaded.crash;
         let signed_in = matches!(loaded.found, Found::SignedIn(_));
         if signed_in {
@@ -762,6 +764,7 @@ impl Shell {
             (true, Found::SignedIn(now)) => {
                 let before = self.active().map(|account| account.named.pk);
                 self.accounts = loaded.accounts;
+                decode_the_pictures(&self.accounts, cx);
                 if before != Some(now.pk) {
                     tracing::info!("the account in use was changed from outside the app");
                     self.quiet(Band::clear_pause, cx);
@@ -783,6 +786,7 @@ impl Shell {
             (false, Found::SignedIn(now)) if waiting => {
                 tracing::info!("somebody signed in from outside the app");
                 self.accounts = loaded.accounts;
+                decode_the_pictures(&self.accounts, cx);
                 self.read_the_pause(window, cx);
                 self.happened(Event::SignedIn(now), window, cx);
             }
@@ -1147,6 +1151,7 @@ impl Shell {
                 }
                 self.accounts.retain(|other| other.named.pk != named.pk);
                 self.accounts.insert(0, account);
+                decode_the_pictures(&self.accounts, cx);
                 self.read_the_pause(window, cx);
                 self.happened(Event::SignedIn(named), window, cx);
             }
@@ -1244,7 +1249,12 @@ impl Shell {
                 (since.elapsed(), moved, true)
             }
             None => {
-                let moved = look.moved(motion::ENTER, if splash { 0.0 } else { 14.0 }, 1.0);
+                let enter = if matches!(self.shown, Screen::Welcome(_)) {
+                    motion::WELCOME_ENTER
+                } else {
+                    motion::ENTER
+                };
+                let moved = look.moved(enter, if splash { 0.0 } else { 14.0 }, 1.0);
                 (self.entered.elapsed(), moved, false)
             }
         };
@@ -1393,6 +1403,19 @@ impl Shell {
     /// How far the content is scrolled under the band.
     pub(crate) fn scrolled(&self) -> Pixels {
         -self.scroll.offset().y
+    }
+}
+
+/// Starts reading and decoding each account's picture kept on disk, into
+/// the cache every picture of it is drawn from, so a screen that shows one
+/// draws it in its first frame rather than an empty circle first. Nothing
+/// is fetched: a picture is a file of the account's, or nothing.
+fn decode_the_pictures(accounts: &[Account], cx: &mut App) {
+    for picture in accounts
+        .iter()
+        .filter_map(|account| account.picture.clone())
+    {
+        let _ = cx.fetch_asset::<ImgResourceLoader>(&Resource::from(picture));
     }
 }
 

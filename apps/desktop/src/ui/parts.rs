@@ -10,14 +10,14 @@ use std::time::Instant;
 use gpui_kit::base::{Button, ObservedElement, TestSupportExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, BoxShadow, Div, ElementId, FocusHandle, FontWeight, Role, SharedString, Stateful,
-    StyleRefinement, Text, Transformation, Window, div, img, point, px, radians, svg,
+    AnyElement, Bounds, BoxShadow, Div, ElementId, FocusHandle, FontWeight, PathBuilder, Pixels,
+    Point, Role, SharedString, Stateful, StyleRefinement, Text, Window, canvas, div, img, point,
+    px, svg,
 };
 
-use super::assets;
 use super::look::{Look, color, color_at, sp};
 use crate::backend::Account;
-use crate::theme::fonts::{MONO, SANS};
+use crate::theme::fonts::SANS;
 use crate::theme::motion::RING_TURN;
 use crate::theme::tokens::{Palette, shape};
 
@@ -60,7 +60,6 @@ pub fn title(
         .aria_level(1)
         .aria_label(text.clone())
         .track_focus(focus)
-        .font_family(MONO)
         .font_weight(FontWeight::BOLD)
         .text_size(sp(30.))
         .line_height(sp(38.))
@@ -144,7 +143,6 @@ fn plain_button(
         .px(sp(20.))
         .gap(sp(8.))
         .rounded(px(shape::CONTROL_RADIUS))
-        .font_family(MONO)
         .font_weight(FontWeight::MEDIUM)
         .text_size(sp(14.))
         .border_1()
@@ -182,15 +180,74 @@ pub fn icon(path: &'static str, size: f32) -> gpui_kit::Svg {
 /// The loading ring: a thin arc in the accent that turns for as long as it
 /// is drawn. **It turns under "reduce motion" too**: it says something is
 /// going on, which is not decoration.
+///
+/// **Drawn as a path at its angle on every frame**, not a drawing turned:
+/// a turned drawing is resampled from its upright pixels, softer at some
+/// angles than at others and with its edges sharpened as text's are, which
+/// reads as a ring that shimmers rather than one that turns.
 pub fn ring(size: f32, look: &Look, window: &mut Window) -> AnyElement {
     static STARTED: OnceLock<Instant> = OnceLock::new();
-    let turned =
-        STARTED.get_or_init(Instant::now).elapsed().as_secs_f32() / RING_TURN.as_secs_f32();
     window.request_animation_frame();
-    icon(assets::RING, size)
-        .text_color(color(look.palette.accent))
-        .with_transformation(Transformation::rotate(radians(turned.fract() * TAU)))
-        .into_any_element()
+    let turned = turn_at(STARTED.get_or_init(Instant::now).elapsed());
+    let ink = color(look.palette.accent);
+    canvas(
+        |_, _, _| {},
+        move |bounds, (), window, _| {
+            let mut path = PathBuilder::fill();
+            path.add_polygon(&arc(bounds, turned), true);
+            match path.build() {
+                Ok(path) => window.paint_path(path, ink),
+                Err(e) => tracing::debug!(error = %e, "the loading ring was not drawn"),
+            }
+        },
+    )
+    .size(sp(size))
+    .flex_none()
+    .into_any_element()
+}
+
+/// The outline of the ring's arc inside `bounds`, `turned` of a turn from
+/// upright: three quarters of a circle of radius 9 with a round-ended stroke
+/// of 2.5, in a box of 24, as the drawing the app had before.
+fn arc(bounds: Bounds<Pixels>, turned: f32) -> Vec<Point<Pixels>> {
+    const STEPS: usize = 72;
+    const CAP_STEPS: usize = 10;
+    let scale = f32::from(bounds.size.width.min(bounds.size.height)) / 24.0;
+    let (radius, half) = (9.0 * scale, 1.25 * scale);
+    let center = bounds.center();
+    let at = |angle: f32, from: Point<Pixels>, distance: f32| {
+        point(
+            from.x + px(distance * angle.cos()),
+            from.y + px(distance * angle.sin()),
+        )
+    };
+    // From the top, clockwise (y grows downward), three quarters round.
+    let start = -TAU / 4.0 + turned * TAU;
+    let end = start + TAU * 0.75;
+    let along = |step: usize| start + (end - start) * step as f32 / STEPS as f32;
+    let around = |step: usize| TAU / 2.0 * step as f32 / CAP_STEPS as f32;
+
+    let mut outline = Vec::with_capacity(2 * (STEPS + CAP_STEPS + 2));
+    outline.extend((0..=STEPS).map(|step| at(along(step), center, radius + half)));
+    let tip = at(end, center, radius);
+    outline.extend((1..CAP_STEPS).map(|step| at(end + around(step), tip, half)));
+    outline.extend(
+        (0..=STEPS)
+            .rev()
+            .map(|step| at(along(step), center, radius - half)),
+    );
+    let tail = at(start, center, radius);
+    outline.extend((1..CAP_STEPS).map(|step| at(start + TAU / 2.0 + around(step), tail, half)));
+    outline
+}
+
+/// How far into its turn the ring is `since` it first turned, from 0 to 1.
+/// **Counted in whole microseconds**: seconds as an `f32` lose their
+/// precision as the app stays open, and after a day a frame's angle moves
+/// in steps the eye sees.
+fn turn_at(since: std::time::Duration) -> f32 {
+    let turn = RING_TURN.as_micros();
+    (since.as_micros() % turn) as f32 / turn as f32
 }
 
 /// The first letter an account is drawn as while it has no picture.
@@ -227,7 +284,6 @@ pub fn avatar(account: &Account, size: f32, look: &Look) -> Div {
             .flex()
             .items_center()
             .justify_center()
-            .font_family(MONO)
             .font_weight(FontWeight::BOLD)
             .text_size(px(size * 0.45))
             .text_color(color(palette.on_accent))
@@ -260,6 +316,49 @@ mod tests {
             biography: None,
             picture: None,
             active: true,
+        }
+    }
+
+    #[test]
+    fn the_ring_turns_evenly_however_long_the_app_has_been_open() {
+        use std::time::Duration;
+        let step = Duration::from_micros(6_100); // a frame at 164 Hz
+        for open in [0, 3_600, 86_400, 30 * 86_400] {
+            let since = Duration::from_secs(open) + Duration::from_millis(137);
+            let moved = turn_at(since + step) - turn_at(since);
+            let expected = step.as_secs_f32() / RING_TURN.as_secs_f32();
+            assert!(
+                (moved - expected).abs() < 1e-4,
+                "after {open} s open a frame turns it {moved}, not {expected}"
+            );
+        }
+        assert_eq!(turn_at(RING_TURN), 0.0);
+    }
+
+    #[test]
+    fn the_ring_is_the_same_arc_at_every_angle_and_stays_in_its_box() {
+        let bounds = Bounds::new(point(px(10.), px(20.)), gpui_kit::size(px(24.), px(24.)));
+        let center = bounds.center();
+        let first = arc(bounds, 0.0);
+        // Upright, it starts at the top, on the outer edge of the stroke.
+        assert!(
+            (f32::from(first[0].x) - 22.0).abs() < 1e-3,
+            "{:?}",
+            first[0]
+        );
+        assert!(
+            (f32::from(first[0].y) - 21.75).abs() < 1e-3,
+            "{:?}",
+            first[0]
+        );
+        for turned in [0.0, 0.1, 0.125, 0.37, 0.5, 0.9] {
+            let outline = arc(bounds, turned);
+            assert_eq!(outline.len(), first.len());
+            for at in &outline {
+                assert!(bounds.contains(at), "{at:?} at {turned}");
+                let from = f32::from(at.x - center.x).hypot(f32::from(at.y - center.y));
+                assert!(from <= 10.25 + 1e-3, "{from} from the middle at {turned}");
+            }
         }
     }
 

@@ -223,12 +223,8 @@ fn main() -> anyhow::Result<()> {
     // Held until the process ends: while the app is open no command applies
     // an update under it, and the app and the `snob` beside it stay one
     // version (`snob_engine::update::edition`).
-    let _running = snob_engine::update::at_start(
-        &paths,
-        testing,
-        snob_engine::update::Role::Counted,
-        &[],
-    );
+    let _running =
+        snob_engine::update::at_start(&paths, testing, snob_engine::update::Role::Counted, &[]);
 
     #[cfg(feature = "testing")]
     let listed = value_of(&args, "--browsers").and_then(|count| count.parse().ok());
