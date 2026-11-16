@@ -559,6 +559,8 @@ async fn the_palette_lists_what_the_screen_can_do_and_finds_it_by_typing(cx: &mu
         listed(&app, cx),
         (
             [
+                "Search",
+                "Automations",
                 "Settings",
                 "Add account",
                 "Switch to @someone",
@@ -613,7 +615,7 @@ async fn the_arrows_choose_in_the_palette_and_escape_hands_focus_back(cx: &mut T
     app.press(cx, "ctrl-k");
     app.press(cx, "down");
     app.press(cx, "enter");
-    app.until_screen(cx, |screen| matches!(screen, Screen::Start { .. }))
+    app.until_screen(cx, |screen| *screen == Screen::Automations)
         .await;
     assert!(!shown(&app, cx, "palette"));
 }

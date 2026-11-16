@@ -29,7 +29,7 @@ pub fn label(command: Command, shell: &Shell, look: &Look) -> String {
     match command {
         Command::SignInBrowser => look.tr("start-browser"),
         Command::SignInPaste => look.tr("start-paste"),
-        Command::Home => look.tr("home-title"),
+        Command::Go(place) => super::screens::section_title(place, look),
         Command::Settings => look.tr("account-settings"),
         Command::AddAccount => look.tr("account-add"),
         Command::SwitchTo(pk) => {

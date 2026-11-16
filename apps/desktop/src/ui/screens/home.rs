@@ -10,7 +10,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Div, FontWeight, Role, Toggled, div, px};
 
 use super::column;
-use crate::state::flow::Event;
+use crate::state::flow::Place;
 use crate::theme::fonts::MONO;
 use crate::theme::tokens::shape;
 use crate::ui::assets;
@@ -139,6 +139,30 @@ pub fn home(shell: &mut Shell, phase: Phase, cx: &mut Context<Shell>) -> AnyElem
         .child(parts::title(&shell.title, look.tr("home-title"), &look))
         .children(crash(shell, &look, cx))
         .into_any_element()
+}
+
+/// A section that is not ready yet: its title, and what it will hold.
+fn to_come(shell: &mut Shell, place: Place, note: String, phase: Phase, look: &Look) -> AnyElement {
+    column(phase)
+        .child(parts::title(
+            &shell.title,
+            super::section_title(place, look),
+            look,
+        ))
+        .child(parts::paragraph("section-note", note, look))
+        .into_any_element()
+}
+
+pub fn search(shell: &mut Shell, phase: Phase, cx: &mut Context<Shell>) -> AnyElement {
+    let look = Look::now(cx).clone();
+    let note = look.tr("search-note");
+    to_come(shell, Place::Search, note, phase, &look)
+}
+
+pub fn automations(shell: &mut Shell, phase: Phase, cx: &mut Context<Shell>) -> AnyElement {
+    let look = Look::now(cx).clone();
+    let note = look.tr("automations-note");
+    to_come(shell, Place::Automations, note, phase, &look)
 }
 
 pub fn settings(shell: &mut Shell, phase: Phase, cx: &mut Context<Shell>) -> AnyElement {
@@ -287,7 +311,7 @@ pub fn settings(shell: &mut Shell, phase: Phase, cx: &mut Context<Shell>) -> Any
         .child(
             parts::button("back", look.tr("back"), Kind::Secondary, true, &look).on_click(
                 cx.listener(|shell, _, window, cx| {
-                    shell.happened(Event::Back, window, cx);
+                    shell.go(Place::Home, window, cx);
                 }),
             ),
         )

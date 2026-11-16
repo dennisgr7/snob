@@ -177,6 +177,12 @@ pub mod frame {
     pub const SIDE: f32 = 14.0;
     /// The panel's corners. **A default to confirm** (20 to 24).
     pub const PANEL_RADIUS: f32 = 22.0;
+    /// The rail of sections at the left of an open frame. **Not grown with
+    /// the text**: its icons stay legible at any size, and a rail that grew
+    /// would take the panel's room at twice the text.
+    pub const RAIL: f32 = 64.0;
+    /// A section's button on the rail.
+    pub const RAIL_BUTTON: f32 = 40.0;
     /// How much of the band's color stays once content scrolls under it:
     /// translucent, with no blur (GPUI has none per element). Opaque when
     /// the system asks for less transparency.

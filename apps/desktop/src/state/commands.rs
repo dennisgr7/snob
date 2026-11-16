@@ -4,14 +4,15 @@
 
 use snob_core::Pk;
 
-use super::flow::Screen;
+use super::flow::{Place, Screen};
 
 /// Something the palette does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     SignInBrowser,
     SignInPaste,
-    Home,
+    /// To a section: what its button on the rail does.
+    Go(Place),
     Settings,
     AddAccount,
     SwitchTo(Pk),
@@ -24,18 +25,24 @@ pub enum Command {
 /// the accounts signed in beside the one in use. Nothing on the way to
 /// signing in: those screens have one thing to do, and a way back.
 pub fn offered(screen: &Screen, others: &[Pk]) -> Vec<Command> {
-    let signed_in = |first: Command| {
-        let mut commands = vec![first, Command::AddAccount];
-        commands.extend(others.iter().copied().map(Command::SwitchTo));
-        commands.extend([Command::SignOut, Command::OpenLogs, Command::CopyReport]);
-        commands
-    };
-    match screen {
-        Screen::Start { .. } => vec![Command::SignInBrowser, Command::SignInPaste],
-        Screen::Home => signed_in(Command::Settings),
-        Screen::Settings => signed_in(Command::Home),
-        _ => Vec::new(),
+    if matches!(screen, Screen::Start { .. }) {
+        return vec![Command::SignInBrowser, Command::SignInPaste];
     }
+    if !screen.signed_in() {
+        return Vec::new();
+    }
+    let mut commands: Vec<Command> = Place::ALL
+        .into_iter()
+        .filter(|place| place.screen() != *screen)
+        .map(Command::Go)
+        .collect();
+    if *screen != Screen::Settings {
+        commands.push(Command::Settings);
+    }
+    commands.push(Command::AddAccount);
+    commands.extend(others.iter().copied().map(Command::SwitchTo));
+    commands.extend([Command::SignOut, Command::OpenLogs, Command::CopyReport]);
+    commands
 }
 
 /// Whether `label` is what `typed` asks for: every word typed is somewhere
@@ -77,6 +84,8 @@ mod tests {
         assert_eq!(
             offered(&Screen::Home, &[other]),
             [
+                Command::Go(Place::Search),
+                Command::Go(Place::Automations),
                 Command::Settings,
                 Command::AddAccount,
                 Command::SwitchTo(other),
@@ -85,7 +94,16 @@ mod tests {
                 Command::CopyReport,
             ]
         );
-        assert_eq!(offered(&Screen::Settings, &[])[0], Command::Home);
+        assert_eq!(
+            offered(&Screen::Settings, &[])[..3],
+            [
+                Command::Go(Place::Home),
+                Command::Go(Place::Search),
+                Command::Go(Place::Automations)
+            ]
+        );
+        assert!(!offered(&Screen::Settings, &[]).contains(&Command::Settings));
+        assert_eq!(offered(&Screen::Search, &[])[0], Command::Go(Place::Home));
         for on_the_way in [Screen::Splash, Screen::Browser, Screen::Paste] {
             assert!(offered(&on_the_way, &[other]).is_empty());
         }

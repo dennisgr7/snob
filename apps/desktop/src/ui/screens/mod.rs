@@ -11,7 +11,7 @@ use snob_engine::login::Failure;
 use super::frame::clock;
 use super::look::{Look, sp};
 use super::shell::{Phase, Shell};
-use crate::state::flow::{Method, Named, Screen};
+use crate::state::flow::{Method, Named, Place, Screen};
 
 mod failed;
 mod home;
@@ -27,6 +27,15 @@ pub fn handle(account: &Named) -> String {
     match &account.username {
         Some(username) => format!("@{username}"),
         None => account.pk.to_string(),
+    }
+}
+
+/// What a section is called: its title, and its button's name on the rail.
+pub fn section_title(place: Place, look: &Look) -> String {
+    match place {
+        Place::Home => look.tr("home-title"),
+        Place::Search => look.tr("search-title"),
+        Place::Automations => look.tr("automations-title"),
     }
 }
 
@@ -82,6 +91,8 @@ pub fn render(
         Screen::Failed { why, id, retry } => failed::render(shell, why, id, retry, phase, cx),
         Screen::Welcome(account) => welcome::render(shell, account, phase, cx),
         Screen::Home => home::home(shell, phase, cx),
+        Screen::Search => home::search(shell, phase, cx),
+        Screen::Automations => home::automations(shell, phase, cx),
         Screen::Settings => home::settings(shell, phase, cx),
     }
 }

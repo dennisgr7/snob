@@ -1,6 +1,7 @@
 //! Which screen is shown, and what moves the app from one to the next: the
 //! start, the two ways to sign in, the update that may come between, the
-//! error, the welcome. **A function of what happened, with no clock, no
+//! error, the welcome, and once somebody is signed in the sections and the
+//! settings. **A function of what happened, with no clock, no
 //! window and no engine in it**, so every path of the flow is a test here
 //! before it is a screen.
 
@@ -85,7 +86,49 @@ pub enum Screen {
     },
     Welcome(Named),
     Home,
+    Search,
+    Automations,
     Settings,
+}
+
+impl Screen {
+    /// Whether this is a screen of an app somebody is signed in to: a
+    /// section or the settings.
+    pub fn signed_in(&self) -> bool {
+        matches!(
+            self,
+            Self::Home | Self::Search | Self::Automations | Self::Settings
+        )
+    }
+}
+
+/// A section of the app, which the rail goes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    Home,
+    Search,
+    Automations,
+}
+
+impl Place {
+    /// The sections, in the rail's order.
+    pub const ALL: [Self; 3] = [Self::Home, Self::Search, Self::Automations];
+
+    /// The screen of this section.
+    pub fn screen(self) -> Screen {
+        match self {
+            Self::Home => Screen::Home,
+            Self::Search => Screen::Search,
+            Self::Automations => Screen::Automations,
+        }
+    }
+
+    /// The section `screen` is, when it is one.
+    pub fn of(screen: &Screen) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|place| place.screen() == *screen)
+    }
 }
 
 /// What happened.
@@ -116,6 +159,8 @@ pub enum Event {
     Back,
     /// The welcome has been shown for as long as it stays.
     Welcomed,
+    /// To a section of the app.
+    Go(Place),
     OpenSettings,
     AddAccount,
     /// The account in use was signed out; `next` is the account now in use,
@@ -156,7 +201,7 @@ pub struct Flow {
     screen: Screen,
     update: Update,
     /// Whether an account is signed in and in use: what "back" from the
-    /// start screen and from settings returns to.
+    /// start screen returns to.
     signed_in: bool,
 }
 
@@ -338,18 +383,18 @@ impl Flow {
 
             (Screen::Welcome(_), Event::Welcomed) => (Screen::Home, Vec::new()),
 
-            (Screen::Home, Event::OpenSettings) => (Screen::Settings, Vec::new()),
-            (Screen::Settings, Event::Back) => (Screen::Home, Vec::new()),
-            (Screen::Home | Screen::Settings, Event::AddAccount) => (self.start(None), Vec::new()),
+            (screen, Event::Go(place)) if screen.signed_in() => (place.screen(), Vec::new()),
+            (screen, Event::OpenSettings) if screen.signed_in() => (Screen::Settings, Vec::new()),
+            (screen, Event::AddAccount) if screen.signed_in() => (self.start(None), Vec::new()),
 
-            (Screen::Home | Screen::Settings, Event::SignedOut { next: Some(_) }) => {
+            (screen, Event::SignedOut { next: Some(_) }) if screen.signed_in() => {
                 (Screen::Home, Vec::new())
             }
-            (Screen::Home | Screen::Settings, Event::SignedOut { next: None }) => {
+            (screen, Event::SignedOut { next: None }) if screen.signed_in() => {
                 self.signed_in = false;
                 (self.start(None), Vec::new())
             }
-            (Screen::Home | Screen::Settings, Event::Expired(account)) => {
+            (screen, Event::Expired(account)) if screen.signed_in() => {
                 self.signed_in = false;
                 (self.start(Some(account)), Vec::new())
             }
@@ -663,6 +708,43 @@ mod tests {
                 back: false
             }
         );
+    }
+
+    #[test]
+    fn the_sections_and_the_settings_are_reached_from_one_another() {
+        let (mut flow, _) = after([loaded(Found::SignedIn(me()))]);
+        for place in [Place::Search, Place::Automations, Place::Home] {
+            flow.on(Event::OpenSettings);
+            assert_eq!(flow.screen(), &Screen::Settings);
+            assert!(flow.on(Event::Go(place)).is_empty());
+            assert_eq!(flow.screen(), &place.screen());
+            assert_eq!(Place::of(flow.screen()), Some(place));
+        }
+        // Signing out and adding an account work from any of them.
+        flow.on(Event::Go(Place::Automations));
+        flow.on(Event::AddAccount);
+        assert_eq!(
+            flow.screen(),
+            &Screen::Start {
+                expired: None,
+                back: true
+            }
+        );
+        flow.on(Event::Back);
+        assert_eq!(flow.screen(), &Screen::Home);
+        flow.on(Event::Go(Place::Search));
+        flow.on(Event::SignedOut { next: None });
+        assert_eq!(flow.screen(), &start());
+    }
+
+    #[test]
+    fn no_section_is_reached_before_somebody_is_signed_in() {
+        let (mut flow, _) = after([loaded(Found::Nobody)]);
+        for event in [Event::Go(Place::Search), Event::OpenSettings] {
+            assert!(flow.on(event).is_empty());
+            assert_eq!(flow.screen(), &start());
+        }
+        assert!(!Screen::Splash.signed_in() && !start().signed_in());
     }
 
     #[test]

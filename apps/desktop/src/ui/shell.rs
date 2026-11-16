@@ -27,7 +27,7 @@ use super::look::Look;
 use super::{frame, screens};
 use crate::backend::{Account, Backend, Loaded, SignIn};
 use crate::state::commands::{self, Command};
-use crate::state::flow::{Effect, Event, Flow, Found, Method, Named, Screen, Update};
+use crate::state::flow::{Effect, Event, Flow, Found, Method, Named, Place, Screen, Update};
 use crate::state::paste::{self, Field};
 use crate::state::rest::{self, Rest};
 use crate::state::status::{self, Band, Status};
@@ -125,6 +125,8 @@ fn name(screen: &Screen) -> &'static str {
         Screen::Failed { .. } => "failed",
         Screen::Welcome(_) => "welcome",
         Screen::Home => "home",
+        Screen::Search => "search",
+        Screen::Automations => "automations",
         Screen::Settings => "settings",
     }
 }
@@ -145,6 +147,7 @@ fn event_name(event: &Event) -> &'static str {
         Event::Retry => "retry",
         Event::Back => "back",
         Event::Welcomed => "welcomed",
+        Event::Go(_) => "go",
         Event::OpenSettings => "open_settings",
         Event::AddAccount => "add_account",
         Event::SignedOut { .. } => "signed_out",
@@ -517,14 +520,13 @@ impl Shell {
     /// Whether the account's menu can be opened now: on the screens of an
     /// app somebody is signed in to, and not on the way to signing in.
     pub(crate) fn has_a_menu(&self) -> bool {
-        matches!(self.shown, Screen::Home | Screen::Settings)
-            && matches!(self.flow.screen(), Screen::Home | Screen::Settings)
+        self.shown.signed_in() && self.flow.screen().signed_in()
     }
 
     /// Whether the app is where somebody signed in is, whatever is still
     /// drawn on the way there.
     fn is_signed_in(&self) -> bool {
-        matches!(self.flow.screen(), Screen::Home | Screen::Settings)
+        self.flow.screen().signed_in()
     }
 
     /// Opens the account's menu, or closes it.
@@ -689,7 +691,7 @@ impl Shell {
         match command {
             Command::SignInBrowser => self.chose(Method::Browser, window, cx),
             Command::SignInPaste => self.chose(Method::Paste, window, cx),
-            Command::Home => self.happened(Event::Back, window, cx),
+            Command::Go(place) => self.go(place, window, cx),
             Command::Settings => self.open_settings(window, cx),
             Command::AddAccount => self.add_an_account(window, cx),
             Command::SwitchTo(pk) => self.switch_to(pk, window, cx),
@@ -757,6 +759,16 @@ impl Shell {
         tracing::info!(action = "add_account", "action");
         self.close_the_menu(window, cx);
         self.happened(Event::AddAccount, window, cx);
+    }
+
+    /// To a section of the app: what its button on the rail does.
+    pub(crate) fn go(&mut self, place: Place, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_signed_in() {
+            return;
+        }
+        tracing::info!(action = "go", "action");
+        self.menu = None;
+        self.happened(Event::Go(place), window, cx);
     }
 
     pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {

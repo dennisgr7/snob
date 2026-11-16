@@ -104,6 +104,10 @@ welcome = Te damos la bienvenida, { $account }.
 ## Inicio y configuración
 
 home-title = Inicio
+search-title = Buscar
+search-note = Busca una cuenta, sus publicaciones y sus listas. Aún no está lista.
+automations-title = Automatizaciones
+automations-note = Vigila cuentas y recibe un aviso cuando algo cambie. Aún no está lista.
 settings-title = Configuración
 settings-logs = Registros
 settings-detailed = Registro detallado

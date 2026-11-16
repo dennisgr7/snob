@@ -30,12 +30,37 @@ pub const WELCOME_ENTER: Duration = Duration::from_millis(600);
 /// time to read the name, not a move. 1.2 s was reported as too short.
 pub const WELCOME_STAYS: Duration = Duration::from_millis(2800);
 
-/// One turn of the loading ring.
 /// How long a picture takes to come in once it is read, when it was not
 /// there at once: a fade and a small growth into its circle.
 pub const PICTURE_ARRIVES: Duration = Duration::from_millis(260);
 
+/// One turn of the loading ring.
 pub const RING_TURN: Duration = Duration::from_millis(1100);
+
+/// The frame opening once somebody is signed in: the screen before it
+/// leaves and home comes in inside it, which hides the panel's reflow.
+pub const FRAME_OPEN: Duration = Duration::from_millis(520);
+
+/// The frame closing, on signing out or adding an account: shorter, as
+/// leaving is.
+pub const FRAME_CLOSE: Duration = Duration::from_millis(380);
+
+/// When the rail's first icon starts coming in, after the frame began to
+/// open: once the rail has room for it.
+pub const RAIL_ICON_DELAY: Duration = Duration::from_millis(220);
+
+/// How long each of the rail's icons takes to come in.
+pub const RAIL_ICON_ENTER: Duration = Duration::from_millis(260);
+
+/// How long after one icon the next starts.
+pub const RAIL_ICON_STAGGER: Duration = Duration::from_millis(70);
+
+/// How long the icons take to leave, all together, as the frame closes.
+pub const RAIL_ICON_LEAVE: Duration = Duration::from_millis(150);
+
+/// The outline of the settings beside their scrollbar, coming and going as
+/// the thumb is held and let go.
+pub const OUTLINE_ENTER: Duration = INTERACTION;
 
 /// What a transition does, beside taking time.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -70,6 +95,17 @@ pub fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
+/// A curve that starts and ends slowly: the cubic ease-in-out, from 0 to 1.
+/// For what moves from one place to another, the frame's shape.
+pub fn ease_in_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if t < 0.5 {
+        4.0 * t * t * t
+    } else {
+        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,6 +138,33 @@ mod tests {
             let now = ease_out(step as f32 / 20.0);
             assert!(now > before, "never backward");
             before = now;
+        }
+    }
+
+    #[test]
+    fn the_frame_and_its_icons_move_within_what_the_design_allows() {
+        assert!(FRAME_CLOSE < FRAME_OPEN);
+        // The screen before leaves while the frame opens, and home comes
+        // in before it has.
+        assert!(EXIT < FRAME_OPEN && FRAME_OPEN < EXIT + ENTER);
+        let icons = RAIL_ICON_DELAY + RAIL_ICON_STAGGER * 2 + RAIL_ICON_ENTER;
+        assert!(
+            icons <= Duration::from_millis(700),
+            "{icons:?} for the icons"
+        );
+        assert!(RAIL_ICON_LEAVE < FRAME_CLOSE);
+    }
+
+    #[test]
+    fn the_curve_of_a_move_is_slow_at_both_ends_and_symmetric() {
+        assert_eq!(ease_in_out(0.0), 0.0);
+        assert_eq!(ease_in_out(1.0), 1.0);
+        assert_eq!(ease_in_out(-1.0), 0.0);
+        assert!((ease_in_out(0.5) - 0.5).abs() < 1e-6);
+        assert!(ease_in_out(0.1) < 0.1 && ease_in_out(0.9) > 0.9);
+        for step in 1..10 {
+            let t = step as f32 / 10.0;
+            assert!((ease_in_out(t) + ease_in_out(1.0 - t) - 1.0).abs() < 1e-5);
         }
     }
 

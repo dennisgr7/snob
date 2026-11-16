@@ -105,6 +105,10 @@ welcome = Welcome, { $account }.
 ## Home and settings
 
 home-title = Home
+search-title = Search
+search-note = Look up an account, its posts and its lists. Not ready yet.
+automations-title = Automations
+automations-note = Watch accounts and be told when something changes. Not ready yet.
 settings-title = Settings
 settings-logs = Logs
 settings-detailed = Detailed logging
