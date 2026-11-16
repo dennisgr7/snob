@@ -326,6 +326,17 @@ impl Driven {
             Request::Capture { to } => self
                 .window
                 .update(cx, |_, window, cx| {
+                    // **The pointer is taken off the window first**: the
+                    // real one lies wherever the person left it, and a
+                    // control under it would be pictured hovered.
+                    window.dispatch_event(
+                        gpui_kit::PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                            position: gpui_kit::point(px(-100.), px(-100.)),
+                            pressed_button: None,
+                            modifiers: gpui_kit::Modifiers::default(),
+                        }),
+                        cx,
+                    );
                     window.render_frame(cx);
                     window
                         .render_to_image()
