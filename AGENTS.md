@@ -230,6 +230,11 @@ documented reason in the same place.
   headless browser, sent with `fetch()`: handshake, HTTP/2, cookies, client
   hints and `Referer` are the browser's (`headless/`, `snob_ig::client::page`).
   `SNOB_NO_BROWSER=1` sends with `reqwest`, and Instagram can tell.
+- **The engine hands itself its browsers** (`owner::ensure`, at `App::open`
+  and a login's check), so a program running it, the desktop app included,
+  has nothing to remember; **a client pointed at Instagram without a page
+  refuses to send** unless `SNOB_NO_BROWSER` chose that (`IgError::NoBrowser`,
+  `transport.rs`).
 - One browser per account, run by the owner process (`owner/`, hidden
   `__browser-owner`), closed `headless::IDLE` (5 min) after its last request;
   `SNOB_NO_OWNER=1` makes a command run its own. Nothing that spends no network
