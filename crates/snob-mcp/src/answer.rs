@@ -138,6 +138,9 @@ pub fn from(plan: &Plan, mut finished: Finished) -> Answer {
     if is_changes(plan) {
         finished.json = finished.json.take().map(bounded_changes);
     }
+    if plan.args.first().map(String::as_str) == Some("whoami") {
+        finished.json = finished.json.take().map(without_session_path);
+    }
     if is_a_post(plan) {
         finished.json = finished.json.take().map(bounded_post);
     }
@@ -998,6 +1001,15 @@ fn last_lines(said: &str) -> String {
     lines[lines.len().saturating_sub(6)..].join("\n")
 }
 
+/// What `whoami` says of where the session is kept, a path on this machine
+/// that no tool hands to an agent, left out; `storage` says which store it is.
+fn without_session_path(mut document: Value) -> Value {
+    if let Some(fields) = document.as_object_mut() {
+        fields.remove("storage_path");
+    }
+    document
+}
+
 /// Whether `plan` is one of the commands about posts, stories or
 /// highlights (`snob_posts`, `snob_post`, `snob_post_likers`,
 /// `snob_post_download`, `snob_stories`, `snob_highlights`, their downloads and
@@ -1106,6 +1118,31 @@ mod tests {
         assert!(kept.len() <= PAGE_BYTES && kept.len() > PAGE_BYTES - 3);
         assert!(kept.ends_with('\u{2192}'));
         assert!(told["cut"].is_string());
+    }
+
+    /// A session that does not answer is an answer with its error beside it,
+    /// and the file it is kept in is no business of an agent's.
+    #[test]
+    fn a_dead_session_is_an_answer_without_the_path_it_is_kept_at() {
+        let whoami = Plan {
+            args: vec!["whoami".into(), "--json".into()],
+            ..plan(&[ExitCode::Ok, ExitCode::NoSession])
+        };
+        let said = json!({
+            "pk": "42",
+            "username": "me",
+            "storage": "file",
+            "storage_path": "/home/me/.local/share/snob-ig/session.json",
+            "alive": false,
+            "error": { "code": "no_session", "message": "the session expired" },
+        });
+        let told = from(&whoami, finished(ExitCode::NoSession, Some(said), None));
+        assert!(!told.failed, "{}", told.body);
+        assert_eq!(told.body["alive"], false);
+        assert_eq!(told.body["exit"], "no_session");
+        assert_eq!(told.body["error"]["hint"], SIGN_IN);
+        assert!(told.body.get("storage_path").is_none(), "{}", told.body);
+        assert_eq!(told.body["storage"], "file");
     }
 
     /// A profile picture told as a document leaves it as an image, and what is

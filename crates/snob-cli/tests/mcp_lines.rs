@@ -141,6 +141,13 @@ fn a_profile_picture_is_a_line_the_command_line_takes() {
 }
 
 #[test]
+fn a_session_check_is_a_line_the_command_line_takes() {
+    for args in [json!({}), json!({"offline": true})] {
+        taken(planned("snob_whoami", args).args);
+    }
+}
+
+#[test]
 fn a_write_checked_ahead_is_a_line_the_command_line_takes() {
     let follow = planned("snob_follow", json!({"account": "someone"}));
     taken(follow.ahead_line(3).unwrap());

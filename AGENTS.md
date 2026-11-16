@@ -603,6 +603,7 @@ prints a client's snippet and never writes it.
 |---|---|---|---|
 | `snob_status` | `status` | no | always |
 | `snob_list` | a list or crossing, filtered by `--hide`/`--only` (`verified`, `private`, `no-pfp`; the job's allowed flags too); a walk runs as a job | another account's lists | always |
+| `snob_whoami` | `whoami --json`, `--offline` sends nothing; a dead session is an answer (exit 3, 4, 5 too), `storage_path` left out | no | always |
 | `snob_job`, `snob_jobs`, `snob_job_cancel` | `__job show`, `list`, `cancel` | no | always |
 | `snob_profile` | `profile`, inline | no | always |
 | `snob_posts` | a grid or tab, at most 3 pages | no | always |

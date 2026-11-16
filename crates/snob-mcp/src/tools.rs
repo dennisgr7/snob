@@ -430,6 +430,38 @@ pub fn specs(offer: Offer<'_>) -> Vec<Spec> {
             open_world: true,
         },
         Spec {
+            name: "snob_whoami",
+            title: "Whether the session still works",
+            description: "Whose session is stored here and whether Instagram still takes it: \
+                          the account (pk and username), where the session came from, when it \
+                          was stored and last checked, and alive, which is true when \
+                          Instagram answered the check, false when it refused the session, \
+                          and null when nothing was checked (not_checked says why: offline, \
+                          cooldown, or signed_out). One request to Instagram, none in a \
+                          cooldown or with offline, which answers from what is stored. A \
+                          session that no longer works comes back as an answer with alive \
+                          false and an error, not as a failure: the person signs in again with \
+                          \"snob login\" in their own terminal, which you cannot do for them. \
+                          Call it before a long walk when snob_status says a session is stored \
+                          but nothing has used it for a while.",
+            input: json!({
+                "type": "object",
+                "properties": {
+                    "offline": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Do not ask Instagram: say only what is stored. Sends \
+                                        nothing."
+                    }
+                },
+                "additionalProperties": false
+            }),
+            read_only: true,
+            destructive: false,
+            idempotent: true,
+            open_world: true,
+        },
+        Spec {
             name: "snob_job",
             title: "A walk running as a job",
             description: "A walk that snob_list handed back as a job (status running, with a \
@@ -1565,6 +1597,35 @@ fn command(name: &str, args: &Map<String, Value>, offer: Offer<'_>) -> Result<Pl
             })
         }
         "snob_pfp" => Ok(pfp(args, offer.downloads)?),
+        "snob_whoami" => {
+            no_more(args, &["offline"])?;
+            let offline = flag(args, "offline")?;
+            let mut command = vec!["whoami".to_string(), "--json".into()];
+            command.extend(offline.then(|| "--offline".to_string()));
+            Ok(Plan {
+                args: command,
+                ask: None,
+                // As `status`: `whoami --json` prints its document and exits
+                // 3 for a session that is dead or none, 4 for one that needs
+                // verifying and 5 while the account cools down, and each is
+                // what was asked, not a failure to retry.
+                answers: &[
+                    ExitCode::Ok,
+                    ExitCode::NoSession,
+                    ExitCode::Challenge,
+                    ExitCode::RateLimited,
+                ],
+                spends: if offline {
+                    Spends::Nothing
+                } else {
+                    Spends::Reads
+                },
+                page: None,
+                run: Run::Inline,
+                acting_as: None,
+                records: true,
+            })
+        }
         "snob_posts" => Ok(posts(name, args)?),
         "snob_snapshots" => {
             no_more(args, &["account", "list", "offset"])?;
@@ -3220,6 +3281,48 @@ mod tests {
         }
     }
 
+    /// The session check is an answer whatever the session is, spends a
+    /// request only when it asks Instagram, and asks nothing.
+    #[test]
+    fn the_session_check_is_an_answer_and_spends_only_when_it_asks() {
+        let live = call("snob_whoami", json!({})).unwrap();
+        assert_eq!(live.args, ["whoami", "--json"]);
+        assert_eq!(live.spends, Spends::Reads);
+        assert!(live.ask.is_none());
+        assert_eq!(live.run, Run::Inline);
+        for code in [
+            ExitCode::Ok,
+            ExitCode::NoSession,
+            ExitCode::Challenge,
+            ExitCode::RateLimited,
+        ] {
+            assert!(live.answers.contains(&code), "{code:?}");
+        }
+        assert!(!live.answers.contains(&ExitCode::Error));
+
+        let stored = call("snob_whoami", json!({"offline": true})).unwrap();
+        assert_eq!(stored.args, ["whoami", "--json", "--offline"]);
+        assert_eq!(stored.spends, Spends::Nothing);
+        assert_eq!(
+            call("snob_whoami", json!({"offline": false})).unwrap(),
+            live
+        );
+
+        for wrong in [
+            json!({"offline": "yes"}),
+            json!({"json": true}),
+            json!({"account": "someone"}),
+        ] {
+            assert!(
+                matches!(
+                    call("snob_whoami", wrong.clone()),
+                    Err(Unplannable::Invalid(_))
+                ),
+                "{wrong}"
+            );
+        }
+    }
+
     #[test]
     fn the_writes_are_offered_only_when_allowed() {
         let names = |offer| specs(offer).iter().map(|s| s.name).collect::<Vec<_>>();
@@ -3844,7 +3947,7 @@ mod tests {
     fn only_the_tools_that_may_reach_instagram_are_open_world() {
         let id = format!("j{}", "0".repeat(26));
         let reaching = |name: &str| match name {
-            "snob_status" | "snob_accounts" | "snob_snapshots" | "snob_changes" => {
+            "snob_status" | "snob_accounts" | "snob_snapshots" | "snob_changes" | "snob_whoami" => {
                 vec![json!({})]
             }
             "snob_logout" => vec![json!({"account": "me"})],
@@ -3864,7 +3967,7 @@ mod tests {
             _ => vec![json!({"account": "x"})],
         };
         let every = specs(EVERYTHING);
-        assert_eq!(every.len(), 21, "every tool is pinned here");
+        assert_eq!(every.len(), 22, "every tool is pinned here");
         for spec in every {
             let may_reach = reaching(spec.name)
                 .into_iter()
