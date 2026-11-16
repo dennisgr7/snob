@@ -472,6 +472,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Every tag, to tell whether this one is the newest.
+          fetch-depth: 0
+
+      # `:latest` moves only to the newest version: an older tag released
+      # again by hand (`workflow_dispatch`) gets its own tag alone.
+      - name: Choose the tags
+        id: tags
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          newest=$(git tag -l 'v*' --sort=-v:refname | grep -v -- - | head -n 1)
+          {
+            echo 'list<<EOF'
+            echo "$IMAGE:$VERSION"
+            if [ "$newest" = "v$VERSION" ]; then echo "$IMAGE:latest"; fi
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
@@ -490,9 +508,7 @@ jobs:
           context: packaging/docker
           platforms: linux/amd64,linux/arm64
           build-args: VERSION=${{ needs.check.outputs.version }}
-          tags: |
-            ${{ env.IMAGE }}:${{ needs.check.outputs.version }}
-            ${{ env.IMAGE }}:latest
+          tags: ${{ steps.tags.outputs.list }}
           push: true
 
       - name: Attest

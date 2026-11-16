@@ -167,8 +167,14 @@ impl Prefs {
         }
     }
 
-    /// Reads what is remembered, applies `change` and saves the result.
+    /// Reads what is remembered, applies `change` and saves the result,
+    /// **one change at a time**: the app's changes run on the runtime's two
+    /// threads, and two read at once would each save without the other's.
     pub fn change(paths: &AppPaths, change: impl FnOnce(&mut Self)) {
+        static CHANGING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _alone = CHANGING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut prefs = Self::load(paths);
         let before = prefs.clone();
         change(&mut prefs);

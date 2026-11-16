@@ -634,6 +634,8 @@ fn outline(
     let track = f32::from(viewport.size.height);
     let whole = f32::from(list.handle.max_offset().y) + track;
     let (at, read) = scroll::outline(&tops, scrolled, whole, track);
+    // The pill's height and a gap below it, in pixels at this text size.
+    let pill = 28.0 * look.settings.text_scale();
     Some(
         div()
             .id("settings-outline")
@@ -656,7 +658,7 @@ fn outline(
                         div()
                             .absolute()
                             .right_0()
-                            .top(px(y.min(track - 28.).max(0.)))
+                            .top(px(y.min(track - pill).max(0.)))
                             .h(sp(26.))
                             .px(sp(10.))
                             .flex()

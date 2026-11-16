@@ -20,6 +20,7 @@ use gpui_kit::{
 use snob_core::secret::Secret;
 use snob_core::{Epoch, Pk};
 use snob_engine::login::Failure;
+use snob_engine::storage::Kind;
 use snob_ig::pace::CancelToken;
 use tokio::sync::watch;
 
@@ -438,6 +439,20 @@ impl Shell {
     /// was read is read again**, and comes in. Nothing is fetched: a picture
     /// is a file of the account's, or nothing.
     fn decode_the_pictures(&mut self, cx: &mut App) {
+        // A picture no account names any more (the cache cleared, an account
+        // gone) is forgotten, and so is what was decoded of it.
+        let named: Vec<&PathBuf> = self
+            .accounts
+            .iter()
+            .filter_map(|a| a.picture.as_ref())
+            .collect();
+        self.pictures.retain(|path, _| {
+            let kept = named.contains(&path);
+            if !kept {
+                cx.remove_asset::<ImgResourceLoader>(&Resource::from(path.clone()));
+            }
+            kept
+        });
         for account in &self.accounts {
             let Some(path) = account.picture.clone() else {
                 continue;
@@ -982,18 +997,32 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let cleared = clearing.await.ok();
             this.update_in(cx, |this, window, cx| {
+                // The pictures were in the cache: the accounts are read again
+                // whether or not the settings are still shown.
+                this.look_again(window, cx);
+                if let Some(cleared) = cleared {
+                    let look = Look::now(cx).clone();
+                    let said = super::screens::settings::cleared_words(cleared, &look);
+                    this.announce(said, cx);
+                }
                 let Some(page) = &mut this.settings else {
                     return;
                 };
                 page.clearing = false;
                 page.cleared = cleared;
-                let look = Look::now(cx).clone();
-                if let Some(cleared) = cleared {
-                    let said = super::screens::settings::cleared_words(cleared, &look);
-                    this.announce(said, cx);
+                if cleared.is_some()
+                    && let Some(storage) = &mut page.storage
+                {
+                    // Gone until measured again, so the button is not offered
+                    // on what was just removed.
+                    for (kind, size) in &mut storage.kinds {
+                        if *kind == Kind::Cache {
+                            size.bytes = 0;
+                            size.files = 0;
+                        }
+                    }
                 }
                 this.measure(window, cx);
-                this.look_again(window, cx);
             })
             .ok();
         })

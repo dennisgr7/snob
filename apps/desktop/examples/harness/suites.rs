@@ -703,6 +703,8 @@ fn no_test_mode_in_a_release() -> Outcome {
         "--test-root",
         "--simulate-system",
         "--instagram",
+        "--browsers",
+        "--fixed-storage",
         "desktop-control",
     ] {
         if bytes

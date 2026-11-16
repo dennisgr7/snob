@@ -1075,8 +1075,9 @@ its version is the release's ("Release and packaging"). GPUI comes through
   (`exe::start_as`): the app points the engine at the `snob` beside it and
   logs when there is none.
 - **Every word is in `locales/en/snob.ftl` and `locales/es/snob.ftl`**, chosen
-  by the system's language and held to the same messages by a test. Spanish
-  belongs there; `language.rs` does not scan `.ftl`.
+  by the system's language unless one is chosen in the settings, and held to
+  the same messages by a test. Spanish belongs there; `language.rs` does not
+  scan `.ftl`.
 - **Closing the window is leaving, but on macOS**, where the app stays in the
   Dock and a click there opens the window again (`main.rs`).
 
@@ -1219,8 +1220,8 @@ for byte):
   released binary checked against `SHA256SUMS`: Chromium, no root, no
   keyring (`--no-keyring`, `SNOB_MCP_KEY`), no self-update, data under
   `/data`. `release.yml`'s job `image` publishes it for each release, for
-  amd64 and arm64, as `ghcr.io/dennisgr7/snob:<version>` and `:latest`,
-  attested like the archives.
+  amd64 and arm64, as `ghcr.io/dennisgr7/snob:<version>`, and `:latest`
+  when it is the newest version, attested like the archives.
 
 Workflows pin every action to a commit SHA with its version in a comment, and
 start from `permissions: contents: read`. `claude.yml` and
