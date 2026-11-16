@@ -1,13 +1,17 @@
 # snob's command line and MCP server in a container: the cli edition, with no
 # app (`snob_engine::update::edition`).
 #
-#     docker build --build-arg VERSION=0.9.0 -t snob packaging/docker
-#     docker run --rm -it -v snob-data:/data snob login --paste
-#     docker run --rm -i -v snob-data:/data -e SNOB_MCP_KEY snob mcp
+#     docker run --rm -it -v snob-data:/data ghcr.io/dennisgr7/snob login --paste
+#     docker run --rm -i -v snob-data:/data -e SNOB_MCP_KEY ghcr.io/dennisgr7/snob mcp
 #
-# **Not published anywhere**: an image is built from a released binary by
-# whoever wants one. The binary is the static one of the release, checked
-# against its SHA256SUMS before anything else is done with it.
+# Published by `release.yml` (job `image`) for every release, as
+# `ghcr.io/dennisgr7/snob:<version>` and `:latest`, with a provenance
+# attestation; or built here from any released version:
+#
+#     docker build --build-arg VERSION=0.9.0 -t snob packaging/docker
+#
+# The binary is the static one of the release, checked against its
+# SHA256SUMS before anything else is done with it.
 #
 # What a container changes, and why:
 # - No keyring: sessions are kept with `--no-keyring` (the entrypoint says it
@@ -20,6 +24,8 @@
 # - Every file snob keeps is under the volume at /data.
 
 FROM debian:trixie-slim
+
+LABEL org.opencontainers.image.source="https://github.com/dennisgr7/snob"       org.opencontainers.image.description="snob's command line and MCP server: Instagram from the terminal and for AI agents"       org.opencontainers.image.licenses="MIT"
 
 # The release to install; required.
 ARG VERSION
