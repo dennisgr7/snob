@@ -23,7 +23,8 @@ use snob_store::viewer::Card;
 use tokio::sync::watch;
 
 use super::{
-    Account, AccountStorage, Answer, Backend, Browsers, Cleared, Loaded, SignIn, Storage, answered,
+    Account, AccountStorage, Answer, Backend, Browsers, Cleared, Forgotten, Loaded, SignIn,
+    Storage, answered,
 };
 use crate::report;
 use crate::runtime::Runtime;
@@ -91,13 +92,26 @@ impl Engine {
     }
 }
 
-/// What the test build says is kept with `fixed_storage`: a size for each
-/// kind, the update and the scratch left empty, and the accounts signed in.
+/// What the test build says is kept with `fixed_storage`: a disk of 512 GB
+/// with a fifth free, a size for each kind, the update and the scratch left
+/// empty, the accounts signed in, and one left behind by a sign-out.
 #[cfg(feature = "testing")]
 fn fixed(accounts: &[Account]) -> Storage {
     use snob_engine::storage::Kind;
     let size = |bytes: u64, files: u64| snob_store::disk::Size { bytes, files };
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let left = AccountStorage {
+        pk: Pk::new(9_000_000_001),
+        username: Some("left_behind".to_string()),
+        signed_in: false,
+        history: size(1_153_434, 2),
+        cache: size(0, 0),
+    };
     Storage {
+        disk: Some(snob_store::disk::Volume {
+            total: 512 * GIB,
+            free: 102 * GIB + 418 * 1024 * 1024,
+        }),
         kinds: vec![
             (Kind::Databases, size(6_815_744, 4)),
             (Kind::Cache, size(3_250_586, 212)),
@@ -113,10 +127,66 @@ fn fixed(accounts: &[Account]) -> Storage {
             .map(|account| AccountStorage {
                 pk: account.named.pk,
                 username: account.named.username.clone(),
-                total: size(62_131_200, 1_520),
+                signed_in: true,
+                history: size(5_662_310, 5),
+                cache: size(3_250_586, 212),
             })
+            .chain(std::iter::once(left))
             .collect(),
     }
+}
+
+/// What each account with a directory here holds: those signed in in
+/// `here`'s order, then the others by id, named as `accounts.toml` keeps
+/// them. **One signed out of is listed while its history or cache is still
+/// here**, so it can be seen and deleted; a directory with nothing of
+/// either left is not.
+fn held_by_accounts(
+    paths: &AppPaths,
+    here: &[Account],
+    usage: &storage::Usage,
+) -> Vec<AccountStorage> {
+    let registry = Registry::load(paths).ok();
+    let named = |pk: Pk| {
+        here.iter()
+            .find(|account| account.named.pk == pk)
+            .and_then(|account| account.named.username.clone())
+            .or_else(|| {
+                let registered = registry.as_ref()?.accounts.iter().find(|a| a.pk == pk)?;
+                Some(snob_core::model::printable(&registered.username))
+            })
+    };
+    let mut held: Vec<AccountStorage> = paths
+        .account_dirs()
+        .into_iter()
+        .map(|pk| {
+            let kinds = usage
+                .accounts
+                .iter()
+                .find(|held| held.pk == pk)
+                .map(|held| held.kinds.clone())
+                .unwrap_or_default();
+            AccountStorage {
+                pk,
+                username: named(pk),
+                signed_in: here.iter().any(|account| account.named.pk == pk),
+                history: kinds
+                    .get(storage::Kind::Databases)
+                    .plus(kinds.get(storage::Kind::Jobs)),
+                cache: kinds.get(storage::Kind::Cache),
+            }
+        })
+        .filter(|held: &AccountStorage| {
+            held.signed_in || held.history.bytes > 0 || held.cache.bytes > 0
+        })
+        .collect();
+    let at = |pk: Pk| {
+        here.iter()
+            .position(|account| account.named.pk == pk)
+            .unwrap_or(usize::MAX)
+    };
+    held.sort_by_key(|account| (at(account.pk), account.pk));
+    held
 }
 
 /// The account `pk` as a view shows it.
@@ -608,30 +678,23 @@ impl Backend for Engine {
                 return fixed(&here);
             }
             let usage = storage::measure(&paths);
-            let accounts = here
-                .iter()
-                .filter_map(|account| {
-                    let pk = account.named.pk;
-                    let held = usage.accounts.iter().find(|held| held.pk == pk)?;
-                    Some(AccountStorage {
-                        pk,
-                        username: account.named.username.clone(),
-                        total: held.kinds.total(),
-                    })
-                })
-                .collect();
             Storage {
+                disk: snob_store::disk::volume(paths.data_dir()),
                 kinds: usage.kinds.iter().collect(),
-                accounts,
+                accounts: held_by_accounts(&paths, &here, &usage),
             }
         })
     }
 
-    fn clear_cache(&self) -> Answer<Cleared> {
+    fn clear_cache(&self, only: Option<Pk>) -> Answer<Cleared> {
         let paths = self.paths.clone();
         self.runtime.run(move || async move {
-            let cleared = storage::clear_cache(&paths, None);
-            tracing::info!(freed = cleared.freed.bytes, "the cache was cleared");
+            let cleared = storage::clear_cache(&paths, only);
+            tracing::info!(
+                freed = cleared.freed.bytes,
+                whole = only.is_none(),
+                "the cache was cleared"
+            );
             if let Some((at, e)) = &cleared.failure {
                 // Where, in the log alone, under the code it is logged as.
                 let error = anyhow::anyhow!("{}: {e}", at.display())
@@ -642,6 +705,34 @@ impl Backend for Engine {
                 freed: cleared.freed,
                 whole: cleared.failure.is_none(),
             }
+        })
+    }
+
+    fn forget_history(&self, only: Option<Pk>) -> Answer<Forgotten> {
+        let paths = self.paths.clone();
+        self.runtime.run(move || async move {
+            let accounts = match only {
+                Some(pk) => vec![pk],
+                None => paths.account_dirs(),
+            };
+            let mut forgotten = Forgotten::default();
+            for pk in accounts {
+                match storage::forget_history(&paths, pk) {
+                    Ok(forgot) => forgotten.freed += forgot.freed,
+                    Err(storage::NotForgotten::Busy) => forgotten.busy += 1,
+                    Err(storage::NotForgotten::Failed(e)) => {
+                        log::failed(&e.context("an account's history could not be forgotten"));
+                        forgotten.failed += 1;
+                    }
+                }
+            }
+            tracing::info!(
+                freed = forgotten.freed.bytes,
+                busy = forgotten.busy,
+                failed = forgotten.failed,
+                "history was forgotten"
+            );
+            forgotten
         })
     }
 }

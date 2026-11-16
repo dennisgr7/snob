@@ -4,7 +4,7 @@
 
 use snob_core::Pk;
 use snob_engine::storage::Kind;
-use snob_store::disk::Size;
+use snob_store::disk::{Size, Volume};
 
 use super::settings::Row;
 
@@ -36,9 +36,9 @@ pub fn said(bytes: u64, language: &str) -> String {
     format!("{number} {}", UNITS[unit])
 }
 
-/// The lines of what is kept, after its total: each kind by what it weighs,
-/// the heaviest first, those that hold nothing left out but the cache,
-/// which is where it is cleared; then each account signed in.
+/// The lines of what is kept, after the disk: each kind by what it weighs,
+/// the heaviest first, those that hold nothing left out but the cache;
+/// then, when there is any, the accounts' heading and each account.
 pub fn rows(kinds: &[(Kind, Size)], accounts: impl IntoIterator<Item = Pk>) -> Vec<Row> {
     let mut kept: Vec<(Kind, Size)> = kinds
         .iter()
@@ -46,10 +46,24 @@ pub fn rows(kinds: &[(Kind, Size)], accounts: impl IntoIterator<Item = Pk>) -> V
         .filter(|(kind, size)| size.bytes > 0 || kind.clearable())
         .collect();
     kept.sort_by(|a, b| b.1.bytes.cmp(&a.1.bytes).then(a.0.cmp(&b.0)));
+    let accounts: Vec<Row> = accounts.into_iter().map(Row::Account).collect();
+    let heading = (!accounts.is_empty()).then_some(Row::Accounts);
     kept.into_iter()
         .map(|(kind, _)| Row::StorageKind(kind))
-        .chain(accounts.into_iter().map(Row::Account))
+        .chain(heading)
+        .chain(accounts)
         .collect()
+}
+
+/// The disk's bar, in bytes adding up to its size: what everything else on
+/// it takes, what snob takes (`kept`), and what is free. What snob keeps
+/// outside the disk (the stories' scratch may be on another) is never said
+/// to take more than all that is used.
+pub fn shares(disk: Volume, kept: u64) -> (u64, u64, u64) {
+    let free = disk.free.min(disk.total);
+    let used = disk.total - free;
+    let snob = kept.min(used);
+    (used - snob, snob, free)
 }
 
 /// Every kind together.
@@ -89,9 +103,29 @@ mod tests {
                 Row::StorageKind(Kind::Databases),
                 Row::StorageKind(Kind::Logs),
                 Row::StorageKind(Kind::Cache),
+                Row::Accounts,
                 Row::Account(Pk::new(7)),
             ]
         );
         assert_eq!(total(&kinds), 70);
+        assert!(
+            !rows(&kinds, []).contains(&Row::Accounts),
+            "nobody to clear"
+        );
+    }
+
+    #[test]
+    fn the_disk_s_shares_add_up_to_its_size_and_snob_never_to_more_than_is_used() {
+        let disk = Volume {
+            total: 1000,
+            free: 300,
+        };
+        assert_eq!(shares(disk, 50), (650, 50, 300));
+        assert_eq!(shares(disk, 900), (0, 700, 300));
+        let odd = Volume {
+            total: 100,
+            free: 400,
+        };
+        assert_eq!(shares(odd, 10), (0, 0, 100));
     }
 }

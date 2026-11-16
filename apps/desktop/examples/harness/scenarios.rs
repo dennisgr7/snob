@@ -150,6 +150,11 @@ pub fn all() -> Vec<Scenario> {
             clearing_the_cache
         ),
         scenario!(
+            "deleting history asks first and keeps the session",
+            "9 10",
+            forgetting_history
+        ),
+        scenario!(
             "the outline shows while the scrollbar is dragged",
             "9",
             outline_while_dragging
@@ -562,7 +567,7 @@ async fn clearing_the_cache(stage: &mut Stage<'_>) -> anyhow::Result<()> {
     app.click("settings-clear-cache").await?;
     let seen = app
         .until("the cache cleared", |seen| {
-            label(seen, "storage-cache-note").is_ok_and(|note| note.ends_with("freed"))
+            label(seen, "settings-accounts-note").is_ok_and(|note| note.ends_with("freed"))
         })
         .await?;
     expect(
@@ -573,6 +578,57 @@ async fn clearing_the_cache(stage: &mut Stage<'_>) -> anyhow::Result<()> {
     expect(account.dir().exists(), || {
         "the account's directory went with the cache".to_string()
     })?;
+    // The session stays: a start goes home.
+    let app = stage.open().await?;
+    app.until_screen("home").await.map(drop)
+}
+
+async fn forgetting_history(stage: &mut Stage<'_>) -> anyhow::Result<()> {
+    stage.open().await?;
+    stage.sign_in(world::ME, "forget").await?;
+    let app = stage.app()?;
+    to_the_settings(app).await?;
+    app.click("settings-search").await?;
+    app.type_in("history").await?;
+    app.until("what is kept measured", |seen| {
+        node(seen, "storage-account-0-forget").is_ok_and(|button| button.disabled != Some(true))
+    })
+    .await?;
+
+    // A no deletes nothing.
+    app.click("storage-account-0-forget").await?;
+    let seen = app
+        .until("the question asked", |seen| {
+            node(seen, "forget-title").is_ok()
+        })
+        .await?;
+    expect(
+        label(&seen, "forget-body")?.contains("cannot be undone"),
+        || "the question does not say it cannot be undone".to_string(),
+    )?;
+    app.press("escape").await?;
+    let seen = app
+        .until("the question gone", |seen| {
+            node(seen, "forget-title").is_err()
+        })
+        .await?;
+    expect(
+        !label(&seen, "storage-account-0-note")?.ends_with("freed"),
+        || "a no deleted something".to_string(),
+    )?;
+
+    app.click("storage-account-0-forget").await?;
+    app.until("the question asked again", |seen| {
+        node(seen, "forget-title").is_ok()
+    })
+    .await?;
+    app.click("forget-confirm").await?;
+    let seen = app
+        .until("the history deleted", |seen| {
+            label(seen, "storage-account-0-note").is_ok_and(|note| note.ends_with("freed"))
+        })
+        .await?;
+    expect_eq(seen.screen.as_str(), "settings", "still in the settings")?;
     // The session stays: a start goes home.
     let app = stage.open().await?;
     app.until_screen("home").await.map(drop)

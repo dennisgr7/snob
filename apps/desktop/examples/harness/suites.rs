@@ -202,7 +202,7 @@ fn logic() -> Vec<Outcome> {
 
 /// The screens a picture is taken of and an audit made of, and how each is
 /// reached from the screen before it.
-const SCREENS: [&str; 14] = [
+const SCREENS: [&str; 17] = [
     "start",
     "paste",
     "failed",
@@ -211,9 +211,12 @@ const SCREENS: [&str; 14] = [
     "menu-accounts",
     "sign-out",
     "settings",
+    "settings-languages",
     "palette",
     "settings-search",
     "settings-storage",
+    "settings-accounts",
+    "settings-forget",
     "search",
     "automations",
     "paste-browsers",
@@ -269,6 +272,9 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
             app.press(SETTINGS_KEYS).await?;
             app.until_screen("settings").await?;
         }
+        "settings-languages" => {
+            stage.app()?.click("settings-language").await?;
+        }
         "settings-search" => {
             let app = stage.app()?;
             app.press("escape").await?;
@@ -293,8 +299,25 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
             // taken while it fades would never be the same twice.
             tokio::time::sleep(Duration::from_millis(2300)).await;
         }
+        "settings-accounts" => {
+            // Turned down to the end: the accounts and what they hold.
+            let app = stage.app()?;
+            let seen = app.look().await?;
+            let (left, top, width, height) = crate::scenarios::bounds(&seen, "settings-list")?;
+            app.point(
+                left + width / 2.0,
+                top + height / 2.0,
+                snob_desktop::control::Pointing::Wheel(2000.0),
+            )
+            .await?;
+            tokio::time::sleep(Duration::from_millis(2300)).await;
+        }
+        "settings-forget" => {
+            stage.app()?.click("settings-forget-all").await?;
+        }
         "search" => {
             let app = stage.app()?;
+            app.press("escape").await?;
             app.click("rail-search").await?;
             app.until_screen("search").await?;
         }
@@ -304,14 +327,15 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
             app.until_screen("automations").await?;
         }
         "palette" => {
-            stage
-                .app()?
-                .press(if cfg!(target_os = "macos") {
-                    "cmd-k"
-                } else {
-                    "ctrl-k"
-                })
-                .await?;
+            let app = stage.app()?;
+            // The languages' list, open on the screen before, closes first.
+            app.press("escape").await?;
+            app.press(if cfg!(target_os = "macos") {
+                "cmd-k"
+            } else {
+                "ctrl-k"
+            })
+            .await?;
         }
         "paste-browsers" => {
             // The same computer with three browsers listed, and the list of
@@ -606,7 +630,7 @@ async fn accessibility(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
             if over {
                 wanted.retain(|path| {
                     path.iter().any(|above| {
-                        ["account-menu", "sign-out", "palette"].contains(&above.as_str())
+                        ["account-menu", "sign-out", "palette", "forget"].contains(&above.as_str())
                     })
                 });
             }

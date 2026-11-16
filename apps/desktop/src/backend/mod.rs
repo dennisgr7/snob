@@ -15,7 +15,7 @@ use snob_core::{Epoch, Pk};
 use snob_engine::login::Failure;
 use snob_engine::storage::Kind;
 use snob_ig::pace::CancelToken;
-use snob_store::disk::Size;
+use snob_store::disk::{Size, Volume};
 use tokio::sync::{oneshot, watch};
 
 use crate::state::flow::{Found, Method, Named, Update};
@@ -70,21 +70,29 @@ pub struct Browsers {
 /// What snob keeps on this computer, measured from its files' sizes alone.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Storage {
+    /// The disk snob's data directory is on, when the system said.
+    pub disk: Option<Volume>,
     /// What each kind weighs, every account's included, in
     /// [`Kind::ALL`]'s order.
     pub kinds: Vec<(Kind, Size)>,
-    /// What each account signed in here holds, the one in use first. **Only
-    /// those**: what an account no longer signed in left is counted in the
-    /// kinds and not named.
+    /// What each account with a directory here holds, signed in or not: the
+    /// one in use first, then the others signed in, then the rest.
     pub accounts: Vec<AccountStorage>,
 }
 
-/// What one account signed in here holds.
+/// What one account with a directory here holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountStorage {
     pub pk: Pk,
     pub username: Option<String>,
-    pub total: Size,
+    /// Whether a session of it is signed in here; one that is not left its
+    /// files behind.
+    pub signed_in: bool,
+    /// Its history: its database (lists, captures, the monitor's work and
+    /// what paces it), and its jobs and their results.
+    pub history: Size,
+    /// Its views' cache.
+    pub cache: Size,
 }
 
 /// What clearing the cache freed, and whether all of it went.
@@ -92,6 +100,17 @@ pub struct AccountStorage {
 pub struct Cleared {
     pub freed: Size,
     pub whole: bool,
+}
+
+/// What forgetting history freed, and of how many accounts it was not
+/// forgotten.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Forgotten {
+    pub freed: Size,
+    /// Accounts left alone because a job or a run of theirs was going.
+    pub busy: usize,
+    /// Accounts the disk or the database refused, logged.
+    pub failed: usize,
 }
 
 /// How a sign-in ended.
@@ -185,10 +204,17 @@ pub trait Backend: Send + Sync + 'static {
     /// database is opened.
     fn storage(&self) -> Answer<Storage>;
 
-    /// Removes the cache of every account here, and nothing else
-    /// (`snob_engine::storage::clear_cache`): what a view showed at once,
-    /// which its requests fetch again.
-    fn clear_cache(&self) -> Answer<Cleared>;
+    /// Removes the cache of `only`, or with `None` of every account here,
+    /// and nothing else (`snob_engine::storage::clear_cache`): what a view
+    /// showed at once, which its requests fetch again.
+    fn clear_cache(&self, only: Option<Pk>) -> Answer<Cleared>;
+
+    /// Forgets the history of `only`, or with `None` of every account with
+    /// a directory here (`snob_engine::storage::forget_history`): its lists,
+    /// captures, the monitor's work, its jobs and its cache. **Never its
+    /// session, its browser, nor what paces it.** An account with a job or
+    /// a run going is left alone and counted.
+    fn forget_history(&self, only: Option<Pk>) -> Answer<Forgotten>;
 }
 
 /// An answer already known.

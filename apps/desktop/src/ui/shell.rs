@@ -5,6 +5,7 @@
 //! decided by the flow (`state::flow`) and done here, off the window's
 //! thread.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -14,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Context, Entity, FocusHandle, ImgResourceLoader, Pixels, Resource,
+    AnyElement, App, Bounds, Context, Entity, FocusHandle, ImgResourceLoader, Pixels, Resource,
     ScrollHandle, SharedString, Subscription, Window, point, px,
 };
 use snob_core::secret::Secret;
@@ -26,7 +27,7 @@ use tokio::sync::watch;
 
 use super::look::Look;
 use super::{frame, screens};
-use crate::backend::{Account, Backend, Cleared, Loaded, SignIn, Storage};
+use crate::backend::{Account, Backend, Cleared, Forgotten, Loaded, SignIn, Storage};
 use crate::state::commands::{self, Command};
 use crate::state::flow::{Effect, Event, Flow, Found, Method, Named, Place, Screen, Update};
 use crate::state::frame::{self as shape, Icon, Morph, Pill, SECTIONS};
@@ -96,6 +97,8 @@ pub(crate) struct PasteForm {
     pub browser: usize,
     /// Whether the list of them is open.
     pub choosing: bool,
+    /// The field that opens the list, where focus goes back when it closes.
+    pub browser_field: FocusHandle,
     _watching: Subscription,
 }
 
@@ -106,15 +109,40 @@ pub(crate) struct SettingsPage {
     pub search: Entity<InputState>,
     pub scroll: super::scroll::OutlinedScroll,
     pub choosing_language: bool,
+    /// The language field, where focus goes back when its list closes, and
+    /// where it was last drawn, which the list is put under.
+    pub language_field: FocusHandle,
+    pub language_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Each language listed, the one chosen focused when the list opens.
+    pub language_options: Vec<FocusHandle>,
     /// Whether the outline of the sections is coming or going, and since
     /// when, by the executor's clock: none before the thumb was first held.
     pub outline: Option<(bool, Instant)>,
     /// What is kept, once measured.
     pub storage: Option<Storage>,
-    /// Whether the cache is being cleared, and what clearing it last did.
-    pub clearing: bool,
-    pub cleared: Option<Cleared>,
+    /// The question deleting history asks first, while it is asked.
+    pub forgetting: Option<Forgetting>,
     _watching: Subscription,
+}
+
+/// What clearing or deleting what is kept did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Done {
+    Cleared(Cleared),
+    Forgot(Forgotten),
+}
+
+/// The question deleting history asks first.
+pub(crate) struct Forgetting {
+    /// Whose: one account, or with `None` every one here.
+    pub only: Option<Pk>,
+    /// The account's name as the settings say it.
+    pub name: String,
+    pub focus: FocusHandle,
+    /// The answer focus starts on: the one that changes nothing.
+    pub cancel: FocusHandle,
+    /// What had focus when it was asked, where it goes back.
+    pub from: Option<FocusHandle>,
 }
 
 /// The command palette, while it is open.
@@ -220,6 +248,13 @@ pub struct Shell {
     pub(crate) crash: Option<String>,
     pub(crate) paste: Option<PasteForm>,
     pub(crate) settings: Option<SettingsPage>,
+    /// What is being cleared or deleted, for one account or with `None` for
+    /// all of them. **The shell's, not the settings'**: it runs on in the
+    /// backend whatever screen is shown, and the settings opened again show
+    /// it running.
+    pub(crate) storage_work: Option<Option<Pk>>,
+    /// What the last of it did, and for whom.
+    pub(crate) storage_done: Option<(Option<Pk>, Done)>,
     pub(crate) menu: Option<AccountMenu>,
     pub(crate) palette: Option<Palette>,
     /// What opens the menu, and where focus returns when it closes.
@@ -376,6 +411,8 @@ impl Shell {
             crash: None,
             paste: None,
             settings: None,
+            storage_work: None,
+            storage_done: None,
             menu: None,
             palette: None,
             account_button: cx.focus_handle(),
@@ -713,8 +750,13 @@ impl Shell {
             return;
         }
         let settled = name(&self.shown) == name(self.flow.screen());
+        let asking = self
+            .settings
+            .as_ref()
+            .is_some_and(|page| page.forgetting.is_some());
         if !settled
             || self.signing_out.is_some()
+            || asking
             || commands::offered(self.flow.screen(), &[]).is_empty()
         {
             return;
@@ -804,13 +846,19 @@ impl Shell {
         if self.palette.is_some() {
             self.close_the_palette(window, cx);
         } else if self.paste.as_ref().is_some_and(|form| form.choosing) {
-            self.toggle_the_browsers(cx);
+            self.toggle_the_browsers(window, cx);
+        } else if self
+            .settings
+            .as_ref()
+            .is_some_and(|page| page.forgetting.is_some())
+        {
+            self.keep_the_history(window, cx);
         } else if self
             .settings
             .as_ref()
             .is_some_and(|page| page.choosing_language)
         {
-            self.toggle_the_languages(cx);
+            self.toggle_the_languages(window, cx);
         } else if self.signing_out.is_some() {
             self.keep_signed_in(window, cx);
         } else {
@@ -954,10 +1002,14 @@ impl Shell {
             search,
             scroll: super::scroll::OutlinedScroll::new(),
             choosing_language: false,
+            language_field: cx.focus_handle(),
+            language_bounds: Rc::default(),
+            language_options: (0..super::screens::settings::LANGUAGES.len())
+                .map(|_| cx.focus_handle())
+                .collect(),
             outline: None,
             storage: None,
-            clearing: false,
-            cleared: None,
+            forgetting: None,
             _watching: watching,
         }
     }
@@ -980,53 +1032,152 @@ impl Shell {
         .detach();
     }
 
-    /// Removes the cache, says what that freed, and measures again. The
-    /// account's own picture is kept there too: the accounts are read again.
-    pub(crate) fn clear_the_cache(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(page) = &mut self.settings else {
-            return;
-        };
-        if page.clearing {
+    /// Removes the cache of `only`, or of every account with `None`, says
+    /// what that freed, and measures again. **Asks nothing**: what a view
+    /// showed at once is fetched again.
+    pub(crate) fn clear_the_cache(
+        &mut self,
+        only: Option<Pk>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.storage_work.is_some() {
             return;
         }
-        tracing::info!(action = "clear_cache", "action");
-        page.clearing = true;
-        page.cleared = None;
-        let clearing = self.backend.clear_cache();
+        tracing::info!(action = "clear_cache", all = only.is_none(), "action");
+        self.storage_work = Some(only);
+        self.storage_done = None;
+        let clearing = self.backend.clear_cache(only);
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let cleared = clearing.await.ok();
             this.update_in(cx, |this, window, cx| {
-                // The pictures were in the cache: the accounts are read again
-                // whether or not the settings are still shown.
-                this.look_again(window, cx);
-                if let Some(cleared) = cleared {
-                    let look = Look::now(cx).clone();
-                    let said = super::screens::settings::cleared_words(cleared, &look);
-                    this.announce(said, cx);
-                }
-                let Some(page) = &mut this.settings else {
-                    return;
-                };
-                page.clearing = false;
-                page.cleared = cleared;
-                if cleared.is_some()
-                    && let Some(storage) = &mut page.storage
-                {
-                    // Gone until measured again, so the button is not offered
-                    // on what was just removed.
-                    for (kind, size) in &mut storage.kinds {
-                        if *kind == Kind::Cache {
-                            size.bytes = 0;
-                            size.files = 0;
-                        }
-                    }
-                }
-                this.measure(window, cx);
+                this.after_working(only, cleared.map(Done::Cleared), window, cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Asks before deleting the history of `only`, or of every account
+    /// with `None`, named `name`.
+    pub(crate) fn ask_to_forget(
+        &mut self,
+        only: Option<Pk>,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let from = window.focused(cx);
+        if self.storage_work.is_some() {
+            return;
+        }
+        let Some(page) = &mut self.settings else {
+            return;
+        };
+        page.choosing_language = false;
+        let (focus, cancel) = (cx.focus_handle(), cx.focus_handle());
+        window.focus(&cancel, cx);
+        page.forgetting = Some(Forgetting {
+            only,
+            name,
+            focus,
+            cancel,
+            from,
+        });
+        cx.notify();
+    }
+
+    /// The answer was no: nothing is deleted.
+    pub(crate) fn keep_the_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(asked) = self
+            .settings
+            .as_mut()
+            .and_then(|page| page.forgetting.take())
+        else {
+            return;
+        };
+        if let Some(from) = asked.from {
+            window.focus(&from, cx);
+        }
+        cx.notify();
+    }
+
+    /// The answer was yes: the history asked about is deleted, what that
+    /// freed is said, and what is kept is measured again.
+    pub(crate) fn forget_the_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(page) = &mut self.settings else {
+            return;
+        };
+        let Some(asked) = page.forgetting.take() else {
+            return;
+        };
+        if let Some(from) = &asked.from {
+            window.focus(from, cx);
+        }
+        let only = asked.only;
+        if self.storage_work.is_some() {
+            return;
+        }
+        tracing::info!(action = "forget_history", all = only.is_none(), "action");
+        self.storage_work = Some(only);
+        self.storage_done = None;
+        let forgetting = self.backend.forget_history(only);
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let forgot = forgetting.await.ok();
+            this.update_in(cx, |this, window, cx| {
+                this.after_working(only, forgot.map(Done::Forgot), window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// What follows a clearing or a deletion, whatever screen is shown: the
+    /// accounts read again, since their pictures were in the cache, and
+    /// what it did said; what is kept measured again when the settings are
+    /// shown.
+    fn after_working(
+        &mut self,
+        only: Option<Pk>,
+        done: Option<Done>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.look_again(window, cx);
+        if let Some(done) = done {
+            let look = Look::now(cx).clone();
+            let said = super::screens::settings::done_words(done, &look);
+            self.announce(said, cx);
+        }
+        self.storage_work = None;
+        self.storage_done = done.map(|done| (only, done));
+        cx.notify();
+        let Some(page) = &mut self.settings else {
+            return;
+        };
+        if let (Some(done), Some(storage)) = (done, &mut page.storage) {
+            // Gone until measured again, so nothing is offered on what was
+            // just removed.
+            let forgot = matches!(done, Done::Forgot(_));
+            for account in &mut storage.accounts {
+                if only.is_none_or(|pk| pk == account.pk) {
+                    account.cache = Default::default();
+                    if forgot {
+                        account.history = Default::default();
+                    }
+                }
+            }
+            if only.is_none() {
+                for (kind, size) in &mut storage.kinds {
+                    if *kind == Kind::Cache {
+                        *size = Default::default();
+                    }
+                }
+            }
+        }
+        self.measure(window, cx);
     }
 
     /// Whether the screen shown scrolls on its own, under a header that
@@ -1062,6 +1213,7 @@ impl Shell {
     ) {
         if let Some(page) = &mut self.settings {
             page.choosing_language = false;
+            window.focus(&page.language_field, cx);
         }
         let look = Look::now(cx).clone();
         if look.chosen.language == language {
@@ -1101,10 +1253,33 @@ impl Shell {
         cx.notify();
     }
 
-    /// Lists the languages under their field, or stops listing them.
-    pub(crate) fn toggle_the_languages(&mut self, cx: &mut Context<Self>) {
-        if let Some(page) = &mut self.settings {
-            page.choosing_language = !page.choosing_language;
+    /// Lists the languages under their field, the one chosen focused, or
+    /// stops listing them, focus back on the field.
+    pub(crate) fn toggle_the_languages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = Look::now(cx).chosen.language.clone();
+        let Some(page) = &mut self.settings else {
+            return;
+        };
+        page.choosing_language = !page.choosing_language;
+        if page.choosing_language {
+            let at = super::screens::settings::LANGUAGES
+                .iter()
+                .position(|(tag, _)| *tag == chosen.as_deref())
+                .unwrap_or(0);
+            window.focus(&page.language_options[at], cx);
+        } else {
+            window.focus(&page.language_field, cx);
+        }
+        cx.notify();
+    }
+
+    /// The languages stop being listed, as a press outside them does: focus
+    /// stays where the press put it.
+    pub(crate) fn close_the_languages(&mut self, cx: &mut Context<Self>) {
+        if let Some(page) = &mut self.settings
+            && page.choosing_language
+        {
+            page.choosing_language = false;
             cx.notify();
         }
     }
@@ -1454,24 +1629,35 @@ impl Shell {
             browsers: None,
             browser: 0,
             choosing: false,
+            browser_field: cx.focus_handle(),
             _watching: watching,
         }
     }
 
-    /// Opens the list of browsers under the field, or closes it.
-    pub(crate) fn toggle_the_browsers(&mut self, cx: &mut Context<Self>) {
+    /// Opens the list of browsers under the field, or closes it, focus
+    /// back on the field.
+    pub(crate) fn toggle_the_browsers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(form) = &mut self.paste {
             form.choosing = !form.choosing;
+            if !form.choosing {
+                window.focus(&form.browser_field, cx);
+            }
             cx.notify();
         }
     }
 
     /// The session is said to come from the browser listed at `at`.
-    pub(crate) fn choose_the_browser(&mut self, at: usize, cx: &mut Context<Self>) {
+    pub(crate) fn choose_the_browser(
+        &mut self,
+        at: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(form) = &mut self.paste {
             tracing::info!(action = "choose_browser", "action");
             form.browser = at;
             form.choosing = false;
+            window.focus(&form.browser_field, cx);
             cx.notify();
         }
     }

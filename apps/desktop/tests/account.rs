@@ -268,6 +268,12 @@ async fn the_settings_hold_the_log_s_switch_its_folder_and_the_report(cx: &mut T
     app.until_screen(cx, |screen| *screen == Screen::Home).await;
 }
 
+/// Types `typed` into the settings' search.
+fn search(app: &App, cx: &mut TestAppContext, typed: &str) {
+    app.click(cx, "settings-search");
+    app.in_window(cx, |window, cx| window.input(typed, cx));
+}
+
 async fn at_the_settings(cx: &mut TestAppContext, backend: Scripted) -> App {
     let app = at_home(cx, backend).await;
     app.press(cx, snob_desktop::ui::SETTINGS_KEYS);
@@ -346,6 +352,17 @@ async fn a_language_is_chosen_from_its_list_and_every_word_follows(cx: &mut Test
             window.find("settings-languages").role(),
             Some(Role::ListBox)
         );
+        assert_eq!(
+            window.find(("settings-language-option", 0usize)).focused(),
+            Some(true),
+            "the one chosen is focused"
+        );
+        // Drawn over what follows, put under the field: not in its line.
+        let field = window.find("settings-language").bounds();
+        let list = window.find("settings-languages").bounds();
+        assert!(list.top() >= field.bottom(), "{list:?} under {field:?}");
+        let logs = window.find("settings-logs-label").bounds();
+        assert!(list.bottom() > logs.top(), "over the next line");
         let names: Vec<_> = (0..3usize)
             .map(|at| {
                 let option = window.find(("settings-language-option", at));
@@ -355,9 +372,17 @@ async fn a_language_is_chosen_from_its_list_and_every_word_follows(cx: &mut Test
             .collect();
         assert_eq!(names, ["System language", "English", "Espa\u{f1}ol"]);
     });
-    // Escape closes the list and chooses nothing.
+    // Escape closes the list and chooses nothing, focus back on its field.
     app.press(cx, "escape");
     assert!(!shown(&app, cx, "settings-languages"));
+    assert!(focused(&app, cx, "settings-language"));
+
+    // A press outside it closes it too.
+    app.click(cx, "settings-language");
+    assert!(shown(&app, cx, "settings-languages"));
+    app.click(cx, "settings-storage");
+    assert!(!shown(&app, cx, "settings-languages"));
+    assert_eq!(worn(&app, cx), (false, "en"));
 
     app.click(cx, "settings-language");
     app.in_window(cx, |window, cx| {
@@ -366,6 +391,7 @@ async fn a_language_is_chosen_from_its_list_and_every_word_follows(cx: &mut Test
     assert_eq!(worn(&app, cx), (false, "es"));
     assert_eq!(app.title(cx).0, "Configuraci\u{f3}n");
     assert!(!shown(&app, cx, "settings-languages"));
+    assert!(focused(&app, cx, "settings-language"));
     assert!(
         backend
             .asked()
@@ -411,6 +437,7 @@ async fn what_is_kept_is_measured_and_clearing_the_cache_measures_again(cx: &mut
         );
     });
     let app = at_the_settings(cx, backend.clone()).await;
+    cx.run_until_parked();
     assert!(backend.asked().contains(&Asked::Storage));
     assert_eq!(
         app.label_of(cx, "settings-storage-total"),
@@ -421,30 +448,202 @@ async fn what_is_kept_is_measured_and_clearing_the_cache_measures_again(cx: &mut
             window.try_find("storage-update").is_none(),
             "nothing is kept there"
         );
-        assert!(window.try_find("storage-account-0").is_some());
+        let disk = window.find("storage-disk");
+        assert_eq!(disk.role(), Some(Role::Meter));
+        assert_eq!(
+            disk.label(),
+            Some("On a disk of 5 GB: 2.5 GB everything else, 5.1 MB snob, 2.5 GB free")
+        );
+        assert_eq!(
+            window.find("storage-disk-snob").label(),
+            Some("snob 5.1 MB")
+        );
+        assert_eq!(
+            window.find("storage-account-0-sizes").label(),
+            Some("History 5 MB \u{b7} Cache 5 MB")
+        );
+        assert_eq!(
+            window.find("storage-account-0-clear").label(),
+            Some("Clear the cache of @me")
+        );
     });
     assert!(!disabled(&app, cx, "settings-clear-cache"));
 
+    // A cache is cleared without a question.
+    search(&app, cx, "cache");
     app.click(cx, "settings-clear-cache");
     app.until(cx, |window, _| {
         window
-            .try_find("storage-cache-note")
+            .try_find("settings-accounts-note")
             .is_some_and(|note| note.label() == Some("3.1 MB freed"))
     })
     .await;
     cx.run_until_parked();
     let asked = backend.asked();
-    let cleared_at = asked.iter().position(|a| *a == Asked::ClearCache).unwrap();
+    let cleared_at = asked
+        .iter()
+        .position(|a| *a == Asked::ClearCache(None))
+        .unwrap();
     assert!(
         asked[cleared_at..].contains(&Asked::Storage),
         "measured again: {asked:?}"
     );
+    assert!(
+        asked[cleared_at..].contains(&Asked::Load),
+        "the accounts read again: {asked:?}"
+    );
     assert_eq!(app.label_of(cx, "announcements"), "3.1 MB freed");
-    assert_eq!(app.label_of(cx, "storage-cache-note"), "3.1 MB freed");
     assert!(
         disabled(&app, cx, "settings-clear-cache"),
         "nothing left to clear"
     );
+    assert!(disabled(&app, cx, "storage-account-0-clear"));
+}
+
+#[gpui_kit::test]
+async fn a_clearing_left_behind_runs_on_and_is_said_when_the_settings_are_back(
+    cx: &mut TestAppContext,
+) {
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    backend.script(|script| {
+        script.storage(&[(Kind::Cache, 3_250_586)], 1024 * 1024);
+    });
+    let app = at_the_settings(cx, backend.clone()).await;
+    cx.run_until_parked();
+    search(&app, cx, "cache");
+    backend.hold_the_work();
+    app.click(cx, "settings-clear-cache");
+    assert!(shown(&app, cx, "settings-accounts-working"));
+
+    app.click(cx, "rail-home");
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    app.press(cx, snob_desktop::ui::SETTINGS_KEYS);
+    app.until_screen(cx, |screen| *screen == Screen::Settings)
+        .await;
+    cx.run_until_parked();
+    search(&app, cx, "cache");
+    assert!(
+        shown(&app, cx, "settings-accounts-working"),
+        "still under way"
+    );
+    assert!(disabled(&app, cx, "settings-clear-cache"));
+
+    backend.release();
+    app.until(cx, |window, _| {
+        window
+            .try_find("settings-accounts-note")
+            .is_some_and(|note| note.label() == Some("3.1 MB freed"))
+    })
+    .await;
+    cx.run_until_parked();
+    assert!(!shown(&app, cx, "settings-accounts-working"));
+    assert_eq!(app.label_of(cx, "announcements"), "3.1 MB freed");
+    let asked = backend.asked();
+    let cleared_at = asked
+        .iter()
+        .position(|a| *a == Asked::ClearCache(None))
+        .unwrap();
+    assert_eq!(
+        asked[cleared_at..]
+            .iter()
+            .filter(|a| **a == Asked::Storage)
+            .count(),
+        2,
+        "measured when the settings came back and once it was done: {asked:?}"
+    );
+}
+
+#[gpui_kit::test]
+async fn deleting_history_asks_first_and_a_no_deletes_nothing(cx: &mut TestAppContext) {
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    backend.script(|script| {
+        script
+            .storage(&[(Kind::Databases, 2 * 1024 * 1024)], 1024 * 1024)
+            .left_behind(7, "gone", 2 * 1024 * 1024);
+    });
+    let app = at_the_settings(cx, backend.clone()).await;
+    cx.run_until_parked();
+    assert_eq!(
+        app.label_of(cx, "storage-account-1-note"),
+        "Not signed in: its data is still here"
+    );
+    search(&app, cx, "gone");
+
+    app.click(cx, "storage-account-1-forget");
+    assert_eq!(
+        app.label_of(cx, "forget-title"),
+        "Delete the history of @gone?"
+    );
+    assert!(app.label_of(cx, "forget-body").contains("cannot be undone"));
+    assert!(
+        focused(&app, cx, "forget-cancel"),
+        "on what changes nothing"
+    );
+    // Escape is a no.
+    app.press(cx, "escape");
+    assert!(!shown(&app, cx, "forget"));
+    assert!(focused(&app, cx, "storage-account-1-forget"));
+    app.click(cx, "storage-account-1-forget");
+    app.click(cx, "forget-cancel");
+    assert!(!shown(&app, cx, "forget"));
+    cx.run_until_parked();
+    assert!(
+        !backend
+            .asked()
+            .iter()
+            .any(|a| matches!(a, Asked::ForgetHistory(_))),
+        "nothing deleted"
+    );
+
+    app.click(cx, "storage-account-1-forget");
+    app.click(cx, "forget-confirm");
+    app.until(cx, |window, _| {
+        window
+            .try_find("storage-account-1-note")
+            .is_some_and(|note| note.label() == Some("2 MB freed"))
+    })
+    .await;
+    cx.run_until_parked();
+    let asked = backend.asked();
+    let forgot_at = asked
+        .iter()
+        .position(|a| *a == Asked::ForgetHistory(Some(Pk::new(7))))
+        .unwrap();
+    assert!(
+        asked[forgot_at..].contains(&Asked::Storage),
+        "measured again"
+    );
+    assert!(
+        asked[forgot_at..].contains(&Asked::Load),
+        "accounts read again"
+    );
+    assert_eq!(app.label_of(cx, "announcements"), "2 MB freed");
+}
+
+#[gpui_kit::test]
+async fn deleting_every_account_s_history_says_which_were_left_alone(cx: &mut TestAppContext) {
+    let backend = Scripted::with(vec![account(42, "me", true), account(43, "other", false)]);
+    backend.script(|script| {
+        script
+            .storage(&[(Kind::Databases, 2 * 1024 * 1024)], 1024 * 1024)
+            .busy();
+    });
+    let app = at_the_settings(cx, backend.clone()).await;
+    cx.run_until_parked();
+    search(&app, cx, "delete all");
+    app.click(cx, "settings-forget-all");
+    assert_eq!(
+        app.label_of(cx, "forget-title"),
+        "Delete the history of every account?"
+    );
+    app.click(cx, "forget-confirm");
+    app.until(cx, |window, _| {
+        window
+            .try_find("settings-accounts-note")
+            .is_some_and(|note| note.label().is_some_and(|said| said.contains(": 2.")))
+    })
+    .await;
+    assert!(backend.asked().contains(&Asked::ForgetHistory(None)));
 }
 
 #[gpui_kit::test]

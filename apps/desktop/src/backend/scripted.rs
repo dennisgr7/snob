@@ -12,7 +12,8 @@ use snob_ig::pace::CancelToken;
 use tokio::sync::{oneshot, watch};
 
 use super::{
-    Account, AccountStorage, Answer, Backend, Browsers, Cleared, Loaded, SignIn, Storage, answered,
+    Account, AccountStorage, Answer, Backend, Browsers, Cleared, Forgotten, Loaded, SignIn,
+    Storage, answered,
 };
 use crate::state::flow::{Found, Method, Named, Update};
 use crate::state::prefs::{Appearance, Placement};
@@ -36,7 +37,8 @@ pub enum Asked {
     DiagnosticReport,
     CrashShown,
     Storage,
-    ClearCache,
+    ClearCache(Option<Pk>),
+    ForgetHistory(Option<Pk>),
 }
 
 type Held = Box<dyn FnOnce() + Send>;
@@ -68,10 +70,14 @@ struct State {
     asked: Vec<Asked>,
     /// Whether answers wait for [`Scripted::release`].
     holding: bool,
+    /// Whether clearing and forgetting do.
+    holding_work: bool,
     held: Vec<Held>,
     /// The token of the window login in flight, to see it stopped.
     window: Option<CancelToken>,
     storage: Storage,
+    /// Whether forgetting finds a job of every account running.
+    busy: bool,
 }
 
 /// The scripted backend. Clones are the same backend.
@@ -118,9 +124,11 @@ impl Scripted {
             placed: None,
             asked: Vec::new(),
             holding: false,
+            holding_work: false,
             held: Vec::new(),
             window: None,
             storage: Storage::default(),
+            busy: false,
         })))
     }
 
@@ -155,11 +163,18 @@ impl Scripted {
         self.state().holding = true;
     }
 
+    /// From now on clearing the cache and forgetting history wait until
+    /// [`Self::release`]; everything else is answered.
+    pub fn hold_the_work(&self) {
+        self.state().holding_work = true;
+    }
+
     /// Lets every answer held go, and stops holding.
     pub fn release(&self) {
         let held = {
             let mut state = self.state();
             state.holding = false;
+            state.holding_work = false;
             std::mem::take(&mut state.held)
         };
         for answer in held {
@@ -193,8 +208,9 @@ impl Scripted {
         };
         let held: Option<Held> = {
             let mut state = self.state();
+            let work = matches!(asked, Asked::ClearCache(_) | Asked::ForgetHistory(_));
             state.asked.push(asked);
-            if state.holding {
+            if state.holding || (state.holding_work && work) {
                 state.held.push(Box::new(send));
                 None
             } else {
@@ -271,10 +287,18 @@ impl Script<'_> {
     }
 
     /// What is said to be kept: `kinds` by size in bytes, and each account
-    /// signed in holding `each`. Clearing the cache empties its kind.
+    /// signed in holding `each` of history and `each` of cache, on a disk of
+    /// a thousand times what is kept, half of it free. Clearing the cache
+    /// empties its kind and the accounts' cache; forgetting empties their
+    /// history too.
     pub fn storage(&mut self, kinds: &[(snob_engine::storage::Kind, u64)], each: u64) -> &mut Self {
         let size = |bytes: u64| snob_store::disk::Size { bytes, files: 1 };
+        let kept: u64 = kinds.iter().map(|(_, bytes)| bytes).sum();
         self.0.storage = Storage {
+            disk: Some(snob_store::disk::Volume {
+                total: kept * 1000,
+                free: kept * 500,
+            }),
             kinds: kinds
                 .iter()
                 .map(|(kind, bytes)| (*kind, size(*bytes)))
@@ -286,10 +310,31 @@ impl Script<'_> {
                 .map(|account| AccountStorage {
                     pk: account.named.pk,
                     username: account.named.username.clone(),
-                    total: size(each),
+                    signed_in: true,
+                    history: size(each),
+                    cache: size(each),
                 })
                 .collect(),
         };
+        self
+    }
+
+    /// An account no longer signed in whose files are still here.
+    pub fn left_behind(&mut self, pk: u64, username: &str, each: u64) -> &mut Self {
+        let size = |bytes: u64| snob_store::disk::Size { bytes, files: 1 };
+        self.0.storage.accounts.push(AccountStorage {
+            pk: pk.into(),
+            username: Some(username.to_string()),
+            signed_in: false,
+            history: size(each),
+            cache: size(0),
+        });
+        self
+    }
+
+    /// Answers every forgetting as left alone, as while a job runs.
+    pub fn busy(&mut self) -> &mut Self {
+        self.0.busy = true;
         self
     }
 
@@ -413,15 +458,53 @@ impl Backend for Scripted {
         self.answer(Asked::Storage, |state| state.storage.clone())
     }
 
-    fn clear_cache(&self) -> Answer<Cleared> {
-        self.answer(Asked::ClearCache, |state| {
+    fn clear_cache(&self, only: Option<Pk>) -> Answer<Cleared> {
+        self.answer(Asked::ClearCache(only), move |state| {
             let mut freed = snob_store::disk::Size::default();
+            for account in &mut state.storage.accounts {
+                if only.is_none_or(|pk| pk == account.pk) {
+                    freed += std::mem::take(&mut account.cache);
+                }
+            }
             for (kind, size) in &mut state.storage.kinds {
                 if kind.clearable() {
-                    freed = std::mem::take(size);
+                    // All of it, the cache no account holds included.
+                    if only.is_none() {
+                        freed = std::mem::take(size);
+                    } else {
+                        size.bytes = size.bytes.saturating_sub(freed.bytes);
+                    }
                 }
             }
             Cleared { freed, whole: true }
+        })
+    }
+
+    fn forget_history(&self, only: Option<Pk>) -> Answer<Forgotten> {
+        self.answer(Asked::ForgetHistory(only), move |state| {
+            let mut forgotten = Forgotten::default();
+            for account in &mut state.storage.accounts {
+                if only.is_some_and(|pk| pk != account.pk) {
+                    continue;
+                }
+                if state.busy {
+                    forgotten.busy += 1;
+                    continue;
+                }
+                forgotten.freed += std::mem::take(&mut account.history);
+                forgotten.freed += std::mem::take(&mut account.cache);
+            }
+            for (kind, size) in &mut state.storage.kinds {
+                if matches!(
+                    kind,
+                    snob_engine::storage::Kind::Databases
+                        | snob_engine::storage::Kind::Jobs
+                        | snob_engine::storage::Kind::Cache
+                ) {
+                    size.bytes = size.bytes.saturating_sub(forgotten.freed.bytes);
+                }
+            }
+            forgotten
         })
     }
 

@@ -1043,7 +1043,10 @@ start to somebody signed in and welcomed**: the frame and its band, signing
 in through snob's own browser window or with a pasted session ID, several
 accounts, signing out, a command palette, and the settings: the theme and
 the language chosen over the system's, the log, and what snob keeps on the
-computer, with the cache to clear. Once somebody is signed in the frame
+computer: the disk it is on, and each account's, signed in or not, with
+its cache to clear and its history to delete after a question. A clearing
+or a deletion is the shell's and runs on in the engine whatever screen is
+shown. Once somebody is signed in the frame
 opens on a rail of sections (home, search, automations); each is a title
 until what a scan shows comes next.
 

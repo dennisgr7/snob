@@ -20,26 +20,25 @@ pub enum Section {
 pub enum Row {
     Theme,
     Language,
-    DetailedLogging,
-    /// The log's folder and the diagnostic report.
+    /// The log's folder and the diagnostic report, and under them the
+    /// switch of the detailed level.
     Logs,
-    /// What everything kept weighs.
-    StorageTotal,
+    /// The disk snob is on: what everything else, snob and nothing take.
+    StorageDisk,
     StorageKind(Kind),
-    /// What an account signed in here holds.
+    /// The accounts' heading, with what clears or deletes for all of them.
+    Accounts,
+    /// What an account with a directory here holds, signed in or not.
     Account(Pk),
 }
 
 /// The sections as they read before a search: `storage`, the rows of what is
 /// kept, once it was measured.
 pub fn every(storage: Vec<Row>) -> Vec<(Section, Vec<Row>)> {
-    let mut kept = vec![Row::StorageTotal];
+    let mut kept = vec![Row::StorageDisk];
     kept.extend(storage);
     vec![
-        (
-            Section::App,
-            vec![Row::Theme, Row::Language, Row::DetailedLogging, Row::Logs],
-        ),
+        (Section::App, vec![Row::Theme, Row::Language, Row::Logs]),
         (Section::Storage, kept),
     ]
 }
@@ -98,12 +97,12 @@ mod tests {
         match row {
             Row::Theme => "Theme appearance dark light mode",
             Row::Language => "Language English Espa\u{f1}ol",
-            Row::DetailedLogging => "Detailed logging For finding a problem",
-            Row::Logs => "Open the logs folder Copy the diagnostic report",
-            Row::StorageTotal => "snob keeps 18.4 MB on this computer",
-            Row::StorageKind(Kind::Cache) => "Cache What a view shows at once Clear cache",
+            Row::Logs => "Open the logs folder Copy the diagnostic report Detailed logging",
+            Row::StorageDisk => "snob keeps 18.4 MB on this computer",
+            Row::StorageKind(Kind::Cache) => "Cache What a view shows at once",
             Row::StorageKind(_) => "Databases Lists and walks",
-            Row::Account(_) => "@me",
+            Row::Accounts => "Accounts Clear all cache Delete all history",
+            Row::Account(_) => "@me Clear cache Delete history",
         }
         .to_string()
     }
@@ -120,6 +119,7 @@ mod tests {
         every(vec![
             Row::StorageKind(Kind::Databases),
             Row::StorageKind(Kind::Cache),
+            Row::Accounts,
             Row::Account(Pk::new(42)),
         ])
     }
@@ -129,7 +129,7 @@ mod tests {
         let shown = shown(all(), "  ", words, named);
         assert_eq!(shown, all());
         assert_eq!(shown[0].1[0], Row::Theme);
-        assert_eq!(shown[1].1[0], Row::StorageTotal);
+        assert_eq!(shown[1].1[0], Row::StorageDisk);
     }
 
     #[test]
@@ -140,7 +140,14 @@ mod tests {
         );
         assert_eq!(
             shown(all(), "cach clear", words, named),
-            [(Section::Storage, vec![Row::StorageKind(Kind::Cache)])]
+            [(
+                Section::Storage,
+                vec![Row::Accounts, Row::Account(Pk::new(42))]
+            )]
+        );
+        assert_eq!(
+            shown(all(), "detailed", words, named),
+            [(Section::App, vec![Row::Logs])]
         );
     }
 
@@ -148,7 +155,7 @@ mod tests {
     fn a_section_s_name_finds_every_row_in_it() {
         let found = shown(all(), "storage", words, named);
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].1.len(), 4);
+        assert_eq!(found[0].1.len(), 5);
     }
 
     #[test]

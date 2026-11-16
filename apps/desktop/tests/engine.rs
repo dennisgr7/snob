@@ -401,7 +401,7 @@ fn a_pasted_session_is_kept_as_the_browser_it_was_said_to_come_from() {
 }
 
 #[test]
-fn what_is_kept_is_measured_for_the_accounts_signed_in_and_clearing_takes_the_cache_alone() {
+fn what_is_kept_is_measured_for_every_account_here_and_clearing_or_forgetting_keeps_the_session() {
     let Some((_root, _sandbox, engine)) = backend() else {
         return;
     };
@@ -423,21 +423,45 @@ fn what_is_kept_is_measured_for_the_accounts_signed_in_and_clearing_takes_the_ca
     let storage = engine.storage().blocking_recv().unwrap();
     assert_eq!(storage.kinds.len(), Kind::ALL.len());
     assert!(cache(&storage) > 0, "the account's picture is kept there");
+    let disk = storage.disk.expect("the disk is said");
+    assert!(disk.free <= disk.total && disk.total > 0);
     let named: Vec<_> = storage
         .accounts
         .iter()
-        .map(|held| (held.pk, held.username.as_deref()))
+        .map(|held| (held.pk, held.username.as_deref(), held.signed_in))
         .collect();
     assert_eq!(
         named,
-        [(Pk::new(world::ME), Some("me"))],
-        "an account signed out is counted and not named"
+        [
+            (Pk::new(world::ME), Some("me"), true),
+            (Pk::new(world::SOMEONE), Some("someone"), false),
+        ],
+        "an account signed out is listed after those signed in, said as such"
+    );
+    let mine = &storage.accounts[0];
+    assert!(mine.history.bytes > 0, "its database");
+    assert_eq!(
+        mine.cache.bytes,
+        cache(&storage),
+        "the only cache is the account's"
     );
 
-    let cleared = engine.clear_cache().blocking_recv().unwrap();
+    let cleared = engine
+        .clear_cache(Some(Pk::new(world::ME)))
+        .blocking_recv()
+        .unwrap();
     assert!(cleared.whole);
-    assert_eq!(cleared.freed.bytes, cache(&storage));
+    assert_eq!(cleared.freed.bytes, mine.cache.bytes);
     assert_eq!(cache(&engine.storage().blocking_recv().unwrap()), 0);
+
+    // A directory with nothing of an account's left in it is not listed.
+    std::fs::create_dir_all(_sandbox.paths.account(Pk::new(77)).dir()).unwrap();
+    assert_eq!(engine.storage().blocking_recv().unwrap().accounts.len(), 2);
+
+    let forgotten = engine.forget_history(None).blocking_recv().unwrap();
+    assert_eq!((forgotten.busy, forgotten.failed), (0, 0));
+    let after = engine.storage().blocking_recv().unwrap();
+    assert_eq!(after.accounts.len(), 2, "no account's directory goes");
     assert_eq!(
         engine.load().blocking_recv().unwrap().found,
         Found::SignedIn(me.named),

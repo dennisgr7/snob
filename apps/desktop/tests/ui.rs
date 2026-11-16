@@ -696,10 +696,11 @@ async fn several_browsers_are_chosen_among_starting_from_the_one_chosen_last(
             assert_eq!(option.selected(), Some(name == "Edge"));
         }
     });
-    // Escape closes the list and nothing else.
+    // Escape closes the list and nothing else, focus back on its field.
     app.press(cx, "escape");
     app.in_window(cx, |window, _| {
         assert!(window.try_find("paste-browsers").is_none());
+        assert_eq!(window.find("paste-browser").focused(), Some(true));
     });
     assert_eq!(
         app.shell.read_with(cx, |shell, _| shell.shown().clone()),
@@ -718,6 +719,11 @@ async fn several_browsers_are_chosen_among_starting_from_the_one_chosen_last(
         assert!(
             window.try_find("paste-browsers").is_none(),
             "chosen and closed"
+        );
+        assert_eq!(
+            window.find("paste-browser").focused(),
+            Some(true),
+            "focus back on the field"
         );
     });
 
