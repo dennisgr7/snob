@@ -16,7 +16,7 @@ use crate::state::paste::Field;
 use crate::theme::fonts::MONO;
 use crate::theme::tokens::shape;
 use crate::ui::assets;
-use crate::ui::look::{Look, color, sp};
+use crate::ui::look::{Look, color, color_at, sp};
 use crate::ui::parts::{self, Kind, icon};
 use crate::ui::shell::{Phase, Shell};
 
@@ -167,7 +167,9 @@ fn browsers(
             .justify_start()
             .text_size(sp(13.))
             .text_color(color(palette.text))
-            .hover(move |style| style.bg(color(palette.panel)))
+            // A wash of the text's color: the pointer over a row is not the
+            // row chosen.
+            .hover(move |style| style.bg(color_at(palette.text, 0.08)))
             .focus_visible(parts::focus_ring(&palette))
             .cursor_pointer()
     };
@@ -201,7 +203,24 @@ fn browsers(
                             .role(Role::ListBoxOption)
                             .accessibility_label(name.clone())
                             .aria_selected(at == chosen)
-                            .when(at == chosen, |row| row.font_weight(FontWeight::MEDIUM))
+                            // The one chosen stands out by itself, wherever
+                            // the pointer is: the panel's color, a bar in the
+                            // text's color, and a heavier name.
+                            .when(at == chosen, |row| {
+                                row.relative()
+                                    .bg(color(palette.panel))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .left_0()
+                                            .top(sp(8.))
+                                            .bottom(sp(8.))
+                                            .w(px(3.))
+                                            .rounded_r(px(2.))
+                                            .bg(color(palette.text)),
+                                    )
+                            })
                             .child(mark(name, palette.text))
                             .child(name.clone())
                             .on_click(cx.listener(move |shell, _, _, cx| {
