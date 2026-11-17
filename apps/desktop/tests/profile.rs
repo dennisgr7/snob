@@ -82,7 +82,7 @@ async fn the_account_s_own_profile_opens_from_its_menu_with_its_names_counters_a
             Some("Photo, pinned: an invented caption, number 0")
         );
         assert_eq!(window.find("profile-options").label(), Some("More options"));
-        assert_eq!(window.find("profile-back").label(), Some("Back"));
+        assert_eq!(window.find("band-back").label(), Some("Back"));
     });
     // The profile and the first page of the tab shown: nothing else.
     let asked: Vec<Asked> = app
@@ -99,7 +99,7 @@ async fn the_account_s_own_profile_opens_from_its_menu_with_its_names_counters_a
         ]
     );
 
-    app.click(cx, "profile-back");
+    app.click(cx, "band-back");
     app.until_screen(cx, |screen| *screen == Screen::Home).await;
 }
 
@@ -267,7 +267,7 @@ async fn another_account_s_list_is_asked_about_first_and_a_no_reads_nothing(
     assert!(theirs(&app), "a yes reads it");
 
     // Back the way it came: the profile, the list, the own profile.
-    app.click(cx, "people-back");
+    app.click(cx, "band-back");
     app.until_screen(
         cx,
         |screen| matches!(screen, Screen::Profile(who) if who.pk == Pk::new(1000)),

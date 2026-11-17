@@ -596,3 +596,19 @@ async fn a_step_dragged_is_kept_where_it_is_dropped_and_an_arrow_is_drawn_from_i
         );
     });
 }
+
+#[gpui_kit::test]
+async fn the_bands_way_back_leaves_the_editor_then_the_automations_page(cx: &mut TestAppContext) {
+    let backend = scripted(vec![daily()]);
+    let app = in_editor(cx, backend).await;
+    assert!(!disabled(&app, cx, "band-back"));
+    app.click(cx, "band-back");
+    settle(&app, cx);
+    assert!(
+        shown(&app, cx, "automation-edit"),
+        "on the automation's page"
+    );
+    app.click(cx, "band-back");
+    settle(&app, cx);
+    assert!(shown(&app, cx, "automations-create"), "on the list");
+}

@@ -170,7 +170,6 @@ pub fn render(
     let layout = shell.pages.layout;
     let showing = shell.pages.showing;
     let popup = shell.pages.popup.as_ref().map(|popup| popup.kind);
-    let back = shell.can_go_back();
 
     // A layout changed comes in again, from a little under its place.
     let moved = look.moved(motion::ENTER, 10.0, 1.0);
@@ -200,7 +199,7 @@ pub fn render(
     };
     let columns = profile::columns(room, WIDEST_TILE);
 
-    let top = top_bar(back, layout, showing, &look, cx);
+    let top = top_bar(layout, showing, &look, cx);
     let posts = posts(&shown, showing, columns, &look, window, cx);
 
     let page = match layout {
@@ -305,18 +304,9 @@ pub fn render(
         .into_any_element()
 }
 
-/// The way back, and how the page is laid out and its posts shown.
-fn top_bar(
-    back: bool,
-    layout: Layout,
-    showing: Showing,
-    look: &Look,
-    cx: &mut Context<Shell>,
-) -> Div {
-    let back = back.then(|| {
-        parts::small_icon_button("profile-back", look.tr("back"), assets::BACK, look)
-            .on_click(cx.listener(|shell, _, window, cx| shell.go_back(window, cx)))
-    });
+/// How the page is laid out and its posts shown; the way back is the
+/// band's.
+fn top_bar(layout: Layout, showing: Showing, look: &Look, cx: &mut Context<Shell>) -> Div {
     let grid = showing == Showing::Grid;
     let to_split = layout == Layout::Stacked;
     div()
@@ -324,7 +314,6 @@ fn top_bar(
         .flex_wrap()
         .items_center()
         .gap(sp(10.))
-        .children(back)
         .child(div().flex_1())
         .child(
             parts::segmented("profile-showing", look.tr("profile-showing"), look)

@@ -186,15 +186,25 @@ impl Shell {
         self.happened(Event::OpenProfile(who), window, cx);
     }
 
-    /// Whether the page shown has somewhere to go back to.
+    /// Whether there is a step to go back to: what the band's arrow says.
     pub(crate) fn can_go_back(&self) -> bool {
-        self.flow.can_go_back()
+        self.has_a_menu()
+            && (self.is_editing() || self.has_an_automation_open() || self.flow.can_go_back())
     }
 
-    /// Back to the screen the page shown was opened from.
+    /// One step back: out of the editor (which asks first about what is
+    /// not finished), out of an automation's page, or to the screen before.
     pub(crate) fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.flow.can_go_back() || self.flow.screen().is_a_page() {
+        if !self.has_a_menu() {
+            return;
+        }
+        if self.is_editing() {
+            self.leave_the_editor(window, cx);
+        } else if self.has_an_automation_open() {
+            self.close_the_automation(window, cx);
+        } else if self.flow.can_go_back() {
             tracing::info!(action = "back", "action");
+            self.menu = None;
             self.happened(Event::Back, window, cx);
         }
     }

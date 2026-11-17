@@ -19,10 +19,11 @@
 //! anything.
 
 use gpui_kit::base::{Button, ObservedElement, TestSupportExt as _};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, CursorStyle, Decorations, Div, FontWeight, MouseButton, ResizeEdge, Role,
-    Stateful, Window, WindowControlArea, accesskit, div, px,
+    AnyElement, Context, CursorStyle, Decorations, Div, FontWeight, MouseButton,
+    NavigationDirection, ResizeEdge, Role, Stateful, Window, WindowControlArea, accesskit, div, px,
 };
 
 use super::assets;
@@ -40,6 +41,11 @@ pub const CAPTION_WIDTH: f32 = 46.0;
 
 /// What macOS's own buttons take of the band's left.
 const TRAFFIC_LIGHTS: f32 = 78.0;
+
+/// How far the way back sits from the band's left edge, where there are no
+/// traffic lights: as far as the account's picture from the right one's
+/// buttons.
+pub const BACK_FROM_THE_EDGE: f32 = 8.0;
 
 /// How close to the window's edge a press resizes it, where the app is its
 /// own decoration.
@@ -110,6 +116,14 @@ pub fn render(
         .on_action(cx.listener(|shell, _: &super::OpenPalette, window, cx| {
             shell.toggle_the_palette(window, cx);
         }))
+        .on_action(cx.listener(|shell, _: &super::GoBack, window, cx| {
+            shell.go_back(window, cx);
+        }))
+        // The pointer's own back button goes back too, wherever it is.
+        .on_mouse_down(
+            MouseButton::Navigate(NavigationDirection::Back),
+            cx.listener(|shell, _, window, cx| shell.go_back(window, cx)),
+        )
         .relative()
         .size_full()
         .bg(color(palette.frame))
@@ -254,18 +268,22 @@ fn band(
             .flex()
             .items_center()
     };
-    // The status starts at the band's left edge, wherever the brand is.
+    // The way back at the band's far left once somebody is signed in, and
+    // the status after it, wherever the brand is.
+    let back = back(shell, look, cx);
     let left = side().justify_start().child(
         div()
             .min_w_0()
             .flex()
             .items_center()
-            .pl(px(if cfg!(target_os = "macos") {
-                TRAFFIC_LIGHTS
-            } else {
-                frame::SIDE
+            .gap(px(6.))
+            .pl(px(match (cfg!(target_os = "macos"), back.is_some()) {
+                (true, _) => TRAFFIC_LIGHTS,
+                (false, true) => BACK_FROM_THE_EDGE,
+                (false, false) => frame::SIDE,
             }))
             .pr(px(14.))
+            .children(back)
             .child(status),
     );
 
@@ -342,6 +360,46 @@ fn drag_area() -> Stateful<Div> {
 
 /// The account in use, where its menu can be opened: its picture, right of
 /// the brand, which opens the menu.
+/// The way back over the steps taken, at the band's far left once somebody
+/// is signed in: there, and dimmed, when there is no step to go back to, so
+/// the status beside it never moves.
+fn back(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    if !shell.has_a_menu() {
+        return None;
+    }
+    let palette = look.palette;
+    let can = shell.can_go_back();
+    let label = look.tr("back");
+    let tip = label.clone();
+    Some(
+        Button::new("band-back")
+            .accessibility_label(label)
+            .disabled(!can)
+            .occlude()
+            .flex_none()
+            .size(px(shape::MIN_TARGET + 6.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(shape::CONTROL_RADIUS))
+            .focus_visible(parts::focus_ring(&palette))
+            .when(can, |button| {
+                button
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(color_at(palette.text, 0.07)))
+                    .active(move |style| style.bg(color_at(palette.text, 0.12)))
+            })
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .child(icon(assets::BACK, 16.).text_color(color(if can {
+                palette.text
+            } else {
+                palette.disabled_text
+            })))
+            .on_click(cx.listener(|shell, _, window, cx| shell.go_back(window, cx)))
+            .into_any_element(),
+    )
+}
+
 fn account(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Option<AnyElement> {
     if !shell.has_a_menu() {
         return None;

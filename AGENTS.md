@@ -1115,7 +1115,10 @@ computer: the disk it is on, and each account's, signed in or not, with
 its cache to clear and its history to delete after a question. A clearing
 or a deletion is the shell's and runs on in the engine whatever screen is
 shown. Once somebody is signed in the frame
-opens on a rail of sections (home, search, automations). Home and search
+opens on a rail of sections (home, search, automations), and the band
+holds a way back over every step taken (`state::flow`'s trail, at most
+`MOST_STEPS_BACK`; also Alt+Left and the pointer's back button), out of
+the editor and an automation's page first. Home and search
 are a title until what a scan shows comes next; automations has an
 introduction shown once an account, a list with its search, an
 automation's page (its runs on the left, its flow in words, a pencil to

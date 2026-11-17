@@ -221,6 +221,9 @@ pub enum Effect {
     ForgetResume,
 }
 
+/// The most steps the way back holds; past it, the oldest is forgotten.
+pub const MOST_STEPS_BACK: usize = 50;
+
 /// How long the check is waited for once a method is chosen.
 pub const CHECK_PATIENCE: Duration = Duration::from_secs(8);
 
@@ -232,8 +235,10 @@ pub struct Flow {
     /// Whether an account is signed in and in use: what "back" from the
     /// start screen returns to.
     signed_in: bool,
-    /// The screens the page shown was opened from, the newest last: what
-    /// "back" returns to. Empty on a section and on the settings.
+    /// **Every screen somebody signed in went through to the one shown**,
+    /// the newest last: what "back" returns to, one step at a time.
+    /// Forgotten when the frame closes (an account added, signed out, or
+    /// its session gone).
     trail: Vec<Screen>,
 }
 
@@ -259,31 +264,44 @@ impl Flow {
     }
 
     /// The section the screen shown belongs to: the section itself, or for
-    /// a page the section it was first opened from. None on the settings
-    /// and on the way in.
+    /// a page the screen its run of pages was opened from, when that is a
+    /// section. None on the settings and on the way in.
     pub fn section(&self) -> Option<Place> {
         Place::of(&self.screen).or_else(|| {
             self.screen
                 .is_a_page()
-                .then(|| self.trail.first().and_then(Place::of))
+                .then(|| {
+                    self.trail
+                        .iter()
+                        .rev()
+                        .find(|screen| !screen.is_a_page())
+                        .and_then(Place::of)
+                })
                 .flatten()
         })
     }
 
-    /// Whether the page shown has somewhere to go back to.
+    /// Whether the screen shown has a step to go back to.
     pub fn can_go_back(&self) -> bool {
-        self.screen.is_a_page() && !self.trail.is_empty()
+        self.screen.signed_in() && !self.trail.is_empty()
     }
 
-    /// The screens the page shown was opened from, the newest last.
+    /// The screens gone through to the one shown, the newest last.
     pub fn trail(&self) -> &[Screen] {
         &self.trail
     }
 
-    /// A page opened on top of the screen shown, which back returns to.
-    fn opened(&mut self, page: Screen) -> (Screen, Vec<Effect>) {
+    /// `next` shown in place of the screen shown, which back returns to;
+    /// nothing at all when it is the screen shown.
+    fn stepped(&mut self, next: Screen) -> Option<(Screen, Vec<Effect>)> {
+        if next == self.screen {
+            return None;
+        }
         self.trail.push(self.screen.clone());
-        (page, Vec::new())
+        if self.trail.len() > MOST_STEPS_BACK {
+            self.trail.remove(0);
+        }
+        Some((next, Vec::new()))
     }
 
     fn start(&self, expired: Option<Named>) -> Screen {
@@ -449,22 +467,35 @@ impl Flow {
                 return Vec::new();
             }
             (screen, Event::OpenProfile(account)) if screen.signed_in() => {
-                self.opened(Screen::Profile(account))
+                match self.stepped(Screen::Profile(account)) {
+                    Some(stepped) => stepped,
+                    None => return Vec::new(),
+                }
             }
             (screen, Event::OpenList { owner, side }) if screen.signed_in() => {
-                self.opened(Screen::People { owner, side })
+                match self.stepped(Screen::People { owner, side }) {
+                    Some(stepped) => stepped,
+                    None => return Vec::new(),
+                }
             }
-            (screen, Event::Back) if screen.is_a_page() => {
-                (self.trail.pop().unwrap_or(Screen::Home), Vec::new())
-            }
+            (screen, Event::Back) if screen.signed_in() => match self.trail.pop() {
+                Some(before) => (before, Vec::new()),
+                // A page with nothing before it, which cannot be: home.
+                None if screen.is_a_page() => (Screen::Home, Vec::new()),
+                None => return Vec::new(),
+            },
 
             (screen, Event::Go(place)) if screen.signed_in() => {
-                self.trail.clear();
-                (place.screen(), Vec::new())
+                match self.stepped(place.screen()) {
+                    Some(stepped) => stepped,
+                    None => return Vec::new(),
+                }
             }
             (screen, Event::OpenSettings) if screen.signed_in() => {
-                self.trail.clear();
-                (Screen::Settings, Vec::new())
+                match self.stepped(Screen::Settings) {
+                    Some(stepped) => stepped,
+                    None => return Vec::new(),
+                }
             }
             (screen, Event::AddAccount) if screen.signed_in() => {
                 self.trail.clear();
@@ -874,7 +905,7 @@ mod tests {
         });
         flow.on(Event::OpenProfile(someone()));
         assert_eq!(flow.screen(), &Screen::Profile(someone()));
-        assert_eq!(flow.trail().len(), 3);
+        assert_eq!(flow.trail().len(), 4, "home, search, a profile, a list");
 
         flow.on(Event::Back);
         assert!(matches!(flow.screen(), Screen::People { .. }));
@@ -882,22 +913,69 @@ mod tests {
         assert_eq!(flow.screen(), &Screen::Profile(me()));
         flow.on(Event::Back);
         assert_eq!(flow.screen(), &Screen::Search);
+        flow.on(Event::Back);
+        assert_eq!(flow.screen(), &Screen::Home);
         assert!(!flow.can_go_back() && flow.trail().is_empty());
     }
 
     #[test]
-    fn the_same_profile_again_is_no_new_page_and_a_section_forgets_the_way() {
+    fn the_same_screen_again_is_no_new_step_and_sections_and_settings_go_back_too() {
         let (mut flow, _) = after([loaded(Found::SignedIn(me())), Event::OpenProfile(me())]);
         flow.on(Event::OpenProfile(me()));
         assert_eq!(flow.trail(), [Screen::Home]);
         flow.on(Event::OpenProfile(someone()));
         flow.on(Event::Go(Place::Automations));
+        flow.on(Event::Go(Place::Automations));
         assert_eq!(flow.screen(), &Screen::Automations);
-        assert!(flow.trail().is_empty());
-        flow.on(Event::OpenProfile(someone()));
         flow.on(Event::OpenSettings);
-        assert!(flow.trail().is_empty());
+        flow.on(Event::OpenSettings);
         assert_eq!(flow.section(), None);
+        assert!(flow.can_go_back());
+        assert_eq!(
+            flow.trail(),
+            [
+                Screen::Home,
+                Screen::Profile(me()),
+                Screen::Profile(someone()),
+                Screen::Automations,
+            ]
+        );
+
+        for before in [
+            Screen::Automations,
+            Screen::Profile(someone()),
+            Screen::Profile(me()),
+            Screen::Home,
+        ] {
+            flow.on(Event::Back);
+            assert_eq!(flow.screen(), &before);
+        }
+        assert!(!flow.can_go_back());
+        assert!(flow.on(Event::Back).is_empty());
+        assert_eq!(flow.screen(), &Screen::Home, "nowhere further back");
+    }
+
+    #[test]
+    fn a_page_belongs_to_the_section_its_pages_were_opened_from() {
+        let (mut flow, _) = after([loaded(Found::SignedIn(me()))]);
+        flow.on(Event::Go(Place::Automations));
+        flow.on(Event::OpenProfile(me()));
+        flow.on(Event::OpenProfile(someone()));
+        assert_eq!(flow.section(), Some(Place::Automations));
+        flow.on(Event::OpenSettings);
+        flow.on(Event::OpenProfile(me()));
+        assert_eq!(flow.section(), None, "opened from the settings");
+    }
+
+    #[test]
+    fn the_way_back_forgets_its_oldest_steps_past_its_length() {
+        let (mut flow, _) = after([loaded(Found::SignedIn(me()))]);
+        for _ in 0..MOST_STEPS_BACK {
+            flow.on(Event::Go(Place::Search));
+            flow.on(Event::Go(Place::Home));
+        }
+        assert_eq!(flow.trail().len(), MOST_STEPS_BACK);
+        assert_eq!(flow.screen(), &Screen::Home);
     }
 
     #[test]
