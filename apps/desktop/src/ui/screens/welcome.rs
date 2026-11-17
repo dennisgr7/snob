@@ -82,12 +82,8 @@ pub fn render(
                 .text_color(color(palette.text))
                 .child(before)
                 .child(
-                    div()
+                    parts::username(&look)
                         .font_weight(FontWeight::BOLD)
-                        .text_color(color(palette.emphasis))
-                        .underline()
-                        .text_decoration_2()
-                        .text_decoration_color(color(palette.underline))
                         .child(who),
                 )
                 .child(after),

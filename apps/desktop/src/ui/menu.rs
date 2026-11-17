@@ -57,13 +57,28 @@ fn item(id: &'static str, label: String, look: &Look) -> Button {
         .cursor_pointer()
 }
 
-/// Who the menu is about: the picture a little larger, the name, and the
-/// bio in three lines at most.
+/// Who the menu is about: the picture a little larger, centered beside the
+/// real name, the username under it as every screen writes one, and the bio
+/// in three lines at most.
 fn header(account: &Account, look: &Look, shown: &parts::Shown) -> Div {
     let palette = look.palette;
     let named = handle(&account.named);
+    let full = account
+        .full_name
+        .clone()
+        .filter(|name| !name.trim().is_empty());
+    let username = parts::username(look)
+        .text_size(sp(if full.is_some() { 14. } else { 15. }))
+        .when(full.is_none(), |username| {
+            username.font_weight(FontWeight::BOLD)
+        })
+        .truncate()
+        .id("menu-username-line")
+        .test_support()
+        .child(parts::said("menu-username", named));
     div()
         .flex()
+        .items_center()
         .gap(sp(12.))
         .p(sp(10.))
         .child(
@@ -87,23 +102,21 @@ fn header(account: &Account, look: &Look, shown: &parts::Shown) -> Div {
                 .flex()
                 .flex_col()
                 .gap(sp(2.))
-                .child(
+                .children(full.map(|name| {
                     div()
+                        .id("menu-name-line")
+                        .test_support()
                         .font_weight(FontWeight::BOLD)
                         .text_size(sp(15.))
                         .text_color(color(palette.text))
                         .truncate()
-                        .child(parts::said("menu-username", named)),
-                )
-                .children(account.full_name.clone().map(|name| {
-                    div()
-                        .text_size(sp(14.))
-                        .text_color(color(palette.text))
-                        .truncate()
                         .child(parts::said("menu-name", name))
                 }))
+                .child(username)
                 .children(account.biography.clone().map(|bio| {
                     div()
+                        .id("menu-bio-line")
+                        .test_support()
                         .text_size(sp(13.))
                         .line_height(sp(18.))
                         .text_color(color(palette.secondary))

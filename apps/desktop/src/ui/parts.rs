@@ -26,6 +26,17 @@ pub fn said(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Text {
     Text::new(id.into(), text.into())
 }
 
+/// A username as every screen writes it: in the emphasis color, underlined
+/// in pink. The size and weight are the caller's.
+pub fn username(look: &Look) -> Div {
+    let palette = look.palette;
+    div()
+        .text_color(color(palette.emphasis))
+        .underline()
+        .text_decoration_2()
+        .text_decoration_color(color(palette.underline))
+}
+
 /// The focus ring: the accent's contour, and a contour inside it, so focus
 /// is a change of outline and not of color alone.
 pub fn focus_ring(palette: &Palette) -> impl Fn(StyleRefinement) -> StyleRefinement + 'static {

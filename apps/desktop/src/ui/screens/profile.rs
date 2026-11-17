@@ -701,13 +701,9 @@ fn names(
         Some(full) => look.tr_with("profile-title", &[("name", full), ("account", &at)]),
         None => at.clone(),
     };
-    let username = div()
+    let username = parts::username(look)
         .font_weight(FontWeight::MEDIUM)
         .text_size(sp(if full.is_some() { 17. } else { 24. }))
-        .text_color(color(palette.emphasis))
-        .underline()
-        .text_decoration_2()
-        .text_decoration_color(color(palette.underline))
         .child(at);
     let marks = [
         verified.then(|| look.tr("profile-verified")),

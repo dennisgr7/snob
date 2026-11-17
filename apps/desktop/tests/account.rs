@@ -83,6 +83,37 @@ async fn the_picture_opens_a_menu_that_says_who_is_signed_in(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
+async fn the_menu_names_the_account_above_its_username_beside_a_centered_picture(
+    cx: &mut TestAppContext,
+) {
+    let mut me = account(42, "me", true);
+    me.biography = Some(
+        "a bio long enough to wrap onto a second line and then a third one, \
+         which makes the column of words taller than the picture beside it"
+            .to_string(),
+    );
+    let app = at_home(cx, Scripted::with(vec![me])).await;
+    app.click(cx, "account");
+    app.in_window(cx, |window, _| {
+        let name = window.find("menu-name-line").bounds();
+        let username = window.find("menu-username-line").bounds();
+        let bio = window.find("menu-bio-line").bounds();
+        assert!(
+            name.bottom() <= username.top(),
+            "{name:?} over {username:?}"
+        );
+        assert!(username.bottom() <= bio.top(), "{username:?} over {bio:?}");
+        let photo = window.find("menu-photo").bounds();
+        let words = (name.top() + bio.bottom()) / 2.0;
+        let middle = (photo.top() + photo.bottom()) / 2.0;
+        assert!(
+            (middle - words).abs() <= px(2.),
+            "the picture's middle {middle:?} beside the words' {words:?}"
+        );
+    });
+}
+
+#[gpui_kit::test]
 async fn escape_closes_the_menu_and_focus_goes_back_to_what_opened_it(cx: &mut TestAppContext) {
     let app = at_home(cx, two_accounts()).await;
     app.click(cx, "account");
