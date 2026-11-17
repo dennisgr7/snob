@@ -11,6 +11,7 @@ use crate::cli::WatchOnceArgs;
 use crate::report;
 use crate::ui;
 
+use super::automation::{Recorded, any_kept, named, run_automation, run_due};
 use super::delivery::delivery_from;
 use super::run::{Printing, run_viewers, settle_all};
 use super::watched::watched_from;
@@ -34,15 +35,42 @@ pub(super) async fn once(
     // on promising the next run will try them.
     settle_all(paths);
 
+    if let Some(id) = args
+        .automation
+        .clone()
+        .filter(|id| id != snob_core::automation::WATCH_TOML)
+    {
+        return by_id(args, &secrets, paths, in_use, &id).await;
+    }
+
     // Before the session is opened and long before a request is spent, so a
     // webhook address that could never work costs nothing to find out about.
     let configured = config::load(paths)?;
     let began = snob_core::clock::now();
+    // Only `--when-due` with no `--automation`: the timer's look, which runs
+    // whatever is due.
+    let every_due = args.when_due && args.automation.is_none();
     // A run by hand was due for nothing; one a timer asked for was due for
     // the moment the schedule names, which is what tells it late.
     let timing = if args.when_due {
-        let Some(due_at) = due_for(paths, configured.as_ref(), began)? else {
-            return Ok(ExitCode::Ok);
+        // A file naming no schedule beside automations of the app's is no
+        // mistake: the timer is there for those.
+        let only_the_app = every_due
+            && configured
+                .as_ref()
+                .is_none_or(super::schedule::names_no_schedule)
+            && any_kept(paths);
+        let due = if only_the_app {
+            None
+        } else {
+            due_for(paths, configured.as_ref(), began)?
+        };
+        let Some(due_at) = due else {
+            return if every_due {
+                due_elsewhere(&args, &secrets, paths, in_use).await
+            } else {
+                Ok(ExitCode::Ok)
+            };
         };
         snob_engine::engine::watch::RunTiming::due(due_at, began, std::time::Duration::ZERO)
     } else {
@@ -80,6 +108,7 @@ pub(super) async fn once(
         }
     }
 
+    let recorded = Recorded::start(paths, snob_core::automation::WATCH_TOML, began);
     let outcome = run_viewers(
         paths,
         &secrets,
@@ -90,6 +119,14 @@ pub(super) async fn once(
         timing,
     )
     .await;
+    if let Some(recorded) = recorded {
+        recorded.finish(&outcome);
+    }
+    let elsewhere = if every_due {
+        due_elsewhere(&args, &secrets, paths, in_use).await
+    } else {
+        Ok(ExitCode::Ok)
+    };
 
     // Said whether or not an account failed: a run that stopped halfway still
     // spent requests, and this is the mode somebody is watching.
@@ -115,8 +152,110 @@ pub(super) async fn once(
         .into());
     }
 
-    // The run's own verdict, as written into `watch_runs`.
-    Ok(outcome.code)
+    // The run's own verdict, as written into `watch_runs`, then the other
+    // automations'.
+    let elsewhere = elsewhere?;
+    Ok(if outcome.code == ExitCode::Ok {
+        elsewhere
+    } else {
+        outcome.code
+    })
+}
+
+/// `--automation <id>`: one run of an automation made in the app, by hand,
+/// or when `--when-due` finds it due.
+async fn by_id(
+    args: WatchOnceArgs,
+    secrets: &SecretStore,
+    paths: &AppPaths,
+    in_use: Option<Pk>,
+    id: &str,
+) -> Result<ExitCode> {
+    use snob_engine::automations::{Next, next_run};
+
+    let automation = named(paths, id)?;
+    if args.delivery.webhook.is_some()
+        || !args.delivery.header.is_empty()
+        || args.delivery.sign_with.is_some()
+    {
+        ui::warn(
+            "an automation sends to its own webhook, so --webhook, --header and --sign-with do              nothing with --automation",
+        );
+    }
+    let began = snob_core::clock::now();
+    let timing = if args.when_due {
+        match next_run(paths, &automation, began)? {
+            (Next::Now, due_at) => {
+                snob_engine::engine::watch::RunTiming::due(due_at, began, std::time::Duration::ZERO)
+            }
+            (Next::At(at), _) => {
+                tracing::debug!(
+                    "not due yet: the next run is on {}",
+                    snob_engine::sentences::stored_on(at)
+                );
+                return Ok(ExitCode::Ok);
+            }
+            (Next::Never, _) => {
+                return Err(anyhow::anyhow!(
+                    "this automation never comes round: it is not finished, or nothing matches                      its schedules"
+                ));
+            }
+        }
+    } else {
+        snob_engine::engine::watch::RunTiming::by_hand(began)
+    };
+    if super::run::waits_for_power(paths, snob_core::clock::now()) {
+        ui::warn(report::BATTERY_CRITICAL_HOLD);
+        return Ok(ExitCode::Interrupted);
+    }
+    super::run::power_is_back(paths);
+    let summary = run_automation(
+        paths,
+        secrets,
+        &automation,
+        Printing::watched(args.output.json),
+        !args.progress.no_progress,
+        timing,
+        in_use,
+    )
+    .await;
+    ui::info(&format!(
+        "{} - {}",
+        snob_engine::sentences::stored_on(snob_core::clock::now()),
+        report::requests(summary.spent)
+    ));
+    if let Some(e) = summary.failed {
+        return Err(e);
+    }
+    Ok(summary.code)
+}
+
+/// The automations made in the app that are due, each run in its turn: the
+/// first reason any came to, and the last failure, the earlier ones printed.
+async fn due_elsewhere(
+    args: &WatchOnceArgs,
+    secrets: &SecretStore,
+    paths: &AppPaths,
+    in_use: Option<Pk>,
+) -> Result<ExitCode> {
+    let printing = Printing::watched(args.output.json);
+    let ran = run_due(paths, secrets, printing, !args.progress.no_progress, in_use).await;
+    let mut code = ExitCode::Ok;
+    let mut last: Option<anyhow::Error> = None;
+    for summary in ran {
+        if code == ExitCode::Ok {
+            code = summary.code;
+        }
+        if let Some(e) = summary.failed
+            && let Some(earlier) = last.replace(e)
+        {
+            report::print_error(&earlier, printing.wording());
+        }
+    }
+    match last {
+        Some(e) => Err(e),
+        None => Ok(code),
+    }
 }
 
 /// `--when-due`: whether the schedule in the file says a run is owed now, asked
@@ -210,6 +349,7 @@ mod tests {
             },
             target: None,
             when_due: false,
+            automation: None,
             output: crate::cli::StatusOutputArgs { json: false },
             progress: crate::cli::ProgressArgs { no_progress: true },
         };

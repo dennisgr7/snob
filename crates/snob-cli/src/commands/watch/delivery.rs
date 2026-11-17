@@ -258,7 +258,38 @@ pub(super) fn delivery_from(
     for warning in &warnings {
         ui::warn(warning);
     }
+    built(planned)
+}
 
+/// Where an automation kept as a file sends: its webhook's address, headers,
+/// format and heartbeat, and **never a credential from the keyring**, which
+/// was set up for `watch.toml`'s address alone.
+pub(super) fn delivery_of(
+    webhook: Option<&snob_core::automation::Webhook>,
+) -> Result<Option<Delivery>> {
+    let Some(webhook) = webhook else {
+        return Ok(None);
+    };
+    let file = WebhookConfig {
+        url: webhook.url.clone(),
+        headers: webhook.headers.clone(),
+        heartbeat: webhook.heartbeat,
+        format: webhook.format,
+    };
+    let (planned, warnings) = plan(
+        &WebhookArgs::default(),
+        Some(&file),
+        Stored::Nothing,
+        Stored::Nothing,
+    )?;
+    for warning in &warnings {
+        ui::warn(warning);
+    }
+    built(planned)
+}
+
+/// The client for what [`plan`] decided, once `webhook::check` lets it.
+fn built(planned: Option<Planned>) -> Result<Option<Delivery>> {
     let Some(planned) = planned else {
         return Ok(None);
     };
@@ -351,6 +382,68 @@ pub(super) async fn deliver(
 
     // Whatever is still owed from earlier runs is NOT drained here but once
     // per run, after every watched account, by the caller (`drain`).
+    Ok(())
+}
+
+/// Queues what an automation's action found, moves its mark in the same
+/// transaction (`automations::read::commit`), and only then sends it, as
+/// [`deliver`] does a tick's report: silence when nothing is new, unless the
+/// webhook asks for a heartbeat.
+pub(super) async fn deliver_found(
+    app: &mut snob_engine::app::App,
+    automation: &snob_core::automation::Automation,
+    found: &snob_engine::automations::read::Found,
+    delivery: Option<&Delivery>,
+) -> Result<()> {
+    let at = snob_core::clock::now();
+    let news = found.has_news();
+    let made = delivery
+        .filter(|delivery| news || delivery.heartbeat)
+        .map(|delivery| {
+            let event = super::wire::found_event(news);
+            let run_id = run_id(at, app.viewer().pk);
+            let summary = super::say::found_lines(found).join(
+                "
+",
+            );
+            let body =
+                super::wire::found_payload(automation, found, app.viewer(), &run_id, event, at);
+            let made = outgoing(delivery.format, body, &summary);
+            let form = deliveries::Form {
+                event: event.to_string(),
+                content_type: made.content_type.to_string(),
+            };
+            (delivery, run_id, made.body, form)
+        });
+
+    let queued = {
+        let conn = app.db().conn();
+        let transaction = conn.unchecked_transaction()?;
+        let queued = match &made {
+            Some((delivery, run_id, body, form)) => {
+                let viewer = app.viewer().pk;
+                snob_store::store::users::ensure(&transaction, viewer)?;
+                snob_store::store::accounts::upsert(&transaction, viewer, true)?;
+                Some(deliveries::enqueue_as(
+                    &transaction,
+                    run_id,
+                    viewer,
+                    body,
+                    at,
+                    &delivery.destination,
+                    Some(form),
+                )?)
+            }
+            None => None,
+        };
+        snob_engine::automations::read::commit(app, &automation.id, found, at)?;
+        transaction.commit()?;
+        queued
+    };
+
+    if let (Some(id), Some((delivery, run_id, body, form))) = (queued, made.as_ref()) {
+        send_one(app.db(), delivery, id, run_id, body, Some(form), 1).await;
+    }
     Ok(())
 }
 

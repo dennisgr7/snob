@@ -14,6 +14,7 @@ use crate::cli::WatchRunArgs;
 use crate::report;
 use crate::ui;
 
+use super::automation::{Recorded, any_kept, run_due};
 use super::delivery::delivery_from;
 use super::run::{Printing, account_databases, run_viewers, settle_all};
 use super::schedule::{describe_schedule, schedule_from, when_from};
@@ -31,6 +32,20 @@ pub(super) async fn scheduled(
 
     // Read first, so the flags can override it.
     let configured = config::load(paths)?;
+
+    // Nothing in watch.toml to run, and automations made in the app: this
+    // runs those alone, each on its own schedule.
+    let given =
+        args.cron.is_some() || !args.at.is_empty() || !args.on.is_empty() || args.every.is_some();
+    if !given
+        && args.target.is_none()
+        && configured
+            .as_ref()
+            .is_none_or(super::schedule::names_no_schedule)
+        && any_kept(paths)
+    {
+        return only_the_app(&args, &secrets, paths, in_use).await;
+    }
 
     let schedule = schedule_from(&args, configured.as_ref())?;
     let watched = watched_from(args.target.clone(), configured.as_ref(), Some(in_use));
@@ -56,16 +71,15 @@ pub(super) async fn scheduled(
     // run without leaving a signal listener behind on each one.
     let cancel = snob_engine::interrupt::install();
     let printing = Printing::unattended(args.output.json);
-    let run = |timing| {
-        run_viewers(
-            paths,
-            &secrets,
-            &watched,
-            delivery.as_ref(),
-            printing,
-            !args.progress.no_progress,
-            timing,
-        )
+    let (held, entries, to) = (&secrets, &watched, delivery.as_ref());
+    let with_progress = !args.progress.no_progress;
+    let run = |timing: snob_engine::engine::watch::RunTiming| async move {
+        let recorded = Recorded::start(paths, snob_core::automation::WATCH_TOML, timing.began_at);
+        let summary = run_viewers(paths, held, entries, to, printing, with_progress, timing).await;
+        if let Some(recorded) = recorded {
+            recorded.finish(&summary);
+        }
+        summary
     };
 
     let mut last_run = seed_for(paths, &schedule, snob_core::clock::now())?;
@@ -184,11 +198,72 @@ pub(super) async fn scheduled(
             continue;
         }
 
+        // The automations made in the app, each on its own schedule, looked
+        // at every time round: a nap is five minutes at most.
+        if run_the_due(
+            &secrets,
+            paths,
+            printing,
+            !args.progress.no_progress,
+            in_use,
+        )
+        .await
+        {
+            continue;
+        }
+
         // Slept in bounded stretches and re-checked against the wall clock each
         // time round, rather than in one long sleep.
         let nap = nap_for(wake_at - now);
         if cancel
             .sleep_or_cancel(std::time::Duration::from_secs(nap))
+            .await
+        {
+            ui::info("Stopped.");
+            return Ok(ExitCode::Interrupted);
+        }
+    }
+}
+
+/// Runs the automations made in the app that are due, and says whether any
+/// ran, which hands the browsers back to their owner.
+async fn run_the_due(
+    secrets: &SecretStore,
+    paths: &AppPaths,
+    printing: Printing,
+    with_progress: bool,
+    in_use: Pk,
+) -> bool {
+    let ran = run_due(paths, secrets, printing, with_progress, Some(in_use)).await;
+    for summary in &ran {
+        if let Some(e) = &summary.failed {
+            report::print_error(e, printing.wording());
+        }
+    }
+    if ran.is_empty() {
+        return false;
+    }
+    snob_engine::owner::finish(secrets, paths).await;
+    true
+}
+
+/// The scheduled mode with nothing of `watch.toml`'s to run: the
+/// automations made in the app, looked at every [`NAP_NEAR_SECS`].
+async fn only_the_app(
+    args: &WatchRunArgs,
+    secrets: &SecretStore,
+    paths: &AppPaths,
+    in_use: Pk,
+) -> Result<ExitCode> {
+    ui::info(
+        "Running the automations made in the app, each on its own schedule. Stop with Ctrl+C.",
+    );
+    let cancel = snob_engine::interrupt::install();
+    let printing = Printing::unattended(args.output.json);
+    loop {
+        run_the_due(secrets, paths, printing, !args.progress.no_progress, in_use).await;
+        if cancel
+            .sleep_or_cancel(std::time::Duration::from_secs(NAP_NEAR_SECS.unsigned_abs()))
             .await
         {
             ui::info("Stopped.");

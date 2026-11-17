@@ -228,6 +228,13 @@ impl Read {
         )
     }
 
+    /// Whether it only means something of another account than the
+    /// viewer's: who of the people you follow follow it, its friends who are
+    /// yours too.
+    pub fn is_about_another(&self) -> bool {
+        matches!(self, Self::KnownFollowers | Self::FriendsInCommon)
+    }
+
     /// Whether it finds a set of accounts, which filters act on.
     pub fn finds_accounts(&self) -> bool {
         !matches!(self, Self::Posts { .. } | Self::Picture { .. })
@@ -429,6 +436,8 @@ pub enum Problem {
     BadName { node: NodeId, name: String },
     #[error("reading the lists of @{name} needs your yes, given in the step's settings")]
     NoConsent { node: NodeId, name: String },
+    #[error("this action is about another account: say whose")]
+    OwnAccount { node: NodeId },
     #[error("the directory to save in is not a whole path")]
     RelativeDir { node: NodeId },
     #[error("the webhook has no address it can use")]
@@ -455,6 +464,7 @@ impl Problem {
             | Self::NoAccount { node }
             | Self::BadName { node, .. }
             | Self::NoConsent { node, .. }
+            | Self::OwnAccount { node }
             | Self::RelativeDir { node }
             | Self::NoAddress { node }
             | Self::TwoWebhooks { node }
@@ -723,6 +733,9 @@ impl Automation {
                                     name: name.to_string(),
                                 });
                             }
+                            None if what.is_about_another() => {
+                                problems.push(Problem::OwnAccount { node: id });
+                            }
                             _ => {}
                         },
                     }
@@ -762,23 +775,12 @@ impl Automation {
         self.problems().is_empty()
     }
 
-    /// What it runs, or what keeps it from running.
-    pub fn program(&self) -> Result<Program, Vec<Problem>> {
-        let problems = self.problems();
-        if !problems.is_empty() {
-            return Err(problems);
-        }
-        let schedules = self
-            .nodes
-            .iter()
-            .filter(|node| node.enabled)
-            .filter_map(|node| match &node.step {
-                Step::Schedule { when } => Some(when.clone()),
-                _ => None,
-            })
-            .collect();
-        let reads = self
-            .started()
+    /// Every enabled action an enabled trigger leads to, in the order of
+    /// their steps, whether or not the automation is finished: what
+    /// [`Automation::program`] runs, and what a run by hand of `watch.toml`
+    /// reads, which needs no schedule.
+    pub fn planned_reads(&self) -> Vec<Planned> {
+        self.started()
             .into_iter()
             .filter_map(|node| match &node.step {
                 Step::Read {
@@ -796,19 +798,39 @@ impl Automation {
                 }
                 _ => None,
             })
-            .collect();
-        let webhook = self
-            .nodes
+            .collect()
+    }
+
+    /// The enabled webhook, when there is one.
+    pub fn webhook(&self) -> Option<&Webhook> {
+        self.nodes
             .iter()
             .filter(|node| node.enabled)
             .find_map(|node| match &node.step {
-                Step::Webhook(webhook) => Some(webhook.clone()),
+                Step::Webhook(webhook) => Some(webhook),
                 _ => None,
-            });
+            })
+    }
+
+    /// What it runs, or what keeps it from running.
+    pub fn program(&self) -> Result<Program, Vec<Problem>> {
+        let problems = self.problems();
+        if !problems.is_empty() {
+            return Err(problems);
+        }
+        let schedules = self
+            .nodes
+            .iter()
+            .filter(|node| node.enabled)
+            .filter_map(|node| match &node.step {
+                Step::Schedule { when } => Some(when.clone()),
+                _ => None,
+            })
+            .collect();
         Ok(Program {
             schedules,
-            reads,
-            webhook,
+            reads: self.planned_reads(),
+            webhook: self.webhook().cloned(),
         })
     }
 

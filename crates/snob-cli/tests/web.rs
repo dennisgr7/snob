@@ -2801,3 +2801,58 @@ async fn the_report_names_the_files_that_were_saved() {
     assert_eq!(files_in(&dir), saved.files);
     assert!(std::path::Path::new(&saved.directory).is_absolute());
 }
+
+/// An automation's crossing of the own lists is the same crossing `snob
+/// unfollowers` makes, through `engine::list`; a "changes" filter lays a
+/// baseline on the first run, and says what came and went against the
+/// accounts the last report named, moved only once the report is made.
+#[tokio::test]
+async fn an_automations_unfollowers_are_told_as_what_changed_since_the_last_report() {
+    use snob_core::automation::{Account, Filters, Only, Planned, Read};
+    use snob_engine::automations::read::{self, Changes};
+
+    let world = World::new();
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let planned = Planned {
+        node: 2,
+        account: Account::own(None),
+        what: Read::Unfollowers,
+        only: Filters::new([Only::Changes]),
+        delivered: false,
+    };
+
+    let mut app = app_on(&server, &world, tmp.path());
+    let first = read::read(&mut app, "a1", &planned).await.unwrap();
+    let names = |users: &[snob_core::model::User]| -> Vec<String> {
+        users.iter().map(|u| u.username.clone()).collect()
+    };
+    assert_eq!(
+        names(&first.accounts),
+        ["user5", "user6", "user7", "user8", "user9"],
+        "me follows user0 to user9, and user0 to user4 follow back"
+    );
+    assert_eq!(first.changes, Some(Changes::Baseline));
+    assert!(!first.has_news(), "a baseline says nothing");
+    read::commit(&app, "a1", &first, snob_core::Epoch::new(1)).unwrap();
+
+    // The last report named two of them, and one account since gone.
+    snob_store::store::automation_marks::set(
+        app.db().conn(),
+        "a1",
+        2,
+        snob_core::Epoch::new(1),
+        &[Pk::new(1005), Pk::new(1006), Pk::new(1010)],
+    )
+    .unwrap();
+    let second = read::read(&mut app, "a1", &planned).await.unwrap();
+    let Some(Changes::Since { added, removed, .. }) = &second.changes else {
+        panic!("compared against the mark: {:?}", second.changes);
+    };
+    assert_eq!(names(added), ["user7", "user8", "user9"]);
+    assert_eq!(
+        removed.iter().map(|u| u.pk).collect::<Vec<_>>(),
+        [Pk::new(1010)]
+    );
+    assert!(second.has_news());
+}
