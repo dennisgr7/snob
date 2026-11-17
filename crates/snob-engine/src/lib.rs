@@ -20,6 +20,7 @@
 //! - what is read besides a list: [`profile`], [`posts`], [`stories`],
 //!   [`highlights`], what a story is and how one is kept ([`media`]), and
 //!   the files they are kept in ([`files`], [`ffmpeg`]);
+//! - the two writes, follow and unfollow: [`follow`];
 //! - what runs by itself: the monitor ([`watch`]), [`automations`], [`jobs`];
 //! - the program itself: [`log`], [`update`].
 //!
@@ -36,6 +37,7 @@ pub mod engine;
 pub mod exit;
 pub mod ffmpeg;
 pub mod files;
+pub mod follow;
 pub mod highlights;
 pub mod host;
 pub mod jobs;
