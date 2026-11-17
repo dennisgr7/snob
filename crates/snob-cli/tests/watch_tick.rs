@@ -20,7 +20,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use snob_engine::app::{App, Viewer};
 use snob_engine::engine::Provenance;
-use snob_engine::engine::watch::{self, Skipped, TickReport, Watched};
+use snob_engine::watch::{self, Skipped, TickReport, Watched};
 
 mod common;
 use common::{
@@ -59,7 +59,7 @@ async fn mount_list(server: &MockServer, kind: &str, pks: &[u64]) {
 /// Moves every stored capture a day and an hour into the past.
 ///
 /// The monitor walks a list at most once a day however its counter moves
-/// (`engine::watch::REUSE_WINDOW`), so a test about what a *walk* finds on the
+/// (`watch::REUSE_WINDOW`), so a test about what a *walk* finds on the
 /// second run has to let a day go by between the two.
 fn a_day_passes(root: &std::path::Path) {
     open_db(root)
@@ -157,7 +157,7 @@ async fn the_first_run_lays_a_baseline_and_reports_nothing() {
 /// monitor is broken.
 #[tokio::test]
 async fn a_capture_nobody_reported_is_not_a_baseline() {
-    use snob_engine::engine::check::{Verdict, baseline_of};
+    use snob_engine::watch::check::{Verdict, baseline_of};
 
     let server = MockServer::start().await;
     mount_profile(&server, 3, 2).await;
@@ -261,7 +261,7 @@ async fn a_counter_that_moved_within_a_day_waits_for_a_later_walk() {
     assert!(
         tick.lists.iter().any(|l| l.kind == ListKind::Followers
             && l.skipped
-                == Some(snob_engine::engine::watch::Skipped::NobodyLooked(
+                == Some(snob_engine::watch::Skipped::NobodyLooked(
                     snob_engine::engine::Provenance::WalkedRecently
                 ))),
         "the list is refused as not looked at, so the arrival is still news later: {:?}",
@@ -1152,10 +1152,10 @@ async fn a_baseline_run_seeds_the_rename_cursor() {
 /// about this at all, or an account that also has no recorded consent, whose
 /// line is the consent sentence with the cooldown as a clause after it.
 /// Matched on the reason rather than searched for a word, because the reason is
-/// what `engine::check` answers with -- the sentence is
+/// what `watch::check` answers with -- the sentence is
 /// `commands::watch::say`'s and is not reachable from here.
-fn blames_the_cooldown(checked: &snob_engine::engine::check::Checked) -> bool {
-    use snob_engine::engine::check::Problem;
+fn blames_the_cooldown(checked: &snob_engine::watch::check::Checked) -> bool {
+    use snob_engine::watch::check::Problem;
     matches!(
         checked.problem,
         Some(Problem::InCooldown { .. }) | Some(Problem::NoRecordedConsent { in_cooldown: true })
@@ -1175,7 +1175,7 @@ fn blames_the_cooldown(checked: &snob_engine::engine::check::Checked) -> bool {
 /// warning and not a failure.
 #[tokio::test]
 async fn watch_check_spends_nothing_during_a_cooldown() {
-    use snob_engine::engine::check::{CheckReport, Verdict, with_a_session};
+    use snob_engine::watch::check::{CheckReport, Verdict, with_a_session};
 
     let tmp = tempfile::tempdir().unwrap();
     let (paths, budget) = budget_at(tmp.path());
@@ -1218,7 +1218,7 @@ async fn watch_check_spends_nothing_during_a_cooldown() {
 /// accounts would turn a two-hour throttle into eight.
 #[tokio::test]
 async fn check_stops_asking_once_an_account_earns_a_cooldown() {
-    use snob_engine::engine::check::{CheckReport, Verdict, with_a_session};
+    use snob_engine::watch::check::{CheckReport, Verdict, with_a_session};
 
     let tmp = tempfile::tempdir().unwrap();
     let (paths, budget) = budget_at(tmp.path());
@@ -1241,9 +1241,9 @@ async fn check_stops_asking_once_an_account_earns_a_cooldown() {
     let secrets = secrets(&paths, "throttle");
 
     let watched = [
-        Watched::consented("one".into(), snob_engine::engine::watch::Consent),
-        Watched::consented("two".into(), snob_engine::engine::watch::Consent),
-        Watched::consented("three".into(), snob_engine::engine::watch::Consent),
+        Watched::consented("one".into(), snob_engine::watch::Consent),
+        Watched::consented("two".into(), snob_engine::watch::Consent),
+        Watched::consented("three".into(), snob_engine::watch::Consent),
     ];
 
     let mut report = CheckReport::default();
@@ -1281,7 +1281,7 @@ async fn check_stops_asking_once_an_account_earns_a_cooldown() {
 /// 0 about a monitor that cannot run at all.
 #[tokio::test]
 async fn a_cooldown_does_not_downgrade_a_missing_consent() {
-    use snob_engine::engine::check::{CheckReport, Verdict, with_a_session};
+    use snob_engine::watch::check::{CheckReport, Verdict, with_a_session};
 
     let tmp = tempfile::tempdir().unwrap();
     let (paths, budget) = budget_at(tmp.path());
@@ -1322,7 +1322,7 @@ async fn a_cooldown_does_not_downgrade_a_missing_consent() {
 /// it in -- which nothing on a headless machine runs.
 #[tokio::test]
 async fn a_session_with_no_stored_username_is_resolved_rather_than_waved_through() {
-    use snob_engine::engine::check::{CheckReport, What, with_a_session};
+    use snob_engine::watch::check::{CheckReport, What, with_a_session};
 
     let tmp = tempfile::tempdir().unwrap();
     let paths = account_at(tmp.path());
@@ -1401,7 +1401,7 @@ async fn a_session_with_no_stored_username_is_resolved_rather_than_waved_through
 /// them cost.
 #[tokio::test]
 async fn checking_twice_spends_twice() {
-    use snob_engine::engine::check::{CheckReport, with_a_session};
+    use snob_engine::watch::check::{CheckReport, with_a_session};
 
     let tmp = tempfile::tempdir().unwrap();
     let paths = account_at(tmp.path());

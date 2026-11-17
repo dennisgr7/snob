@@ -10,8 +10,8 @@ use snob_store::config::{self, WatchConfig};
 use snob_store::store::deliveries;
 use url::Url;
 
-use snob_engine::engine::watch::{ListReport, WatchReport};
 use snob_engine::watch::webhook::{Webhook, WebhookClient};
+use snob_engine::watch::{ListReport, WatchReport};
 
 use super::delivery::Delivery;
 
@@ -82,8 +82,8 @@ pub(in crate::commands::watch) fn post(n: u64, caption: &str) -> snob_engine::po
 /// A comparison of an account's posts that found `news`, read in one page.
 pub(in crate::commands::watch) fn posts_report(
     news: Vec<snob_engine::posts::Post>,
-) -> snob_engine::engine::watch_posts::PostsReport {
-    snob_engine::engine::watch_posts::PostsReport {
+) -> snob_engine::watch::posts::PostsReport {
+    snob_engine::watch::posts::PostsReport {
         basis: snob_core::watch::posts::Basis::Compared,
         since: Some(Epoch::new(1_699_913_600)),
         until: Epoch::new(1_700_000_000),

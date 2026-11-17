@@ -5,7 +5,7 @@
 //!   with the id `watch` (`snob_store::automations::from_watch`), kept in
 //!   that file and written back to it ([`save`]).
 //! - **What one reads** is [`read`]: the monitor's tick for lists and posts
-//!   (`engine::watch`, through [`watched`]), and [`read::read`] for the
+//!   (`watch`, through [`watched`]), and [`read::read`] for the
 //!   rest, every list through `engine::list` with its consent, pace, budget
 //!   and cooldown. **Nothing here writes to Instagram.**
 //! - **When one runs**: on its schedules, through `snob watch` (the scheduled
@@ -29,7 +29,7 @@ use snob_store::registry::Registry;
 use snob_store::secrets::{Kind, SecretStore};
 use snob_store::store::shared::{AutomationRun, Shared};
 
-use crate::engine::watch::{Consent, PostsWatch, Watched};
+use crate::watch::{Consent, PostsWatch, Watched};
 
 pub use snob_core::automation;
 
@@ -196,7 +196,7 @@ pub fn next_run(
 
 /// The monitor's entries for the lists and posts `reads` asks for, one per
 /// account and viewer as `watch.toml` has them, the account in use standing
-/// for a viewer not named: what a tick reads ([`crate::engine::watch::tick`]).
+/// for a viewer not named: what a tick reads ([`crate::watch::tick`]).
 pub fn watched(reads: &[Planned], in_use: Option<Pk>) -> Vec<Watched> {
     let mut entries: Vec<(Option<Pk>, Option<String>, Watched)> = Vec::new();
     for read in reads {

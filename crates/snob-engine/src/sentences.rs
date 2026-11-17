@@ -468,7 +468,7 @@ pub fn advice_for(error: &snob_ig::error::IgError) -> Option<&'static str> {
 /// The `hint:` line is what a **reported failure** gets, and the two places
 /// that print an `IgError` are not that: `engine::walk` warns about what
 /// stopped a walk while the walk's own refusal is still to come, and
-/// `engine::check` puts the answer in a column of its own.
+/// `watch::check` puts the answer in a column of its own.
 pub fn what_instagram_said(error: &snob_ig::error::IgError) -> String {
     match advice_for(error) {
         Some(advice) => format!("{error}; {advice}"),

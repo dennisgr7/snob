@@ -303,7 +303,7 @@ impl App {
 
         let db = Store::open(paths)?;
         // Retention, for the commands that are not the monitor.
-        crate::engine::watch::settle_daily(&db);
+        crate::watch::settle_daily(&db);
         let Front {
             progress,
             ask,
@@ -378,7 +378,7 @@ impl App {
     /// `IgClient::profile_named`, **the same requests**, with what it
     /// answered kept in the account's cache for a view to show at once next
     /// time. A list's resolve and the monitor read through here; a check,
-    /// which writes nothing, does not (`engine::check`).
+    /// which writes nothing, does not (`watch::check`).
     pub async fn profile_named(
         &self,
         name: &str,

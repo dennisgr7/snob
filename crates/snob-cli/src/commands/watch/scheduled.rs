@@ -73,7 +73,7 @@ pub(super) async fn scheduled(
     let printing = Printing::unattended(args.output.json);
     let (held, entries, to) = (&secrets, &watched, delivery.as_ref());
     let with_progress = !args.progress.no_progress;
-    let run = |timing: snob_engine::engine::watch::RunTiming| async move {
+    let run = |timing: snob_engine::watch::RunTiming| async move {
         let recorded = Recorded::start(paths, snob_core::automation::WATCH_TOML, timing.began_at);
         let summary = run_viewers(paths, held, entries, to, printing, with_progress, timing).await;
         if let Some(recorded) = recorded {
@@ -90,7 +90,7 @@ pub(super) async fn scheduled(
         // calendar would answer with its next moment on the grid.
         last_run = Some(snob_core::clock::now());
         // Asked for at start, by hand: due for nothing.
-        let timing = snob_engine::engine::watch::RunTiming::by_hand(snob_core::clock::now());
+        let timing = snob_engine::watch::RunTiming::by_hand(snob_core::clock::now());
         if let Err(e) = run(timing).await.into_result() {
             report::print_error(&e, printing.wording());
         }
@@ -184,7 +184,7 @@ pub(super) async fn scheduled(
             last_run = Some(now);
             waiting_for = None;
             // The jitter rolled is the schedule's own lateness, not the run's.
-            let timing = snob_engine::engine::watch::RunTiming::due(due_at, now, schedule.jitter());
+            let timing = snob_engine::watch::RunTiming::due(due_at, now, schedule.jitter());
 
             // A scheduled service does not exit because one run failed.
             if let Err(e) = run(timing).await.into_result() {

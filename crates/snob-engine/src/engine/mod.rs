@@ -4,15 +4,12 @@
 /// served: a day.
 pub const DEFAULT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
-pub mod check;
 pub mod cooldown;
 pub mod estimate;
 pub mod freshness;
 pub mod people;
 pub mod target;
 pub mod walk;
-pub mod watch;
-pub mod watch_posts;
 
 use anyhow::Result;
 use snob_core::model::{ListKind, StopReason, User};

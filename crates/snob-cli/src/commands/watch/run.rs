@@ -10,8 +10,8 @@ use anyhow::Result;
 use snob_core::model::printable;
 use snob_core::{Epoch, Pk};
 use snob_engine::app::{App, Viewer};
-use snob_engine::engine::watch::{RunTiming, TickReport, Watched, group_by_viewer};
 use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::watch::{RunTiming, TickReport, Watched, group_by_viewer};
 use snob_ig::pace::CancelToken;
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::registry::Registry;
@@ -223,7 +223,7 @@ pub(super) fn settle_all(paths: &AppPaths) {
     say_what_was_given_up(
         account_databases(paths)
             .iter()
-            .map(|account| snob_engine::engine::watch::settle_account(account, now))
+            .map(|account| snob_engine::watch::settle_account(account, now))
             .sum(),
     );
 }
@@ -542,7 +542,7 @@ async fn tick_one(
     printing: Printing,
     timing: RunTiming,
 ) -> Result<TickReport> {
-    let tick = snob_engine::engine::watch::tick(app, watched).await;
+    let tick = snob_engine::watch::tick(app, watched).await;
     app.progress().finish();
     let mut tick = tick?;
     // Saved before the report is made, so it names what is in the directory,
@@ -599,7 +599,7 @@ mod tests {
     /// The skipped entries are named as a sentence would, and the verb agrees.
     #[test]
     fn the_skipped_entries_are_named_and_the_verb_agrees() {
-        let friend = Watched::consented("friend".into(), snob_engine::engine::watch::Consent);
+        let friend = Watched::consented("friend".into(), snob_engine::watch::Consent);
         let one = skipped_because(Some("@me"), "no session", &[Watched::own()]);
         assert_eq!(
             one.to_string(),
@@ -640,7 +640,7 @@ mod tests {
 
         let watched = [Watched::consented(
             "friend".into(),
-            snob_engine::engine::watch::Consent,
+            snob_engine::watch::Consent,
         )];
         let mut outcome = Tally::default();
         run_accounts(

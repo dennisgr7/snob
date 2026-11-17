@@ -5,8 +5,8 @@ use snob_core::model::printable;
 use snob_core::secret::Secret;
 use snob_core::{Epoch, Pk};
 use snob_core::{duration, watch::schedule};
-use snob_engine::engine::check::Verdict;
 use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::watch::check::Verdict;
 use snob_store::config::{self, WatchConfig};
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::registry::Registry;
@@ -266,8 +266,8 @@ impl BaselineCost {
 /// Adds up what the preflight learned about every account it checked, its
 /// requests as they go out from the browser or, with `browser` false,
 /// directly.
-fn baseline_cost(report: &snob_engine::engine::check::CheckReport, browser: bool) -> BaselineCost {
-    use snob_engine::engine::check::What;
+fn baseline_cost(report: &snob_engine::watch::check::CheckReport, browser: bool) -> BaselineCost {
+    use snob_engine::watch::check::What;
 
     let mut cost = BaselineCost {
         accounts: 0,
@@ -315,7 +315,7 @@ fn baseline_cost(report: &snob_engine::engine::check::CheckReport, browser: bool
 
 /// Offers to take the first capture, saying what it costs.
 async fn offer_the_baseline(
-    report: &snob_engine::engine::check::CheckReport,
+    report: &snob_engine::watch::check::CheckReport,
     secrets: &SecretStore,
     paths: &AppPaths,
     account: Option<&AccountPaths>,
@@ -877,7 +877,7 @@ evry = \"6h\"
     /// and prompts, and returns before the sentence without a terminal.
     #[test]
     fn the_offer_describes_the_walk_it_is_about_to_make() {
-        use snob_engine::engine::check::{CheckReport, Checked, What};
+        use snob_engine::watch::check::{CheckReport, Checked, What};
 
         let account = |followers, following| Checked {
             what: What::Account {
@@ -1427,7 +1427,7 @@ lists = false
     /// account whose lists are not watched.
     #[test]
     fn the_offer_counts_the_posts_it_reads_and_not_the_lists_it_leaves_alone() {
-        use snob_engine::engine::check::{CheckReport, Checked, What};
+        use snob_engine::watch::check::{CheckReport, Checked, What};
 
         let report = CheckReport {
             checked: vec![

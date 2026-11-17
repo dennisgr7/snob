@@ -10,9 +10,9 @@ use snob_core::model::{ListKind, printable};
 use snob_core::watch::{RunOutcome, schedule};
 use snob_core::{Epoch, Pk};
 use snob_engine::app::Viewer;
-use snob_engine::engine::check::Verdict;
-use snob_engine::engine::watch::Watched;
 use snob_engine::exit::ExitCode;
+use snob_engine::watch::Watched;
+use snob_engine::watch::check::Verdict;
 use snob_store::config::{self, WatchConfig};
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::registry::Registry;
@@ -421,10 +421,10 @@ const MISSED_BEFORE_FAILED: i64 = 3;
 
 /// When a recorded run was due and began, when it was recorded with both: what
 /// `status` and its `--json` tell a late run by.
-pub(super) fn timing_of(run: &watch_store::Run) -> Option<snob_engine::engine::watch::RunTiming> {
-    Some(snob_engine::engine::watch::RunTiming {
+pub(super) fn timing_of(run: &watch_store::Run) -> Option<snob_engine::watch::RunTiming> {
+    Some(snob_engine::watch::RunTiming {
         ended_at: run.finished_at,
-        ..snob_engine::engine::watch::RunTiming::due(
+        ..snob_engine::watch::RunTiming::due(
             Some(run.due_at?),
             run.began_at?,
             std::time::Duration::ZERO,
@@ -1420,7 +1420,7 @@ url = \"https://example.com/hook\"
         );
         assert_eq!(status.notes.len(), 1, "{:?}", status.notes);
 
-        let check = snob_engine::engine::check::without_a_session(None, None, NOW);
+        let check = snob_engine::watch::check::without_a_session(None, None, NOW);
         assert_eq!(check.checked.len(), 1, "{:?}", check.checked);
 
         assert_eq!(

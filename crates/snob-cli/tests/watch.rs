@@ -14,7 +14,7 @@ use snob_store::store::{Store, accounts, snapshots, users};
 use wiremock::MockServer;
 
 use snob_engine::app::App;
-use snob_engine::engine::watch;
+use snob_engine::watch;
 
 mod common;
 use common::{ME, app, user};
@@ -559,7 +559,7 @@ async fn the_rename_cursor_moves_only_over_lists_a_mark_was_written_for() {
 /// the state the whole line exists for.
 #[tokio::test]
 async fn one_list_reported_on_is_not_a_baseline_to_either_reader() {
-    use snob_engine::engine::check::{CheckReport, Verdict, baseline_of};
+    use snob_engine::watch::check::{CheckReport, Verdict, baseline_of};
 
     let server = MockServer::start().await;
     let mut db = Store::in_memory().unwrap();

@@ -500,8 +500,8 @@ async fn a_name_is_looked_up_once_and_its_profile_read_by_pk_after() {
 /// counters; the session is checked for nothing.
 #[tokio::test]
 async fn watch_check_reads_each_account_by_its_profile() {
-    use snob_engine::engine::check::{CheckReport, Verdict, What, with_a_session};
-    use snob_engine::engine::watch::{Consent, Watched};
+    use snob_engine::watch::check::{CheckReport, Verdict, What, with_a_session};
+    use snob_engine::watch::{Consent, Watched};
 
     let world = World::new();
     let server = world.serve_web().await;
@@ -544,8 +544,8 @@ async fn watch_check_reads_each_account_by_its_profile() {
 /// database that has never walked it.
 #[tokio::test]
 async fn watch_check_reads_the_own_account_as_its_profile_opens() {
-    use snob_engine::engine::check::{CheckReport, What, with_a_session};
-    use snob_engine::engine::watch::Watched;
+    use snob_engine::watch::Watched;
+    use snob_engine::watch::check::{CheckReport, What, with_a_session};
 
     let world = World::new();
     let server = world.serve_web().await;
@@ -614,7 +614,7 @@ async fn the_profile_query_copies_the_apps_variables_once_it_has_seen_them() {
 /// the first run learned, which cost the route definitions besides.
 #[tokio::test]
 async fn watch_once_on_a_known_third_party_costs_its_profile() {
-    use snob_engine::engine::watch::{self, Consent, Watched};
+    use snob_engine::watch::{self, Consent, Watched};
 
     let world = World::new();
     let server = world.serve_web().await;
@@ -753,7 +753,7 @@ async fn a_third_partys_counters_come_with_its_profile() {
 /// one request: the hover card.
 #[tokio::test]
 async fn watch_once_on_the_own_account_costs_one_request() {
-    use snob_engine::engine::watch::{self, Watched};
+    use snob_engine::watch::{self, Watched};
 
     let world = World::new();
     let server = world.serve_web().await;
@@ -779,7 +779,7 @@ async fn watch_once_on_the_own_account_costs_one_request() {
 /// earlier one are not reused (`Pacer::begin_action`, `App::resolved_target`).
 #[tokio::test]
 async fn every_tick_on_one_app_reads_the_counters_anew() {
-    use snob_engine::engine::watch::{self, Watched};
+    use snob_engine::watch::{self, Watched};
 
     let world = World::new();
     let server = world.serve_web().await;
@@ -809,7 +809,7 @@ async fn every_tick_on_one_app_reads_the_counters_anew() {
 #[tokio::test]
 async fn a_page_not_ready_ends_the_tick_and_the_next_one_tries_again() {
     use snob_core::budget::RateBudget;
-    use snob_engine::engine::watch::{self, Watched};
+    use snob_engine::watch::{self, Watched};
     use snob_store::store::watch::all_marks;
 
     let world = World::new();
@@ -858,7 +858,7 @@ async fn a_page_not_ready_ends_the_tick_and_the_next_one_tries_again() {
 /// A tab served a logged-out document ends the run as an expired session.
 #[tokio::test]
 async fn a_logged_out_document_ends_the_tick_with_exit_3() {
-    use snob_engine::engine::watch::{self, Watched};
+    use snob_engine::watch::{self, Watched};
 
     let world = World::new();
     let server = world.serve_web().await;
@@ -2148,8 +2148,8 @@ async fn a_posts_likers_are_one_get_from_its_page_and_nothing_follows() {
 }
 
 /// What the monitor watches of an account whose posts alone are watched.
-fn posts_only(name: Option<&str>) -> snob_engine::engine::watch::Watched {
-    use snob_engine::engine::watch::{PostsWatch, Watched};
+fn posts_only(name: Option<&str>) -> snob_engine::watch::Watched {
+    use snob_engine::watch::{PostsWatch, Watched};
     let watched = match name {
         Some(name) => Watched::asking(name.to_string()),
         None => Watched::own(),
@@ -2158,7 +2158,7 @@ fn posts_only(name: Option<&str>) -> snob_engine::engine::watch::Watched {
 }
 
 /// An hour and a minute go by for the posts the monitor read, so the next
-/// run is allowed to read them again (`watch_posts::READ_AT_MOST_EVERY`).
+/// run is allowed to read them again (`watch::posts::READ_AT_MOST_EVERY`).
 fn an_hour_passes(root: &std::path::Path) {
     common::open_db(root)
         .conn()
@@ -2170,7 +2170,7 @@ fn an_hour_passes(root: &std::path::Path) {
 }
 
 /// The new posts a tick found, by pk, in the grid's order.
-fn news_of(tick: &snob_engine::engine::watch::TickReport) -> Vec<u64> {
+fn news_of(tick: &snob_engine::watch::TickReport) -> Vec<u64> {
     tick.report
         .posts
         .as_ref()
@@ -2187,13 +2187,11 @@ async fn tick_and_commit(
     server: &MockServer,
     world: &World,
     root: &std::path::Path,
-    watched: &snob_engine::engine::watch::Watched,
-) -> snob_engine::engine::watch::TickReport {
+    watched: &snob_engine::watch::Watched,
+) -> snob_engine::watch::TickReport {
     let mut app = app_on(server, world, root);
-    let tick = snob_engine::engine::watch::tick(&mut app, watched)
-        .await
-        .unwrap();
-    snob_engine::engine::watch::commit(&mut app, &tick, None).unwrap();
+    let tick = snob_engine::watch::tick(&mut app, watched).await.unwrap();
+    snob_engine::watch::commit(&mut app, &tick, None).unwrap();
     tick
 }
 
@@ -2274,7 +2272,7 @@ async fn a_post_published_since_is_reported_once_and_never_again() {
 /// follows, and the grid is the one read more.
 #[tokio::test]
 async fn a_run_with_no_new_post_costs_the_profile_and_one_page() {
-    use snob_engine::engine::watch::{Consent, PostsWatch, Watched};
+    use snob_engine::watch::{Consent, PostsWatch, Watched};
 
     let world = World::new();
     let server = world.serve_web().await;
@@ -2379,13 +2377,13 @@ async fn more_new_posts_than_three_pages_says_the_read_is_not_complete() {
 /// the run is an error.
 #[tokio::test]
 async fn a_private_account_not_followed_is_said_hidden_and_its_grid_is_not_asked_for() {
-    use snob_engine::engine::watch_posts::PostsSkipped;
+    use snob_engine::watch::posts::PostsSkipped;
 
     let world = World::new();
     let server = world.serve_web().await;
     let tmp = tempfile::tempdir().unwrap();
     let mut app = app_on(&server, &world, tmp.path());
-    let tick = snob_engine::engine::watch::tick(&mut app, &posts_only(Some("ghost")))
+    let tick = snob_engine::watch::tick(&mut app, &posts_only(Some("ghost")))
         .await
         .unwrap();
     assert_eq!(tick.posts_skipped(), Some(PostsSkipped::Hidden));
@@ -2402,7 +2400,7 @@ async fn a_private_account_not_followed_is_said_hidden_and_its_grid_is_not_asked
 /// In a cooldown nothing is sent for the posts, not even the profile.
 #[tokio::test]
 async fn posts_are_not_read_in_a_cooldown() {
-    use snob_engine::engine::watch_posts::PostsSkipped;
+    use snob_engine::watch::posts::PostsSkipped;
 
     let world = World::new();
     let server = world.serve_web().await;
@@ -2422,10 +2420,8 @@ async fn posts_are_not_read_in_a_cooldown() {
     };
     let watched = posts_only(Some("someone"));
     let mut app = app_of();
-    let first = snob_engine::engine::watch::tick(&mut app, &watched)
-        .await
-        .unwrap();
-    snob_engine::engine::watch::commit(&mut app, &first, None).unwrap();
+    let first = snob_engine::watch::tick(&mut app, &watched).await.unwrap();
+    snob_engine::watch::commit(&mut app, &first, None).unwrap();
     snob_store::store::Store::open(&paths)
         .unwrap()
         .conn()
@@ -2435,9 +2431,7 @@ async fn posts_are_not_read_in_a_cooldown() {
     common::start_cooldown(&budget, common::HOUR);
     let since = common::requests(&server).await;
     let mut app = app_of();
-    let tick = snob_engine::engine::watch::tick(&mut app, &watched)
-        .await
-        .unwrap();
+    let tick = snob_engine::watch::tick(&mut app, &watched).await.unwrap();
     assert_eq!(tick.posts_skipped(), Some(PostsSkipped::Cooldown));
     assert_eq!(tick.outcome(), snob_engine::exit::ExitCode::RateLimited);
     assert!(sent_since(&server, since).await.is_empty());
@@ -2447,7 +2441,7 @@ async fn posts_are_not_read_in_a_cooldown() {
 /// failure: the run sends nothing and ends well.
 #[tokio::test]
 async fn posts_read_less_than_an_hour_ago_are_not_read_again() {
-    use snob_engine::engine::watch_posts::PostsSkipped;
+    use snob_engine::watch::posts::PostsSkipped;
 
     let world = World::new();
     let server = world.serve_web().await;
@@ -2491,8 +2485,8 @@ async fn a_posts_only_entry_walks_no_list_and_asks_no_consent() {
 /// receipt does not move.
 #[tokio::test]
 async fn a_push_back_on_the_grid_still_reports_what_the_lists_found() {
-    use snob_engine::engine::watch::{Consent, PostsWatch, Watched};
-    use snob_engine::engine::watch_posts::PostsSkipped;
+    use snob_engine::watch::posts::PostsSkipped;
+    use snob_engine::watch::{Consent, PostsWatch, Watched};
     use wiremock::matchers::{body_string_contains, method, path};
 
     let world = World::new();
@@ -2562,9 +2556,7 @@ async fn a_tick_killed_before_its_commit_reports_the_same_posts_next_time() {
     world.person(ig::SOMEONE, |p| p.newer = 1);
     an_hour_passes(tmp.path());
     let mut app = app_on(&server, &world, tmp.path());
-    let lost = snob_engine::engine::watch::tick(&mut app, &watched)
-        .await
-        .unwrap();
+    let lost = snob_engine::watch::tick(&mut app, &watched).await.unwrap();
     drop(app);
     let again = tick_and_commit(&server, &world, tmp.path(), &watched).await;
     assert_eq!(news_of(&lost), [ig::newer_post(ig::SOMEONE, 0)]);
@@ -2573,8 +2565,8 @@ async fn a_tick_killed_before_its_commit_reports_the_same_posts_next_time() {
 
 /// An entry that watches `name`'s posts alone and saves them into `dir`,
 /// videos as the app's file, so no ffmpeg is asked after.
-fn saving_to(name: &str, dir: &std::path::Path) -> snob_engine::engine::watch::Watched {
-    use snob_engine::engine::watch::{PostsWatch, Watched};
+fn saving_to(name: &str, dir: &std::path::Path) -> snob_engine::watch::Watched {
+    use snob_engine::watch::{PostsWatch, Watched};
     Watched::asking(name.to_string()).watching(
         false,
         Some(PostsWatch {
@@ -2590,18 +2582,16 @@ async fn tick_saving(
     server: &MockServer,
     world: &World,
     root: &std::path::Path,
-    watched: &snob_engine::engine::watch::Watched,
+    watched: &snob_engine::watch::Watched,
     commit: bool,
-) -> snob_engine::engine::watch::TickReport {
+) -> snob_engine::watch::TickReport {
     let mut app = app_on(server, world, root);
-    let mut tick = snob_engine::engine::watch::tick(&mut app, watched)
-        .await
-        .unwrap();
+    let mut tick = snob_engine::watch::tick(&mut app, watched).await.unwrap();
     snob_cli::commands::watch::posts::save_new(&app, &mut tick, watched)
         .await
         .unwrap();
     if commit {
-        snob_engine::engine::watch::commit(&mut app, &tick, None).unwrap();
+        snob_engine::watch::commit(&mut app, &tick, None).unwrap();
     }
     tick
 }

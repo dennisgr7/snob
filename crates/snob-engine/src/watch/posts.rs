@@ -37,9 +37,9 @@ use snob_store::store::{accounts, users, watch_posts};
 
 use crate::app::App;
 use crate::engine::target;
-use crate::engine::watch::Watched;
 use crate::exit::ExitCode;
 use crate::posts::{self, Post};
+use crate::watch::Watched;
 
 /// The shortest time between two reads of one account's grid: an hour.
 ///
@@ -401,7 +401,7 @@ async fn read(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::watch::PostsWatch;
+    use crate::watch::PostsWatch;
 
     /// Without a browser the grid cannot be read, so the posts are skipped
     /// and said to be, and nothing at all is sent for them.

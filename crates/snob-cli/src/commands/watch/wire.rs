@@ -15,21 +15,19 @@ use snob_core::model::{User, printable};
 use snob_core::watch::{Basis, Rename};
 
 use snob_engine::app::Viewer;
-use snob_engine::engine::watch::{
-    ListReport, RunTiming, Skipped, TickReport, WatchReport, Watched,
-};
-use snob_engine::engine::watch_posts::{PostsReport, SavedPost};
 use snob_engine::exit::ExitCode;
 use snob_engine::posts::{Post, PostKind};
+use snob_engine::watch::posts::{PostsReport, SavedPost};
+use snob_engine::watch::{ListReport, RunTiming, Skipped, TickReport, WatchReport, Watched};
 
 use super::status::{MarkOf, RunOf};
 
 /// `viewer` is the account the check was run as, when one was chosen.
 pub(super) fn check_json(
-    report: &snob_engine::engine::check::CheckReport,
+    report: &snob_engine::watch::check::CheckReport,
     viewer: Option<&Viewer>,
 ) -> serde_json::Value {
-    use snob_engine::engine::check::What;
+    use snob_engine::watch::check::What;
 
     serde_json::json!({
         "verdict": report.verdict().as_str(),
@@ -177,7 +175,7 @@ fn report_json(
 /// began and `ended_at` when this account's part of it ended, each with its
 /// `_iso`; `late_by` is how many seconds after `due_at` it began, and `late`
 /// whether that is past what a timer's look and the jitter explain
-/// (`engine::watch::LATE_AFTER`).
+/// (`watch::LATE_AFTER`).
 fn run_json(
     at: Epoch,
     looked: bool,
@@ -496,7 +494,7 @@ pub(super) fn found_payload(
 pub(super) fn preflight_body(run_id: &str, at: Epoch) -> serde_json::Value {
     serde_json::json!({
         "schema": SENT_SCHEMA,
-        "event": snob_engine::engine::check::PREFLIGHT_EVENT,
+        "event": snob_engine::watch::check::PREFLIGHT_EVENT,
         "run": {
             "id": run_id,
             "at": at,
@@ -770,7 +768,7 @@ mod tests {
     use snob_core::model::ListKind;
     use snob_core::watch::{Basis, ListDiff, Rename};
     use snob_engine::engine::Provenance;
-    use snob_engine::engine::watch::TickList;
+    use snob_engine::watch::TickList;
 
     /// The tokens are what a caller branches on, so they are asserted rather
     /// than left to whatever the enum happens to be called.
@@ -924,7 +922,7 @@ mod tests {
             let mut report = report_with(None, vec![]);
             report.posts = Some(posts_report(vec![post(1, "a post")]));
             let mut tick = TickReport::for_test(report, 14, Epoch::new(1_700_000_000));
-            tick.posts = Some(snob_engine::engine::watch::TickPosts { skipped: None });
+            tick.posts = Some(snob_engine::watch::TickPosts { skipped: None });
             payload(&tick, "run-1", "watch.changes")
         };
 
@@ -1025,7 +1023,7 @@ mod tests {
         // to disagree.
         assert_eq!(
             preflight["event"],
-            snob_engine::engine::check::PREFLIGHT_EVENT
+            snob_engine::watch::check::PREFLIGHT_EVENT
         );
         assert_eq!(
             preflight["event"], "watch.preflight",
@@ -1146,7 +1144,7 @@ mod tests {
         let error = anyhow::anyhow!("@friend's account is private");
         let line = failed_tick_json(
             None,
-            &Watched::consented("friend".into(), snob_engine::engine::watch::Consent),
+            &Watched::consented("friend".into(), snob_engine::watch::Consent),
             &error,
             Epoch::new(1_700_000_000),
             1,
@@ -1426,8 +1424,8 @@ mod tests {
     /// does not read as a run that found no new post.
     #[test]
     fn a_run_that_could_not_look_at_posts_does_not_read_as_no_new_posts() {
-        use snob_engine::engine::watch::TickPosts;
-        use snob_engine::engine::watch_posts::PostsSkipped;
+        use snob_engine::watch::TickPosts;
+        use snob_engine::watch::posts::PostsSkipped;
 
         let mut tick =
             TickReport::for_test(report_with(None, vec![]), 0, Epoch::new(1_700_000_000));
@@ -1569,7 +1567,7 @@ mod tests {
         let error = anyhow::anyhow!("@friend\u{202e} is private{hidden}");
         let line = failed_tick_json(
             None,
-            &Watched::consented("friend".into(), snob_engine::engine::watch::Consent),
+            &Watched::consented("friend".into(), snob_engine::watch::Consent),
             &error,
             Epoch::new(1_700_000_000),
             0,
@@ -1598,7 +1596,7 @@ mod tests {
         assert_eq!(tick_json(&tick)["viewer"], reader);
         assert_eq!(tick_json(&tick)["account"]["pk"], 7);
 
-        let friend = Watched::consented("friend".into(), snob_engine::engine::watch::Consent);
+        let friend = Watched::consented("friend".into(), snob_engine::watch::Consent);
         let error = anyhow::anyhow!("skipped this run");
         let at = Epoch::new(1_700_000_000);
         assert_eq!(
@@ -1610,7 +1608,7 @@ mod tests {
             "nobody was signed in to read it as"
         );
 
-        let checked = snob_engine::engine::check::CheckReport::default();
+        let checked = snob_engine::watch::check::CheckReport::default();
         assert_eq!(check_json(&checked, Some(&tick.viewer))["viewer"], reader);
         assert!(check_json(&checked, None)["viewer"].is_null());
     }
@@ -1673,18 +1671,18 @@ mod tests {
 
         let mut tick = TickReport::for_test(report, 14, Epoch::new(1_700_000_000));
         tick.lists = vec![
-            snob_engine::engine::watch::TickList {
+            snob_engine::watch::TickList {
                 kind: ListKind::Followers,
                 skipped: None,
             },
-            snob_engine::engine::watch::TickList {
+            snob_engine::watch::TickList {
                 kind: ListKind::Following,
                 skipped: Some(Skipped::NobodyLooked(
                     snob_engine::engine::Provenance::Cooldown,
                 )),
             },
         ];
-        tick.posts = Some(snob_engine::engine::watch::TickPosts { skipped: None });
+        tick.posts = Some(snob_engine::watch::TickPosts { skipped: None });
         tick.timing = Some(RunTiming {
             due_at: Some(Epoch::new(1_699_999_800)),
             began_at: Epoch::new(1_699_999_900),

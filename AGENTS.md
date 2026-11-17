@@ -398,7 +398,7 @@ processes snob detaches. `SNOB_NO_PARENT_WATCH` turns it off, out of the help.
 
 ### The monitor's posts
 
-`engine::watch_posts`: an entry with `[account.posts]` has its profile and one
+`watch::posts`: an entry with `[account.posts]` has its profile and one
 page of its grid read after its lists (up to `posts::UNTIL_PAGES`, 3, while
 nothing seen before turns up), from the browser only. **At most once an hour per
 account** (`READ_AT_MOST_EVERY`), nothing in a cooldown, no retry. Files go to
@@ -930,7 +930,7 @@ draw pixels it gets kitty's protocol, iTerm2's images or sixel
 - **A post is new when its pk was never seen and it was taken after the newest
   one seen** (`snob_core::watch::posts`); a first read lays a baseline and says
   nothing. A `taken_at` more than a day ahead of this machine's clock never
-  becomes that floor (`watch_posts::AHEAD_AT_MOST`). **`counts.total` does not
+  becomes that floor (`watch::posts::AHEAD_AT_MOST`). **`counts.total` does not
   count posts.**
 - The delivery queue is drained once per run, after every account; a report is
   owed for a week. `watch once` exits 1 (`not_delivered`) when one it tried did

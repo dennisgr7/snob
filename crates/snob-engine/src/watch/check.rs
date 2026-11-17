@@ -248,7 +248,7 @@ pub fn without_a_session(
 pub async fn with_a_session(
     app: &App,
     secrets: &SecretStore,
-    watched: &[super::watch::Watched],
+    watched: &[super::Watched],
     report: &mut CheckReport,
 ) {
     // **Nothing is spent during a cooldown.**
@@ -337,7 +337,7 @@ pub async fn with_a_session(
 /// **The directory is not made**: `check` writes nothing.
 pub fn posts_of(
     app: &App,
-    watched: &super::watch::Watched,
+    watched: &super::Watched,
     pk: Option<Pk>,
     shown: Option<bool>,
 ) -> Checked {
@@ -412,7 +412,7 @@ fn waiting_out(what: What, held: Held) -> Checked {
 ///
 /// It is decided before any request, no cooldown affects it, and
 /// `commands::watch` refuses to **start** without it.
-fn not_asked_about(account: &super::watch::Watched, held: Held) -> Checked {
+fn not_asked_about(account: &super::Watched, held: Held) -> Checked {
     let may_run_unattended = account.may_run_unattended();
     let what = What::Account {
         target: account.name().map(str::to_string),
@@ -437,7 +437,7 @@ fn not_asked_about(account: &super::watch::Watched, held: Held) -> Checked {
 /// what do its counters say.
 async fn account_of(
     app: &App,
-    watched: &super::watch::Watched,
+    watched: &super::Watched,
     ask: bool,
 ) -> (Checked, Option<Pk>, Option<bool>) {
     let target = watched.name().map(str::to_string);

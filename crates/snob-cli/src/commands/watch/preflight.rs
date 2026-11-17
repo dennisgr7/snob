@@ -4,7 +4,7 @@ use anyhow::Result;
 use snob_core::Pk;
 use snob_core::model::printable;
 use snob_engine::app::App;
-use snob_engine::engine::watch::{Watched, group_by_viewer};
+use snob_engine::watch::{Watched, group_by_viewer};
 use snob_store::config::{self, WatchConfig};
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::registry::Registry;
@@ -24,8 +24,8 @@ pub(super) async fn preflight(
     secrets: &SecretStore,
     paths: &AppPaths,
     account: Option<&AccountPaths>,
-) -> Result<snob_engine::engine::check::CheckReport> {
-    use snob_engine::engine::check::{self, Verdict};
+) -> Result<snob_engine::watch::check::CheckReport> {
+    use snob_engine::watch::check::{self, Verdict};
 
     let configured = config::load(paths)?;
     let now = snob_core::clock::now();
@@ -180,8 +180,8 @@ fn say_who_else_reads(paths: &AppPaths, others: &[Watched]) {
 fn not_posted(
     webhook: Option<(&str, bool)>,
     no_webhook: bool,
-) -> Option<snob_engine::engine::check::Checked> {
-    use snob_engine::engine::check::{Checked, Problem, Verdict, What};
+) -> Option<snob_engine::watch::check::Checked> {
+    use snob_engine::watch::check::{Checked, Problem, Verdict, What};
 
     let (destination, signed) = webhook.filter(|_| no_webhook)?;
     Some(Checked {
@@ -214,15 +214,15 @@ pub(super) async fn baseline_now(
         Printing::unattended(false),
         true,
         // Asked for by hand, at the end of the wizard: due for nothing.
-        snob_engine::engine::watch::RunTiming::by_hand(snob_core::clock::now()),
+        snob_engine::watch::RunTiming::by_hand(snob_core::clock::now()),
     )
     .await
     .into_result()
 }
 
 /// One line per check, in the order they were made.
-pub(super) fn describe_check(report: &snob_engine::engine::check::CheckReport) -> Vec<String> {
-    use snob_engine::engine::check::{Verdict, What};
+pub(super) fn describe_check(report: &snob_engine::watch::check::CheckReport) -> Vec<String> {
+    use snob_engine::watch::check::{Verdict, What};
 
     let mut lines = Vec::new();
     for checked in &report.checked {
@@ -339,7 +339,7 @@ mod tests {
     /// receiver configured?" is being asked.
     #[test]
     fn not_posting_is_not_the_same_as_having_nowhere_to_post() {
-        use snob_engine::engine::check::{CheckReport, Verdict, What};
+        use snob_engine::watch::check::{CheckReport, Verdict, What};
 
         const WHERE_TO: &str = "https://n8n.local/webhook/snob";
 
@@ -354,11 +354,11 @@ mod tests {
         assert_eq!(checked.verdict, Verdict::Ok);
         assert_eq!(
             checked.problem,
-            Some(snob_engine::engine::check::Problem::NotPosted),
+            Some(snob_engine::watch::check::Problem::NotPosted),
             "and the line has to say why nothing was posted"
         );
         assert!(
-            super::super::say::problem_line(&snob_engine::engine::check::Problem::NotPosted)
+            super::super::say::problem_line(&snob_engine::watch::check::Problem::NotPosted)
                 .contains("--no-webhook"),
             "which is the flag it has to name"
         );

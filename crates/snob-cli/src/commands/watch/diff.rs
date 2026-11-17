@@ -21,7 +21,7 @@ pub(super) fn diff(
     // Nothing is fetched here, so there is no bar to draw.
     let app = common::app(&secrets.session_of(account), account, false)?;
 
-    let report = snob_engine::engine::watch::from_store(&app, args.target.as_deref())?;
+    let report = snob_engine::watch::from_store(&app, args.target.as_deref())?;
 
     if args.output.json {
         let out = stored_json(app.viewer(), &report, snob_core::clock::now());

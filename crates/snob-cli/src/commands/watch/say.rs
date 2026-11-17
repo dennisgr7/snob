@@ -4,9 +4,9 @@ use snob_core::Epoch;
 use snob_core::model::{ListKind, User, printable};
 use snob_core::watch::{Basis, ListDiff};
 use snob_engine::engine::Provenance;
-use snob_engine::engine::check::Problem;
-use snob_engine::engine::watch::{Skipped, TickReport, WatchReport};
-use snob_engine::engine::watch_posts::{PostsReport, PostsSkipped, SavedPost};
+use snob_engine::watch::check::Problem;
+use snob_engine::watch::posts::{PostsReport, PostsSkipped, SavedPost};
+use snob_engine::watch::{Skipped, TickReport, WatchReport};
 
 use crate::report;
 use snob_core::watch::posts::Basis as PostsBasis;
@@ -282,7 +282,7 @@ fn accounts(n: usize) -> String {
 
 /// When a run the schedule asked for was due, began and ended, and how late it
 /// began when that is late (`RunTiming::late`).
-pub(super) fn timing_line(timing: &snob_engine::engine::watch::RunTiming) -> Option<String> {
+pub(super) fn timing_line(timing: &snob_engine::watch::RunTiming) -> Option<String> {
     let due = timing.due_at?;
     let mut line = format!(
         "Due on {}, began on {}",
@@ -616,7 +616,7 @@ mod tests {
     use snob_core::model::ListKind;
     use snob_core::watch::{Basis, ListDiff, Rename};
     use snob_core::{EpochMs, Pk};
-    use snob_engine::engine::watch::ListReport;
+    use snob_engine::watch::ListReport;
 
     /// Every reason a check can give says something.
     ///
@@ -945,7 +945,7 @@ mod tests {
     }
 
     /// An account somebody else owns, whose posts alone are reported.
-    fn school(posts: snob_engine::engine::watch_posts::PostsReport) -> WatchReport {
+    fn school(posts: snob_engine::watch::posts::PostsReport) -> WatchReport {
         WatchReport {
             account_pk: Pk::new(9001),
             username: Some("school".into()),
@@ -1073,7 +1073,7 @@ mod tests {
     /// it began late when it did; one by hand says nothing of it.
     #[test]
     fn a_late_run_says_so_in_its_summary() {
-        use snob_engine::engine::watch::RunTiming;
+        use snob_engine::watch::RunTiming;
         let due = snob_core::Epoch::new(1_700_000_000);
         let late = RunTiming::due(
             Some(due),
@@ -1096,8 +1096,8 @@ mod tests {
     /// account nothing was ever walked for.
     #[test]
     fn posts_read_within_the_hour_are_said_to_be() {
-        use snob_engine::engine::watch::TickPosts;
-        let mut tick = snob_engine::engine::watch::TickReport::for_test(
+        use snob_engine::watch::TickPosts;
+        let mut tick = snob_engine::watch::TickReport::for_test(
             WatchReport {
                 account_pk: Pk::new(9001),
                 username: Some("school".into()),

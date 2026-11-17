@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use snob_core::{Epoch, Pk};
-use snob_engine::engine::watch::TickReport;
+use snob_engine::watch::TickReport;
 use snob_engine::watch::webhook::{self, Attempt, Planned, WebhookClient};
 use snob_ig::pace::CancelToken;
 use snob_store::config::{WatchConfig, WebhookConfig, WebhookFormat};
@@ -167,7 +167,7 @@ pub(super) async fn deliver(
         None => None,
     };
 
-    let queued = snob_engine::engine::watch::commit(
+    let queued = snob_engine::watch::commit(
         app,
         tick,
         // A report and the address it was made for are one thing: the body is

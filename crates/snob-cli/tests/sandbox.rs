@@ -2,7 +2,7 @@
 //! anybody's.
 //!
 //! The library suites call the engine directly: `watch_tick.rs` runs the
-//! comparison through `engine::watch::tick`, `watch_webhook.rs` the outbox
+//! comparison through `watch::tick`, `watch_webhook.rs` the outbox
 //! through `WebhookClient`. This one runs the program: `main`, the dispatch,
 //! `AppPaths::discover`, the secret store choosing a backend and the exit code a
 //! timer reads, so the parts of `snob watch` a person actually configures and a

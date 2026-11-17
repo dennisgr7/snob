@@ -72,9 +72,9 @@ pub(super) async fn once(
                 Ok(ExitCode::Ok)
             };
         };
-        snob_engine::engine::watch::RunTiming::due(due_at, began, std::time::Duration::ZERO)
+        snob_engine::watch::RunTiming::due(due_at, began, std::time::Duration::ZERO)
     } else {
-        snob_engine::engine::watch::RunTiming::by_hand(began)
+        snob_engine::watch::RunTiming::by_hand(began)
     };
     let delivery = delivery_from(&args.delivery, configured.as_ref(), &secrets)?;
 
@@ -187,7 +187,7 @@ async fn by_id(
     let timing = if args.when_due {
         match next_run(paths, &automation, began)? {
             (Next::Now, due_at) => {
-                snob_engine::engine::watch::RunTiming::due(due_at, began, std::time::Duration::ZERO)
+                snob_engine::watch::RunTiming::due(due_at, began, std::time::Duration::ZERO)
             }
             (Next::At(at), _) => {
                 tracing::debug!(
@@ -204,7 +204,7 @@ async fn by_id(
             }
         }
     } else {
-        snob_engine::engine::watch::RunTiming::by_hand(began)
+        snob_engine::watch::RunTiming::by_hand(began)
     };
     if super::run::waits_for_power(paths, snob_core::clock::now()) {
         ui::warn(report::BATTERY_CRITICAL_HOLD);

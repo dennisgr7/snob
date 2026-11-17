@@ -103,7 +103,7 @@ fn query(target: Option<String>, yes: bool) -> ListQuery {
 }
 
 /// Reads what `planned` asks for, as `app`'s viewer, for the automation
-/// `automation`. Lists and posts are the monitor's (`engine::watch::tick`),
+/// `automation`. Lists and posts are the monitor's (`watch::tick`),
 /// refused here.
 pub async fn read(app: &mut App, automation: &str, planned: &Planned) -> Result<Found> {
     let username = planned

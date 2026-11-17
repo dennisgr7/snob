@@ -3,7 +3,7 @@
 use snob_core::Pk;
 use snob_store::config::{AccountConfig, WatchConfig};
 
-use snob_engine::engine::watch::{PostsWatch, Watched};
+use snob_engine::watch::{PostsWatch, Watched};
 
 /// Which account a scheduled run watches, as whom, and whether it may.
 pub(super) fn watched_from(
@@ -57,7 +57,7 @@ fn from_entry(name: &str, entry: Option<&AccountConfig>) -> Watched {
 
     let watched = if recorded.is_some() {
         // The table is what matters, not what is in it.
-        Watched::consented(name.to_string(), snob_engine::engine::watch::Consent)
+        Watched::consented(name.to_string(), snob_engine::watch::Consent)
     } else {
         Watched::asking(name.to_string())
     };
@@ -103,13 +103,12 @@ pub(super) fn watching_label(watched: &[Watched]) -> String {
 mod tests {
     use super::*;
     use crate::commands::watch::fixtures::watch_toml;
-    use snob_engine::engine::watch::group_by_viewer;
+    use snob_engine::watch::group_by_viewer;
 
     /// The opening line names what it watches as a sentence would.
     #[test]
     fn the_opening_line_names_what_it_watches() {
-        let friend =
-            |name: &str| Watched::consented(name.into(), snob_engine::engine::watch::Consent);
+        let friend = |name: &str| Watched::consented(name.into(), snob_engine::watch::Consent);
         assert_eq!(watching_label(&[]), "nothing");
         assert_eq!(watching_label(&[Watched::own()]), "your account");
         assert_eq!(
