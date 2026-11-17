@@ -29,7 +29,6 @@ use snob_ig::pace::CancelToken;
 use snob_store::paths::AppPaths;
 use snob_store::registry::Registry;
 use snob_store::secrets::SecretStore;
-use snob_store::viewer::Card;
 use tokio::sync::watch;
 
 use super::{
@@ -215,7 +214,9 @@ fn held_by_accounts(
 /// The account `pk` as a view shows it.
 fn account_of(paths: &AppPaths, pk: Pk, username: Option<String>, active: bool) -> Account {
     let account = paths.account(pk);
-    let card = Card::load(&account).unwrap_or_default();
+    // The card, and what the cache kept of the account's own page where the
+    // card says nothing: a bio the tab's document left out, say.
+    let shown = snob_engine::cache::shown(paths, pk, pk).unwrap_or_default();
     let said = |text: Option<String>| text.filter(|text| !text.trim().is_empty());
     let picture = account.viewer_picture();
     let kept_at = std::fs::metadata(&picture)
@@ -226,8 +227,8 @@ fn account_of(paths: &AppPaths, pk: Pk, username: Option<String>, active: bool) 
             pk,
             username: said(username.map(|name| snob_core::model::printable(&name))),
         },
-        full_name: said(card.full_name),
-        biography: said(card.biography),
+        full_name: said(shown.full_name),
+        biography: said(shown.biography),
         picture: picture.is_file().then_some(picture),
         picture_kept_at: kept_at,
         active,
@@ -293,18 +294,29 @@ fn paused(paths: &AppPaths, pk: Pk) -> Option<Epoch> {
 }
 
 /// The account that just signed in, with what the browser its check went
-/// out from says of it, its picture included, when the browser is still
-/// there (`viewer::look_again`): a check pushed back kept no card, and the
-/// tab's document says it for nothing. **Not at any other time but the
-/// day's check of the session**: a start does not open a browser for a
-/// picture.
+/// out from says of it (`viewer::look_again`), then its own profile read
+/// once, its counters and both its pictures kept (`viewer::read_after_login`),
+/// so the welcome, the menu and its page draw at once. **Not at any other
+/// time**: a start reads the files alone, and the day's check of the
+/// session only looks at the tab again.
 async fn done(paths: &AppPaths, secrets: &SecretStore, viewer: Viewer) -> SignIn {
     let account = paths.account(viewer.pk);
+    // **The name the list of accounts keeps when the login's check did not
+    // read one** (a push-back on it, a check skipped in a pause): what a
+    // start would show, shown from the welcome on rather than once the
+    // files are read again.
+    let username = viewer.username.filter(|name| !name.is_empty()).or_else(|| {
+        let registry = Registry::load(paths).ok()?;
+        snob_engine::account::username(&registry, viewer.pk).map(str::to_string)
+    });
     let opened =
         snob_engine::app::App::open(&secrets.session_of(&account), &account, host::Front::quiet);
     match opened {
         Ok(Some(app)) => {
             snob_engine::viewer::look_again(app.client(), &account).await;
+            if let Some(name) = &username {
+                snob_engine::viewer::read_after_login(&app, &account, name).await;
+            }
         }
         Ok(None) => {}
         Err(e) => tracing::debug!(error = %e, "the account's picture was not fetched"),
@@ -313,14 +325,6 @@ async fn done(paths: &AppPaths, secrets: &SecretStore, viewer: Viewer) -> SignIn
         prefs.expired = prefs.expired.filter(|pk| *pk != viewer.pk);
         // A login is a check that answered.
         prefs.note_checked(viewer.pk, snob_core::clock::now());
-    });
-    // **The name the list of accounts keeps when the login's check did not
-    // read one** (a push-back on it, a check skipped in a pause): what a
-    // start would show, shown from the welcome on rather than once the
-    // files are read again.
-    let username = viewer.username.filter(|name| !name.is_empty()).or_else(|| {
-        let registry = Registry::load(paths).ok()?;
-        snob_engine::account::username(&registry, viewer.pk).map(str::to_string)
     });
     SignIn::Done(account_of(paths, viewer.pk, username, true))
 }

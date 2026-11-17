@@ -198,6 +198,24 @@ async fn the_counter_poll_keeps_the_accounts_own_counts() {
 }
 
 #[tokio::test]
+async fn a_login_reads_the_accounts_own_profile_once_and_keeps_its_counts() {
+    let (_root, sandbox) = sandbox();
+    let (app, session) = signed_in(&sandbox, world::ME, "after-login").await;
+    let me = Pk::new(world::ME);
+    let account = sandbox.paths.account(me);
+
+    let sent = sent_by(&session, async {
+        snob_engine::viewer::read_after_login(&app, &account, "me").await;
+    })
+    .await;
+    assert_eq!(sent.len(), 1, "the profile alone: {sent:?}");
+
+    let own = cache::shown(&sandbox.paths, me, me).expect("the read is kept");
+    assert_eq!((own.followers, own.following), (Some(11), Some(10)));
+    assert_eq!(own.full_name.as_deref(), Some("Invented me"));
+}
+
+#[tokio::test]
 async fn a_sign_out_takes_the_accounts_cache() {
     let (_root, sandbox) = sandbox();
     let (app, _) = signed_in(&sandbox, world::ME, "sign-out").await;

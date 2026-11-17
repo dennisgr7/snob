@@ -1,8 +1,9 @@
 //! The card of a signed-in account (`snob_store::viewer`): kept from what a
 //! login's check was answered, and from what the tab a later check of the
 //! session went out from says ([`look_again`]); its picture fetched once per
-//! picture. **Nothing here asks Instagram about the account**; the picture
-//! is one download from the CDN, and only for a view that shows it.
+//! picture. **The one request here is [`read_after_login`]**, the account's
+//! own profile once a login is done; the pictures are downloads from the
+//! CDN, which Instagram's pace does not count.
 
 use std::path::PathBuf;
 
@@ -12,7 +13,47 @@ use snob_ig::page_values::Face;
 use snob_store::paths::AccountPaths;
 use snob_store::viewer::Card;
 
+use crate::app::App;
+use crate::cache::Drawing;
 use crate::media::{MAX_SMALL_PICTURE, picture_type};
+
+/// Right after a login: the account's own profile, read once
+/// (`App::profile_named`, the request every command makes to turn a name
+/// into an id), kept in its card and in the cache with its counters, and
+/// its small and largest pictures downloaded from the CDN, so a welcome, the
+/// menu and its own page draw all of it at once. **After a login only**,
+/// never at a start or on a check of the session. **Never an error**: a
+/// login does not fail for it.
+pub async fn read_after_login(app: &App, account: &AccountPaths, username: &str) {
+    let pk = app.viewer().pk;
+    let info = match app.profile_named(username, Some(pk)).await {
+        Ok(info) => info,
+        Err(e) => {
+            tracing::debug!(error = %e, "the account's own profile was not read");
+            return;
+        }
+    };
+    keep(
+        account,
+        Face {
+            full_name: info.full_name.clone(),
+            biography: info.biography.clone(),
+            picture: info.profile_pic_url.clone(),
+        },
+    );
+    picture(app.client(), account).await;
+    if info.anonymous_picture == Some(true) {
+        return;
+    }
+    // Only an address the read named: a by-id request for a larger one is
+    // left to the page that shows it.
+    let largest = crate::profile::full_size_of(&info).or(info.profile_pic_url_hd.clone());
+    if let (Some(keeper), Some(address)) = (app.cache(), largest) {
+        keeper
+            .fetch_drawing(app.client(), Drawing::Largest, &pk.to_string(), &address)
+            .await;
+    }
+}
 
 /// Keeps what an answer showed of `account`. What the answer left out stays
 /// as it was kept. **Never an error**: the card is cosmetic, and a login does

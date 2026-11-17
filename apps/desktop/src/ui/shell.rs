@@ -52,6 +52,11 @@ const SETTLED_AFTER: Duration = Duration::from_millis(500);
 /// asks Instagram once a day at most (`prefs::CHECKED_FOR_SECS`).
 const SESSION_ASKED_EVERY: Duration = Duration::from_secs(60 * 60);
 
+/// How long the engine's browser stays open with nothing asked of it
+/// (`snob_engine`'s `headless::IDLE`): a read after longer waits on it
+/// starting again.
+const ENGINE_IDLE: Duration = Duration::from_secs(5 * 60);
+
 /// Where the screen shown is in its coming and going.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Phase {
@@ -230,6 +235,9 @@ pub struct Shell {
     system: Rc<dyn System>,
     flow: Flow,
     band: Band,
+    /// When a read through the engine's browser was last answered: what the
+    /// band's [`Status::Starting`] is said from.
+    engine_answered: Option<Instant>,
     accounts: Vec<Account>,
     /// The screen drawn: the flow's, once the one before it has left.
     shown: Screen,
@@ -414,6 +422,7 @@ impl Shell {
             system,
             flow: Flow::default(),
             band,
+            engine_answered: None,
             accounts: Vec::new(),
             shown: Screen::Splash,
             entered: started,
@@ -1993,6 +2002,25 @@ impl Shell {
     pub(crate) fn announce(&mut self, said: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.announced = said.into();
         cx.notify();
+    }
+
+    /// A read that goes through the engine's browser starts. **The band says
+    /// the engine is being prepared** when nothing was answered for as long
+    /// as the browser stays open idle, so it is likely starting again.
+    pub(crate) fn engine_asked(&mut self, cx: &mut Context<Self>) {
+        if self
+            .engine_answered
+            .is_none_or(|at| at.elapsed() >= ENGINE_IDLE)
+        {
+            self.say(Status::Starting, cx);
+        }
+    }
+
+    /// A read that went through the engine's browser was answered: the
+    /// browser is up, whatever the answer.
+    pub(crate) fn engine_answered(&mut self, cx: &mut Context<Self>) {
+        self.engine_answered = Some(Instant::now());
+        self.quiet(|band| band.clear_kind(&Status::Starting), cx);
     }
 
     /// Turns `status` on in the band, telling a screen reader when what the

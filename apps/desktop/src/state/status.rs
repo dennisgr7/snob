@@ -16,6 +16,9 @@ pub enum Status {
     },
     /// Back from a sleep or a lost network, picking up where it was.
     Resuming,
+    /// A read waits on the engine's browser, which is starting: said while
+    /// nothing was answered for as long as the browser stays open idle.
+    Starting,
     /// An update is being fetched: a whole number from 0 to 100, when the
     /// size is known.
     Downloading {
@@ -32,8 +35,9 @@ impl Status {
             Self::Offline => 0,
             Self::Paused { .. } => 1,
             Self::Resuming => 2,
-            Self::Downloading { .. } => 3,
-            Self::UpdateAvailable => 4,
+            Self::Starting => 3,
+            Self::Downloading { .. } => 4,
+            Self::UpdateAvailable => 5,
         }
     }
 

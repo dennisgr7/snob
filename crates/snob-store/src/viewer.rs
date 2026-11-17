@@ -1,9 +1,10 @@
 //! What a signed-in account shows of itself, kept beside its session so a
 //! view can name it without asking Instagram: its name, its bio, and its
 //! small picture, kept in the account's cache (`cache`) since it can be
-//! fetched again. **Cosmetic, and never asked for on its own**: it is
-//! whatever an answer already paid for carried, and it goes with the session
-//! on a sign-out.
+//! fetched again. **Cosmetic, and asked for once only**: right after a
+//! login, the account's own profile (`snob_engine::viewer::read_after_login`);
+//! otherwise whatever an answer already paid for carried. It goes with the
+//! session on a sign-out.
 
 use std::io::Read as _;
 use std::path::PathBuf;

@@ -61,6 +61,7 @@ pub fn status_line(status: &Status, look: &Look) -> (&'static str, String) {
             look.tr_with("status-paused", &[("time", &clock(*until))]),
         ),
         Status::Resuming => (assets::RESUMING, look.tr("status-resuming")),
+        Status::Starting => (assets::RESUMING, look.tr("status-starting")),
         Status::Downloading {
             percent: Some(percent),
         } => (

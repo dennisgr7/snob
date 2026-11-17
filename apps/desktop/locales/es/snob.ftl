@@ -17,6 +17,7 @@ window-close = Cerrar
 status-offline = Sin conexión a Internet
 status-paused = Instagram ha pedido una pausa · se reanuda a las { $time }
 status-resuming = Reanudando…
+status-starting = Preparando el motor de snob…
 status-downloading = Descargando actualización · { $percent } %
 status-downloading-unknown = Descargando actualización
 status-update-available = Hay una versión nueva

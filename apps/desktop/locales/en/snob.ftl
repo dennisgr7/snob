@@ -18,6 +18,7 @@ window-close = Close
 status-offline = No internet connection
 status-paused = Instagram asked for a pause · resumes at { $time }
 status-resuming = Resuming…
+status-starting = Preparing snob's engine…
 status-downloading = Downloading update · { $percent } %
 status-downloading-unknown = Downloading update
 status-update-available = A new version is available

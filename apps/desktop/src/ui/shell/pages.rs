@@ -263,6 +263,7 @@ impl Shell {
         let pk = who.pk;
         let kept = self.backend.profile_kept(who.clone());
         let reading = self.backend.profile(who);
+        self.engine_asked(cx);
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Some(kept)) = kept.await {
                 this.update(cx, |this, cx| {
@@ -277,6 +278,7 @@ impl Shell {
             }
             let read = reading.await;
             this.update_in(cx, |this, window, cx| {
+                this.engine_answered(cx);
                 this.profile_read(pk, read.ok(), window, cx);
             })
             .ok();
@@ -296,6 +298,14 @@ impl Shell {
         };
         match read {
             Some(Ok(profile)) => {
+                // An account's own page read now is what its menu shows too.
+                if let Some(account) = self.accounts.iter_mut().find(|a| a.named.pk == pk) {
+                    account.full_name = profile.full_name.clone().or(account.full_name.take());
+                    account.biography = profile.biography.clone().or(account.biography.take());
+                    if account.picture.is_none() {
+                        account.picture = profile.picture.clone();
+                    }
+                }
                 let visible = profile.visible == Some(true);
                 page.profile = Some(profile);
                 page.read_at = Some(Instant::now());
@@ -329,9 +339,11 @@ impl Shell {
             .map_or_else(|| page.who.clone(), |profile| profile.named.clone());
         page.tabs.insert(tab, TabRead::Reading);
         let reading = self.backend.tiles(who, tab);
+        self.engine_asked(cx);
         cx.spawn_in(window, async move |this, cx| {
             let read = reading.await;
             this.update(cx, |this, cx| {
+                this.engine_answered(cx);
                 if let Some(page) = this.pages.profiles.get_mut(&pk) {
                     let read = match read {
                         Ok(Ok(tiles)) => TabRead::Read(tiles),
@@ -527,11 +539,14 @@ impl Shell {
             back_to,
         });
         let fetching = self.backend.full_picture(who.clone());
+        self.engine_asked(cx);
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(large) = fetching.await else {
-                return;
-            };
+            let large = fetching.await;
             this.update(cx, |this, cx| {
+                this.engine_answered(cx);
+                let Ok(large) = large else {
+                    return;
+                };
                 if let Some(viewer) = &mut this.pages.viewer
                     && viewer.who.pk == who.pk
                 {
@@ -789,9 +804,14 @@ impl Shell {
         });
         self.pages.lists.insert((owner.pk, side), list.clone());
         let walking = self.backend.list(owner, side, said, stop);
+        self.engine_asked(cx);
         let weak = list.downgrade();
-        cx.spawn_in(window, async move |_, cx| {
+        cx.spawn_in(window, async move |this, cx| {
+            let mut first = true;
             while heard.changed().await.is_ok() {
+                if std::mem::take(&mut first) {
+                    this.update(cx, |this, cx| this.engine_answered(cx)).ok();
+                }
                 let walked = heard.borrow_and_update().clone();
                 let told = weak.update(cx, |list, cx| {
                     list.take(walked);
@@ -824,6 +844,7 @@ impl Shell {
                 .ok();
             if let Some(ended) = said {
                 this.update(cx, |this, cx| {
+                    this.engine_answered(cx);
                     let look = Look::now(cx).clone();
                     let said = match ended {
                         Ok(listed) => look.tr_with(
