@@ -59,8 +59,9 @@ pub(super) fn schedule_from(
 ) -> Result<Schedule> {
     match when_from(args, configured).build() {
         Err(ScheduleError::Empty) => Err(anyhow::anyhow!(
-            "how often should this run?
-             Run \"snob watch setup\" once, or say it here: \"--every 6h\",              \"--on mon,thu --at 09:00\", or \"--cron '0 9 * * 1,4'\"."
+            "how often should this run?\n\
+             Run \"snob watch setup\" once, or say it here: \"--every 6h\", \
+             \"--on mon,thu --at 09:00\", or \"--cron '0 9 * * 1,4'\"."
         )),
         built => Ok(built?),
     }

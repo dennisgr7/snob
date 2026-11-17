@@ -1,10 +1,9 @@
 //! Getting a report to a receiver.
 
-use anyhow::{Context, Result, bail};
-use snob_core::secret::Secret;
+use anyhow::Result;
 use snob_core::{Epoch, Pk};
 use snob_engine::engine::watch::TickReport;
-use snob_engine::watch::webhook::{self, Attempt, Webhook, WebhookClient};
+use snob_engine::watch::webhook::{self, Attempt, Planned, WebhookClient};
 use snob_ig::pace::CancelToken;
 use snob_store::config::{WatchConfig, WebhookConfig, WebhookFormat};
 use snob_store::secrets::{Kind, SecretStore, Stored};
@@ -38,208 +37,22 @@ impl Delivery {
     }
 }
 
-/// What this run would send, worked out without touching the keyring or the
-/// network.
-struct Planned {
-    /// With the stored `Authorization` as its `token`, when this run sends
-    /// it: never among the plain headers.
-    webhook: Webhook,
-    heartbeat: bool,
-    format: WebhookFormat,
-}
-
-/// Decides what to send, and what to say about it.
-///
-/// **The warnings come back rather than being printed**, because a decision that
-/// prints is a decision that cannot be checked.
+/// What this run would send, from the flags and the file
+/// (`webhook::plan`, where the rules are).
 fn plan(
     args: &WebhookArgs,
     from_file: Option<&WebhookConfig>,
     stored_token: Stored,
     stored_key: Stored,
 ) -> Result<(Option<Planned>, Vec<String>)> {
-    let mut warnings: Vec<String> = Vec::new();
-
-    // Whether the credential store could be consulted at all, asked before the
-    // secrets are unwrapped.
-    let store_unreadable = stored_token.is_unreachable() || stored_key.is_unreachable();
-    let (stored_token, stored_key) = (stored_token.found(), stored_key.found());
-
-    let Some(url) = args
-        .webhook
-        .clone()
-        .or_else(|| from_file.map(|w| w.url.clone()))
-    else {
-        if !args.header.is_empty()
-            || args.sign_with.is_some()
-            || args.heartbeat
-            || args.webhook_format.is_some()
-        {
-            warnings.push(
-                "there is no webhook, so nothing is sent and those options do nothing".to_string(),
-            );
-        }
-        return Ok((None, warnings));
+    let given = webhook::Given {
+        webhook: args.webhook.clone(),
+        header: args.header.clone(),
+        sign_with: args.sign_with.clone(),
+        heartbeat: args.heartbeat,
+        format: args.webhook_format,
     };
-
-    // Never the address itself: the likeliest one that does not parse is one
-    // hand-edited without its scheme, where `shown` cannot take a Slack or
-    // Discord secret out of the path, and this is the error every scheduled run
-    // fails with into the log of an unattended service.
-    let url = Url::parse(&url).with_context(|| {
-        if args.webhook.is_some() {
-            "the address given with --webhook is not an address"
-        } else {
-            "the webhook's url in watch.toml is not an address"
-        }
-    })?;
-
-    // Whether this run is posting to the address the configuration was written
-    // for.
-    //
-    // `snob watch once --webhook https://webhook.site/<id>` is precisely what
-    // somebody does to see what the payload looks like, and the file's headers
-    // and the keyring token must not follow it to a host nobody configured.
-    //
-    // **An origin there is nothing to compare against is not a match.**
-    let configured_origin = from_file
-        .and_then(|w| Url::parse(&w.url).ok())
-        .map(|configured| configured.origin());
-    let same_destination = match &configured_origin {
-        Some(origin) => *origin == url.origin(),
-        None => args.webhook.is_none(),
-    };
-
-    // Every message below names the address, and the address may carry a
-    // password: `check` refuses one, but these are built before it runs, and a
-    // refusal that printed the secret first is not a refusal.
-    let shown = snob_engine::watch::webhook::shown(&url);
-
-    /// Names the origin a stored credential belongs to, for a warning about not
-    /// sending it.
-    fn configured_for(origin: Option<&url::Origin>) -> String {
-        origin.map_or_else(
-            || "the configuration".to_string(),
-            |o| o.ascii_serialization(),
-        )
-    }
-
-    // Headers from the file first, then the ones typed, so a flag can override
-    // a configured one of the same name -- the last one wins at the request.
-    let mut headers: Vec<(String, String)> = from_file
-        .filter(|_| same_destination)
-        .map(|w| {
-            w.headers
-                .iter()
-                .map(|(name, value)| (name.clone(), value.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
-    if !same_destination && from_file.is_some_and(|w| !w.headers.is_empty()) {
-        warnings.push(format!(
-            "{shown} is not the address in the configuration, so the headers configured there are \
-             not sent with it. Pass what this one needs with --header."
-        ));
-    }
-
-    for raw in &args.header {
-        let (name, value) = raw.split_once(':').ok_or_else(|| {
-            anyhow::anyhow!("\"{raw}\" is not a header; write it as \"Name: value\"")
-        })?;
-        headers.push((name.trim().to_string(), value.trim().to_string()));
-    }
-
-    // Stored secrets fill in what was not passed.
-    //
-    // The guard looks at the **merged** list, not only at the flags, or a
-    // configured `Authorization` and a stored token would both go out.
-    let authorization_given = headers
-        .iter()
-        .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
-    let token = match stored_token.filter(|_| !authorization_given) {
-        Some(token) if same_destination => Some(token),
-        Some(_) => {
-            warnings.push(format!(
-                "the stored token was set up for {}, so it is not sent to {shown}. Pass one with \
-                 --header \"Authorization: ...\" if this address needs it.",
-                configured_for(configured_origin.as_ref()),
-            ));
-            None
-        }
-        None => None,
-    };
-
-    let key = match args.sign_with.clone() {
-        // An empty `--sign-with` is not a request to sign with nothing: it is
-        // `--sign-with ${SNOB_KEY}` in a unit file where the variable is unset.
-        Some(given) if given.trim().is_empty() => bail!(
-            "--sign-with was given an empty value. If that came from an environment variable \
-             that is not set, leave the flag out: the key stored by \"snob watch setup\" is \
-             used when it is absent."
-        ),
-        Some(given) => Some(Secret::from(given)),
-        // The same gate as the token.
-        None if same_destination => stored_key,
-        None => {
-            if stored_key.is_some() {
-                warnings.push(format!(
-                    "the stored signing key was set up for {}, so the report sent to {shown} is \
-                     not signed. Pass one with --sign-with if this address checks the signature.",
-                    configured_for(configured_origin.as_ref()),
-                ));
-            }
-            None
-        }
-    };
-
-    // Said whatever the file asks for, because the file is what says a
-    // credential was ever meant to travel. **It names only what is really
-    // missing**: a key from `--sign-with` or `SNOB_SIGNING_KEY` still signs,
-    // and a header still authenticates, and a warning that said otherwise sent
-    // somebody looking for a fault there was not.
-    let authenticated = authorization_given || token.is_some();
-    if store_unreadable && from_file.is_some() {
-        let (stored, goes_out, pass) = match (authenticated, key.is_some()) {
-            (true, true) => (None, "", ""),
-            (true, false) => (Some("signing key"), "unsigned", "it with --sign-with"),
-            (false, true) => (Some("token"), "unauthenticated", "it with --header"),
-            (false, false) => (
-                Some("token or signing key"),
-                "unauthenticated and unsigned",
-                "them with --header and --sign-with",
-            ),
-        };
-        if let Some(stored) = stored {
-            warnings.push(format!(
-                "the system keyring could not be read, so any {stored} stored by \
-                 \"snob watch setup\" is not being used: this report goes out {goes_out}. \
-                 Pass {pass}, or run where the keyring is reachable."
-            ));
-        }
-    }
-
-    Ok((
-        Some(Planned {
-            webhook: Webhook {
-                url,
-                headers,
-                key,
-                token,
-            },
-            heartbeat: args.heartbeat || from_file.is_some_and(|w| w.heartbeat),
-            // The file's format is the file's address's: Slack's shape posted
-            // to another address given with --webhook would be refused there.
-            format: args
-                .webhook_format
-                .or_else(|| {
-                    from_file
-                        .filter(|w| args.webhook.as_deref().is_none_or(|given| given == w.url))
-                        .map(|w| w.format)
-                })
-                .unwrap_or_default(),
-        }),
-        warnings,
-    ))
+    webhook::plan(&given, from_file, stored_token, stored_key)
 }
 
 /// Reads the webhook arguments, or explains what is wrong with them.
@@ -402,10 +215,7 @@ pub(super) async fn deliver_found(
         .map(|delivery| {
             let event = super::wire::found_event(news);
             let run_id = run_id(at, app.viewer().pk);
-            let summary = super::say::found_lines(found).join(
-                "
-",
-            );
+            let summary = super::say::found_lines(found).join("\n");
             let body =
                 super::wire::found_payload(automation, found, app.viewer(), &run_id, event, at);
             let made = outgoing(delivery.format, body, &summary);
@@ -626,6 +436,7 @@ pub(super) fn run_id(now: Epoch, account_pk: Pk) -> String {
 mod tests {
     use super::*;
     use crate::commands::watch::fixtures::{app_posting_to, list, report_with, user};
+    use snob_core::secret::Secret;
     use snob_core::watch::{Basis, ListDiff};
 
     /// Two workflows on one host are two addresses.
@@ -804,7 +615,7 @@ mod tests {
         let delivery = Delivery {
             destination: destination_of(&url),
             signed: false,
-            client: WebhookClient::new(Webhook {
+            client: WebhookClient::new(webhook::Webhook {
                 url,
                 headers: vec![("Not a header".into(), "homelab".into())],
                 key: None,

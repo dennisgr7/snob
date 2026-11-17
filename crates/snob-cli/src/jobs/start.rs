@@ -179,24 +179,21 @@ pub async fn start(
     // The supervisor taking the job, then the walk ending.
     let taken: fn(Status) -> bool = |status| status != Status::Queued;
     for (within, enough) in [(SUPERVISOR_WITHIN, taken), (args.wait, Status::is_over)] {
-        let deadline = tokio::time::Instant::now() + within;
-        while !enough(seen.status) && tokio::time::Instant::now() < deadline {
-            let pause = Duration::from_millis(100).min(deadline - tokio::time::Instant::now());
-            if token.sleep_or_cancel(pause).await {
-                if ours {
-                    // Not handed over yet: nobody would ever ask for it.
-                    snob_engine::jobs::ask_to_stop(&seen)?;
-                    // Waited for without the token, which is canceled now
-                    // and would end every wait at once.
-                    let until = tokio::time::Instant::now() + STOPPED_WITHIN;
-                    while !seen.status.is_over() && tokio::time::Instant::now() < until {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        seen = look()?;
-                    }
+        let (now_seen, canceled) = show::wait_until(account, seen, within, enough, &token).await?;
+        seen = now_seen;
+        if canceled {
+            if ours {
+                // Not handed over yet: nobody would ever ask for it.
+                snob_engine::jobs::ask_to_stop(&seen)?;
+                // Waited for without the token, which is canceled now and
+                // would end every wait at once.
+                let until = tokio::time::Instant::now() + STOPPED_WITHIN;
+                while !seen.status.is_over() && tokio::time::Instant::now() < until {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    seen = look()?;
                 }
-                return Ok(None);
             }
-            seen = look()?;
+            return Ok(None);
         }
     }
 

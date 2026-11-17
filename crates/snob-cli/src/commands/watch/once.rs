@@ -179,7 +179,8 @@ async fn by_id(
         || args.delivery.sign_with.is_some()
     {
         ui::warn(
-            "an automation sends to its own webhook, so --webhook, --header and --sign-with do              nothing with --automation",
+            "an automation sends to its own webhook, so --webhook, --header and --sign-with do \
+             nothing with --automation",
         );
     }
     let began = snob_core::clock::now();
@@ -197,7 +198,8 @@ async fn by_id(
             }
             (Next::Never, _) => {
                 return Err(anyhow::anyhow!(
-                    "this automation never comes round: it is not finished, or nothing matches                      its schedules"
+                    "this automation never comes round: it is not finished, or nothing matches \
+                     its schedules"
                 ));
             }
         }

@@ -202,6 +202,21 @@ pub(super) async fn drain_all(
     tried
 }
 
+/// What every account's queue still owes, to `destination` and elsewhere,
+/// read the way [`drain_all`] reads the queues it drains.
+pub(super) fn owed_all(paths: &AppPaths, destination: &str) -> snob_store::store::deliveries::Owed {
+    let mut left = snob_store::store::deliveries::Owed::default();
+    for account in account_databases(paths) {
+        if let Ok(Some(db)) = Store::open_existing(&account)
+            && let Ok(owed) = snob_store::store::deliveries::owed(db.conn(), Some(destination))
+        {
+            left.waiting += owed.waiting;
+            left.elsewhere += owed.elsewhere;
+        }
+    }
+    left
+}
+
 /// Retention for every account's database, with no session needed.
 pub(super) fn settle_all(paths: &AppPaths) {
     let now = snob_core::clock::now();

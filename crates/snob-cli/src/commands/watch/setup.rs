@@ -562,7 +562,7 @@ fn ask_webhook() -> Result<WebhookAnswers> {
     }
 
     // Not echoed, as nowhere else an address that does not parse is
-    // (`webhook::shown_str`): the person has just typed it.
+    // (`webhook::shown`): the person has just typed it.
     let (url, parsed) = asked_until_it_holds("Where? (https://n8n.local/webhook/snob)", |url| {
         let parsed = url::Url::parse(url.trim()).context("what was typed is not an address")?;
         Ok((url.to_string(), parsed))
@@ -802,7 +802,7 @@ fn consent_question(name: &str, webhook: Option<&str>) -> String {
             "Record that you agreed to read @{}'s lists, and to have what changes in them sent \
              to {}?",
             printable(name),
-            snob_engine::watch::webhook::shown_str(url)
+            snob_engine::watch::webhook::shown(url)
         ),
         None => format!(
             "Record that you agreed to read @{}'s lists?",

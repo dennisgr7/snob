@@ -237,12 +237,12 @@ pub fn paused_for_the_day(wait: std::time::Duration) -> String {
 
 /// What `snob watch once <name> --webhook ...` says before it asks about
 /// `name`'s lists: that what changes in them goes to `destination`, shown as
-/// every address is (`webhook::shown_str`).
+/// every address is (`webhook::shown`).
 pub fn sent_to(name: &str, destination: &str) -> String {
     format!(
         "What changes in @{}'s lists is sent to {}.",
         printable(snob_engine::engine::target::clean(name)),
-        snob_engine::watch::webhook::shown_str(destination)
+        snob_engine::watch::webhook::shown(destination)
     )
 }
 

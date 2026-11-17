@@ -948,7 +948,7 @@ mod tests {
                 .all(|e| e.from != filter && e.to != filter)
         );
         let again = automation.insert(Step::Filter { only: Only::Public }, (0, 0));
-        assert!(again > filter + 0 && again != action);
+        assert!(again > filter && again != action);
         assert!(!automation.remove(filter));
     }
 
