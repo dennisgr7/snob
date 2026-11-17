@@ -3,6 +3,12 @@
 //! and their views share it, as `stories` and `highlights` share
 //! [`crate::media`].
 //!
+//! A post and the read of one are here; its parts each have a file: a
+//! profile's grid and tabs (`grid`), a post's comments and their threads
+//! (`comments`), the accounts that liked it (`likers`), how its files
+//! are kept (`save`) and what the JSON contract has of it (`document`).
+//! Every front names them as `posts::<name>`.
+//!
 //! What is read: a grid is its profile and one read per page of twelve, a
 //! step apart; opening a post is its info and its first page of comments; a
 //! thread of replies is one read ([`read_threads`], at most
@@ -13,26 +19,37 @@
 //! **Nothing here tells anybody what was looked at**: the allowlist and
 //! `crates/snob-core/tests/no_seen.rs` keep it that way.
 
-use std::path::{Path, PathBuf};
-
-use anyhow::{Result, anyhow};
-use serde_json::Value;
+use anyhow::Result;
 use snob_core::Epoch;
-use snob_core::model::post::{self as document, AccountRef, Place};
+use snob_core::model::post::{AccountRef, Music, Place};
 use snob_core::model::printable;
-use snob_ig::client::{IgClient, ProfileTab};
-use snob_ig::error::IgError;
+use snob_ig::client::IgClient;
 use snob_ig::model::dash;
-use snob_ig::model::post::{Comment, CommentsPage, LikedBy, Media, Named as NamedAccount};
+use snob_ig::model::post::{LikedBy, Media, Named as NamedAccount};
 use snob_ig::pace::{PAGES_PER_SITTING, Pace};
-use snob_ig::shortcode::{self, CommentPk, MediaPk, Opens, Shortcode};
-use snob_store::config::VideoQuality;
+use snob_ig::shortcode::{self, MediaPk, Opens, Shortcode};
 
 use crate::exit::{ExitCode, ExitError};
-use crate::ffmpeg::{self, Ffmpeg};
-use crate::files;
 use crate::host;
-use crate::media::{Best, Bounds, Kind, Named, Saved, save_file_saying, save_named};
+use crate::media::{Best, Kind, Named};
+
+mod comments;
+mod document;
+mod grid;
+mod likers;
+mod save;
+
+pub use comments::{
+    CommentLine, Comments, MOST_COMMENT_PAGES, MOST_THREADS, Thread, comment_pages, first_comments,
+    more_comments, read_thread, read_threads, replies_under, threads_to_read,
+};
+pub use document::{comment_document, comment_json, post_document, post_json, thread_document};
+pub use grid::{
+    Fetched, Grid, GridRead, UNTIL_PAGES, fetch_grid, first_page, more, reached, read_grid,
+    read_pages, read_tab,
+};
+pub use likers::{LIKERS_AT_MOST, likers};
+pub use save::{Kept, Opened, Videos, fetched_item, files_of, keep_item, keep_post, save_telling};
 
 /// Ceiling on one downloaded file of a post: 128 MiB.
 ///
@@ -146,7 +163,7 @@ pub struct Post {
     pub plays_facebook: Option<u64>,
     /// A video's length in seconds.
     pub duration: Option<f64>,
-    pub music: Option<document::Music>,
+    pub music: Option<Music>,
     pub place: Option<Place>,
     pub pinned: bool,
     pub paid_partnership: bool,
@@ -270,7 +287,7 @@ impl Post {
             plays_instagram: media.ig_play_count,
             plays_facebook: media.fb_play_count,
             duration: seconds(media.video_duration),
-            music: media.music().map(|music| document::Music {
+            music: media.music().map(|music| Music {
                 kind: if music.licensed { "song" } else { "original" }.to_string(),
                 title: music.title.as_deref().map(printable),
                 artist: music.artist.as_deref().map(printable),
@@ -394,7 +411,7 @@ impl Post {
 }
 
 /// The picture of `item` a view draws small: of its candidates (a video's
-/// are its cover), the one [`media::thumb_among`] picks.
+/// are its cover), the one [`crate::media::thumb_among`] picks.
 fn thumb_of(item: &Media) -> Option<String> {
     crate::media::thumb_among(&item.image_versions2.as_ref()?.candidates)
 }
@@ -409,69 +426,6 @@ fn best_of(item: &Media, width: Option<u32>) -> Option<Best> {
         video: tracks.video,
         audio: tracks.audio,
     })
-}
-
-/// What a run saves a post's videos as (`--quality`, or `quality` in `watch.toml`).
-#[derive(Debug, Clone)]
-pub enum Videos {
-    /// The progressive file; `say_how` when it is so because no ffmpeg was
-    /// found, which a run that would have saved better says once.
-    Compat { say_how: bool },
-    /// The best tracks, joined by this ffmpeg.
-    Best(std::sync::Arc<Ffmpeg>),
-}
-
-impl Videos {
-    /// What `asked` and `named` (`--ffmpeg`) make of this run: best when
-    /// ffmpeg is found and nothing else was asked, and `--quality best`
-    /// with no ffmpeg refused before anything is asked of Instagram.
-    pub fn resolve(asked: Option<VideoQuality>, named: Option<&Path>) -> Result<Self> {
-        let found = Ffmpeg::find(named).map(std::sync::Arc::new);
-        match (asked, found) {
-            (Some(VideoQuality::Compat), _) => Ok(Self::Compat { say_how: false }),
-            (_, Some(ffmpeg)) => Ok(Self::Best(ffmpeg)),
-            (None, None) => Ok(Self::Compat { say_how: true }),
-            (Some(VideoQuality::Best), None) => Err(ExitError::new(
-                ExitCode::Error,
-                "--quality best joins a video's tracks with ffmpeg, and none was found",
-            )
-            .with_hint(format!(
-                "install it ({}), or name it with --ffmpeg or {}",
-                ffmpeg::how_to_install(),
-                ffmpeg::ENV
-            ))
-            .into()),
-        }
-    }
-
-    /// What the full-screen view keeps a video as: the run's default, which
-    /// never fails.
-    pub fn for_the_view() -> Self {
-        Self::resolve(None, None).unwrap_or(Self::Compat { say_how: false })
-    }
-
-    /// `files` made ready to save as this says: each video's best tracks kept,
-    /// with the ffmpeg that joins them, or dropped.
-    pub fn prepare(&self, files: Vec<Named>) -> Vec<Named> {
-        if matches!(self, Self::Compat { say_how: true }) && files.iter().any(|f| f.best.is_some())
-        {
-            host::info(&format!(
-                "Videos are saved as the app's 720-wide file: with ffmpeg installed ({}), \
-                 snob saves them at their best, joined into one MP4",
-                ffmpeg::how_to_install()
-            ));
-        }
-        files
-            .into_iter()
-            .map(|file| match self {
-                Self::Best(ffmpeg) => Named {
-                    ffmpeg: Some(std::sync::Arc::clone(ffmpeg)),
-                    ..file
-                },
-                Self::Compat { .. } => Named { best: None, ..file },
-            })
-            .collect()
-    }
 }
 
 /// `1234567` as `1,234,567`.
@@ -503,7 +457,7 @@ pub fn length(seconds: f64) -> String {
 /// The line that says what a post plays: "Music: <title> · <artist>" for a
 /// song, "Sound: <title> · <artist>" for a video's own; `None` when it says
 /// neither.
-pub fn music_line(music: &document::Music) -> Option<String> {
+pub fn music_line(music: &Music) -> Option<String> {
     let what = if music.kind == "song" {
         "Music"
     } else {
@@ -515,201 +469,6 @@ pub fn music_line(music: &document::Music) -> Option<String> {
         .filter(|part| !part.trim().is_empty())
         .collect();
     (!parts.is_empty()).then(|| format!("{what}: {}", parts.join(" · ")))
-}
-
-/// One comment, or a reply shown under one, filtered for a terminal.
-#[derive(Debug, Clone)]
-pub struct CommentLine {
-    pub author: String,
-    pub text: String,
-    pub at: Epoch,
-    pub likes: u64,
-    /// How many replies it has; only the ones in `replies` are shown.
-    pub replies_count: u64,
-    pub replies: Vec<CommentLine>,
-    pub pk: Option<String>,
-    pub author_pk: Option<String>,
-    /// `None` until its thread is read ([`read_threads`]): `replies` are the
-    /// page's previews.
-    pub more_replies: Option<bool>,
-}
-
-impl CommentLine {
-    /// Whether its thread holds replies the page did not show: what
-    /// `--replies` and the view's `r` read.
-    pub fn replies_missing(&self) -> bool {
-        self.more_replies.is_none()
-            && self.replies_count > u64::try_from(self.replies.len()).unwrap_or(u64::MAX)
-    }
-
-    /// Its id, when it has one a thread can be asked under.
-    pub fn comment_pk(&self) -> Option<CommentPk> {
-        self.pk.as_deref().and_then(CommentPk::parse)
-    }
-
-    fn from(comment: &Comment) -> Self {
-        Self {
-            author: printable(
-                comment
-                    .user
-                    .as_ref()
-                    .and_then(|u| u.username.as_deref())
-                    .unwrap_or("someone"),
-            ),
-            text: printable(comment.text.as_deref().unwrap_or_default()),
-            at: comment.created_at,
-            likes: comment.comment_like_count.unwrap_or(0),
-            replies_count: comment.child_comment_count.unwrap_or(0),
-            replies: comment
-                .preview_child_comments
-                .iter()
-                .map(Self::from)
-                .collect(),
-            pk: comment.pk.as_deref().and_then(digits),
-            author_pk: comment
-                .user
-                .as_ref()
-                .and_then(|u| u.pk.as_deref())
-                .and_then(digits),
-            more_replies: None,
-        }
-    }
-}
-
-/// The most threads of replies one run reads, `--replies` and
-/// `--replies-of` together: ten, each one request, which with the twenty
-/// pages of comments a run may read keeps one post under a sitting
-/// ([`PAGES_PER_SITTING`]).
-pub const MOST_THREADS: usize = 10;
-
-/// The replies under one comment, as far as the first page of its thread
-/// goes ([`read_thread`]).
-#[derive(Debug, Clone)]
-pub struct Thread {
-    pub comment: CommentPk,
-    /// Whether Instagram answered with a thread of a comment on this post.
-    pub found: bool,
-    /// How many replies the comment has, as Instagram counts them: more
-    /// than it hands out on every thread seen, so nothing is worked out
-    /// from it.
-    pub count: Option<u64>,
-    /// Whether Instagram said the thread holds replies it did not hand out.
-    pub more: bool,
-    pub replies: Vec<CommentLine>,
-}
-
-impl Thread {
-    /// A thread Instagram answered nothing of this post's for.
-    fn not_found(comment: CommentPk) -> Self {
-        Self {
-            comment,
-            found: false,
-            count: None,
-            more: false,
-            replies: Vec::new(),
-        }
-    }
-
-    /// What it puts under the comment it is of, once read.
-    fn fill(&self, line: &mut CommentLine) {
-        if self.found {
-            line.replies.clone_from(&self.replies);
-            line.more_replies = Some(self.more);
-        }
-    }
-}
-
-/// The replies under `comment` of `post`: one read, from the post's page.
-///
-/// **A thread Instagram answers nothing for is not a failure of the run**: an
-/// answer that names another post's comment, or none, and a refusal of the
-/// request itself (a 4xx that is no push-back, or "not found") are a thread
-/// `found: false`, since a comment named by a person may be gone or on another
-/// post.
-pub async fn read_thread(client: &IgClient, post: &Post, comment: CommentPk) -> Result<Thread> {
-    let page = match client.comment_replies(post.pk, comment, &post.page()).await {
-        Ok(page) => page,
-        Err(IgError::NotFound { .. }) => return Ok(Thread::not_found(comment)),
-        Err(IgError::Unexpected { status, .. }) if (400..500).contains(&status) => {
-            return Ok(Thread::not_found(comment));
-        }
-        Err(e) => return Err(e.into()),
-    };
-    if !page.is_on(post.pk) {
-        return Ok(Thread::not_found(comment));
-    }
-    Ok(Thread {
-        comment,
-        found: true,
-        count: page.child_comment_count,
-        more: page.more(),
-        replies: page.child_comments.iter().map(CommentLine::from).collect(),
-    })
-}
-
-/// The comments of `comments` whose threads `--replies <first>` reads: the
-/// first `first` that hold replies the page did not show, in the order they
-/// were read.
-pub fn threads_to_read(comments: &Comments, first: usize) -> Vec<CommentPk> {
-    comments
-        .lines
-        .iter()
-        .filter(|line| line.replies_missing())
-        .filter_map(CommentLine::comment_pk)
-        .take(first)
-        .collect()
-}
-
-/// Reads the threads `--replies` and `--replies-of` ask for, once each and at
-/// most [`MOST_THREADS`] in all: those of the first `first` comments read with
-/// replies missing ([`threads_to_read`]), put under their comments, then each
-/// of `of` not read already, which need not be among the comments read.
-pub async fn read_threads(
-    client: &IgClient,
-    post: &Post,
-    comments: &mut Comments,
-    first: usize,
-    of: &[CommentPk],
-) -> Result<Option<Vec<Thread>>> {
-    let mut asked = threads_to_read(comments, first);
-    for comment in of {
-        if !asked.contains(comment) {
-            asked.push(*comment);
-        }
-    }
-    asked.truncate(MOST_THREADS);
-    let pace = Pace::for_comments();
-    let mut read: Vec<Thread> = Vec::new();
-    for comment in asked {
-        if rest_before_a_page(client, "the replies").await? || client.step_between(&pace).await {
-            return Ok(None);
-        }
-        let thread = read_thread(client, post, comment).await?;
-        if let Some(line) = comments
-            .lines
-            .iter_mut()
-            .find(|line| line.comment_pk() == Some(comment))
-        {
-            thread.fill(line);
-        }
-        read.push(thread);
-    }
-    Ok(Some(
-        of.iter()
-            .filter_map(|comment| read.iter().find(|t| t.comment == *comment).cloned())
-            .collect(),
-    ))
-}
-
-/// The replies under the comment `line` is, put under it: what the view's
-/// `r` reads. One read.
-pub async fn replies_under(client: &IgClient, post: &Post, line: &mut CommentLine) -> Result<bool> {
-    let Some(comment) = line.comment_pk() else {
-        return Ok(false);
-    };
-    let thread = read_thread(client, post, comment).await?;
-    thread.fill(line);
-    Ok(thread.found)
 }
 
 /// `pk` when it is one: digits, and nothing else Instagram might put there.
@@ -729,301 +488,6 @@ fn account(named: &NamedAccount) -> AccountRef {
         pk: named.pk.as_deref().and_then(digits),
         username: printable(&named.username),
     }
-}
-
-/// The comments of a post read so far, and where the next page starts.
-#[derive(Debug, Clone, Default)]
-pub struct Comments {
-    pub lines: Vec<CommentLine>,
-    pub next: Option<String>,
-    pub total: Option<u64>,
-}
-
-impl Comments {
-    fn take(&mut self, page: &CommentsPage) {
-        self.lines
-            .extend(page.comments.iter().map(CommentLine::from));
-        self.next = page.next().map(str::to_string);
-        self.total = page.comment_count.or(self.total);
-    }
-}
-
-/// A profile's grid as far as it was read.
-#[derive(Debug, Clone)]
-pub struct Grid {
-    /// As Instagram spells it.
-    pub username: String,
-    pub posts: Vec<Post>,
-    /// Where the next page starts; `None` once the grid has ended.
-    pub next: Option<String>,
-    /// How many posts the profile says it has.
-    pub declared: Option<u64>,
-    /// The tab it is, `None` for the grid itself.
-    pub tab: Option<ProfileTab>,
-    /// The account's pk: what a tab is asked by.
-    pub pk: Option<snob_core::Pk>,
-    /// Whether the app was navigated to the tab, which it is once, before
-    /// the tab's second page.
-    pub tab_opened: bool,
-}
-
-impl Grid {
-    /// An empty grid of `username`'s, of `tab` when it is one.
-    pub fn of(username: &str, tab: Option<ProfileTab>, pk: Option<snob_core::Pk>) -> Self {
-        Self {
-            username: username.to_string(),
-            posts: Vec::new(),
-            next: None,
-            declared: None,
-            tab,
-            pk,
-            tab_opened: false,
-        }
-    }
-
-    /// What it is, for a sentence: "posts", "reels", "tagged posts",
-    /// "reposts".
-    pub fn what(&self) -> &'static str {
-        match self.tab {
-            None => "posts",
-            Some(ProfileTab::Reels) => "reels",
-            Some(ProfileTab::Tagged) => "tagged posts",
-            Some(ProfileTab::Reposts) => "reposts",
-        }
-    }
-}
-
-/// What a profile's grid could show.
-pub enum Fetched {
-    Grid(Grid),
-    /// Private, and the viewer does not follow it: "no posts" and "posts you
-    /// may not see" are different sentences, as `profile` keeps them.
-    Hidden {
-        username: String,
-    },
-}
-
-/// The profile `typed` names and the first `pages` pages of its grid, more if
-/// `at_least` posts take more, up to [`MOST_PAGES`].
-pub async fn fetch_grid(
-    client: &IgClient,
-    typed: &str,
-    viewer: snob_core::Pk,
-    known: Option<snob_core::Pk>,
-    pages: u32,
-    at_least: usize,
-) -> Result<Fetched> {
-    let (fetched, _) = read_grid(client, typed, viewer, known, pages, at_least, &[]).await?;
-    Ok(fetched)
-}
-
-/// How many pages a grid read with `--until` reads at most when `--pages` does
-/// not say: three, 36 posts, which is days of most accounts' posting.
-pub const UNTIL_PAGES: u32 = 3;
-
-/// How a grid's read went: what it cost, and whether it reached a post the
-/// reader already had.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct GridRead {
-    /// How many pages of the grid were asked for, one request each.
-    pub pages: u32,
-    /// The first of the posts named to stop at that the pages read hold,
-    /// when one was named and found.
-    pub reached: Option<MediaPk>,
-}
-
-/// The first post of `posts` that is one of `until` and is not pinned.
-///
-/// **A pinned post never stops a read.**
-pub fn reached(posts: &[Post], until: &[MediaPk]) -> Option<MediaPk> {
-    posts
-        .iter()
-        .find(|post| !post.pinned && until.contains(&post.pk))
-        .map(|post| post.pk)
-}
-
-/// [`fetch_grid`], stopping early at a post the reader already has: no page is
-/// asked for once the pages read hold one of `until` ([`reached`]), so a reader
-/// that comes back each day pays for the new posts and not for the grid.
-pub async fn read_grid(
-    client: &IgClient,
-    typed: &str,
-    viewer: snob_core::Pk,
-    known: Option<snob_core::Pk>,
-    pages: u32,
-    at_least: usize,
-    until: &[MediaPk],
-) -> Result<(Fetched, GridRead)> {
-    let info = client
-        .profile_named(crate::engine::target::clean(typed), known)
-        .await?;
-    if !crate::engine::target::shown_to(&info, viewer) {
-        return Ok((
-            Fetched::Hidden {
-                username: info.username,
-            },
-            GridRead::default(),
-        ));
-    }
-    let declared = info.posts.map(|p| p.count);
-    // Zero is an answer the profile already gave, as in `highlights`.
-    if declared == Some(0) {
-        let mut grid = Grid::of(&info.username, None, Some(info.id));
-        grid.declared = declared;
-        return Ok((Fetched::Grid(grid), GridRead::default()));
-    }
-    let (mut grid, how) = read_pages(client, &info.username, pages, at_least, until).await?;
-    grid.declared = declared;
-    Ok((Fetched::Grid(grid), how))
-}
-
-/// The pages of `username`'s grid, once its profile is open: the first, then
-/// each next one a step after the page before and past any rest the account's
-/// sitting owes, while fewer than `at_least` posts are held, or while fewer
-/// than `pages` were read and none of `until` has come ([`reached`]); at most
-/// [`MOST_PAGES`].
-pub async fn read_pages(
-    client: &IgClient,
-    username: &str,
-    pages: u32,
-    at_least: usize,
-    until: &[MediaPk],
-) -> Result<(Grid, GridRead)> {
-    let mut grid = Grid::of(username, None, None);
-    let first = client.profile_posts(&grid.username, None).await?;
-    grid.take(first);
-    let how = read_on(client, &mut grid, pages, at_least, until).await?;
-    Ok((grid, how))
-}
-
-/// Tab `tab` of the profile `typed` names, as [`read_grid`] reads its grid: the
-/// profile, then the tab's first page, and its next ones as far as `pages`,
-/// `at_least` and `until` say.
-///
-/// **No shortcut on a profile that says it has no posts**: its header counts
-/// the grid alone, and an account with none had a reel, reposts and tagged
-/// posts over more than a page in the capture of 2026-11-14.
-#[expect(clippy::too_many_arguments, reason = "read_grid's, and the tab")]
-pub async fn read_tab(
-    client: &IgClient,
-    typed: &str,
-    viewer: snob_core::Pk,
-    known: Option<snob_core::Pk>,
-    tab: ProfileTab,
-    pages: u32,
-    at_least: usize,
-    until: &[MediaPk],
-) -> Result<(Fetched, GridRead)> {
-    let info = client
-        .profile_named(crate::engine::target::clean(typed), known)
-        .await?;
-    if !crate::engine::target::shown_to(&info, viewer) {
-        return Ok((
-            Fetched::Hidden {
-                username: info.username,
-            },
-            GridRead::default(),
-        ));
-    }
-    let mut grid = Grid::of(&info.username, Some(tab), Some(info.id));
-    let first = client
-        .profile_tab(tab, info.id, &grid.username, None)
-        .await?;
-    grid.take(first);
-    let how = read_on(client, &mut grid, pages, at_least, until).await?;
-    Ok((Fetched::Grid(grid), how))
-}
-
-/// The first page of the grid (`tab` `None`) or of a tab of `pk`, an
-/// account already resolved: what a profile page shows once the tab is
-/// shown, with no resolve of its own.
-pub async fn first_page(
-    client: &IgClient,
-    username: &str,
-    pk: snob_core::Pk,
-    tab: Option<ProfileTab>,
-) -> Result<Grid> {
-    let mut grid = Grid::of(username, tab, Some(pk));
-    let first = match tab {
-        None => client.profile_posts(username, None).await?,
-        Some(tab) => client.profile_tab(tab, pk, username, None).await?,
-    };
-    grid.take(first);
-    Ok(grid)
-}
-
-/// Reads `grid` on from its first page, each next one a step after the
-/// page before and past any rest the account's sitting owes, while fewer
-/// than `at_least` posts are held, or while fewer than `pages` were read and
-/// none of `until` has come ([`reached`]); at most [`MOST_PAGES`].
-async fn read_on(
-    client: &IgClient,
-    grid: &mut Grid,
-    pages: u32,
-    at_least: usize,
-    until: &[MediaPk],
-) -> Result<GridRead> {
-    let mut read = 1;
-    // A post's number asked for is read up to, whatever `until` says; past
-    // it, a page is asked for only while none of `until` has come.
-    while read < MOST_PAGES
-        && (grid.posts.len() < at_least || (read < pages && reached(&grid.posts, until).is_none()))
-    {
-        if rest_before_a_page(client, "the grid").await? || !more(client, grid).await? {
-            break;
-        }
-        read += 1;
-    }
-    Ok(GridRead {
-        pages: read,
-        reached: reached(&grid.posts, until),
-    })
-}
-
-impl Grid {
-    fn take(&mut self, page: snob_ig::client::PostsPage) {
-        // **A tagged post or a repost is its author's**, never the
-        // profile's whose tab it is on (12 of 12 in the capture of
-        // 2026-11-14): the answer names the owner, and where it does not,
-        // the owner is not known rather than taken to be the profile.
-        let owner = match self.tab {
-            None | Some(ProfileTab::Reels) => self.username.clone(),
-            Some(ProfileTab::Tagged | ProfileTab::Reposts) => String::new(),
-        };
-        self.posts
-            .extend(page.posts.iter().map(|m| Post::from_media(m, &owner)));
-        self.next = page.next;
-    }
-}
-
-/// The grid's next page, a step after the page before as the pages of an
-/// action are. `false` when the grid had ended, or Ctrl+C stopped the wait.
-pub async fn more(client: &IgClient, grid: &mut Grid) -> Result<bool> {
-    let Some(after) = grid.next.clone() else {
-        return Ok(false);
-    };
-    if client.step_between(&Pace::default()).await {
-        return Ok(false);
-    }
-    let page = match (grid.tab, grid.pk) {
-        (Some(tab), Some(pk)) => {
-            // The click that opens the tab, then a step, then its next
-            // page from it, as the app scrolls a tab it has opened.
-            if !grid.tab_opened {
-                client.open_tab(&grid.username, tab).await?;
-                grid.tab_opened = true;
-                if client.step_between(&Pace::default()).await {
-                    return Ok(false);
-                }
-            }
-            client
-                .profile_tab(tab, pk, &grid.username, Some(&after))
-                .await?
-        }
-        _ => client.profile_posts(&grid.username, Some(&after)).await?,
-    };
-    grid.take(page);
-    Ok(true)
 }
 
 /// `posts`, each read again by its info, a step apart: what a tab's posts take
@@ -1069,22 +533,6 @@ pub async fn open(client: &IgClient, post: &Post) -> Result<(Post, Comments)> {
     Ok((post, comments))
 }
 
-/// The next page of `post`'s comments, one read.
-pub async fn more_comments(
-    client: &IgClient,
-    post: &Post,
-    comments: &mut Comments,
-) -> Result<bool> {
-    let Some(after) = comments.next.clone() else {
-        return Ok(false);
-    };
-    let page = client
-        .media_comments(post.pk, Some(&after), &post.page())
-        .await?;
-    comments.take(&page);
-    Ok(true)
-}
-
 /// The post `link` names, read the way the app reads one it opens: its info,
 /// from the page it opens on.
 pub async fn fetch_link(client: &IgClient, link: &Shortcode) -> Result<Post> {
@@ -1106,38 +554,6 @@ pub async fn fetch_link(client: &IgClient, link: &Shortcode) -> Result<Post> {
     Ok(post)
 }
 
-/// The first page of `post`'s comments, one read.
-pub async fn first_comments(client: &IgClient, post: &Post) -> Result<Comments> {
-    let mut comments = Comments::default();
-    comments.take(&client.media_comments(post.pk, None, &post.page()).await?);
-    Ok(comments)
-}
-
-/// The most pages of a post's comments one run reads: twenty, some 300
-/// comments at the fifteen a page the app reads (capture of 2026-11-13),
-/// and half a sitting ([`PAGES_PER_SITTING`]), so that one post cannot be a
-/// list's worth of reading.
-pub const MOST_COMMENT_PAGES: u32 = 20;
-
-/// `post`'s comments, `pages` pages of them, or fewer when they end: the first,
-/// then each next one a comment step after the page before
-/// ([`Pace::for_comments`]), as "load more" is clicked, past any rest the
-/// account's sitting owes.
-pub async fn comment_pages(client: &IgClient, post: &Post, pages: u32) -> Result<Option<Comments>> {
-    let mut comments = first_comments(client, post).await?;
-    let pace = Pace::for_comments();
-    for _ in 1..pages.min(MOST_COMMENT_PAGES) {
-        if comments.next.is_none() {
-            break;
-        }
-        if rest_before_a_page(client, "the comments").await? || client.step_between(&pace).await {
-            return Ok(None);
-        }
-        more_comments(client, post, &mut comments).await?;
-    }
-    Ok(Some(comments))
-}
-
 /// Pays a rest the account's sitting owes before a page of `of` that a command
 /// reads on its own, saying so on standard error, since nothing else would say
 /// why it went quiet for minutes.
@@ -1152,411 +568,14 @@ async fn rest_before_a_page(client: &IgClient, of: &str) -> Result<bool> {
         .await?)
 }
 
-/// Saves item `index` (zero-based) of `post` into `dir` under its own name,
-/// as its progressive file: what the view hands the system viewer, which
-/// starts at once and plays anywhere (QuickTime plays no VP9).
-pub(crate) async fn save_item(
-    client: &IgClient,
-    post: &Post,
-    index: usize,
-    dir: &Path,
-) -> Result<Saved> {
-    let file = post.file(index);
-    save_named(
-        client,
-        &file.stem,
-        file.url.as_deref(),
-        &file.what,
-        file.cap,
-        dir,
-    )
-    .await
-}
-
-/// Item `index` of `post` as the view keeps one: at its best when ffmpeg
-/// is found ([`Videos::for_the_view`]).
-fn kept_file(post: &Post, index: usize) -> Result<Named> {
-    anyhow::ensure!(
-        index < post.items.len(),
-        "item {} is not in the post",
-        index + 1
-    );
-    Videos::for_the_view()
-        .prepare(vec![post.file(index)])
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow!("item {} is not in the post", index + 1))
-}
-
-/// Saves item `index` of `post` into `dir` as the view keeps one, with the
-/// sentence to show when it was saved as the app's smaller file after all.
-async fn keep_one(
-    client: &IgClient,
-    post: &Post,
-    index: usize,
-    dir: &Path,
-) -> Result<(Saved, Option<String>)> {
-    save_file_saying(client, &kept_file(post, index)?, dir).await
-}
-
-/// What [`keep_item`] saved: where, and the sentence to show beside it
-/// when the video was saved as the app's smaller file after all.
-#[derive(Debug)]
-pub struct Kept {
-    pub path: PathBuf,
-    pub said: Option<String>,
-}
-
-/// Saves `files`, items of `post`, into the directory `dir`, one after another,
-/// and answers with what became of each as one JSON document, and with how many
-/// failed:
-///
-/// - `post`: what tells the post from every other (`pk`, `code`, `url`,
-///   `owner`, `kind`, `taken_at`);
-/// - `directory`: where the files are, absolute;
-/// - `saved`: each file there, by its item's number: its `file` name, its
-///   `bytes`, its `kind` and the item's `pk`, `already` when an earlier run had
-///   saved it and nothing was fetched, and a `note` when a video was saved as
-///   the app's smaller file;
-/// - `failed`: the items that could not be fetched, each with `why`;
-/// - `left`: the items not started because a bound of `bounds` was reached,
-///   each with `why` (`bytes` or `time`): asking again saves them, since those
-///   already there are not fetched twice;
-/// - `bytes`: what this run fetched.
-///
-/// **For a caller that reads the answer rather than a directory** (`post -d
-/// --json`, which `snob mcp` runs for an agent): `dir` is always a directory,
-/// made when it is not there, so one file is never written over a name, and
-/// nothing is, since every file goes in under a name of its own
-/// (`media::save_named`).
-pub async fn save_telling(
-    client: &IgClient,
-    post: &Post,
-    files: Vec<Named>,
-    dir: &Path,
-    bounds: Bounds,
-) -> Result<(Value, usize)> {
-    use anyhow::Context as _;
-
-    std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
-    let directory = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
-    let started = std::time::Instant::now();
-    let (mut saved, mut failed, mut left) = (Vec::new(), Vec::new(), Vec::new());
-    let mut fetched: u64 = 0;
-    for file in files {
-        if client.pacer().cancel_token().is_canceled() {
-            return Err(ExitError::new(ExitCode::Interrupted, "stopped").into());
-        }
-        if let Some(why) = bounds.passed(fetched, started) {
-            left.push(serde_json::json!({ "item": file.number, "why": why }));
-            continue;
-        }
-        let item = post.items.get(file.number.wrapping_sub(1));
-        // What the best tracks weigh, when they are tried: fetched whether
-        // or not they end as the file kept, so counted when they do not.
-        let tried = crate::media::best_weight(&file);
-        match crate::media::save_file_saying(client, &file, &directory).await {
-            Ok((kept, note)) => {
-                let (path, already) = match kept {
-                    Saved::Now(path) => (path, false),
-                    Saved::Already(path) => (path, true),
-                };
-                let bytes = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
-                if !already {
-                    fetched = fetched.saturating_add(bytes);
-                    // A note is the best tracks given up for the smaller
-                    // file: both were fetched.
-                    if note.is_some() {
-                        fetched = fetched.saturating_add(tried);
-                    }
-                }
-                // To a program, without the address a failure's words name.
-                let note = note.map(|note| crate::media::without_addresses(&note));
-                saved.push(serde_json::json!({
-                    "item": file.number,
-                    "pk": item.and_then(|item| item.pk.clone()),
-                    "kind": item.map(|item| item.kind.label()),
-                    "file": path.file_name().map(|name| name.to_string_lossy().into_owned()),
-                    "bytes": bytes,
-                    "already": already,
-                    "note": note,
-                }));
-            }
-            Err(e) if crate::media::was_canceled(&e) => {
-                return Err(ExitError::new(ExitCode::Interrupted, "stopped").into());
-            }
-            // A push-back, or the cooldown it started: the run ends, with
-            // no further file asked for.
-            Err(e) if crate::media::stopped_the_run(&e) => return Err(e),
-            Err(e) => {
-                // What it may have fetched before it failed counts too.
-                fetched = fetched.saturating_add(tried);
-                failed.push(serde_json::json!({
-                    "item": file.number,
-                    "why": crate::media::without_addresses(&e.to_string()),
-                }));
-            }
-        }
-    }
-    let about = post_document(post, None);
-    let document = serde_json::json!({
-        "post": {
-            "pk": about.pk,
-            "code": about.code,
-            "url": about.url,
-            "owner": about.owner,
-            "kind": about.kind,
-            "taken_at": about.taken_at,
-        },
-        "directory": directory.to_string_lossy(),
-        "saved": saved,
-        "failed": failed,
-        "left": left,
-        "bytes": fetched,
-    });
-    let failures = document["failed"].as_array().map_or(0, Vec::len);
-    Ok((document, failures))
-}
-
-/// The files of every item of `posts`, in order.
-pub fn files_of(posts: &[&Post]) -> Vec<Named> {
-    let mut number = 0;
-    let mut files = Vec::new();
-    for post in posts {
-        for index in 0..post.items.len() {
-            number += 1;
-            files.push(Named {
-                number,
-                ..post.file(index)
-            });
-        }
-    }
-    files
-}
-
-/// `post` as the JSON contract has it ([`document::Post`]): everything a
-/// listing shows, its items with their addresses, and its number in the
-/// listing when it has one.
-pub fn post_document(post: &Post, number: Option<usize>) -> document::Post {
-    let items = post
-        .items
-        .iter()
-        .enumerate()
-        .map(|(i, item)| document::PostItem {
-            number: i + 1,
-            kind: item.kind.label().to_string(),
-            width: item.width,
-            height: item.height,
-            url: item.url.clone(),
-            pk: item.pk.clone(),
-            alt: item.alt.clone(),
-            duration: item.duration,
-            best: item.best.as_ref().map(|best| document::BestTracks {
-                width: best.video.width,
-                height: best.video.height,
-                codec: best.video.codecs.as_deref().map(printable),
-                bytes: best.video.bytes.map(|video| {
-                    let audio = best.audio.as_ref().and_then(|a| a.bytes).unwrap_or(0);
-                    video.saturating_add(audio)
-                }),
-                video_url: best.video.url.clone(),
-                audio_url: best.audio.as_ref().map(|a| a.url.clone()),
-            }),
-        })
-        .collect();
-    document::Post {
-        pk: post.pk.to_string(),
-        code: post.code.clone(),
-        url: post.link(),
-        owner: post.owner.clone(),
-        kind: post.kind.word().to_string(),
-        taken_at: post.taken_at.get(),
-        caption: post.caption.join("\n"),
-        location: post.location.clone(),
-        likes: (!post.likes_hidden).then_some(post.likes).flatten(),
-        liked_by: post.liked_by.as_ref().map(|l| document::LikedBy {
-            name: l.name.clone(),
-            others: l.others,
-        }),
-        comments: post.comments,
-        plays: post.plays,
-        tagged: post.tagged.clone(),
-        mentions: post.mentions.clone(),
-        with: post.with.clone(),
-        items,
-        number,
-        owner_pk: post.owner_pk.clone(),
-        tagged_accounts: post.tagged_accounts.clone(),
-        with_accounts: post.with_accounts.clone(),
-        likers_known: post.likers_known.clone(),
-        likes_hidden: post.likes_hidden,
-        reposts: post.reposts,
-        shares: post.shares,
-        plays_instagram: post.plays_instagram,
-        plays_facebook: post.plays_facebook,
-        duration: post.duration,
-        music: post.music.clone(),
-        place: post.place.clone(),
-        pinned: post.pinned,
-        paid_partnership: post.paid_partnership,
-        caption_edited: post.caption_edited,
-        notes: post.notes.clone(),
-    }
-}
-
-/// `comment` as the JSON contract has it, its shown replies under it.
-pub fn comment_document(comment: &CommentLine) -> document::PostComment {
-    document::PostComment {
-        author: comment.author.clone(),
-        text: comment.text.clone(),
-        created_at: comment.at.get(),
-        likes: comment.likes,
-        replies: comment.replies_count,
-        shown_replies: comment.replies.iter().map(comment_document).collect(),
-        pk: comment.pk.clone(),
-        author_pk: comment.author_pk.clone(),
-        more_replies: comment.more_replies,
-    }
-}
-
-/// `thread` as the JSON contract has it, under `replies_of`.
-pub fn thread_document(thread: &Thread) -> document::RepliesOf {
-    document::RepliesOf {
-        comment_pk: thread.comment.to_string(),
-        found: thread.found,
-        count: thread.count,
-        more: thread.more,
-        replies: thread.replies.iter().map(comment_document).collect(),
-    }
-}
-
-/// A post as JSON ([`post_document`]), for the listings that put rows
-/// together as values. A document of these types always serializes.
-pub fn post_json(post: &Post, number: Option<usize>) -> Value {
-    serde_json::to_value(post_document(post, number)).unwrap_or_default()
-}
-
-/// A comment as JSON ([`comment_document`]).
-pub fn comment_json(comment: &CommentLine) -> Value {
-    serde_json::to_value(comment_document(comment)).unwrap_or_default()
-}
-
-/// Where a post shown by a view was saved into the scratch directory to be
-/// handed to the system viewer, per item, so opening one twice is one
-/// download.
-pub type Opened = Vec<Option<PathBuf>>;
-
-/// Item `index` of `post`, fetched into `scratch` as the view opens one, the
-/// app's own file, and not opened: once per item, so asking twice is one
-/// download.
-pub async fn fetched_item(
-    client: &IgClient,
-    post: &Post,
-    index: usize,
-    scratch: &Path,
-    opened: &mut Opened,
-) -> Result<PathBuf> {
-    if let Some(existing) = opened.get(index).cloned().flatten()
-        && existing.is_file()
-    {
-        return Ok(existing);
-    }
-    let path = match save_item(client, post, index, scratch).await? {
-        Saved::Now(path) | Saved::Already(path) => path,
-    };
-    if opened.len() < post.items.len() {
-        opened.resize(post.items.len(), None);
-    }
-    if let Some(slot) = opened.get_mut(index) {
-        *slot = Some(path.clone());
-    }
-    Ok(path)
-}
-
-/// Saves item `index` of `post` where the user works: the copy already fetched
-/// to look at, when there is one and it is what would be saved, and otherwise
-/// the CDN's.
-pub async fn keep_item(
-    client: &IgClient,
-    post: &Post,
-    index: usize,
-    opened: &Opened,
-) -> Result<Kept> {
-    let at_its_best = kept_file(post, index)?.best.is_some();
-    if !at_its_best
-        && let Some(seen) = opened.get(index).cloned().flatten()
-        && seen.is_file()
-        && let Some(name) = seen.file_name()
-    {
-        let target = Path::new(".").join(name);
-        let mut out = files::create_new(&target)?;
-        let mut from = std::fs::File::open(&seen)?;
-        std::io::copy(&mut from, &mut out)?;
-        return Ok(Kept {
-            path: target,
-            said: None,
-        });
-    }
-    match keep_one(client, post, index, Path::new(".")).await? {
-        (Saved::Now(path), said) => Ok(Kept { path, said }),
-        (Saved::Already(path), _) => Err(anyhow!("{} is already here", path.display())),
-    }
-}
-
-/// Saves every item of `post` where the user works, one at a time.
-pub async fn keep_post(client: &IgClient, post: &Post) -> (String, bool) {
-    let total = post.items.len();
-    let (mut kept, mut failed, mut smaller) = (0usize, 0usize, 0usize);
-    for index in 0..total {
-        if client.pacer().cancel_token().is_canceled() {
-            return (format!("Stopped after {kept} of {total}"), kept > 0);
-        }
-        match keep_one(client, post, index, Path::new(".")).await {
-            Ok((_, said)) => {
-                kept += 1;
-                smaller += usize::from(said.is_some());
-            }
-            Err(_) => failed += 1,
-        }
-    }
-    let mut note = if failed == 0 {
-        format!("Saved {kept} of {total} from {} here", post.code)
-    } else {
-        format!(
-            "Saved {kept} of {total} from {}; {failed} failed",
-            post.code
-        )
-    };
-    if smaller > 0 {
-        note.push_str(&format!("; {smaller} as the app's smaller file"));
-    }
-    (note, kept > 0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ffmpeg::Ffmpeg;
+    use serde_json::Value;
 
     fn media(json: &str) -> Media {
         serde_json::from_str(json).unwrap()
-    }
-
-    /// A read stops at a post the reader has, the first in the grid's order,
-    /// and never at one its owner pinned, which comes first however old.
-    #[test]
-    fn a_pinned_post_never_stops_a_read() {
-        let post = |pk: u64, pinned: bool| {
-            let ids = if pinned { "[42]" } else { "[]" };
-            let json =
-                format!(r#"{{"pk":"{pk}","user":{{"pk":"42"}},"timeline_pinned_user_ids":{ids}}}"#);
-            Post::from_media(&media(&json), "x")
-        };
-        let grid = [post(9, true), post(5, false), post(4, false)];
-        let pk = MediaPk::new;
-        assert_eq!(reached(&grid, &[pk(9)]), None);
-        assert_eq!(reached(&grid, &[pk(9), pk(4)]), Some(pk(4)));
-        assert_eq!(reached(&grid, &[pk(4), pk(5)]), Some(pk(5)));
-        assert_eq!(reached(&grid, &[]), None);
     }
 
     /// A one-item post whose pictures are `candidates`, a JSON array.
@@ -1996,7 +1015,7 @@ mod tests {
 
     #[test]
     fn a_music_line_says_what_plays() {
-        let music = |kind: &str, title: Option<&str>, artist: Option<&str>| document::Music {
+        let music = |kind: &str, title: Option<&str>, artist: Option<&str>| Music {
             kind: kind.into(),
             title: title.map(str::to_string),
             artist: artist.map(str::to_string),

@@ -403,8 +403,8 @@ fn a_part_of_the_engine_that_names_up_is_caught() {
         Some("system")
     );
     assert_eq!(
-        engine_part("crates/snob-engine/src/posts.rs"),
-        Some("posts")
+        engine_part("crates/snob-engine/src/profile.rs"),
+        Some("profile")
     );
     assert_eq!(engine_part("crates/snob-engine/src/lib.rs"), None);
     assert_eq!(engine_part("crates/snob-cli/src/main.rs"), None);

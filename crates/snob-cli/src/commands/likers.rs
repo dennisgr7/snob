@@ -1,11 +1,7 @@
 //! `snob likers LINK`: the accounts that liked a post, as many as Instagram
-//! shows the web app.
-//!
-//! The app is shown about a hundred (105 of 603,328 twice in the capture of
-//! 2026-11-13, 125 of 1,796 in the capture of 2026-11-14), the viewer's
-//! contacts first, with no cursor to a second page (the list scrolled to its
-//! end on 2026-11-14 asked for none); snob reads what the app is shown and says
-//! so, beside the count when the owner did not hide it.
+//! shows the web app (`snob_engine::posts::likers`, which says how many that
+//! is); snob says it is a sample, beside the count when the owner did not
+//! hide it.
 //!
 //! **They are other people's accounts**, so this keeps the rule a list walk
 //! keeps (AGENTS.md, "Consent"): asked first, before any request, since the
@@ -13,10 +9,10 @@
 //! advance, and no terminal without `-y` is exit 130 with nothing sent.
 
 use anyhow::Result;
-use snob_core::model::post::{Liker, Likers};
+use snob_core::model::post::Likers;
 use snob_engine::app::App;
 use snob_engine::exit::{ExitCode, ExitError};
-use snob_engine::posts::{self, Post};
+use snob_engine::posts::{self, LIKERS_AT_MOST};
 use snob_ig::shortcode::Shortcode;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
@@ -25,13 +21,6 @@ use crate::cli::{Format, LikersArgs};
 use crate::commands::common;
 use crate::output::Rendered;
 use crate::ui;
-
-/// The most accounts one answer was seen to hold, with a margin: what the
-/// day's accounts must still allow before the request is sent, so a read the
-/// day cannot pay for is refused rather than made. 105 twice in the capture
-/// of 2026-11-13 and 125 in the capture of 2026-11-14, past the 120 this was
-/// until then; 150 leaves a fifth over the largest seen.
-pub const LIKERS_AT_MOST: u32 = 150;
 
 pub async fn run(args: LikersArgs, store: SecretStore, paths: &AccountPaths) -> Result<ExitCode> {
     if args.check_ahead {
@@ -65,8 +54,7 @@ pub async fn run(args: LikersArgs, store: SecretStore, paths: &AccountPaths) -> 
     if app.cancel().is_canceled() {
         return Ok(ExitCode::Interrupted);
     }
-    let page = app.client().media_likers(post.pk, &post.page()).await?;
-    let likers = likers_of(&post, &page);
+    let likers = posts::likers(app.client(), &post).await?;
     ui::info(&shown_line(&likers));
 
     let accounts: Vec<_> = likers
@@ -157,40 +145,6 @@ async fn ask(app: &App, yes: bool, someone_is_there: bool, code: &str) -> Result
         .into());
     }
     Ok(())
-}
-
-/// The document `snob likers` prints: every account the answer named, its
-/// names made safe to print, and the count unless the owner hid it.
-fn likers_of(post: &Post, page: &snob_ig::model::post::LikersPage) -> Likers {
-    let accounts: Vec<Liker> = page
-        .accounts()
-        .into_iter()
-        .map(|(account, standing)| Liker {
-            account: snob_core::model::User {
-                username: account.safe_username(),
-                full_name: account.safe_full_name(),
-                ..account
-            },
-            you_follow: standing.as_ref().map(|s| s.following),
-            follows_you: standing.as_ref().map(|s| s.followed_by),
-        })
-        .collect();
-    // The post's count first, the one the app prints; the likers' own when the
-    // post said none.
-    let likes = if post.likes_hidden {
-        None
-    } else {
-        post.likes.or(page.user_count)
-    };
-    let shown = accounts.len();
-    Likers {
-        code: post.code.clone(),
-        url: post.link(),
-        likes,
-        shown,
-        complete: likes.is_some_and(|likes| likes == shown as u64),
-        accounts,
-    }
 }
 
 /// What standard error says about how much of the list this is.
