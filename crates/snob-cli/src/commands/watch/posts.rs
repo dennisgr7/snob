@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use snob_engine::app::App;
 use snob_engine::exit::ExitCode;
-use snob_engine::posts::{Bounds, Post, Videos, files_of, save_telling};
+use snob_engine::media::Bounds;
+use snob_engine::posts::{Post, Videos, files_of, save_telling};
 use snob_engine::watch::posts::SavedPost;
 use snob_engine::watch::{TickReport, Watched};
 

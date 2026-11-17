@@ -16,6 +16,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::system::pipe::wide;
+use crate::system::sync::lock;
 
 /// How long the window holds the end of the session for the browsers to
 /// close: inside the five seconds or so Windows waits for an answer.
@@ -42,7 +43,7 @@ impl Ending {
 
     /// Says the browsers are closed: the window may let the session end.
     fn closed(&self) {
-        *self.closed.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        *lock(&self.closed) = true;
         self.said.notify_all();
     }
 }
@@ -180,7 +181,7 @@ unsafe extern "system" fn answer(
                 let ending = unsafe { &*kept };
                 tracing::info!("the session is ending; closing the browsers");
                 ending.heard.notify_one();
-                let done = ending.closed.lock().unwrap_or_else(|e| e.into_inner());
+                let done = lock(&ending.closed);
                 let _ = ending
                     .said
                     .wait_timeout_while(done, PATIENCE, |done| !*done);

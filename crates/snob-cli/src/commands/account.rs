@@ -156,7 +156,7 @@ fn table(rows: &[Row]) -> String {
         .iter()
         .map(|row| {
             [
-                snob_engine::app::label(
+                snob_engine::sentences::label(
                     row.pk,
                     Some(row.username.as_str()).filter(|name| !name.is_empty()),
                 ),

@@ -173,9 +173,7 @@ impl Armed {
     /// The state, whether or not a thread panicked holding it: the guard is
     /// fed by a browser and never panics.
     fn lock(&self) -> std::sync::MutexGuard<'_, Held> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::system::sync::lock(&self.0)
     }
 }
 

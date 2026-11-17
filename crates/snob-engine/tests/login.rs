@@ -217,7 +217,7 @@ fn every_way_a_browser_login_ends_without_a_session_is_told_apart() {
 fn a_browser() -> Option<browser::Browser> {
     let found = browser::detect();
     if found.is_none() {
-        let required = snob_engine::browser::headless::env_flag("SNOB_TEST_REQUIRE_BROWSER");
+        let required = snob_engine::system::env::flag("SNOB_TEST_REQUIRE_BROWSER");
         assert!(!required, "no browser is installed, and one is required");
         eprintln!("no browser is installed; skipping");
     }

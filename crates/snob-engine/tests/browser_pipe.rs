@@ -29,7 +29,7 @@ use snob_store::paths::AppPaths;
 /// Says why a test that needs a browser does not run, or fails it where one
 /// is required.
 fn skip(why: &str) {
-    let required = snob_engine::browser::headless::env_flag("SNOB_TEST_REQUIRE_BROWSER");
+    let required = snob_engine::system::env::flag("SNOB_TEST_REQUIRE_BROWSER");
     assert!(!required, "{why}, and SNOB_TEST_REQUIRE_BROWSER needs one");
     eprintln!("{why}; skipping");
 }

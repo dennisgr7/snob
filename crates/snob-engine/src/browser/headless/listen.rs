@@ -19,8 +19,8 @@ use snob_ig::error::{IgError, landed_on, push_back};
 use snob_ig::web::AppCalls;
 use snob_store::paths::AccountPaths;
 
-use super::lock;
 use crate::browser::cdp::{Connection, Event};
+use crate::system::sync::lock;
 
 /// The name snob's own fetch script runs under, which the browser reports as
 /// the initiator of every request it sends.

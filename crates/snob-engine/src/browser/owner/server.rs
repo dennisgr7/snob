@@ -26,6 +26,7 @@ use tokio::sync::{Notify, mpsc};
 use super::socket::{self, Listener};
 use super::wire::{self, FromOwner, ToOwner};
 use crate::browser::headless::{Headless, IDLE, Open};
+use crate::system::sync::lock;
 
 /// How long browsers are kept.
 #[derive(Debug, Clone, Copy)]
@@ -107,12 +108,7 @@ struct State {
 
 impl State {
     fn users(&self, pk: Pk) -> usize {
-        self.users
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&pk)
-            .copied()
-            .unwrap_or(0)
+        lock(&self.users).get(&pk).copied().unwrap_or(0)
     }
 }
 
@@ -421,12 +417,7 @@ async fn serve_commands<R: AsyncRead + Unpin>(
 /// as watched when somebody waits on the command.
 fn uses(engine: &Headless, state: &State, used: &mut HashSet<Pk>, pk: Pk, attended: bool) {
     if used.insert(pk) {
-        *state
-            .users
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(pk)
-            .or_default() += 1;
+        *lock(&state.users).entry(pk).or_default() += 1;
         if attended {
             watch(state, pk, true);
         }
@@ -437,7 +428,7 @@ fn uses(engine: &Headless, state: &State, used: &mut HashSet<Pk>, pk: Pk, attend
 /// One command on `pk`'s browser more (`true`) or fewer that somebody waits
 /// on.
 fn watch(state: &State, pk: Pk, more: bool) {
-    let mut watched = state.watched.lock().unwrap_or_else(|e| e.into_inner());
+    let mut watched = lock(&state.watched);
     let count = watched.entry(pk).or_default();
     *count = if more {
         *count + 1
@@ -450,7 +441,7 @@ fn watch(state: &State, pk: Pk, more: bool) {
 /// whether anybody waits on any: the owner runs efficiently when nobody does.
 fn reconsider(engine: &Headless, state: &State, pk: Pk) {
     let (this, any) = {
-        let watched = state.watched.lock().unwrap_or_else(|e| e.into_inner());
+        let watched = lock(&state.watched);
         (
             watched.get(&pk).copied().unwrap_or(0) > 0,
             watched.values().any(|n| *n > 0),
@@ -473,7 +464,7 @@ async fn leave(
             watch(state, pk, false);
         }
         let remaining = {
-            let mut users = state.users.lock().unwrap_or_else(|e| e.into_inner());
+            let mut users = lock(&state.users);
             let count = users.entry(pk).or_default();
             *count = count.saturating_sub(1);
             *count

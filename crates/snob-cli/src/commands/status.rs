@@ -208,7 +208,7 @@ fn braked_names(budget: &BudgetState, held: Option<EpochMs>, paths: &AppPaths) -
     brake
         .accounts
         .iter()
-        .map(|&pk| snob_engine::app::label(pk, registry.get(pk).map(|r| r.username.as_str())))
+        .map(|&pk| snob_engine::sentences::label(pk, registry.get(pk).map(|r| r.username.as_str())))
         .collect()
 }
 
@@ -615,7 +615,7 @@ impl Found<'_> {
                 let outcome = run.outcome.as_ref().map_or("unfinished", |o| o.as_str());
                 lines.push(format!(
                     "  {}  {outcome} {}, {} requests, {} changes",
-                    snob_engine::app::label(run.account_pk, name.as_deref()),
+                    snob_engine::sentences::label(run.account_pk, name.as_deref()),
                     snob_engine::sentences::stored_on(run.started_at),
                     run.requests,
                     run.changes

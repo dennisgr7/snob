@@ -170,7 +170,7 @@ fn say_who_else_reads(paths: &AppPaths, others: &[Watched]) {
             } else {
                 "ies are"
             },
-            snob_engine::app::label(pk, name),
+            snob_engine::sentences::label(pk, name),
             if entries.len() == 1 { "it" } else { "them" },
         ));
     }
@@ -248,7 +248,7 @@ pub(super) fn describe_check(report: &snob_engine::watch::check::CheckReport) ->
                 following,
                 ..
             } => (
-                snob_engine::app::target_label(target.as_deref()),
+                snob_engine::sentences::target_label(target.as_deref()),
                 match (followers, following) {
                     (Some(a), Some(b)) => format!("{a} followers, {b} following"),
                     _ => String::new(),
@@ -284,7 +284,7 @@ pub(super) fn describe_check(report: &snob_engine::watch::check::CheckReport) ->
             } => (
                 format!(
                     "{} posts",
-                    snob_engine::app::target_label(target.as_deref())
+                    snob_engine::sentences::target_label(target.as_deref())
                 ),
                 [
                     baseline_at

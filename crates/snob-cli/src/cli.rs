@@ -2240,9 +2240,9 @@ pub struct SaveTellingArgs {
 }
 
 impl SaveTellingArgs {
-    /// What the download stops at ([`snob_engine::posts::Bounds`]).
-    pub fn bounds(&self) -> snob_engine::posts::Bounds {
-        snob_engine::posts::Bounds {
+    /// What the download stops at ([`snob_engine::media::Bounds`]).
+    pub fn bounds(&self) -> snob_engine::media::Bounds {
+        snob_engine::media::Bounds {
             bytes: self.save_at_most,
             within: self.save_within,
         }

@@ -223,7 +223,7 @@ pub(super) fn settle_all(paths: &AppPaths) {
     say_what_was_given_up(
         account_databases(paths)
             .iter()
-            .map(|account| snob_engine::watch::settle_account(account, now))
+            .map(|account| snob_engine::engine::retention::settle_account(account, now))
             .sum(),
     );
 }

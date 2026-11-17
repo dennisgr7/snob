@@ -28,8 +28,8 @@ use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::browser::headless::lock;
 use crate::browser::headless::write_back::Rotated;
+use crate::system::sync::lock;
 
 #[cfg(windows)]
 mod end_of_session;
@@ -114,14 +114,12 @@ pub fn install(paths: &AppPaths, start: Option<Vec<OsString>>) {
 /// when `SNOB_NO_BROWSER` is set, and nothing over what a front installed
 /// first (the command line's, with its globals).
 pub fn ensure(paths: &AppPaths) {
-    if crate::browser::headless::env_flag("SNOB_NO_BROWSER")
-        || snob_ig::client::page::a_page_factory_is_set()
+    if crate::system::env::flag("SNOB_NO_BROWSER") || snob_ig::client::page::a_page_factory_is_set()
     {
         return;
     }
-    let start = (crate::system::exe::was_named()
-        && !crate::browser::headless::env_flag("SNOB_NO_OWNER"))
-    .then(|| vec![OsString::from(COMMAND)]);
+    let start = (crate::system::exe::was_named() && !crate::system::env::flag("SNOB_NO_OWNER"))
+        .then(|| vec![OsString::from(COMMAND)]);
     install(paths, start);
 }
 
@@ -345,10 +343,7 @@ impl Remote {
         let start = self.through_the_owner()?;
         match self.link(start).await {
             Ok(link) => {
-                self.used
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(session.ds_user_id, session.fingerprint());
+                lock(&self.used).insert(session.ds_user_id, session.fingerprint());
                 Some(link)
             }
             Err(e) => {
@@ -434,14 +429,9 @@ impl Remote {
 
     /// Reads what each browser this command used holds, then leaves them.
     async fn leave(&self) -> Vec<Rotated> {
-        let used: Vec<(Pk, String)> = self
-            .used
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .drain()
-            .collect();
-        self.heard.lock().unwrap_or_else(|e| e.into_inner()).clear();
-        self.told.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        let used: Vec<(Pk, String)> = lock(&self.used).drain().collect();
+        lock(&self.heard).clear();
+        lock(&self.told).clear();
         lock(&self.own).clear();
         self.alone.store(false, Ordering::SeqCst);
         let Some(link) = self.link.lock().await.take().filter(|link| link.alive()) else {
@@ -489,18 +479,8 @@ impl Remote {
         if self.through_the_owner().is_none() {
             return crate::browser::headless::local(&self.paths).heard_for(pk);
         }
-        let heard = self
-            .heard
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&pk)
-            .cloned()?;
-        if self
-            .told
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(pk)
-        {
+        let heard = lock(&self.heard).get(&pk).cloned()?;
+        if lock(&self.told).insert(pk) {
             tracing::warn!(
                 "Instagram pushed back on the page's own calls; which call, and what it answered, is in {}",
                 log_of(&self.paths).display()
@@ -562,10 +542,7 @@ struct Forget<'a>(&'a Pending, u64);
 
 impl Drop for Forget<'_> {
     fn drop(&mut self) {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.1);
+        lock(self.0).remove(&self.1);
     }
 }
 
@@ -682,18 +659,10 @@ impl Link {
                     // read; the link is not lost over it.
                     match serde_json::from_slice::<wire::FromOwner>(&body) {
                         Ok(wire::FromOwner::Heard { pk, cause }) => {
-                            heard
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .insert(pk, cause);
+                            lock(&heard).insert(pk, cause);
                         }
                         Ok(message) => {
-                            let waiting = message.id().and_then(|id| {
-                                pending
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .remove(&id)
-                            });
+                            let waiting = message.id().and_then(|id| lock(&pending).remove(&id));
                             if let Some(waiting) = waiting {
                                 let _ = waiting.send(message);
                             }
@@ -706,7 +675,7 @@ impl Link {
                 // Every request still waiting fails now, and every later one
                 // at once.
                 alive.store(false, Ordering::SeqCst);
-                pending.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                lock(&pending).clear();
             })
         };
         Self {
@@ -738,10 +707,7 @@ impl Link {
     ) -> Result<wire::FromOwner> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (answered, answer) = oneshot::channel();
-        self.pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, answered);
+        lock(&self.pending).insert(id, answered);
         let _forget = Forget(&self.pending, id);
         if !self.alive() {
             bail!("the connection to it is closed");
@@ -913,7 +879,7 @@ mod tests {
             return false;
         };
         assert!(
-            !crate::browser::headless::env_flag("SNOB_TEST_REQUIRE_BROWSER"),
+            !crate::system::env::flag("SNOB_TEST_REQUIRE_BROWSER"),
             "{why}, and SNOB_TEST_REQUIRE_BROWSER needs one"
         );
         eprintln!("{why}; skipping");
@@ -975,7 +941,7 @@ mod tests {
         let told = match told {
             Err(PageError::Browser(e)) => {
                 assert!(
-                    !crate::browser::headless::env_flag("SNOB_TEST_REQUIRE_BROWSER"),
+                    !crate::system::env::flag("SNOB_TEST_REQUIRE_BROWSER"),
                     "the browser would not start: {e}"
                 );
                 eprintln!("the browser found here will not start ({e}); skipping");

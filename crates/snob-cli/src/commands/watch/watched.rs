@@ -93,7 +93,7 @@ fn posts_of(account: &AccountConfig) -> Option<PostsWatch> {
 pub(super) fn watching_label(watched: &[Watched]) -> String {
     let names: Vec<String> = watched
         .iter()
-        .map(|w| snob_engine::app::target_label(w.name()))
+        .map(|w| snob_engine::sentences::target_label(w.name()))
         .collect();
 
     snob_engine::sentences::and_list(&names).unwrap_or_else(|| "nothing".to_string())

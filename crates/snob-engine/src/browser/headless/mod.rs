@@ -43,6 +43,7 @@ use snob_ig::web::{Ask, Call, Seen, SentToken, Told, Unbuilt};
 use snob_store::paths::{AccountPaths, AppPaths};
 
 use crate::browser::cdp::Cdp;
+use crate::system::sync::lock;
 
 mod guard;
 mod identity;
@@ -198,21 +199,6 @@ fn letting_go(handed_over: bool, waited: Duration) -> Option<Duration> {
     let (shortest, longest) = LETTING_GO_PAUSES;
     let pause = waited.clamp(shortest, longest);
     (!handed_over && waited + pause <= PROFILE_LETTING_GO).then_some(pause)
-}
-
-/// What `mutex` guards, whether or not a thread panicked holding it: every
-/// value kept behind one here stays whole whatever panicked.
-pub(crate) fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Whether a switch in the environment is on: set, and neither empty nor `0`.
-pub fn env_flag(name: &str) -> bool {
-    is_on(std::env::var_os(name).as_deref())
-}
-
-fn is_on(value: Option<&std::ffi::OsStr>) -> bool {
-    value.is_some_and(|value| !value.is_empty() && value != "0")
 }
 
 /// Closes the account's browser, or every one, among those this process runs
@@ -999,7 +985,7 @@ impl Headless {
             if !told {
                 crate::host::info(&format!(
                     "Another snob is using {}'s browser; waiting for it to finish (Ctrl+C to stop)",
-                    crate::app::label(session.ds_user_id, session.username.as_deref())
+                    crate::sentences::label(session.ds_user_id, session.username.as_deref())
                 ));
                 told = true;
             }
@@ -1902,7 +1888,7 @@ mod tests {
     /// one is required, as the browser tests under `tests/` do.
     fn skip(why: &str) {
         assert!(
-            !env_flag("SNOB_TEST_REQUIRE_BROWSER"),
+            !crate::system::env::flag("SNOB_TEST_REQUIRE_BROWSER"),
             "{why}, and SNOB_TEST_REQUIRE_BROWSER needs one"
         );
         eprintln!("{why}; skipping");
@@ -4424,17 +4410,6 @@ mod tests {
             .iter()
             .filter(|r| r.url.path() == "/")
             .count()
-    }
-
-    /// `=0` and an empty value leave a switch off, as unset does.
-    #[test]
-    fn a_switch_is_on_only_when_it_says_so() {
-        let on = |value: Option<&str>| is_on(value.map(std::ffi::OsStr::new));
-        assert!(on(Some("1")));
-        assert!(on(Some("yes")));
-        assert!(!on(Some("0")));
-        assert!(!on(Some("")));
-        assert!(!on(None));
     }
 
     /// The owner starts a browser again on a held profile soon, then less

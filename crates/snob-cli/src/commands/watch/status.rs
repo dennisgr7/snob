@@ -262,7 +262,7 @@ impl Recorded {
                 return Ok(label.clone());
             }
             let name = snob_store::store::users::name(conn, pk)?;
-            let label = snob_engine::app::label(pk, name.as_deref());
+            let label = snob_engine::sentences::label(pk, name.as_deref());
             labels.insert(pk, label.clone());
             Ok(label)
         };

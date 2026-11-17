@@ -16,6 +16,7 @@ use snob_ig::pace::CancelToken;
 
 use crate::browser::Browser;
 use crate::system::pipe::{BrowserProcess, PipeTransport};
+use crate::system::sync::lock;
 
 mod connection;
 
@@ -437,13 +438,7 @@ impl Cdp {
     /// What to say about a browser that has already exited, if it has:
     /// [`ProfileInUse`] when another holds its profile.
     fn left_early(&self) -> Option<anyhow::Error> {
-        let ended = self
-            .process
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .try_wait()
-            .ok()
-            .flatten()?;
+        let ended = lock(&self.process).try_wait().ok().flatten()?;
         let said = if self.windowless {
             windowless_died_early(ended.code, &self.profile)
         } else {
@@ -464,13 +459,7 @@ impl Cdp {
     /// process is gone.
     async fn was_closed(&self) -> bool {
         for _ in 0..20 {
-            let ended = self
-                .process
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .try_wait()
-                .ok()
-                .flatten();
+            let ended = lock(&self.process).try_wait().ok().flatten();
             if let Some(ended) = ended {
                 return ended.code == Some(0);
             }
@@ -542,15 +531,12 @@ impl Cdp {
 
     /// Moves the browser and its helpers to `mode` (`power::qos`).
     pub(crate) fn set_mode(&self, mode: crate::system::power::qos::Mode) {
-        self.process
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .set_mode(mode);
+        lock(&self.process).set_mode(mode);
     }
 
     /// The browser's process id.
     pub fn browser_pid(&self) -> u32 {
-        self.process.lock().unwrap_or_else(|e| e.into_inner()).id()
+        lock(&self.process).id()
     }
 
     /// The exact User-Agent this browser sends.

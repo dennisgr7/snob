@@ -40,9 +40,7 @@ pub(crate) use windows_impl::{command_line, wide};
 /// created, not yet close-on-exec on macOS.
 pub(crate) fn one_start_at_a_time() -> std::sync::MutexGuard<'static, ()> {
     static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    STARTING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    super::sync::lock(&STARTING)
 }
 
 /// How the two ends of the protocol are numbered.

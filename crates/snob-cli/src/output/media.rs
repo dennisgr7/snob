@@ -161,7 +161,7 @@ pub(crate) struct Telling<'a> {
     pub items: &'a [Story],
     pub selection: DownloadSelection,
     pub destination: Option<&'a Path>,
-    pub bounds: snob_engine::posts::Bounds,
+    pub bounds: snob_engine::media::Bounds,
 }
 
 impl Telling<'_> {

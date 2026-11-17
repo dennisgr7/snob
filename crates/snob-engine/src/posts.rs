@@ -32,7 +32,7 @@ use crate::exit::{ExitCode, ExitError};
 use crate::ffmpeg::{self, Ffmpeg};
 use crate::files;
 use crate::host;
-use crate::media::{Best, Kind, Named, Saved, save_file_saying, save_named};
+use crate::media::{Best, Bounds, Kind, Named, Saved, save_file_saying, save_named};
 
 /// Ceiling on one downloaded file of a post: 128 MiB.
 ///
@@ -1213,14 +1213,6 @@ pub struct Kept {
     pub said: Option<String>,
 }
 
-/// What a download told as a document stops at ([`save_telling`]): the bytes it
-/// may fetch and the time it may take before it starts no further file.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Bounds {
-    pub bytes: Option<u64>,
-    pub within: Option<std::time::Duration>,
-}
-
 /// Saves `files`, items of `post`, into the directory `dir`, one after another,
 /// and answers with what became of each as one JSON document, and with how many
 /// failed:
@@ -1261,14 +1253,7 @@ pub async fn save_telling(
         if client.pacer().cancel_token().is_canceled() {
             return Err(ExitError::new(ExitCode::Interrupted, "stopped").into());
         }
-        let past = if bounds.bytes.is_some_and(|most| fetched >= most) {
-            Some("bytes")
-        } else if bounds.within.is_some_and(|most| started.elapsed() >= most) {
-            Some("time")
-        } else {
-            None
-        };
-        if let Some(why) = past {
+        if let Some(why) = bounds.passed(fetched, started) {
             left.push(serde_json::json!({ "item": file.number, "why": why }));
             continue;
         }

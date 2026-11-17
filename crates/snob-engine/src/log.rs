@@ -21,6 +21,7 @@ use snob_store::paths::{self, AppPaths};
 use tracing::Level;
 use tracing_subscriber::filter::Targets;
 
+use crate::system::sync::lock;
 
 /// What is logged, and at which level, and why `spec` (`SNOB_LOG`) was not
 /// taken when it does not parse: the quiet default then, so a typo does not
@@ -191,7 +192,7 @@ impl Files {
     /// full. **A line that cannot be written is dropped**: a full disk must
     /// not stop the program that says so.
     pub fn write(&self, line: &str) {
-        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        let mut open = lock(&self.open);
         let needed = line.len() as u64 + 1;
         if open
             .as_ref()

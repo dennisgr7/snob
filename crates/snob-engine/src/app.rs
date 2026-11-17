@@ -14,6 +14,7 @@ use snob_store::store::rate_budget::SqliteRateBudget;
 
 use crate::engine::target;
 use crate::host::{Front, Progress, Wait};
+use crate::sentences::label;
 use crate::system::interrupt;
 
 /// The account the run is acting as, when there is one.
@@ -39,24 +40,6 @@ impl Viewer {
     /// The `viewer` object a JSON answer names the account with.
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({ "pk": self.pk, "username": self.safe_username() })
-    }
-}
-
-/// How to name any account to a person: `@someone`, or the id when the name has
-/// not been learned yet.
-pub fn label(pk: Pk, username: Option<&str>) -> String {
-    match username {
-        Some(name) => format!("@{}", snob_core::model::printable(name)),
-        None => format!("account {pk}"),
-    }
-}
-
-/// The same rule where the absent case means the viewer rather than an account
-/// whose name is not known yet.
-pub fn target_label(target: Option<&str>) -> String {
-    match target {
-        Some(name) => format!("@{}", snob_core::model::printable(name)),
-        None => "your account".to_string(),
     }
 }
 
@@ -303,7 +286,7 @@ impl App {
 
         let db = Store::open(paths)?;
         // Retention, for the commands that are not the monitor.
-        crate::watch::settle_daily(&db);
+        crate::engine::retention::settle_daily(&db);
         let Front {
             progress,
             ask,
@@ -597,7 +580,7 @@ pub fn held_in(
 
 #[cfg(test)]
 mod tests {
-    use super::{App, Viewer, target_label};
+    use super::{App, Viewer};
     use snob_core::Pk;
 
     /// An account's paths with another account's session in them is refused
@@ -700,18 +683,6 @@ mod tests {
         above.cancel();
         assert!(second.cancel().is_canceled());
         store.delete().unwrap();
-    }
-
-    /// Two of the targets this names come from `watch.toml`, which validates a
-    /// username not at all, and one of those is the banner a scheduled service
-    /// opens with — the first thing a monitor ever prints.
-    #[test]
-    fn naming_a_target_takes_out_what_a_terminal_would_obey() {
-        let shown = target_label(Some("friend\u{1b}[2K"));
-        assert!(!shown.contains('\x1b'), "{shown:?}");
-        assert_eq!(shown, "@friend[2K");
-
-        assert_eq!(target_label(None), "your account");
     }
 
     /// The name here came from Instagram — `whoami` writes it out of

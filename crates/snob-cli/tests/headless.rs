@@ -63,7 +63,7 @@ fn a_browser_starts() -> bool {
     match answer {
         Ok(()) => true,
         Err(why) => {
-            let required = snob_engine::browser::headless::env_flag("SNOB_TEST_REQUIRE_BROWSER");
+            let required = snob_engine::system::env::flag("SNOB_TEST_REQUIRE_BROWSER");
             assert!(!required, "{why}, and SNOB_TEST_REQUIRE_BROWSER needs one");
             eprintln!("{why}; skipping");
             false

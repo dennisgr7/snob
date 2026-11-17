@@ -369,7 +369,7 @@ impl Drop for Forget<'_> {
 
 impl Shared {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        crate::system::sync::lock(&self.state)
     }
 
     fn closed_reason(&self) -> String {

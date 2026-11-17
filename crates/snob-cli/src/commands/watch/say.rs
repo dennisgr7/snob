@@ -166,7 +166,8 @@ pub(super) fn describe_tick(tick: &TickReport) -> Vec<String> {
     // Posts read within the hour are no refusal.
     let posts_refused = posts_skipped.is_some_and(|skipped| skipped != PostsSkipped::ReadRecently);
     if tick.lists.is_empty() && posts_skipped == Some(PostsSkipped::ReadRecently) {
-        let who = snob_engine::app::label(tick.report.account_pk, tick.report.username.as_deref());
+        let who =
+            snob_engine::sentences::label(tick.report.account_pk, tick.report.username.as_deref());
         return vec![format!(
             "The posts of {who} were read less than an hour ago, so they were not read again \
              this time."
@@ -326,7 +327,7 @@ pub(super) fn describe(report: &WatchReport, refused: bool) -> Vec<String> {
 
 /// What the posts of `report`'s account came to.
 fn posts_lines(report: &WatchReport, posts: &PostsReport) -> Vec<String> {
-    let who = snob_engine::app::label(report.account_pk, report.username.as_deref());
+    let who = snob_engine::sentences::label(report.account_pk, report.username.as_deref());
     if posts.basis == PostsBasis::Baseline {
         return vec![format!(
             "The posts of {who} have never been reported on, so there is nothing to compare \
@@ -432,7 +433,7 @@ fn plural_files(n: usize) -> String {
 
 /// The lists' part of [`describe`].
 fn describe_lists(report: &WatchReport, refused: bool) -> Vec<String> {
-    let who = snob_engine::app::label(report.account_pk, report.username.as_deref());
+    let who = snob_engine::sentences::label(report.account_pk, report.username.as_deref());
 
     if report.followers.is_none() && report.following.is_none() {
         // A run in which every list was refused concluded nothing, and that is

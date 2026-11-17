@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use snob_ig::pace::CancelToken;
 
+use crate::system::sync::lock;
+
 /// The process's cancellation token. See [`install`].
 static TOKEN: OnceLock<CancelToken> = OnceLock::new();
 
@@ -44,12 +46,12 @@ pub fn stop_when_parent_exits(detached_command: bool) {
         return;
     }
     let parent = crate::system::parent::arm();
-    *PARENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(parent);
+    *lock(&PARENT) = Some(parent);
 }
 
 /// Says so, once, when the parent [`stop_when_parent_exits`] opened is gone.
 fn parent_gone() -> Option<tokio::sync::mpsc::Receiver<()>> {
-    let parent = PARENT.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+    let parent = lock(&PARENT).take()?;
     let (gone, heard) = tokio::sync::mpsc::channel(1);
     std::thread::spawn(move || {
         parent.wait();

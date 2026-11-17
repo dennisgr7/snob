@@ -9,6 +9,7 @@
 //! The per-platform halves are in AGENTS.md, "Platforms".
 
 pub mod detach;
+pub mod env;
 pub mod exe;
 pub mod interrupt;
 pub mod local_socket;
@@ -17,3 +18,4 @@ pub mod pipe;
 pub mod power;
 pub mod random;
 pub mod seat;
+pub(crate) mod sync;

@@ -341,7 +341,7 @@ pub async fn by_paste(
     // The requests go out from the browser that made the account's profile,
     // while it is installed (`ProfileMark`), whichever one was named here.
     if let Some(named) = &session.browser
-        && !crate::browser::headless::env_flag("SNOB_NO_BROWSER")
+        && !crate::system::env::flag("SNOB_NO_BROWSER")
         && let Some(maker) =
             ProfileMark::read(&paths.browser_profile_for(session.ds_user_id)).browser
         && maker.is_file()

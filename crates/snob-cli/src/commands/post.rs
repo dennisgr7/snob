@@ -77,7 +77,7 @@ pub async fn run(args: PostArgs, store: SecretStore, paths: &AccountPaths) -> Re
     if let Some(selection) = args.action.selection() {
         posts::first_comments(app.client(), &post).await?;
         if args.json {
-            let bounds = posts::Bounds {
+            let bounds = snob_engine::media::Bounds {
                 bytes: args.save_at_most,
                 within: args.save_within,
             };
@@ -120,7 +120,7 @@ async fn save_telling(
     selection: crate::cli::DownloadSelection,
     destination: Option<&Path>,
     videos: &snob_engine::posts::Videos,
-    bounds: posts::Bounds,
+    bounds: snob_engine::media::Bounds,
 ) -> Result<ExitCode> {
     let numbers = crate::output::media::numbers_of(selection, post.items.len(), |n| {
         crate::commands::posts::no_such_item(post, n)

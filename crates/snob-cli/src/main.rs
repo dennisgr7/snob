@@ -431,8 +431,8 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 
     // Every request to Instagram goes out from a browser from here on, unless
     // this run was told not to — see `headless/`.
-    if !snob_engine::browser::headless::env_flag("SNOB_NO_BROWSER") {
-        let start = if snob_engine::browser::headless::env_flag("SNOB_NO_OWNER") {
+    if !snob_engine::system::env::flag("SNOB_NO_BROWSER") {
+        let start = if snob_engine::system::env::flag("SNOB_NO_OWNER") {
             None
         } else {
             Some(owner_args(&cli)?)

@@ -779,6 +779,29 @@ pub fn stable_stem(username: &str, kind: &str, pk: &str) -> String {
     format!("{}-{kind}-{pk}", printable(username))
 }
 
+/// What a download told as a document stops at ([`save_telling`],
+/// `posts::save_telling`): the bytes it may fetch and the time it may take
+/// before it starts no further file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Bounds {
+    pub bytes: Option<u64>,
+    pub within: Option<std::time::Duration>,
+}
+
+impl Bounds {
+    /// The bound a run that has fetched `fetched` bytes since `started` is
+    /// past, as an item it leaves says why: `bytes` or `time`.
+    pub(crate) fn passed(&self, fetched: u64, started: std::time::Instant) -> Option<&'static str> {
+        if self.bytes.is_some_and(|most| fetched >= most) {
+            Some("bytes")
+        } else if self.within.is_some_and(|most| started.elapsed() >= most) {
+            Some("time")
+        } else {
+            None
+        }
+    }
+}
+
 /// One file of a download told as a document ([`save_telling`]), with what
 /// its listing says of it.
 #[derive(Debug, Clone)]
@@ -809,7 +832,7 @@ pub async fn save_telling(
     client: &IgClient,
     files: Vec<Told>,
     dir: &Path,
-    bounds: crate::posts::Bounds,
+    bounds: Bounds,
 ) -> Result<(serde_json::Map<String, serde_json::Value>, usize)> {
     std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
     let directory = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
@@ -820,14 +843,7 @@ pub async fn save_telling(
         if client.pacer().cancel_token().is_canceled() {
             return Err(ExitError::new(ExitCode::Interrupted, "stopped").into());
         }
-        let past = if bounds.bytes.is_some_and(|most| fetched >= most) {
-            Some("bytes")
-        } else if bounds.within.is_some_and(|most| started.elapsed() >= most) {
-            Some("time")
-        } else {
-            None
-        };
-        if let Some(why) = past {
+        if let Some(why) = bounds.passed(fetched, started) {
             left.push(serde_json::json!({ "item": file.number, "why": why }));
             continue;
         }

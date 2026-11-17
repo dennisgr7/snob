@@ -15,9 +15,16 @@
 //! 0.0.0 (not shipped) or the workspace's: the desktop edition's two binaries
 //! are one version (`snob_engine::update::edition`), and `release.yml`
 //! ships the app only when it says the tag's.
+//!
+//! **And inside the engine, the parts that others stand on name nothing
+//! above them**, reading its sources ([`ENGINE_MAY_NAME`],
+//! [`ENGINE_NAMED_ONLY_BY`]): a `crate::<part>` anywhere in a part's files
+//! but a comment and its tests. So the operating system's plumbing, the
+//! browser, the lists and the monitor can each be changed with the rest
+//! closed.
 
 mod common;
-use common::repo_root;
+use common::{relative, repo_root, source_files};
 
 /// The crates that draw on or read from a terminal.
 const TERMINAL: [&str; 6] = [
@@ -250,6 +257,199 @@ fn a_fake_linked_into_a_build_is_caught() {
         [
             "the desktop app depends on snob-cli",
             "the desktop app depends on ratatui, a terminal crate"
+        ]
+    );
+}
+
+/// Where the engine's parts are: one a file or a directory of `src/`.
+const ENGINE_SRC: &str = "crates/snob-engine/src/";
+
+/// What a part of the engine may name of the rest of it, for the parts held
+/// to a list. A part not listed is held to [`ENGINE_NAMED_ONLY_BY`] alone.
+const ENGINE_MAY_NAME: [(&str, &[&str]); 6] = [
+    // What the engine is handed, and what it answers with, stand on nothing.
+    ("host", &[]),
+    ("exit", &[]),
+    // The operating system: a notice to say, and nothing else of snob's.
+    ("system", &["host"]),
+    // The browser: the system under it, and what it says.
+    ("browser", &["host", "sentences", "system"]),
+    // The lists: never the monitor, an automation, a post or a profile.
+    ("engine", &["app", "exit", "host", "sentences", "system"]),
+    // Stories and the files a download keeps: never a post.
+    ("media", &["exit", "ffmpeg", "files", "host", "sentences"]),
+];
+
+/// The parts only these others may name: the monitor is a front's and the
+/// automations', and an automation is a front's alone.
+const ENGINE_NAMED_ONLY_BY: [(&str, &[&str]); 2] =
+    [("watch", &["automations"]), ("automations", &[])];
+
+/// The part of the engine a source file is of, by its path from the
+/// repository's root; `None` for `lib.rs` and for a file of another crate.
+fn engine_part(file: &str) -> Option<&str> {
+    let inside = file.strip_prefix(ENGINE_SRC)?;
+    let part = inside.split('/').next()?;
+    let part = part.strip_suffix(".rs").unwrap_or(part);
+    (part != "lib").then_some(part)
+}
+
+/// The parts a source names as `crate::<part>` or `crate::{<part>, ...}`,
+/// outside its comments and above its tests (`mod tests {` at the margin,
+/// where AGENTS.md keeps them).
+fn parts_named(source: &str) -> Vec<String> {
+    let ident = |text: &str| -> String {
+        text.trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect()
+    };
+    let mut named = Vec::new();
+    for line in source.lines() {
+        if line == "mod tests {" {
+            break;
+        }
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(at) = rest.find("crate::") {
+            let before = rest[..at].chars().next_back();
+            let after = &rest[at + "crate::".len()..];
+            rest = after;
+            if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+                continue; // another crate's name ending in "crate"
+            }
+            match after.strip_prefix('{') {
+                Some(group) => {
+                    named.extend(group.split('}').next().unwrap_or("").split(',').map(ident))
+                }
+                None => named.push(ident(after)),
+            }
+        }
+    }
+    named.retain(|name| !name.is_empty());
+    named
+}
+
+/// What the engine's sources break of its own layering, as sentences:
+/// `named` is each file's part and the parts it names.
+fn engine_broken(named: &[(String, Vec<String>)]) -> Vec<String> {
+    let mut broken = Vec::new();
+    for (part, names) in named {
+        let may = ENGINE_MAY_NAME
+            .iter()
+            .find(|(held, _)| held == part)
+            .map(|(_, may)| *may);
+        for name in names.iter().filter(|name| *name != part) {
+            if may.is_some_and(|may| !may.contains(&name.as_str())) {
+                broken.push(format!("{part} names crate::{name}, which it stands under"));
+            }
+            let only = ENGINE_NAMED_ONLY_BY
+                .iter()
+                .find(|(kept, _)| kept == name)
+                .map(|(_, only)| *only);
+            if only.is_some_and(|only| !only.contains(&part.as_str())) {
+                broken.push(format!(
+                    "{part} names crate::{name}, which is not its to name"
+                ));
+            }
+        }
+    }
+    broken.sort();
+    broken.dedup();
+    broken
+}
+
+#[test]
+fn the_parts_of_the_engine_name_nothing_above_them() {
+    let Some(root) = repo_root() else {
+        return; // packaged build, nothing to read
+    };
+    let named: Vec<(String, Vec<String>)> = source_files(&root, &["rs"])
+        .iter()
+        .filter_map(|file| {
+            let part = engine_part(&relative(&root, file))?.to_string();
+            let source = std::fs::read_to_string(file).ok()?;
+            Some((part, parts_named(&source)))
+        })
+        .collect();
+    // Every part held to a list is there to be read: a renamed one would
+    // otherwise pass by being absent.
+    for held in ENGINE_MAY_NAME
+        .iter()
+        .chain(&ENGINE_NAMED_ONLY_BY)
+        .map(|(part, _)| *part)
+    {
+        assert!(
+            named.iter().any(|(part, _)| part == held),
+            "no file of the engine's {held} was read"
+        );
+    }
+    let broken = engine_broken(&named);
+    assert!(
+        broken.is_empty(),
+        "{}\n(the parts and what each may name are in this file)",
+        broken.join("\n")
+    );
+}
+
+/// A name that points up is caught in each spelling, and a comment, a test
+/// and the part's own name are passed over.
+#[test]
+fn a_part_of_the_engine_that_names_up_is_caught() {
+    assert_eq!(
+        engine_part("crates/snob-engine/src/system/power/qos.rs"),
+        Some("system")
+    );
+    assert_eq!(
+        engine_part("crates/snob-engine/src/posts.rs"),
+        Some("posts")
+    );
+    assert_eq!(engine_part("crates/snob-engine/src/lib.rs"), None);
+    assert_eq!(engine_part("crates/snob-cli/src/main.rs"), None);
+
+    let source = "\
+//! Says `crate::app` in a comment.
+use crate::{host, system::pipe};
+fn f() { crate::system::env::flag(\"X\"); snob_crate::app::x(); }
+    // crate::watch
+mod tests {
+    use crate::automations;
+}
+";
+    assert_eq!(parts_named(source), ["host", "system", "system"]);
+
+    let of = |part: &str, names: &[&str]| {
+        (
+            part.to_string(),
+            names.iter().map(|name| name.to_string()).collect(),
+        )
+    };
+    assert!(
+        engine_broken(&[
+            of("system", &["host", "system"]),
+            of("browser", &["system", "sentences"]),
+            of("automations", &["watch", "engine"]),
+            of("posts", &["media", "engine"]),
+        ])
+        .is_empty()
+    );
+    assert_eq!(
+        engine_broken(&[
+            of("system", &["app"]),
+            of("engine", &["watch"]),
+            of("media", &["posts"]),
+            of("app", &["watch"]),
+            of("watch", &["automations"]),
+        ]),
+        [
+            "app names crate::watch, which is not its to name",
+            "engine names crate::watch, which is not its to name",
+            "engine names crate::watch, which it stands under",
+            "media names crate::posts, which it stands under",
+            "system names crate::app, which it stands under",
+            "watch names crate::automations, which is not its to name",
         ]
     );
 }

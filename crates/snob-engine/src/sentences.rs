@@ -2,11 +2,12 @@
 //! with no styling and no terminal width.
 
 use snob_core::model::{ListKind, printable};
-use snob_core::{Epoch, EpochMs};
+use snob_core::{Epoch, EpochMs, Pk};
 
 use crate::app::{ConsentInAdvance, Held, Viewer};
 use crate::engine::Provenance;
 use crate::exit::{ExitCode, ExitError};
+use crate::system::sync::lock;
 
 /// What a session stored here that this computer no longer sends as is
 /// (`owner::signed_out`): its account was signed out of here, by a `logout`
@@ -29,12 +30,30 @@ pub fn act_as(viewer: Viewer) {
 
 /// Records the account this run acts as, or that it acts as none.
 pub fn set_acting_as(viewer: Option<Viewer>) {
-    *ACTING_AS.lock().unwrap_or_else(|e| e.into_inner()) = viewer;
+    *lock(&ACTING_AS) = viewer;
 }
 
 /// The account this run acts as, once one has been resolved.
 pub fn acting_as() -> Option<Viewer> {
-    ACTING_AS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    lock(&ACTING_AS).clone()
+}
+
+/// How to name any account to a person: `@someone`, or the id when the name has
+/// not been learned yet.
+pub fn label(pk: Pk, username: Option<&str>) -> String {
+    match username {
+        Some(name) => format!("@{}", printable(name)),
+        None => format!("account {pk}"),
+    }
+}
+
+/// The same rule where the absent case means the viewer rather than an account
+/// whose name is not known yet.
+pub fn target_label(target: Option<&str>) -> String {
+    match target {
+        Some(name) => format!("@{}", printable(name)),
+        None => "your account".to_string(),
+    }
 }
 
 /// "Aug 3 at 14:12", in the local zone like every other moment the tool prints.
@@ -200,7 +219,7 @@ pub fn refuse_cooldown_mid_walk(held: &Held) -> anyhow::Error {
 
 /// A list another snob is walking right now, awake or asleep on the budget.
 pub fn walked_elsewhere(target: Option<&str>, kind: ListKind) -> anyhow::Error {
-    let who = crate::app::target_label(target);
+    let who = target_label(target);
     let minutes = snob_store::store::snapshots::CLAIM_TTL_SECS / 60;
     ExitError::new(
         ExitCode::Error,
@@ -519,6 +538,18 @@ pub fn signed_out_here() -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two of the targets this names come from `watch.toml`, which validates a
+    /// username not at all, and one of those is the banner a scheduled service
+    /// opens with — the first thing a monitor ever prints.
+    #[test]
+    fn naming_a_target_takes_out_what_a_terminal_would_obey() {
+        let shown = target_label(Some("friend\u{1b}[2K"));
+        assert!(!shown.contains('\x1b'), "{shown:?}");
+        assert_eq!(shown, "@friend[2K");
+
+        assert_eq!(target_label(None), "your account");
+    }
 
     /// The time a walk has left says one figure when both ends round to the
     /// same minute, and never "0 minutes".

@@ -220,7 +220,7 @@ fn walk_failed(app: &App, error: WalkError, target: &Target, kind: ListKind) -> 
         // A crossing walks two lists in the same run, so "the walk failed" would
         // not say which one stopped.
         error => {
-            let who = crate::app::target_label(target.username.as_deref());
+            let who = crate::sentences::target_label(target.username.as_deref());
             anyhow::Error::new(error).context(format!("could not read {who}'s {kind} list"))
         }
     }

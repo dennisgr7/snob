@@ -8,6 +8,7 @@ pub mod cooldown;
 pub mod estimate;
 pub mod freshness;
 pub mod people;
+pub mod retention;
 pub mod target;
 pub mod walk;
 
