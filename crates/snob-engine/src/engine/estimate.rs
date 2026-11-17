@@ -47,14 +47,6 @@ pub struct Bucket {
 }
 
 impl Bucket {
-    /// A bucket at rest.
-    pub const fn at_rest(most: u32) -> Self {
-        Self {
-            left: most,
-            free_in_ms: 0,
-        }
-    }
-
     fn of(state: &BucketState, now: EpochMs) -> Self {
         Self {
             left: state.left,
@@ -606,11 +598,13 @@ mod tests {
 
     /// The budget of an account with nothing spent: both buckets at rest.
     fn at_rest() -> (Bucket, Bucket) {
-        let most =
-            |emission: i64, burst: i64| u32::try_from(burst / emission + 1).unwrap_or(u32::MAX);
+        let full = |emission: i64, burst: i64| Bucket {
+            left: u32::try_from(burst / emission + 1).unwrap_or(u32::MAX),
+            free_in_ms: 0,
+        };
         (
-            Bucket::at_rest(most(PACE_EMISSION_MS, PACE_BURST_MS)),
-            Bucket::at_rest(most(DAILY_EMISSION_MS, DAILY_BURST_MS)),
+            full(PACE_EMISSION_MS, PACE_BURST_MS),
+            full(DAILY_EMISSION_MS, DAILY_BURST_MS),
         )
     }
 

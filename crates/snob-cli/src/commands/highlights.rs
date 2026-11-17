@@ -354,10 +354,7 @@ pub async fn fetch_tray(
     // The same three-way rule as `profile`: a private account serves its
     // reels only to its followers, and asking would spend a request on an
     // empty answer and then say "none" for an account that has some.
-    let own = info.id == viewer;
-    let is_private = info.is_private.unwrap_or(false);
-    let you_follow = info.followed_by_viewer.unwrap_or(false);
-    if !(own || !is_private || you_follow) {
+    if !snob_engine::engine::target::shown_to(&info, viewer) {
         return Ok(Fetched::Hidden {
             username: info.username,
         });

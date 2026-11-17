@@ -513,9 +513,7 @@ async fn account_of(
     // The client's own read: a check writes nothing, the cache included.
     match app.client().profile_named(&name, known).await {
         Ok(profile) => {
-            let shown = profile.id == app.viewer().pk
-                || profile.is_private != Some(true)
-                || profile.followed_by_viewer == Some(true);
+            let shown = crate::engine::target::shown_to(&profile, app.viewer().pk);
             what = What::Account {
                 target,
                 pk: Some(profile.id),

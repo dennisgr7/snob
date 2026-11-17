@@ -857,10 +857,7 @@ pub async fn read_grid(
     let info = client
         .profile_named(crate::engine::target::clean(typed), known)
         .await?;
-    let own = info.id == viewer;
-    let is_private = info.is_private.unwrap_or(false);
-    let you_follow = info.followed_by_viewer.unwrap_or(false);
-    if !(own || !is_private || you_follow) {
+    if !crate::engine::target::shown_to(&info, viewer) {
         return Ok((
             Fetched::Hidden {
                 username: info.username,
@@ -920,10 +917,7 @@ pub async fn read_tab(
     let info = client
         .profile_named(crate::engine::target::clean(typed), known)
         .await?;
-    let own = info.id == viewer;
-    let is_private = info.is_private.unwrap_or(false);
-    let you_follow = info.followed_by_viewer.unwrap_or(false);
-    if !(own || !is_private || you_follow) {
+    if !crate::engine::target::shown_to(&info, viewer) {
         return Ok((
             Fetched::Hidden {
                 username: info.username,

@@ -299,9 +299,7 @@ async fn read(
                 &User::named(info.id, info.username.clone()),
             )?;
             accounts::upsert(app.db().conn(), info.id, is_self)?;
-            let is_private = info.is_private.unwrap_or(false);
-            let you_follow = info.followed_by_viewer.unwrap_or(false);
-            if !(is_self || !is_private || you_follow) {
+            if !target::shown_to(&info, app.viewer().pk) {
                 return Ok(PostsLook::skipped(Some(info.id), PostsSkipped::Hidden));
             }
             (info.id, info.username, info.posts.map(|posts| posts.count))

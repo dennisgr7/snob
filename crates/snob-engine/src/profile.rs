@@ -191,7 +191,7 @@ async fn of(client: &IgClient, info: WebProfileInfo, viewer: Pk, reads: Reads) -
 
     // A private account serves its reels, the highlights and the stories,
     // only to its followers.
-    let visible = own || !is_private || you_follow;
+    let visible = target::shown_to(&info, viewer);
 
     let relation = (!own).then(|| Relation {
         you_follow,

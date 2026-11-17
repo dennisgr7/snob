@@ -107,9 +107,9 @@ pub fn held_elsewhere() -> anyhow::Error {
     .into()
 }
 
-/// What [`App::open`] does for a run given `--spend-alone`, for a command that
-/// builds no `App` and sends a request of its own (`whoami`): the account's
-/// `spend.lock`, taken before the request, refused as [`held_elsewhere`] while
+/// The account's `spend.lock` for a run given `--spend-alone`, taken before
+/// any request: by [`App::open`], and by a command that builds no `App` and
+/// sends a request of its own (`whoami`). Refused as [`held_elsewhere`] while
 /// another run holds it, and `None` when the run was not given the flag. Held
 /// as long as the file is.
 pub fn hold_alone(paths: &AccountPaths) -> Result<Option<std::fs::File>> {
@@ -257,15 +257,7 @@ impl App {
 
         // Before anything that could send a request: a run refused here has
         // spent nothing.
-        let alone = if SPEND_ALONE.load(std::sync::atomic::Ordering::SeqCst) {
-            paths.ensure_dirs()?;
-            Some(
-                snob_store::paths::try_lock_file(&paths.spend_lock())?
-                    .ok_or_else(held_elsewhere)?,
-            )
-        } else {
-            None
-        };
+        let alone = hold_alone(paths)?;
 
         // Done here rather than at login because a browser updates long after
         // the session was created, and this is the only moment every command

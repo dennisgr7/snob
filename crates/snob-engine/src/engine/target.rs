@@ -73,6 +73,19 @@ pub fn known_pk_of(app: &App, target: Option<&str>, typed: &str) -> Result<Optio
     }
 }
 
+/// Whether `viewer` is shown what the account `profile` is keeps for its
+/// followers once it is private: its grid and tabs, its highlights and its
+/// stories. Its own, a public account's, and a private one's it follows; a
+/// private account that does not say whether it is followed counts as not.
+///
+/// **A list is held to less** ([`resolve`]): only an account known to be
+/// private and known not to be followed is refused there.
+pub fn shown_to(profile: &snob_ig::model::WebProfileInfo, viewer: Pk) -> bool {
+    profile.id == viewer
+        || !profile.is_private.unwrap_or(false)
+        || profile.followed_by_viewer.unwrap_or(false)
+}
+
 /// Resolves against Instagram when a name was given: from the browser, the
 /// profile as the app opens one, its query and the three reads beside it
 /// (`IgClient::profile_named`), four once the name's pk is known here and
@@ -179,5 +192,35 @@ mod tests {
         assert_eq!(clean("someone"), "someone");
         // Only the leading one: it is not part of any username anyway.
         assert_eq!(clean("@@someone"), "someone");
+    }
+
+    /// One's own account, a public one and a private one followed are shown;
+    /// a private one not followed, or that does not say, is not.
+    #[test]
+    fn a_private_account_shows_its_posts_to_its_followers_alone() {
+        let viewer = Pk::new(1);
+        let profile = |pk: u64, private: Option<bool>, followed: Option<bool>| {
+            let mut profile: snob_ig::model::WebProfileInfo = serde_json::from_value(
+                serde_json::json!({ "id": pk.to_string(), "username": "x" }),
+            )
+            .unwrap();
+            profile.is_private = private;
+            profile.followed_by_viewer = followed;
+            profile
+        };
+        for (pk, private, followed, shown) in [
+            (1, Some(true), Some(false), true),
+            (2, Some(false), Some(false), true),
+            (2, None, None, true),
+            (2, Some(true), Some(true), true),
+            (2, Some(true), Some(false), false),
+            (2, Some(true), None, false),
+        ] {
+            assert_eq!(
+                shown_to(&profile(pk, private, followed), viewer),
+                shown,
+                "account {pk}, private {private:?}, followed {followed:?}"
+            );
+        }
     }
 }
