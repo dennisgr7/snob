@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow, bail};
 use snob_desktop::control::{Answer, CONTROL, Node, Pointing, Request, Said};
-use snob_engine::local_socket::{self, Stream};
+use snob_engine::system::local_socket::{self, Stream};
 use snob_store::paths::AppPaths;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, ReadHalf, WriteHalf};
 

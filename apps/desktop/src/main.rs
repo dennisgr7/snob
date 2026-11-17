@@ -334,7 +334,7 @@ fn main() -> anyhow::Result<()> {
             async move {
                 let finished = runtime
                     .handle()
-                    .spawn(async move { snob_engine::owner::finish(&secrets, &paths).await });
+                    .spawn(async move { snob_engine::browser::owner::finish(&secrets, &paths).await });
                 let _ = finished.await;
                 tracing::info!("the app stopped");
             }

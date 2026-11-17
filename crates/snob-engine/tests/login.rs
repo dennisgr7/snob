@@ -10,10 +10,10 @@
 use std::sync::OnceLock;
 
 use snob_core::Pk;
+use snob_engine::browser::{self, cdp};
 use snob_engine::login::{self, Agent, ByBrowser, Check, Failure, Method, Opened};
 use snob_engine::logout::{self, Who};
 use snob_engine::sandbox::Sandbox;
-use snob_engine::{browser, cdp};
 use snob_fake_ig::world::{self, World};
 use snob_ig::login::BrowserCookies;
 use snob_ig::pace::CancelToken;
@@ -217,7 +217,7 @@ fn every_way_a_browser_login_ends_without_a_session_is_told_apart() {
 fn a_browser() -> Option<browser::Browser> {
     let found = browser::detect();
     if found.is_none() {
-        let required = snob_engine::headless::env_flag("SNOB_TEST_REQUIRE_BROWSER");
+        let required = snob_engine::browser::headless::env_flag("SNOB_TEST_REQUIRE_BROWSER");
         assert!(!required, "no browser is installed, and one is required");
         eprintln!("no browser is installed; skipping");
     }

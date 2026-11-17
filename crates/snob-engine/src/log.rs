@@ -21,6 +21,7 @@ use snob_store::paths::{self, AppPaths};
 use tracing::Level;
 use tracing_subscriber::filter::Targets;
 
+
 /// What is logged, and at which level, and why `spec` (`SNOB_LOG`) was not
 /// taken when it does not parse: the quiet default then, so a typo does not
 /// also silence warnings.
@@ -31,7 +32,7 @@ pub fn filter(verbose: bool, spec: Option<&str>, owner: bool) -> (Targets, Optio
     let quiet = || {
         let quiet = Targets::new().with_default(Level::WARN);
         if owner {
-            quiet.with_target("snob_engine::owner::server", Level::INFO)
+            quiet.with_target("snob_engine::browser::owner::server", Level::INFO)
         } else {
             quiet
         }
@@ -63,10 +64,38 @@ const OURS: [&str; 7] = [
     "snob_desktop",
 ];
 
-/// A `SNOB_LOG` spec with, ahead of every pair that names `snob_cli`, the same
-/// level for where that code lives now: most of what was `snob_cli::<module>`
-/// is `snob_engine::<module>`, and `snob_cli::commands::mcp` is `snob_mcp`, so
-/// a spec written before the crate was split would select nothing.
+/// Where a module of the engine was, and where it is since the engine's were
+/// grouped: the browser's under `browser`, the operating system's under
+/// `system`, the monitor's under `watch`. The longer name first where one
+/// begins another; `::engine` last, which held the monitor.
+const MOVED_IN_THE_ENGINE: [(&str, &str); 16] = [
+    ("::cdp", "::browser::cdp"),
+    ("::headless", "::browser::headless"),
+    ("::owner", "::browser::owner"),
+    ("::detach", "::system::detach"),
+    ("::exe", "::system::exe"),
+    ("::interrupt", "::system::interrupt"),
+    ("::local_socket", "::system::local_socket"),
+    ("::parent", "::system::parent"),
+    ("::pipe", "::system::pipe"),
+    ("::power", "::system::power"),
+    ("::random", "::system::random"),
+    ("::seat", "::system::seat"),
+    ("::engine::watch_posts", "::watch::posts"),
+    ("::engine::watch", "::watch"),
+    ("::engine::check", "::watch::check"),
+    ("::engine", "::watch"),
+];
+
+/// A `SNOB_LOG` spec with, ahead of every pair that names a module by where
+/// it was, the same level for where that code lives now, so a spec a person
+/// saved still selects what it did:
+///
+/// - most of what was `snob_cli::<module>` is `snob_engine::<module>`, and
+///   `snob_cli::commands::mcp` is `snob_mcp`;
+/// - a module of the engine's that was grouped since is under its group
+///   ([`MOVED_IN_THE_ENGINE`]), whichever of the two crates the spec names it
+///   by.
 ///
 /// **Ahead, so a pair the person wrote for the new name wins**: of two pairs
 /// for one target the later is kept. A module that stayed gets a pair that
@@ -77,11 +106,21 @@ fn with_moved_targets(spec: &str) -> String {
         path.strip_prefix(prefix)
             .filter(|rest| rest.is_empty() || rest.starts_with("::") || rest.starts_with('['))
     }
+    /// Where the engine's `module` is now, when it was moved.
+    fn grouped(module: &str) -> Option<String> {
+        MOVED_IN_THE_ENGINE
+            .iter()
+            .find_map(|(was, is)| under(module, was).map(|rest| format!("{is}{rest}")))
+    }
 
     let mut pairs = Vec::new();
     for pair in spec.split(',') {
         let pair = pair.trim();
         let (target, level) = pair.split_at(pair.find('=').unwrap_or(pair.len()));
+        if let Some(module) = under(target, "snob_engine") {
+            pairs.extend(grouped(module).map(|now| format!("snob_engine{now}{level}")));
+            continue;
+        }
         let Some(module) = under(target, "snob_cli") else {
             continue;
         };
@@ -89,6 +128,7 @@ fn with_moved_targets(spec: &str) -> String {
             Some(rest) => pairs.push(format!("snob_mcp{rest}{level}")),
             None => {
                 pairs.push(format!("snob_engine{module}{level}"));
+                pairs.extend(grouped(module).map(|now| format!("snob_engine{now}{level}")));
                 if module.is_empty() || module.starts_with('[') {
                     pairs.push(format!("snob_mcp{module}{level}"));
                 }
@@ -598,7 +638,7 @@ fn error_id() -> String {
     // Without the letters read as digits.
     const LETTERS: &[u8] = b"23456789ABCDEFGHJKMNPQRSTVWXYZ";
     let mut bytes = [0u8; 8];
-    if crate::random::fill_random(&mut bytes).is_err() {
+    if crate::system::random::fill_random(&mut bytes).is_err() {
         bytes = snob_core::clock::now_ms().get().to_le_bytes();
     }
     let mut id = String::with_capacity(9);
@@ -749,13 +789,13 @@ mod tests {
         let (quiet, _) = filter(false, None, false);
         assert!(quiet.would_enable("snob_ig::client", &Level::WARN));
         assert!(!quiet.would_enable("snob_ig::client", &Level::INFO));
-        assert!(!quiet.would_enable("snob_engine::owner::server", &Level::INFO));
+        assert!(!quiet.would_enable("snob_engine::browser::owner::server", &Level::INFO));
 
         // The owner says when it starts, and otherwise no more than a command.
         let (owner, _) = filter(false, None, true);
-        assert!(owner.would_enable("snob_engine::owner::server", &Level::INFO));
-        assert!(!owner.would_enable("snob_engine::owner::server", &Level::DEBUG));
-        assert!(!owner.would_enable("snob_engine::headless", &Level::INFO));
+        assert!(owner.would_enable("snob_engine::browser::owner::server", &Level::INFO));
+        assert!(!owner.would_enable("snob_engine::browser::owner::server", &Level::DEBUG));
+        assert!(!owner.would_enable("snob_engine::browser::headless", &Level::INFO));
 
         let (chosen, ignored) = filter(false, Some("snob_store=debug,warn"), false);
         assert!(ignored.is_none());
@@ -777,12 +817,12 @@ mod tests {
     fn a_spec_that_names_a_module_by_its_old_crate_still_selects_it() {
         let chosen = |spec: &str| filter(false, Some(spec), false).0;
         let old = chosen("snob_cli::headless=debug,snob_cli::commands::mcp=trace,warn");
-        assert!(old.would_enable("snob_engine::headless::guard", &Level::DEBUG));
-        assert!(!old.would_enable("snob_engine::headless::guard", &Level::TRACE));
-        assert!(!old.would_enable("snob_engine::owner::server", &Level::DEBUG));
+        assert!(old.would_enable("snob_engine::browser::headless::guard", &Level::DEBUG));
+        assert!(!old.would_enable("snob_engine::browser::headless::guard", &Level::TRACE));
+        assert!(!old.would_enable("snob_engine::browser::owner::server", &Level::DEBUG));
         assert!(old.would_enable("snob_mcp::child", &Level::TRACE));
         assert!(old.would_enable("snob_mcp", &Level::TRACE));
-        assert!(!old.would_enable("snob_engine::cdp", &Level::INFO));
+        assert!(!old.would_enable("snob_engine::browser::cdp", &Level::INFO));
         assert!(old.would_enable("snob_ig::client", &Level::WARN));
 
         // The whole crate, as it was: the commands, the engine and the server.
@@ -802,7 +842,7 @@ mod tests {
         let stayed = chosen("snob_cli::jobs=debug,snob_client=debug");
         assert!(stayed.would_enable("snob_cli::jobs::start", &Level::DEBUG));
         assert!(stayed.would_enable("snob_engine::jobs::supervise", &Level::DEBUG));
-        assert!(!stayed.would_enable("snob_engine::owner", &Level::DEBUG));
+        assert!(!stayed.would_enable("snob_engine::browser::owner", &Level::DEBUG));
 
         // What the person wrote for the new name is not overridden by what
         // the old one implies, in either order.
@@ -813,7 +853,7 @@ mod tests {
             let both = chosen(spec);
             assert!(both.would_enable("snob_cli::commands::lists", &Level::TRACE));
             assert!(
-                !both.would_enable("snob_engine::owner", &Level::INFO),
+                !both.would_enable("snob_engine::browser::owner", &Level::INFO),
                 "{spec}"
             );
             assert!(both.would_enable("snob_mcp::http", &Level::TRACE), "{spec}");
@@ -822,8 +862,43 @@ mod tests {
         // A spec that does not parse is still said and still quiet.
         assert_eq!(
             with_moved_targets("snob_cli::owner=loud"),
-            "snob_engine::owner=loud,snob_cli::owner=loud"
+            "snob_engine::owner=loud,snob_engine::browser::owner=loud,snob_cli::owner=loud"
         );
+    }
+
+    /// A spec saved before the engine's modules were grouped still selects
+    /// them where they are now, and one written for where they are wins.
+    #[test]
+    fn a_spec_that_names_a_module_by_where_it_was_in_the_engine_still_selects_it() {
+        let chosen = |spec: &str| filter(false, Some(spec), false).0;
+        let old = chosen(
+            "snob_engine::owner=debug,snob_engine::interrupt=info,\
+             snob_engine::engine::watch_posts=trace,snob_engine::engine::check=debug,warn",
+        );
+        assert!(old.would_enable("snob_engine::browser::owner::server", &Level::DEBUG));
+        assert!(!old.would_enable("snob_engine::browser::headless", &Level::INFO));
+        assert!(old.would_enable("snob_engine::system::interrupt", &Level::INFO));
+        assert!(!old.would_enable("snob_engine::system::interrupt", &Level::DEBUG));
+        assert!(old.would_enable("snob_engine::watch::posts", &Level::TRACE));
+        assert!(old.would_enable("snob_engine::watch::check", &Level::DEBUG));
+        assert!(!old.would_enable("snob_engine::watch::webhook", &Level::INFO));
+
+        // The lists' module held the monitor, and a module that only begins
+        // like one that moved did not move.
+        let lists = chosen("snob_engine::engine=debug,snob_engine::pipeline=debug,warn");
+        assert!(lists.would_enable("snob_engine::engine::walk", &Level::DEBUG));
+        assert!(lists.would_enable("snob_engine::watch", &Level::DEBUG));
+        assert!(!lists.would_enable("snob_engine::system::pipe", &Level::INFO));
+
+        for spec in [
+            "snob_engine::owner=trace,snob_engine::browser::owner=warn",
+            "snob_engine::browser::owner=warn,snob_engine::owner=trace",
+        ] {
+            assert!(
+                !chosen(spec).would_enable("snob_engine::browser::owner", &Level::INFO),
+                "{spec}"
+            );
+        }
     }
 
     #[test]

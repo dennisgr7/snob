@@ -29,7 +29,7 @@ pub fn front(with_progress: bool) -> Front {
 /// Hands the engine this process's notices and its terminal's restoring.
 pub fn install() {
     host::tell_notices_to(Box::new(Lines));
-    snob_engine::interrupt::before_a_forced_exit(crate::ui::restore_terminal);
+    snob_engine::system::interrupt::before_a_forced_exit(crate::ui::restore_terminal);
 }
 
 impl host::Progress for Progress {

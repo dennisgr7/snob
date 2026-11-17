@@ -13,7 +13,7 @@ pub(super) fn request(_reason: &'static str) -> Option<Request> {
     // One start at a time with the browsers' (`pipe`), so that none of their
     // pipes is caught open across this one's `exec`.
     let spawned = {
-        let _starting = crate::pipe::one_start_at_a_time();
+        let _starting = crate::system::pipe::one_start_at_a_time();
         Command::new("/usr/bin/caffeinate")
             .arg("-i")
             .arg("-w")

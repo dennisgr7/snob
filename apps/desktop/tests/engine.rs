@@ -72,7 +72,7 @@ fn logged() -> &'static (TempDir, log::Detail, Arc<log::Files>) {
 fn backend() -> Option<(TempDir, Sandbox, Engine)> {
     world();
     if browser::detect().is_none() {
-        let required = snob_engine::headless::env_flag("SNOB_TEST_REQUIRE_BROWSER");
+        let required = snob_engine::browser::headless::env_flag("SNOB_TEST_REQUIRE_BROWSER");
         assert!(!required, "no browser is installed, and one is required");
         eprintln!("no browser is installed; skipping");
         return None;

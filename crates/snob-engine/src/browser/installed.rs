@@ -301,7 +301,7 @@ fn version_of(path: &std::path::Path) -> Option<String> {
     use std::process::Stdio;
 
     let child = {
-        let _starting = crate::pipe::one_start_at_a_time();
+        let _starting = crate::system::pipe::one_start_at_a_time();
         Command::new(path)
             .arg("--version")
             .stdin(Stdio::null())

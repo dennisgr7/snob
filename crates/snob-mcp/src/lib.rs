@@ -16,7 +16,8 @@
 //!   client that takes MCP Tasks gets a task for it (`tasks.rs`).
 
 // What the server reads of the engine, by the names it has always used.
-use snob_engine::{exe, exit, jobs, posts, random, sentences};
+use snob_engine::system::{exe, random};
+use snob_engine::{exit, jobs, posts, sentences};
 
 pub(crate) mod answer;
 pub mod args;

@@ -37,7 +37,7 @@ use snob_ig::allowlist::{Operation, Rediscovered, document, refused_app, refused
 use snob_ig::client::page::{Method, PageRequest};
 use url::Url;
 
-use crate::cdp::Paused;
+use crate::browser::cdp::Paused;
 
 /// The one call of the app's let through that the allowlist does not name,
 /// when its body is empty. The capture notes give only its last two

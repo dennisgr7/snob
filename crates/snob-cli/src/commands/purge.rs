@@ -317,9 +317,9 @@ pub async fn run_for_account(
     // And every other process running as it is refused its next request
     // (`owner::sign_out`), so none starts the browser again on what goes,
     // and none sends again once a login has made the directory again.
-    snob_engine::owner::sign_out(app_paths, &[pk]);
-    snob_engine::owner::release(app_paths, Some(pk)).await;
-    snob_engine::owner::let_go_of(&[app_paths.browser_profile_for(pk)]).await;
+    snob_engine::browser::owner::sign_out(app_paths, &[pk]);
+    snob_engine::browser::owner::release(app_paths, Some(pk)).await;
+    snob_engine::browser::owner::let_go_of(&[app_paths.browser_profile_for(pk)]).await;
     // **The session goes while the jobs lock is held**, and the lock is let
     // go of before the removal, which Windows refuses while a file in it is
     // open: a start waiting on the lock then finds no session and makes
@@ -345,12 +345,15 @@ pub async fn run_everything(
     // Every other process running as one of them is refused its next request
     // (`owner::sign_out`), and once the directory is gone, by that alone,
     // until a login lets in a session of its own.
-    snob_engine::owner::sign_out(app_paths, &pks);
+    snob_engine::browser::owner::sign_out(app_paths, &pks);
     // The whole data directory goes, the owner's log with it, so the owner is
     // asked to leave, not only to close its browsers; after the jobs, which
     // would start it again.
-    snob_engine::owner::quit(app_paths).await;
-    snob_engine::owner::let_go_of(&snob_engine::headless::profile::every_profile(app_paths)).await;
+    snob_engine::browser::owner::quit(app_paths).await;
+    snob_engine::browser::owner::let_go_of(
+        &snob_engine::browser::headless::profile::every_profile(app_paths),
+    )
+    .await;
     // The sessions go while the jobs locks are held (see `run_for_account`).
     finish(&plan, &store, app_paths, || drop(stopping))
 }
@@ -498,7 +501,7 @@ fn finish(
 
 /// Says where the executable is, since this command deliberately leaves it.
 fn report_the_binary() {
-    let location = match snob_engine::exe::program() {
+    let location = match snob_engine::system::exe::program() {
         Ok(path) => format!(
             "\nThe binary itself is still installed, at {}.",
             path.display()

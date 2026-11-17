@@ -44,7 +44,7 @@ pub(super) async fn deliver(
     };
     let shown = snob_engine::watch::webhook::shown(&delivery.destination);
 
-    let cancel = snob_engine::interrupt::install();
+    let cancel = snob_engine::system::interrupt::install();
     let tried = drain_all(paths, &cancel, &delivery, true).await;
 
     let left = owed_all(paths, &delivery.destination);

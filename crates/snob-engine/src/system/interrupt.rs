@@ -32,17 +32,18 @@ pub fn stop_when_stdin_closes() {
 }
 
 /// The parent [`stop_when_parent_exits`] opened, until the handler takes it.
-static PARENT: std::sync::Mutex<Option<crate::parent::Parent>> = std::sync::Mutex::new(None);
+static PARENT: std::sync::Mutex<Option<crate::system::parent::Parent>> =
+    std::sync::Mutex::new(None);
 
 /// Makes the parent process going one more way of asking the process to stop,
 /// taken as the system's requests are (no message, exit 130), **when it is
 /// worth watching** (`parent::worth_watching`: a program drives this process,
 /// and nobody detached it on purpose).
 pub fn stop_when_parent_exits(detached_command: bool) {
-    if !crate::parent::worth_watching(crate::parent::situation(detached_command)) {
+    if !crate::system::parent::worth_watching(crate::system::parent::situation(detached_command)) {
         return;
     }
-    let parent = crate::parent::arm();
+    let parent = crate::system::parent::arm();
     *PARENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(parent);
 }
 
@@ -248,7 +249,7 @@ impl Requests {
             use tokio::signal::unix::{SignalKind, signal};
             // `nohup` left `SIGHUP` ignored: somebody asked for this process to
             // outlive its terminal, and listening would undo it.
-            let hangup = if crate::parent::hangup_ignored() {
+            let hangup = if crate::system::parent::hangup_ignored() {
                 None
             } else {
                 signal(SignalKind::hangup()).ok()

@@ -60,7 +60,7 @@ pub const SCHEMA: u32 = 1;
 /// call's child (`snob_mcp::child`), for the same reason.
 pub const GRACE: Duration = Duration::from_secs(30);
 
-pub use crate::detach::NEVER_INHERITED;
+pub use crate::system::detach::NEVER_INHERITED;
 
 /// How long a job may wait for its supervisor before it counts as lost: it
 /// is started at once, so a job still queued after this never will be.

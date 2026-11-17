@@ -220,7 +220,7 @@ impl Tui {
         let raw = disable_raw_mode();
         // Back to a command in a terminal, which somebody waits on, whatever
         // the view's focus last said (`owner::attended`).
-        snob_engine::owner::attended(true);
+        snob_engine::browser::owner::attended(true);
         crate::ui::browser::input::focus_unknown();
         modes.and(raw)?;
         self.active = false;

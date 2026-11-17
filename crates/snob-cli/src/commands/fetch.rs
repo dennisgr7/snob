@@ -47,7 +47,7 @@ pub async fn run(
                 )
             })?,
     };
-    let cdn = CdnClient::new(&user_agent, site, snob_engine::interrupt::install())?;
+    let cdn = CdnClient::new(&user_agent, site, snob_engine::system::interrupt::install())?;
     // The client holds the address to the same rule again, and every
     // redirect hop after it.
     cdn.check_downloadable(&url)?;

@@ -337,7 +337,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 // `--max-wait` is the server's to hand each child, which
                 // waits as long as what it runs allows (`mcp::Waits`).
                 let launch = snob_mcp::child::Launch::new(
-                    snob_engine::exe::program()?,
+                    snob_engine::system::exe::program()?,
                     mcp_globals(&cli, None)?,
                 );
                 // The account the server is held to, by a flag or by the
@@ -385,11 +385,11 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     }
     if let Command::BrowserOwner = cli.command {
         let linger = if keyring_namespace.is_some() {
-            snob_engine::owner::Linger::for_a_sandbox()
+            snob_engine::browser::owner::Linger::for_a_sandbox()
         } else {
-            snob_engine::owner::Linger::for_people()
+            snob_engine::browser::owner::Linger::for_people()
         };
-        boxed(|| snob_engine::owner::serve(&paths, linger)).await?;
+        boxed(|| snob_engine::browser::owner::serve(&paths, linger)).await?;
         return Ok(ExitCode::Ok);
     }
     let store = SecretStore::new(paths.clone(), no_keyring);
@@ -405,7 +405,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Purge(_) | Command::Import(_) | Command::Fetch(_)
     ) && snob_store::layout::pending(&paths)
     {
-        boxed(|| snob_engine::owner::quit(&paths)).await;
+        boxed(|| snob_engine::browser::owner::quit(&paths)).await;
         let settled = snob_store::layout::settle(&paths, &store)?;
         if let Some(parked) = settled.parked {
             snob_cli::ui::warn(&format!(
@@ -431,22 +431,22 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 
     // Every request to Instagram goes out from a browser from here on, unless
     // this run was told not to — see `headless/`.
-    if !snob_engine::headless::env_flag("SNOB_NO_BROWSER") {
-        let start = if snob_engine::headless::env_flag("SNOB_NO_OWNER") {
+    if !snob_engine::browser::headless::env_flag("SNOB_NO_BROWSER") {
+        let start = if snob_engine::browser::headless::env_flag("SNOB_NO_OWNER") {
             None
         } else {
             Some(owner_args(&cli)?)
         };
-        snob_engine::owner::install(&paths, start);
+        snob_engine::browser::owner::install(&paths, start);
     }
-    snob_engine::owner::attended(somebody_waits(&cli));
+    snob_engine::browser::owner::attended(somebody_waits(&cli));
     // A copy for the command, which consumes its store; the write-back needs
     // the same store, on the same keyring service, once it is done.
     let for_the_command = store.clone();
     let outcome = boxed(|| dispatch(cli, for_the_command, &paths, sandboxed)).await;
     // Whatever the command came to: the browser kept the session current
     // while it ran, and the stored copy learns what it kept.
-    boxed(|| snob_engine::owner::finish(&store, &paths)).await;
+    boxed(|| snob_engine::browser::owner::finish(&store, &paths)).await;
     outcome
 }
 
@@ -686,7 +686,7 @@ async fn dispatch(
 /// command.
 fn owner_args(cli: &Cli) -> anyhow::Result<Vec<std::ffi::OsString>> {
     let mut args = detached_globals(cli)?;
-    args.push(snob_engine::owner::COMMAND.into());
+    args.push(snob_engine::browser::owner::COMMAND.into());
     Ok(args)
 }
 

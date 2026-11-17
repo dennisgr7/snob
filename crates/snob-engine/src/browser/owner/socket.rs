@@ -1,13 +1,13 @@
 //! Where the owner listens and how a command reaches it: one
-//! [`local_socket`](crate::local_socket) per data directory, which admits
+//! [`local_socket`](crate::system::local_socket) per data directory, which admits
 //! only the user running snob, on both ends.
 
 use std::io;
 
 use snob_store::paths::AppPaths;
 
-use crate::local_socket::{self, Endpoint};
-pub(super) use crate::local_socket::{
+use crate::system::local_socket::{self, Endpoint};
+pub(super) use crate::system::local_socket::{
     Listener, Owner, ServerStream, Stream, nobody_there, owner_of,
 };
 

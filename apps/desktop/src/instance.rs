@@ -3,12 +3,12 @@
 //! app**: both run at once, and the engine's own locks keep them apart.
 //!
 //! The first instance listens where only this user reaches it
-//! (`snob_engine::local_socket`), one listener per data directory, so a test
+//! (`snob_engine::system::local_socket`), one listener per data directory, so a test
 //! build in its sandbox is never taken for the real app.
 
 use std::time::Duration;
 
-use snob_engine::local_socket::{self, Endpoint, Listener};
+use snob_engine::system::local_socket::{self, Endpoint, Listener};
 use snob_store::paths::AppPaths;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 

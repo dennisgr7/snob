@@ -748,7 +748,7 @@ pub enum Command {
 
     /// The process that runs the browsers for every command (`owner`).
     /// Started by the commands themselves; nobody types it.
-    #[command(name = snob_engine::owner::COMMAND, hide = true)]
+    #[command(name = snob_engine::browser::owner::COMMAND, hide = true)]
     BrowserOwner,
 
     /// The updater's own processes (`update`): started by the commands;

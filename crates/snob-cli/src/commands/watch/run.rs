@@ -38,7 +38,7 @@ pub(super) async fn run_viewers(
     timing: RunTiming,
 ) -> RunSummary {
     started(paths, timing.began_at);
-    let cancel = snob_engine::interrupt::install();
+    let cancel = snob_engine::system::interrupt::install();
     run_groups(
         paths,
         watched,
@@ -51,7 +51,7 @@ pub(super) async fn run_viewers(
                 crate::front::front(with_progress)
             })?;
             Ok(opened.map(|mut app| {
-                app.stops_on_a_critical_battery(snob_engine::power::battery::critical);
+                app.stops_on_a_critical_battery(snob_engine::system::power::battery::critical);
                 Box::new(app)
             }))
         },
@@ -74,7 +74,7 @@ fn started(paths: &AppPaths, at: Epoch) {
 /// system is about to hibernate or shut down under a run started now
 /// (`power::battery`).
 pub(super) fn waits_for_power(paths: &AppPaths, now: Epoch) -> bool {
-    if !snob_engine::power::battery::critical() {
+    if !snob_engine::system::power::battery::critical() {
         return false;
     }
     match Shared::open(paths) {

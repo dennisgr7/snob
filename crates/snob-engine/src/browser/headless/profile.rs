@@ -28,7 +28,7 @@ pub(super) async fn sync_cookies(
         .host_str()
         .unwrap_or_default()
         .to_string();
-    let on_instagram = crate::cdp::is_instagram(&host);
+    let on_instagram = crate::browser::cdp::is_instagram(&host);
     let named = |c: &Value, name: &str| c.get("name").and_then(Value::as_str) == Some(name);
 
     let jar = live.cdp.cookies().await?;
@@ -163,8 +163,8 @@ enum Needs {
 /// Whether a cookie on `domain` is the site's at `host`: any of Instagram's
 /// on Instagram, and elsewhere, such as a local fake, the host's own.
 fn of_site(host: &str, domain: &str) -> bool {
-    if crate::cdp::is_instagram(host) {
-        crate::cdp::is_instagram(domain)
+    if crate::browser::cdp::is_instagram(host) {
+        crate::browser::cdp::is_instagram(domain)
     } else {
         domain.trim_start_matches('.') == host
     }

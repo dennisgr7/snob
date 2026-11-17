@@ -8,7 +8,7 @@ use snob_store::paths::AppPaths;
 
 use super::tab::{evaluate, navigate_tab};
 use super::{COMMAND_TIMEOUT, attach_to_a_tab};
-use crate::cdp::Cdp;
+use crate::browser::cdp::Cdp;
 
 /// What this browser says about the machine: the brands, the architecture, the
 /// bitness, the operating system's version — the client hints a page can ask
@@ -145,7 +145,7 @@ async fn ask_without_the_flag(
     let dir = Throwaway(dir);
     let cancel = CancelToken::default();
     let flags = ["--headless=new".to_string()];
-    let launched = crate::cdp::launch_headless(browser, &dir.0, &flags)?;
+    let launched = crate::browser::cdp::launch_headless(browser, &dir.0, &flags)?;
     let cdp = Cdp::connect(launched, &cancel).await?;
     let found = match attach_to_a_tab(&cdp).await {
         Ok(tab) => probe_platform(&cdp, &tab.session).await,

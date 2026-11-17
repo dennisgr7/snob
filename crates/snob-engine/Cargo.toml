@@ -62,14 +62,14 @@ base64.workspace = true
 # Launching the browser with the debugging protocol on a pipe. Windows needs the
 # handle-inheritance blob and the job object; Unix needs `dup2`. Neither is
 # reachable through `std::process::Command`, and the reasoning is in
-# `src/pipe.rs`.
+# `src/system/pipe.rs`.
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
-# Asking logind to hold off idle sleep while a walk reads (`src/power/`).
+# Asking logind to hold off idle sleep while a walk reads (`src/system/power/`).
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus.workspace = true
 

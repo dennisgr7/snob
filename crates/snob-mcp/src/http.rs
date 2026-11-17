@@ -237,7 +237,7 @@ pub async fn serve(
     // (`Server::consent` asks a form first), so whoever holds the key can
     // confirm a write whatever this says, which [`writes_warning`] tells.
     let in_chat = settings.in_chat.unwrap_or(ConfirmInChat::Lists);
-    let closing = snob_engine::interrupt::install();
+    let closing = snob_engine::system::interrupt::install();
     let server = Server::new(launch, &settings, in_chat, closing.clone())?;
     let in_flight = Arc::clone(&server.in_flight);
 

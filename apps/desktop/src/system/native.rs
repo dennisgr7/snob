@@ -197,11 +197,11 @@ impl System for Native {
     }
 
     fn attended(&self, attended: bool) {
-        snob_engine::owner::attended(attended);
+        snob_engine::browser::owner::attended(attended);
     }
 
     fn rest(&self, resting: bool) {
-        use snob_engine::power::qos::{Mode, this_program};
+        use snob_engine::system::power::qos::{Mode, this_program};
         tracing::debug!(resting, "the app rests");
         this_program(if resting { Mode::Eco } else { Mode::Normal });
     }

@@ -43,7 +43,7 @@ pub fn spawn(
 /// compares names, without case: `snob_mcp_key` is the same variable.
 #[cfg(windows)]
 fn never_inherited(name: &std::ffi::OsStr) -> bool {
-    crate::detach::NEVER_INHERITED
+    crate::system::detach::NEVER_INHERITED
         .iter()
         .any(|kept| name.eq_ignore_ascii_case(kept))
 }
@@ -51,7 +51,7 @@ fn never_inherited(name: &std::ffi::OsStr) -> bool {
 /// Takes `jobs::NEVER_INHERITED` out of what `command` passes on.
 #[cfg(unix)]
 pub(crate) fn without_what_is_never_inherited(command: &mut std::process::Command) {
-    for name in crate::detach::NEVER_INHERITED {
+    for name in crate::system::detach::NEVER_INHERITED {
         command.env_remove(name);
     }
 }
@@ -165,7 +165,7 @@ mod platform {
         // One start at a time with the browsers' (`pipe`), so that none of
         // their pipes is caught open across this one's `exec`.
         let mut child = {
-            let _starting = crate::pipe::one_start_at_a_time();
+            let _starting = crate::system::pipe::one_start_at_a_time();
             command.spawn()?
         };
         // Reaped by whoever is still here when it leaves: a command that
@@ -265,7 +265,7 @@ mod platform {
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        let dir = crate::pipe::wide(&dir.display().to_string());
+        let dir = crate::system::pipe::wide(&dir.display().to_string());
         let environment = super::environment_block(std::env::vars_os());
 
         let mut attribute_size: usize = 0;
@@ -316,7 +316,7 @@ mod platform {
         let mut result: io::Result<super::Started> =
             Err(io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32));
         for (flags, left_job) in [(plain | CREATE_BREAKAWAY_FROM_JOB, true), (plain, false)] {
-            let mut command_line = crate::pipe::command_line(program, &args);
+            let mut command_line = crate::system::pipe::command_line(program, &args);
             // SAFETY: an out parameter; all-zero is what it is handed.
             let mut information: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
             // SAFETY: every pointer is to storage that outlives the call, and
@@ -473,7 +473,7 @@ mod tests {
             .filter(|(_, value)| value.is_none())
             .map(|(name, _)| name)
             .collect();
-        for name in crate::detach::NEVER_INHERITED {
+        for name in crate::system::detach::NEVER_INHERITED {
             assert!(removed.contains(&std::ffi::OsStr::new(name)), "{name}");
         }
     }

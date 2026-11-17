@@ -117,7 +117,7 @@ pub async fn run(
     }
     write(&dir, "state.json", &state)?;
 
-    let mut command = std::process::Command::new(crate::exe::program()?);
+    let mut command = std::process::Command::new(crate::system::exe::program()?);
     command
         .args(walk_args(&checked.args)?)
         .stdin(Stdio::piped())
@@ -143,7 +143,7 @@ pub async fn run(
     state.child_pid = Some(child.id());
     write(&dir, "state.json", &state)?;
 
-    let token = crate::interrupt::install();
+    let token = crate::system::interrupt::install();
     // Held, never written: dropping it is the request to stop.
     let mut stdin = child.stdin.take();
     let mut asked: Option<Instant> = None;

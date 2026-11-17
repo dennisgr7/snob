@@ -69,7 +69,7 @@ pub(super) async fn scheduled(
 
     // Installed once for the process, which is what lets this open an `App` per
     // run without leaving a signal listener behind on each one.
-    let cancel = snob_engine::interrupt::install();
+    let cancel = snob_engine::system::interrupt::install();
     let printing = Printing::unattended(args.output.json);
     let (held, entries, to) = (&secrets, &watched, delivery.as_ref());
     let with_progress = !args.progress.no_progress;
@@ -194,7 +194,7 @@ pub(super) async fn scheduled(
             // what it rotated is written back now, and the browser is left to
             // its owner, which closes it once idle (or closed here, when this
             // process runs its own).
-            snob_engine::owner::finish(&secrets, paths).await;
+            snob_engine::browser::owner::finish(&secrets, paths).await;
             continue;
         }
 
@@ -243,7 +243,7 @@ async fn run_the_due(
     if ran.is_empty() {
         return false;
     }
-    snob_engine::owner::finish(secrets, paths).await;
+    snob_engine::browser::owner::finish(secrets, paths).await;
     true
 }
 
@@ -258,7 +258,7 @@ async fn only_the_app(
     ui::info(
         "Running the automations made in the app, each on its own schedule. Stop with Ctrl+C.",
     );
-    let cancel = snob_engine::interrupt::install();
+    let cancel = snob_engine::system::interrupt::install();
     let printing = Printing::unattended(args.output.json);
     loop {
         run_the_due(secrets, paths, printing, !args.progress.no_progress, in_use).await;

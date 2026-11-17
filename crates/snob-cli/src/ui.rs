@@ -177,8 +177,8 @@ pub enum LoginMethod {
 /// **Every label fits an 80-column terminal** with the menu's pointer in
 /// front of it: the menu clips a row at the edge, and the words a long label
 /// loses there are its last ones, which is where "(recommended)" is.
-pub fn login_methods(seat: &snob_engine::seat::Seat) -> Vec<(LoginMethod, &'static str)> {
-    use snob_engine::seat::Window;
+pub fn login_methods(seat: &snob_engine::system::seat::Seat) -> Vec<(LoginMethod, &'static str)> {
+    use snob_engine::system::seat::Window;
     const REMOTE: &str = "Log in from the browser of the computer you are at, over SSH";
     const REMOTE_FIRST: &str =
         "Log in from the browser of the computer you are at, over SSH  (recommended)";
@@ -208,7 +208,7 @@ pub fn login_methods(seat: &snob_engine::seat::Seat) -> Vec<(LoginMethod, &'stat
 }
 
 /// Arrow-key selection menu. Returns `None` if canceled with Esc.
-pub fn choose_login_method(seat: &snob_engine::seat::Seat) -> Result<Option<LoginMethod>> {
+pub fn choose_login_method(seat: &snob_engine::system::seat::Seat) -> Result<Option<LoginMethod>> {
     let methods = login_methods(seat);
     let labels: Vec<&str> = methods.iter().map(|(_, label)| *label).collect();
     let chosen = menu::choose("How do you want to log in?", &labels)?;
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn the_login_menu_follows_the_seat() {
         use super::{LoginMethod, login_methods};
-        use snob_engine::seat::{Seat, Window};
+        use snob_engine::system::seat::{Seat, Window};
         let at = |window| Seat { ssh: None, window };
         let order = |window| -> Vec<LoginMethod> {
             login_methods(&at(window))

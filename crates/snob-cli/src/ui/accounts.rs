@@ -236,7 +236,7 @@ pub async fn pick(
                 tui.suspend()?;
                 let added = crate::commands::login::add_by_browser(secrets.clone(), paths).await;
                 tui.resume()?;
-                if snob_engine::interrupt::interrupted() {
+                if snob_engine::system::interrupt::interrupted() {
                     return Ok(Picked::Leave(ExitCode::Interrupted));
                 }
                 picker.note = match added {

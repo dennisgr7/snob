@@ -77,7 +77,7 @@ pub async fn run(
     // not checked with Instagram, `--offline` or not: it is said as what it
     // is, with the code of having none, which every command refuses it with
     // at its start (`App::open`).
-    let signed_out = snob_engine::owner::signed_out(paths, &session);
+    let signed_out = snob_engine::browser::owner::signed_out(paths, &session);
     if signed_out {
         alive = Some(false);
         code = ExitCode::NoSession;
@@ -93,8 +93,10 @@ pub async fn run(
     } else if !args.offline {
         // Through `app::pacer_saying_a_line`, so Ctrl+C reaches the request
         // and a wait the budget imposes is announced.
-        let pacer =
-            snob_engine::app::pacer_saying_a_line(paths, snob_engine::interrupt::install())?;
+        let pacer = snob_engine::app::pacer_saying_a_line(
+            paths,
+            snob_engine::system::interrupt::install(),
+        )?;
 
         // A cooldown means nothing is spent, and checking a session is a
         // request like any other.

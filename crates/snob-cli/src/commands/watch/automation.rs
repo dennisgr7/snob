@@ -184,7 +184,7 @@ async fn run_program(
         .await;
         fold(&mut summary, found);
         if let Some(delivery) = delivery.as_ref() {
-            let cancel = snob_engine::interrupt::install();
+            let cancel = snob_engine::system::interrupt::install();
             drain_all(paths, &cancel, delivery, false).await;
         }
     }
@@ -230,7 +230,7 @@ async fn read_others(
             viewers.push(viewer);
         }
     }
-    let cancel = snob_engine::interrupt::install();
+    let cancel = snob_engine::system::interrupt::install();
     for viewer in viewers {
         if cancel.is_canceled() {
             break;
@@ -266,7 +266,7 @@ async fn read_others(
             }
         };
         app.consent_comes_from_the_config();
-        app.stops_on_a_critical_battery(snob_engine::power::battery::critical);
+        app.stops_on_a_critical_battery(snob_engine::system::power::battery::critical);
         for (index, read) in reads
             .iter()
             .filter(|read| read.account.viewer.or(in_use) == viewer)

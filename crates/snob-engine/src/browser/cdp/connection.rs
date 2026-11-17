@@ -32,7 +32,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::pipe::{Frame, Message, PipeTransport};
+use crate::system::pipe::{Frame, Message, PipeTransport};
 
 /// Chromium's answer to a command for a session it does not know: the target
 /// went away between the command being written and read.
@@ -64,7 +64,7 @@ impl std::fmt::Display for CallError {
             Self::TooLarge { method } => write!(
                 f,
                 "the browser's answer to {method} was larger than {} MiB, and was dropped",
-                crate::pipe::MAX_MESSAGE_BYTES / (1024 * 1024)
+                crate::system::pipe::MAX_MESSAGE_BYTES / (1024 * 1024)
             ),
             Self::TimedOut { method } => write!(f, "the browser stopped answering ({method})"),
             Self::Closed { method, reason } => write!(

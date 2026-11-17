@@ -101,7 +101,7 @@ pub enum Raw {
 ///
 /// **A stop the system asked for arrives as a Ctrl+C.**
 pub fn read(timeout: Duration) -> std::io::Result<Raw> {
-    if snob_engine::interrupt::asked_by_the_system() {
+    if snob_engine::system::interrupt::asked_by_the_system() {
         return Ok(Raw::Key(system_stop()));
     }
     if !event::poll(timeout)? {
@@ -113,12 +113,12 @@ pub fn read(timeout: Duration) -> std::io::Result<Raw> {
         // while nobody looked is put on screen as they come back.
         Event::FocusGained => {
             FOCUSED.store(true, Ordering::Relaxed);
-            snob_engine::owner::attended(true);
+            snob_engine::browser::owner::attended(true);
             Raw::Resized
         }
         Event::FocusLost => {
             FOCUSED.store(false, Ordering::Relaxed);
-            snob_engine::owner::attended(false);
+            snob_engine::browser::owner::attended(false);
             Raw::Tick
         }
         Event::Paste(text) => Raw::Paste(text),

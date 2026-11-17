@@ -20,7 +20,7 @@ use snob_ig::web::AppCalls;
 use snob_store::paths::AccountPaths;
 
 use super::lock;
-use crate::cdp::{Connection, Event};
+use crate::browser::cdp::{Connection, Event};
 
 /// The name snob's own fetch script runs under, which the browser reports as
 /// the initiator of every request it sends.

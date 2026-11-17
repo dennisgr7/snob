@@ -14,7 +14,7 @@ use snob_store::store::rate_budget::SqliteRateBudget;
 
 use crate::engine::target;
 use crate::host::{Front, Progress, Wait};
-use crate::interrupt;
+use crate::system::interrupt;
 
 /// The account the run is acting as, when there is one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,11 +91,11 @@ pub fn max_wait() -> Option<std::time::Duration> {
 
 /// `--stop-when-stdin-closes`, beside `--max-wait`: the other run-wide
 /// setting `main` hands every pacer, through the cancellation token.
-pub use crate::interrupt::stop_when_stdin_closes;
+pub use crate::system::interrupt::stop_when_stdin_closes;
 
 /// And stopping when the parent goes, which `main` asks of every command and
 /// which watches only where a program drives the run (`parent`).
-pub use crate::interrupt::stop_when_parent_exits;
+pub use crate::system::interrupt::stop_when_parent_exits;
 
 /// `--spend-alone`, set once by `main` before any command runs.
 static SPEND_ALONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -268,7 +268,7 @@ impl App {
                 session.ds_user_id
             );
         }
-        if crate::owner::signed_out(paths, &session) {
+        if crate::browser::owner::signed_out(paths, &session) {
             return Err(crate::sentences::signed_out_here());
         }
 
@@ -299,7 +299,7 @@ impl App {
         };
         crate::sentences::act_as(viewer.clone());
         // Before the client is built: it sends from the browsers.
-        crate::owner::ensure(paths);
+        crate::browser::owner::ensure(paths);
 
         let db = Store::open(paths)?;
         // Retention, for the commands that are not the monitor.

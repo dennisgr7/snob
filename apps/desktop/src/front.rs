@@ -48,7 +48,7 @@ impl Notices for Lines {
 ///
 /// **The engine starts a binary for the owner of the browsers, a job and an
 /// update, and that binary is the command line, never this app**
-/// (`snob_engine::exe::start_as`): the app has none of its hidden commands.
+/// (`snob_engine::system::exe::start_as`): the app has none of its hidden commands.
 pub fn snob_beside_the_app() -> Option<PathBuf> {
     let name = if cfg!(windows) { "snob.exe" } else { "snob" };
     let beside = std::env::current_exe().ok()?.parent()?.join(name);
@@ -62,7 +62,7 @@ pub fn hand_over() -> (Lines, bool) {
     snob_engine::host::tell_notices_to(Box::new(lines.clone()));
     let found = match snob_beside_the_app() {
         Some(program) => {
-            snob_engine::exe::start_as(program);
+            snob_engine::system::exe::start_as(program);
             true
         }
         None => false,

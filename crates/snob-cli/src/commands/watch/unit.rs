@@ -18,7 +18,7 @@ const ASK_EVERY_MINUTES: u32 = 15;
 const RUN: [&str; 3] = ["watch", "once", "--when-due"];
 
 pub(super) fn unit(args: WatchUnitArgs, paths: &snob_store::paths::AppPaths) -> Result<ExitCode> {
-    let exe = snob_engine::exe::to_print(
+    let exe = snob_engine::system::exe::to_print(
         "a scheduler started from it stops working once an upgrade removes that directory; \
          print the unit again after an upgrade",
     )?;

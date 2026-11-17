@@ -99,7 +99,7 @@ pub async fn start(
         ),
         // Refused as the walk would refuse it at its start (`App::open`),
         // the check ahead of an agent's question included.
-        Some(session) if snob_engine::owner::signed_out(account, &session) => {
+        Some(session) if snob_engine::browser::owner::signed_out(account, &session) => {
             return Err(snob_engine::sentences::signed_out_here());
         }
         Some(_) => {}
@@ -170,7 +170,7 @@ pub async fn start(
         Made::Reused(id) => (id, false),
     };
 
-    let token = snob_engine::interrupt::install();
+    let token = snob_engine::system::interrupt::install();
     let look = || -> Result<snob_engine::jobs::Seen> {
         snob_engine::jobs::look(account, &id, snob_core::clock::now_ms().get())?
             .ok_or_else(|| show::no_such_job(id.as_str()))
@@ -346,7 +346,7 @@ fn make(
     };
     // Asked again under the lock, as the session is: a logout may have
     // signed it out while this waited on it.
-    if snob_engine::owner::signed_out(account, &session) {
+    if snob_engine::browser::owner::signed_out(account, &session) {
         return Err(snob_engine::sentences::signed_out_here());
     }
     let now = snob_core::clock::now_ms().get();
@@ -368,8 +368,8 @@ fn make(
     args.extend([COMMAND.into(), "run".into(), id.as_str().into()]);
     // The program is this one, never a path read from anywhere (AGENTS.md,
     // "The MCP server": a supervisor runs itself).
-    let exe = snob_engine::exe::program()?;
-    let started = snob_engine::detach::spawn(
+    let exe = snob_engine::system::exe::program()?;
+    let started = snob_engine::system::detach::spawn(
         &exe,
         &args,
         None,

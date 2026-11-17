@@ -13,7 +13,7 @@ use gpui_kit::base::test_support;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AnyWindowHandle, App, AsyncApp, ElementId, Entity, px, size};
 use serde::{Deserialize, Serialize};
-use snob_engine::local_socket::{self, Endpoint, Listener};
+use snob_engine::system::local_socket::{self, Endpoint, Listener};
 use snob_store::paths::AppPaths;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::sync::{mpsc, oneshot};

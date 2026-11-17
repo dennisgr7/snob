@@ -110,7 +110,7 @@ fn run(mut command: Command, cancel: &CancelToken, within: Duration) -> Result<(
     // its own browser may be starting it, and ffmpeg must inherit no end of
     // its pipe.
     let spawned = {
-        let _starting = crate::pipe::one_start_at_a_time();
+        let _starting = crate::system::pipe::one_start_at_a_time();
         command.spawn()
     };
     let mut child = spawned.map_err(|e| anyhow!("ffmpeg would not start: {e}"))?;

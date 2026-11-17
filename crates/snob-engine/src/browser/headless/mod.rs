@@ -42,7 +42,7 @@ use snob_ig::pace::CancelToken;
 use snob_ig::web::{Ask, Call, Seen, SentToken, Told, Unbuilt};
 use snob_store::paths::{AccountPaths, AppPaths};
 
-use crate::cdp::Cdp;
+use crate::browser::cdp::Cdp;
 
 mod guard;
 mod identity;
@@ -66,7 +66,7 @@ const SETTLE: Duration = Duration::from_millis(1_500);
 
 /// How long a single browser command may take when it is not a fetch: what
 /// any browser command gets.
-const COMMAND_TIMEOUT: Duration = crate::cdp::CALL_TIMEOUT;
+const COMMAND_TIMEOUT: Duration = crate::browser::cdp::CALL_TIMEOUT;
 
 /// How long a browser is kept after its last request, whether or not a command
 /// that used it is still connected: an interactive view left open does not hold
@@ -108,7 +108,7 @@ const APP_CALLS_QUIET: Duration = Duration::from_secs(1);
 /// The most a page may hand back, measured the way it travels: as a protocol
 /// message on the pipe, where every character outside printable ASCII is six
 /// bytes (`\uXXXX`) and a quote or backslash two.
-const PAGE_WIRE_CAP: u64 = (crate::pipe::MAX_MESSAGE_BYTES - 2 * 1024 * 1024) as u64;
+const PAGE_WIRE_CAP: u64 = (crate::system::pipe::MAX_MESSAGE_BYTES - 2 * 1024 * 1024) as u64;
 
 /// How much of the app's answers the browser keeps for the listener to read:
 /// enough for a page's API calls, which are what it judges, and no more.
@@ -146,7 +146,7 @@ pub(crate) fn alone(paths: &AppPaths) -> Arc<Headless> {
     headless.waits.store(true, Ordering::SeqCst);
     headless
         .attended_otherwise
-        .store(crate::owner::is_attended(), Ordering::SeqCst);
+        .store(crate::browser::owner::is_attended(), Ordering::SeqCst);
     REAPING.call_once(|| {
         let reaped = Arc::clone(&headless);
         tokio::spawn(async move {
@@ -183,10 +183,10 @@ pub(crate) fn attended_here(attended: bool) {
 /// A mode forced from the environment, `SNOB_TEST_QOS=eco` or `normal`, for the
 /// measurement in `tests/headless.rs` that compares the two.
 #[cfg(feature = "testing")]
-fn forced_mode() -> Option<crate::power::qos::Mode> {
+fn forced_mode() -> Option<crate::system::power::qos::Mode> {
     match std::env::var("SNOB_TEST_QOS").ok()?.as_str() {
-        "eco" => Some(crate::power::qos::Mode::Eco),
-        "normal" => Some(crate::power::qos::Mode::Normal),
+        "eco" => Some(crate::system::power::qos::Mode::Eco),
+        "normal" => Some(crate::system::power::qos::Mode::Normal),
         _ => None,
     }
 }
@@ -348,7 +348,7 @@ struct Live {
     asked_document: Option<(String, String)>,
     /// What it was last moved to (`power::qos`), and when; `None` until it
     /// has been. See [`Headless::keep_mode`].
-    mode: Option<(crate::power::qos::Mode, std::time::Instant)>,
+    mode: Option<(crate::system::power::qos::Mode, std::time::Instant)>,
 }
 
 impl Live {
@@ -371,7 +371,7 @@ impl Live {
             .await
             .map_err(|e| tracing::debug!(error = %e, "could not read the browser's cookies"))
             .ok()?;
-        crate::cdp::collect_for(&cookies, &host)
+        crate::browser::cdp::collect_for(&cookies, &host)
     }
 
     /// Whether the browser holds exactly `session`'s `sessionid`.
@@ -630,7 +630,7 @@ impl Headless {
     }
 
     /// What the account's browser runs as now (`power::qos`).
-    pub(crate) fn mode_of(&self, pk: Pk) -> crate::power::qos::Mode {
+    pub(crate) fn mode_of(&self, pk: Pk) -> crate::system::power::qos::Mode {
         #[cfg(feature = "testing")]
         if let Some(forced) = forced_mode() {
             return forced;
@@ -639,7 +639,7 @@ impl Headless {
             .get(&pk)
             .copied()
             .unwrap_or_else(|| self.attended_otherwise.load(Ordering::SeqCst));
-        crate::power::qos::Mode::for_attention(attended)
+        crate::system::power::qos::Mode::for_attention(attended)
     }
 
     /// Moves `live` to the mode the account calls for, when it is not in it
@@ -651,7 +651,9 @@ impl Headless {
         let due = match live.mode {
             None => true,
             Some((mode, _)) if mode != wanted => true,
-            Some((mode, at)) => mode == crate::power::qos::Mode::Eco && at.elapsed() >= MODE_AGAIN,
+            Some((mode, at)) => {
+                mode == crate::system::power::qos::Mode::Eco && at.elapsed() >= MODE_AGAIN
+            }
         };
         if due {
             tracing::debug!(account = %pk, mode = ?wanted, "the browser's processor mode");
@@ -817,7 +819,7 @@ impl Headless {
         let mut slot = account.live.lock().await;
         let mut starts = 0;
         let ready = loop {
-            if crate::owner::signed_out(&self.paths, session) {
+            if crate::browser::owner::signed_out(&self.paths, session) {
                 tracing::debug!(
                     account = %session.ds_user_id,
                     "the account was signed out of; its browser is not used for this session"
@@ -972,14 +974,14 @@ impl Headless {
         let mut told = false;
         let mut waited = Duration::ZERO;
         loop {
-            if crate::owner::signed_out(&self.paths, session) {
+            if crate::browser::owner::signed_out(&self.paths, session) {
                 return Err(PageError::SignedOutHere);
             }
             let error = match self.start(session, account).await {
                 Err(e) => e,
                 Ok(started) => return Ok(started),
             };
-            let Some(in_use) = error.downcast_ref::<crate::cdp::ProfileInUse>() else {
+            let Some(in_use) = error.downcast_ref::<crate::browser::cdp::ProfileInUse>() else {
                 return Err(broken(error));
             };
             if !self.waits.load(Ordering::SeqCst) {
@@ -1001,7 +1003,7 @@ impl Headless {
                 ));
                 told = true;
             }
-            if crate::interrupt::install()
+            if crate::system::interrupt::install()
                 .sleep_or_cancel(PROFILE_RETRY)
                 .await
             {
@@ -1053,7 +1055,7 @@ impl Headless {
 
         let flags = windowless_flags(&user_agent);
         let cancel = CancelToken::default();
-        let launched = crate::cdp::launch_headless(&browser, &profile, &flags)
+        let launched = crate::browser::cdp::launch_headless(&browser, &profile, &flags)
             .with_context(|| format!("could not start {} without a window", browser.name))?;
         let cdp = Cdp::connect(launched, &cancel).await?;
         if claim {
@@ -1088,13 +1090,14 @@ impl Headless {
             // The guard's pauses, judged by the rule set just below.
             ("Fetch.enable", guard::patterns()),
         ];
-        cdp.connection().set_on_attach(crate::cdp::OnAttach {
-            page: page_commands.clone(),
-            worker: vec![
-                ("Network.setUserAgentOverride", identity),
-                ("Fetch.enable", guard::patterns()),
-            ],
-        });
+        cdp.connection()
+            .set_on_attach(crate::browser::cdp::OnAttach {
+                page: page_commands.clone(),
+                worker: vec![
+                    ("Network.setUserAgentOverride", identity),
+                    ("Fetch.enable", guard::patterns()),
+                ],
+            });
         // Created here so the guard can read what the app is seen to send,
         // and which write of snob's to let through.
         let listened = Arc::new(listen::Shared::default());
@@ -1557,7 +1560,7 @@ pub async fn for_a_remote_login(
     refuse_root()?;
     let hints = machine_hints(browser, paths).await;
     let flags = windowless_flags(&browser.user_agent());
-    let launched = crate::cdp::launch_headless(browser, profile, &flags)
+    let launched = crate::browser::cdp::launch_headless(browser, profile, &flags)
         .with_context(|| format!("could not start {} without a window", browser.name))?;
     let cdp = Cdp::connect(launched, cancel).await?;
     let (full_version, user_agent) = running_build(&cdp, browser).await?;
@@ -1572,10 +1575,11 @@ pub async fn for_a_remote_login(
             json!({ "enabled": true }),
         ),
     ];
-    cdp.connection().set_on_attach(crate::cdp::OnAttach {
-        page: page_commands.clone(),
-        worker: vec![("Network.setUserAgentOverride", identity)],
-    });
+    cdp.connection()
+        .set_on_attach(crate::browser::cdp::OnAttach {
+            page: page_commands.clone(),
+            worker: vec![("Network.setUserAgentOverride", identity)],
+        });
     cdp.browser_call(
         "Target.setAutoAttach",
         json!({

@@ -25,7 +25,7 @@ use tokio::sync::{Notify, mpsc};
 
 use super::socket::{self, Listener};
 use super::wire::{self, FromOwner, ToOwner};
-use crate::headless::{Headless, IDLE, Open};
+use crate::browser::headless::{Headless, IDLE, Open};
 
 /// How long browsers are kept.
 #[derive(Debug, Clone, Copy)]
@@ -130,7 +130,7 @@ pub async fn serve(paths: &AppPaths, linger: Linger) -> anyhow::Result<()> {
 
 /// [`serve`], as the binary `build`.
 pub(super) async fn run(paths: &AppPaths, linger: Linger, build: String) -> anyhow::Result<()> {
-    run_on(paths, linger, build, crate::headless::local(paths)).await
+    run_on(paths, linger, build, crate::browser::headless::local(paths)).await
 }
 
 /// [`run`], with the browsers of `engine`: this process's own, or a test's.
@@ -457,7 +457,7 @@ fn reconsider(engine: &Headless, state: &State, pk: Pk) {
         )
     };
     engine.attend(pk, this);
-    crate::power::qos::own(crate::power::qos::Mode::for_attention(any));
+    crate::system::power::qos::own(crate::system::power::qos::Mode::for_attention(any));
 }
 
 /// A command is done with the browsers it used.
@@ -548,7 +548,7 @@ mod tests {
     /// command at all.
     #[tokio::test]
     async fn a_browser_is_efficient_while_nobody_waits_on_it() {
-        use crate::power::qos::Mode;
+        use crate::system::power::qos::Mode;
 
         let tmp = tempfile::tempdir().unwrap();
         let engine = Headless::apart(&AppPaths::rooted_at(tmp.path()));

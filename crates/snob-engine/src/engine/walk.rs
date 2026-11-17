@@ -110,7 +110,7 @@ pub async fn fetch(
     // The machine is kept from sleeping on its own while the walk reads, and
     // let go while it waits for the day's accounts (`power::KeepAwake`).
     let mut awake =
-        crate::power::KeepAwake::new("snob is reading an Instagram list", client.is_live());
+        crate::system::power::KeepAwake::new("snob is reading an Instagram list", client.is_live());
 
     let summary = match walker
         .walk(

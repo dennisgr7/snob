@@ -13,8 +13,8 @@ use snob_store::paths::{self, AppPaths};
 use snob_store::registry::Registry;
 use snob_store::secrets::{SecretStore, SecretsError};
 
+use crate::browser::owner;
 use crate::jobs::Stopping;
-use crate::owner;
 
 /// Which accounts a sign-out is for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,7 +113,7 @@ pub async fn sign_out(
     // browser, and a sign-out that left it would leave the session on the
     // machine while saying it had gone.
     let profiles = if who.sweep {
-        crate::headless::profile::every_profile(paths)
+        crate::browser::headless::profile::every_profile(paths)
     } else {
         who.leaving
             .iter()

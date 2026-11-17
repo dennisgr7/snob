@@ -206,7 +206,7 @@ pub fn alone_ahead(
         );
     }
     // As the run refuses it at its start (`App::open`).
-    if snob_engine::owner::signed_out(paths, &session) {
+    if snob_engine::browser::owner::signed_out(paths, &session) {
         return Err(signed_out_here());
     }
     // A job's walk holds the account for as long as it walks, from before

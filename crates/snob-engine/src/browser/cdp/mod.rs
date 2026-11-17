@@ -4,7 +4,7 @@
 //! belongs to it.**
 //!
 //! **The protocol travels on a pipe, not on a port**: a port hands the session
-//! to every account on the machine, as `crate::pipe` tells.
+//! to every account on the machine, as `crate::system::pipe` tells.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -15,7 +15,7 @@ use snob_ig::login::BrowserCookies;
 use snob_ig::pace::CancelToken;
 
 use crate::browser::Browser;
-use crate::pipe::{BrowserProcess, PipeTransport};
+use crate::system::pipe::{BrowserProcess, PipeTransport};
 
 mod connection;
 
@@ -106,7 +106,7 @@ fn clear_a_lock_left_by_another_host(profile: &Path) {
     let Some((host, _pid)) = target.rsplit_once('-') else {
         return;
     };
-    let ours = crate::headless::profile::this_host();
+    let ours = crate::browser::headless::profile::this_host();
     if ours.is_empty() || host == ours {
         return;
     }
@@ -177,7 +177,7 @@ fn launch_in(
 
     // Chrome narrates to standard error: GCM registration failures, a
     // TensorFlow notice.
-    let (process, transport) = crate::pipe::spawn(&browser.path, &arguments)
+    let (process, transport) = crate::system::pipe::spawn(&browser.path, &arguments)
         .with_context(|| format!("could not start {}", browser.name))?;
 
     Ok(Launched {
@@ -484,7 +484,7 @@ impl Cdp {
     ///
     /// **At the normal pace, whatever it ran as** (`power::qos`).
     pub async fn close(self) {
-        self.set_mode(crate::power::qos::Mode::Normal);
+        self.set_mode(crate::system::power::qos::Mode::Normal);
         // `call` carries its own timeout, so a browser that has stopped
         // answering delays the exit rather than preventing it.
         let _ = self
@@ -541,7 +541,7 @@ impl Cdp {
     }
 
     /// Moves the browser and its helpers to `mode` (`power::qos`).
-    pub(crate) fn set_mode(&self, mode: crate::power::qos::Mode) {
+    pub(crate) fn set_mode(&self, mode: crate::system::power::qos::Mode) {
         self.process
             .lock()
             .unwrap_or_else(|e| e.into_inner())

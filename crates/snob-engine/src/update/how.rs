@@ -331,7 +331,7 @@ fn ancestor(path: &Path, levels: usize) -> Option<&Path> {
 /// file, while the path itself now holds the new binary, which is the one
 /// a question about this install is about.
 pub(crate) fn real_exe() -> std::io::Result<PathBuf> {
-    let exe = crate::exe::program()?;
+    let exe = crate::system::exe::program()?;
     #[cfg(target_os = "linux")]
     let exe = {
         use std::os::unix::ffi::{OsStrExt, OsStringExt};

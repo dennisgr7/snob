@@ -28,8 +28,8 @@ use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::headless::lock;
-use crate::headless::write_back::Rotated;
+use crate::browser::headless::lock;
+use crate::browser::headless::write_back::Rotated;
 
 #[cfg(windows)]
 mod end_of_session;
@@ -74,7 +74,7 @@ pub fn attended(attended: bool) {
     if ATTENDED.swap(attended, Ordering::SeqCst) == attended {
         return;
     }
-    crate::headless::attended_here(attended);
+    crate::browser::headless::attended_here(attended);
     let Some(remote) = REMOTE.get() else {
         return;
     };
@@ -109,18 +109,19 @@ pub fn install(paths: &AppPaths, start: Option<Vec<OsString>>) {
 
 /// [`install`] for whichever program runs the engine, from the engine's own
 /// doors (`App::open`, a login's check), so **no front has to remember it**:
-/// the owner the binary [`crate::exe::start_as`] names runs, or a browser of
+/// the owner the binary [`crate::system::exe::start_as`] names runs, or a browser of
 /// this process's own when none was named or `SNOB_NO_OWNER` is set. Nothing
 /// when `SNOB_NO_BROWSER` is set, and nothing over what a front installed
 /// first (the command line's, with its globals).
 pub fn ensure(paths: &AppPaths) {
-    if crate::headless::env_flag("SNOB_NO_BROWSER")
+    if crate::browser::headless::env_flag("SNOB_NO_BROWSER")
         || snob_ig::client::page::a_page_factory_is_set()
     {
         return;
     }
-    let start = (crate::exe::was_named() && !crate::headless::env_flag("SNOB_NO_OWNER"))
-        .then(|| vec![OsString::from(COMMAND)]);
+    let start = (crate::system::exe::was_named()
+        && !crate::browser::headless::env_flag("SNOB_NO_OWNER"))
+    .then(|| vec![OsString::from(COMMAND)]);
     install(paths, start);
 }
 
@@ -132,8 +133,8 @@ pub async fn finish(secrets: &SecretStore, paths: &AppPaths) {
         Some(remote) => remote.leave().await,
         None => Vec::new(),
     };
-    held.extend(crate::headless::close_own().await);
-    crate::headless::write_back::keep(secrets, paths, held);
+    held.extend(crate::browser::headless::close_own().await);
+    crate::browser::headless::write_back::keep(secrets, paths, held);
 }
 
 /// Closes the account's browser, or every one, and waits for it to close:
@@ -147,7 +148,7 @@ pub async fn release(paths: &AppPaths, pk: Option<Pk>) {
     {
         tracing::debug!(error = %e, "the owner of the browsers did not close them");
     }
-    crate::headless::release_own(pk).await;
+    crate::browser::headless::release_own(pk).await;
 }
 
 /// Signs the accounts out for every process on this machine, before their sessions and
@@ -184,7 +185,7 @@ pub fn signed_out(paths: &AppPaths, session: &Session) -> bool {
 /// it has in flight, and a browser closing writes into its profile, which would
 /// make a removed one again.
 pub async fn let_go_of(profiles: &[PathBuf]) {
-    use crate::headless::profile::in_use;
+    use crate::browser::headless::profile::in_use;
     let held = |path: &PathBuf| {
         in_use(path)
             || std::fs::read_dir(path).is_ok_and(|inside| {
@@ -308,7 +309,7 @@ impl Remote {
                 for pk in gone {
                     lock(&own).remove(&pk);
                     tracing::debug!(account = %pk, "the account was signed out of; closing its browser");
-                    crate::headless::release_own(Some(pk)).await;
+                    crate::browser::headless::release_own(Some(pk)).await;
                 }
             }
         });
@@ -359,8 +360,8 @@ impl Remote {
     }
 
     /// This process's own browsers.
-    fn here(&self) -> Arc<crate::headless::Headless> {
-        crate::headless::alone(&self.paths)
+    fn here(&self) -> Arc<crate::browser::headless::Headless> {
+        crate::browser::headless::alone(&self.paths)
     }
 
     /// Sends `request` as `session`: through the owner, or from this
@@ -427,7 +428,7 @@ impl Remote {
             account = %session.ds_user_id,
             "the account was signed out of and this session not let in again; nothing more is sent as it"
         );
-        crate::headless::release_own(Some(session.ds_user_id)).await;
+        crate::browser::headless::release_own(Some(session.ds_user_id)).await;
         Err(PageError::SignedOutHere)
     }
 
@@ -449,7 +450,7 @@ impl Remote {
         // A command stopped by Ctrl+C, or a stop key in the interactive
         // browser, does not wait for the cookies: they wait for the request it
         // gave up, which the owner may still be sending.
-        let used = if crate::interrupt::interrupted() {
+        let used = if crate::system::interrupt::interrupted() {
             Vec::new()
         } else {
             used
@@ -486,7 +487,7 @@ impl Remote {
     /// browser.
     fn heard_for(&self, pk: Pk) -> Option<PushedBack> {
         if self.through_the_owner().is_none() {
-            return crate::headless::local(&self.paths).heard_for(pk);
+            return crate::browser::headless::local(&self.paths).heard_for(pk);
         }
         let heard = self
             .heard
@@ -811,9 +812,10 @@ fn start_one(paths: &AppPaths, args: &[OsString]) -> Result<spawn::Started> {
     // An owner started as root could only fail, the browser refusing root,
     // and would leave root's files in a data directory the user's own owners
     // then cannot open. The browser this process starts instead says why.
-    crate::headless::refuse_root()?;
+    crate::browser::headless::refuse_root()?;
     snob_store::paths::create_private_dir(paths.data_dir())?;
-    let program = crate::exe::program().context("could not find this program to start it")?;
+    let program =
+        crate::system::exe::program().context("could not find this program to start it")?;
     let started = spawn::spawn(&program, args, &log_of(paths))
         .context("could not start the owner of the browsers")?;
     // Said, because an owner left in the command's job ends with it: a
@@ -903,7 +905,7 @@ mod tests {
     /// Says why a test that needs a browser does not run, or fails it where
     /// one is required.
     fn no_browser_here() -> bool {
-        let why = if crate::headless::refuse_root().is_err() {
+        let why = if crate::browser::headless::refuse_root().is_err() {
             "running as root, where the browser will not start"
         } else if crate::browser::detect().is_none() {
             "no browser installed"
@@ -911,7 +913,7 @@ mod tests {
             return false;
         };
         assert!(
-            !crate::headless::env_flag("SNOB_TEST_REQUIRE_BROWSER"),
+            !crate::browser::headless::env_flag("SNOB_TEST_REQUIRE_BROWSER"),
             "{why}, and SNOB_TEST_REQUIRE_BROWSER needs one"
         );
         eprintln!("{why}; skipping");
@@ -963,7 +965,7 @@ mod tests {
             .unwrap();
         let owner = tokio::spawn({
             let paths = paths.clone();
-            let engine = crate::headless::Headless::apart(&paths);
+            let engine = crate::browser::headless::Headless::apart(&paths);
             async move { server::run_on(&paths, Linger::for_a_sandbox(), wire::build(), engine).await }
         });
 
@@ -973,7 +975,7 @@ mod tests {
         let told = match told {
             Err(PageError::Browser(e)) => {
                 assert!(
-                    !crate::headless::env_flag("SNOB_TEST_REQUIRE_BROWSER"),
+                    !crate::browser::headless::env_flag("SNOB_TEST_REQUIRE_BROWSER"),
                     "the browser would not start: {e}"
                 );
                 eprintln!("the browser found here will not start ({e}); skipping");
@@ -1040,7 +1042,7 @@ mod tests {
         // With no owner to send through, this process's own browser answers:
         // made once, with whichever test's paths asked first, where the
         // session is let in too.
-        crate::headless::alone(&paths)
+        crate::browser::headless::alone(&paths)
             .paths()
             .account(Pk::new(42))
             .admit_session(session.created_at)
@@ -1051,7 +1053,7 @@ mod tests {
             matches!(&told, Told::Viewer(v) if v.pk == Pk::new(42)),
             "{told:?}"
         );
-        crate::headless::release_own(Some(Pk::new(42))).await;
+        crate::browser::headless::release_own(Some(Pk::new(42))).await;
     }
 
     /// Asks as `session` the way a walk still running would, by the command
@@ -1100,7 +1102,7 @@ mod tests {
 
         let owner = tokio::spawn({
             let paths = paths.clone();
-            let engine = crate::headless::Headless::apart(&paths);
+            let engine = crate::browser::headless::Headless::apart(&paths);
             async move { server::run_on(&paths, Linger::for_a_sandbox(), wire::build(), engine).await }
         });
         let Handshake::Ours(mut stream) = reach(paths, &wire::build()).await else {

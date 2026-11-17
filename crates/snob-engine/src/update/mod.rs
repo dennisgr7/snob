@@ -200,7 +200,7 @@ fn start_detached(files: &Files, globals: &[OsString], what: &[OsString]) {
         let mut args = globals.to_vec();
         args.push(COMMAND.into());
         args.extend(what.iter().cloned());
-        crate::detach::spawn(&program, &args, None, &files.log())?;
+        crate::system::detach::spawn(&program, &args, None, &files.log())?;
         Ok(())
     })();
     if let Err(e) = started {
@@ -213,7 +213,7 @@ fn start_detached(files: &Files, globals: &[OsString], what: &[OsString]) {
 /// `snob.exe` it would replace runs, and so runs from a copy in the data
 /// directory.
 fn applier(files: &Files, applying: bool) -> anyhow::Result<PathBuf> {
-    let exe = crate::exe::program()?;
+    let exe = crate::system::exe::program()?;
     if !(cfg!(windows) && applying) {
         return Ok(exe);
     }

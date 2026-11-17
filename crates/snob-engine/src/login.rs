@@ -20,10 +20,10 @@ use snob_store::secrets::SecretStore;
 
 use crate::app::{Held, Viewer};
 use crate::browser::Browser;
-use crate::headless::ProfileMark;
-use crate::headless::profile::{self, ProfileSwap};
+use crate::browser::headless::ProfileMark;
+use crate::browser::headless::profile::{self, ProfileSwap};
+use crate::browser::{cdp, owner};
 use crate::host::{self, Progress, Wait};
-use crate::{cdp, owner};
 
 /// Where a session came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,7 +341,7 @@ pub async fn by_paste(
     // The requests go out from the browser that made the account's profile,
     // while it is installed (`ProfileMark`), whichever one was named here.
     if let Some(named) = &session.browser
-        && !crate::headless::env_flag("SNOB_NO_BROWSER")
+        && !crate::browser::headless::env_flag("SNOB_NO_BROWSER")
         && let Some(maker) =
             ProfileMark::read(&paths.browser_profile_for(session.ds_user_id)).browser
         && maker.is_file()
@@ -442,7 +442,7 @@ pub async fn finish(
     account.admit_login(session.created_at, kept)?;
     host::info("Checking the session against Instagram...");
     // The check goes out from the browsers, as every request does.
-    crate::owner::ensure(paths);
+    crate::browser::owner::ensure(paths);
     let validated = login::validate_seeing(&mut session, pacer).await;
     let rejected = matches!(
         &validated,

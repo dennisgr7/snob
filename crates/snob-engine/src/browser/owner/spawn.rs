@@ -13,12 +13,12 @@ use std::path::Path;
 const LOG_LIMIT: u64 = 1024 * 1024;
 
 /// The owner just started, as far as the command that started it can tell.
-pub(super) use crate::detach::Started;
+pub(super) use crate::system::detach::Started;
 
 /// Starts `program` with `args` as the owner, logging to `log`.
 pub(super) fn spawn(program: &Path, args: &[OsString], log: &Path) -> io::Result<Started> {
     if std::fs::metadata(log).is_ok_and(|m| m.len() > LOG_LIMIT) {
         let _ = std::fs::rename(log, log.with_extension("log.old"));
     }
-    crate::detach::spawn(program, args, None, log)
+    crate::system::detach::spawn(program, args, None, log)
 }

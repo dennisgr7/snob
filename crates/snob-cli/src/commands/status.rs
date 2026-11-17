@@ -46,7 +46,7 @@ pub fn run(
     // A session this computer no longer sends as is no session to report on
     // either, and is said as what it is: every command refuses it at its
     // start (`App::open`), with the same code.
-    if snob_engine::owner::signed_out(paths, &session) {
+    if snob_engine::browser::owner::signed_out(paths, &session) {
         return no_session(
             &args,
             viewer,

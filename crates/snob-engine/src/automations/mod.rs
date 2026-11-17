@@ -249,19 +249,19 @@ pub fn watched(reads: &[Planned], in_use: Option<Pk>) -> Vec<Watched> {
 pub fn run_now(paths: &AppPaths, id: &str, globals: &[OsString]) -> Result<()> {
     // Unnamed, the program is the one asking, which may be an app that has
     // no `watch` to run.
-    if !crate::exe::was_named() && !cfg!(test) {
+    if !crate::system::exe::was_named() && !cfg!(test) {
         let running = std::env::current_exe().unwrap_or_default();
         let is_snob = running
             .file_stem()
             .is_some_and(|stem| stem.eq_ignore_ascii_case("snob"));
         anyhow::ensure!(is_snob, "there is no snob beside this program to run it");
     }
-    let program = crate::exe::program().context("could not find snob to start it")?;
+    let program = crate::system::exe::program().context("could not find snob to start it")?;
     let dir = paths.data_dir().join("logs");
     snob_store::paths::create_private_dir(&dir)?;
     let mut args = globals.to_vec();
     args.extend(["watch", "once", "--automation", id].map(OsString::from));
-    crate::detach::spawn(&program, &args, None, &dir.join("automations.log"))
+    crate::system::detach::spawn(&program, &args, None, &dir.join("automations.log"))
         .context("could not start the run")?;
     Ok(())
 }

@@ -268,12 +268,12 @@ impl BrowserProcess {
 
     /// Moves it, with every process it started, to `mode` (`power::qos`): its
     /// job on Windows, its process group on Linux and macOS.
-    pub fn set_mode(&mut self, mode: crate::power::qos::Mode) {
+    pub fn set_mode(&mut self, mode: crate::system::power::qos::Mode) {
         #[cfg(windows)]
-        crate::power::qos::in_job(self.inner.job, mode);
+        crate::system::power::qos::in_job(self.inner.job, mode);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if !self.nothing_left() {
-            crate::power::qos::in_group(self.group(), mode);
+            crate::system::power::qos::in_group(self.group(), mode);
         }
         #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         let _ = mode;
@@ -625,7 +625,7 @@ mod windows_impl {
         let mut command_line = command_line(program, args);
         // This process's environment without what no child of snob's gets
         // (`detach`): the browser would keep it for its whole life.
-        let environment = crate::detach::environment_block(std::env::vars_os());
+        let environment = crate::system::detach::environment_block(std::env::vars_os());
 
         // SAFETY: an out parameter. `CreateProcessW` fills it, and all-zero is
         // what it is documented to be handed.
@@ -903,7 +903,7 @@ mod unix_impl {
             .stderr(std::process::Stdio::null());
         // Nothing of what no child of snob's gets (`detach`): the browser
         // would keep it for its whole life.
-        crate::detach::without_what_is_never_inherited(&mut command);
+        crate::system::detach::without_what_is_never_inherited(&mut command);
 
         // SAFETY: `onto` is async-signal-safe, which is the whole contract
         // of `pre_exec`, and it is why the descriptor numbers are computed

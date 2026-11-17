@@ -15,7 +15,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WNDCLASSW, WS_OVERLAPPED,
 };
 
-use crate::pipe::wide;
+use crate::system::pipe::wide;
 
 /// How long the window holds the end of the session for the browsers to
 /// close: inside the five seconds or so Windows waits for an answer.

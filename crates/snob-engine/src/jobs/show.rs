@@ -445,7 +445,7 @@ pub fn whole(seen: &Seen, now: i64, check: Check) -> Value {
 
 /// Waits, at most `wait`, for the job to be over, and reads it again.
 pub async fn settle(account: &AccountPaths, seen: Seen, wait: Duration) -> Result<Seen> {
-    let token = crate::interrupt::install();
+    let token = crate::system::interrupt::install();
     Ok(wait_until(account, seen, wait, Status::is_over, &token)
         .await?
         .0)

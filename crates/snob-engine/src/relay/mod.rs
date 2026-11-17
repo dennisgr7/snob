@@ -19,9 +19,9 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
-use crate::cdp::{self, CALL_TIMEOUT, Cdp, Connection, Event};
+use crate::browser::cdp::{self, CALL_TIMEOUT, Cdp, Connection, Event};
 use crate::host::{Progress, Wait};
-use crate::seat::Ssh;
+use crate::system::seat::Ssh;
 
 mod http;
 mod input;
@@ -174,8 +174,8 @@ async fn relay(
         json!({
             "format": "jpeg",
             "quality": QUALITY,
-            "maxWidth": crate::headless::SCREEN.0,
-            "maxHeight": crate::headless::SCREEN.1,
+            "maxWidth": crate::browser::headless::SCREEN.0,
+            "maxHeight": crate::browser::headless::SCREEN.1,
         }),
         CALL_TIMEOUT,
     )
@@ -651,7 +651,8 @@ async fn text<S: AsyncWrite + Unpin>(
 fn secret() -> Result<String> {
     use base64::Engine as _;
     let mut bytes = [0u8; 32];
-    crate::random::fill_random(&mut bytes).context("the system would not hand out random bytes")?;
+    crate::system::random::fill_random(&mut bytes)
+        .context("the system would not hand out random bytes")?;
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
 }
 

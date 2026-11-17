@@ -7,9 +7,10 @@
 
 use anyhow::{Context, Result, bail};
 use snob_engine::app::Viewer;
+use snob_engine::browser::{self, cdp};
 use snob_engine::exit::{ExitCode, ExitError};
 use snob_engine::login::{self, Agent, ByBrowser, Check, Method, Opened, Stored};
-use snob_engine::{browser, cdp, interrupt};
+use snob_engine::system::interrupt;
 use snob_ig::login::BrowserCookies;
 use snob_ig::pace::CancelToken;
 use snob_store::paths::AppPaths;
@@ -94,7 +95,7 @@ pub async fn run(
 /// does, for the interactive views' account picker, which has no command line
 /// to take the flags from.
 pub async fn add_by_browser(store: SecretStore, paths: &AppPaths) -> Result<ExitCode> {
-    let remote = snob_engine::seat::Seat::here().prefers_remote();
+    let remote = snob_engine::system::seat::Seat::here().prefers_remote();
     let args = LoginArgs {
         paste: false,
         browser: !remote,
@@ -133,12 +134,12 @@ fn writable(paths: &AppPaths) -> Result<()> {
 /// Works out the method: whatever the flags say, or whatever the user picks
 /// from the menu.
 fn choose_method(args: &LoginArgs) -> Result<Option<LoginMethod>> {
-    choose_method_at(args, snob_engine::seat::Seat::here())
+    choose_method_at(args, snob_engine::system::seat::Seat::here())
 }
 
 fn choose_method_at(
     args: &LoginArgs,
-    seat: &snob_engine::seat::Seat,
+    seat: &snob_engine::system::seat::Seat,
 ) -> Result<Option<LoginMethod>> {
     if args.paste {
         return Ok(Some(LoginMethod::Paste));
@@ -149,7 +150,7 @@ fn choose_method_at(
     if args.browser {
         // Said outright, and taken as said — except where a window cannot
         // open at all, which Chromium would only report as exiting with 1.
-        if seat.window == snob_engine::seat::Window::Nowhere {
+        if seat.window == snob_engine::system::seat::Window::Nowhere {
             bail!("{}", no_window_here(seat));
         }
         return Ok(Some(LoginMethod::Browser));
@@ -169,7 +170,7 @@ fn choose_method_at(
 }
 
 /// Why `--browser` cannot work at `seat`, and what does.
-fn no_window_here(seat: &snob_engine::seat::Seat) -> String {
+fn no_window_here(seat: &snob_engine::system::seat::Seat) -> String {
     let why = if seat.ssh.is_some() {
         "this is an SSH session to a machine with no display"
     } else {
@@ -222,8 +223,8 @@ async fn by_browser(
     method: LoginMethod,
 ) -> Result<ExitCode> {
     let remote = method == LoginMethod::Remote;
-    let seat = snob_engine::seat::Seat::here();
-    if !remote && seat.window == snob_engine::seat::Window::Elsewhere {
+    let seat = snob_engine::system::seat::Seat::here();
+    if !remote && seat.window == snob_engine::system::seat::Window::Elsewhere {
         ui::info(
             "This is an SSH session: the browser window opens on this machine's own screen, \
              not on the computer you are at. \"snob login --remote\" shows it there instead.",
@@ -302,11 +303,11 @@ async fn capture_remotely(
     cancel: &CancelToken,
 ) -> Result<(BrowserCookies, String)> {
     let relay = snob_engine::relay::Relay::bind(paths)?;
-    let snob_engine::headless::RemoteLogin {
+    let snob_engine::browser::headless::RemoteLogin {
         cdp,
         tab,
         user_agent,
-    } = snob_engine::headless::for_a_remote_login(found, profile, paths, cancel).await?;
+    } = snob_engine::browser::headless::for_a_remote_login(found, profile, paths, cancel).await?;
     // An explicit --user-agent still wins, as in a windowed login.
     let user_agent = requested_user_agent.unwrap_or(user_agent);
     let outcome = relayed(&cdp, &tab, relay, cancel).await;
@@ -337,7 +338,7 @@ async fn relayed(
     .await?;
     ui::info(&remote_instructions(
         &relay,
-        snob_engine::seat::Seat::here().ssh.as_ref(),
+        snob_engine::system::seat::Seat::here().ssh.as_ref(),
     ));
     // One bar, started once nothing else is printed.
     let progress = Progress::new(true);
@@ -349,7 +350,7 @@ async fn relayed(
 /// What to do on the computer the person is at, for `relay`.
 fn remote_instructions(
     relay: &snob_engine::relay::Relay,
-    ssh: Option<&snob_engine::seat::Ssh>,
+    ssh: Option<&snob_engine::system::seat::Ssh>,
 ) -> String {
     let named = ssh.and_then(|s| s.server.as_ref()).is_some();
     let host_note = if named {
@@ -527,7 +528,7 @@ fn prompt_user_agent() -> Result<Agent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use snob_engine::seat::{Seat, Ssh, Window};
+    use snob_engine::system::seat::{Seat, Ssh, Window};
 
     fn args(paste: bool, browser: bool, remote: bool) -> LoginArgs {
         LoginArgs {
