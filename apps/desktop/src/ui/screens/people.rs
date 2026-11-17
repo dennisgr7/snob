@@ -1,7 +1,7 @@
 //! One of an account's lists, as far as it is read: **its rows come in as
 //! the walk reads them**, a page at a time, and a click on one opens that
 //! account's profile. The same list drawn in a window of its own
-//! (`ui::detached`) is this one without the way back.
+//! (`ui::detached`) is this one, and the way back is the band's.
 //!
 //! Only rows on screen are built (`uniform_list`): a list of thousands
 //! costs what a screen of it costs. **A row shows a picture only when the
@@ -86,7 +86,6 @@ pub fn render(
     let Some(list) = shell.people_list() else {
         return div().into_any_element();
     };
-    let back = shell.can_go_back();
     let shell_entity = cx.entity().downgrade();
     let open: Open = Rc::new(move |who, window, cx| {
         shell_entity
@@ -98,10 +97,6 @@ pub fn render(
         .flex_wrap()
         .items_center()
         .gap(sp(10.))
-        .children(back.then(|| {
-            parts::small_icon_button("people-back", look.tr("back"), assets::BACK, &look)
-                .on_click(cx.listener(|shell, _, window, cx| shell.go_back(window, cx)))
-        }))
         .child(div().flex_1())
         .child(
             parts::small_icon_button(

@@ -202,7 +202,7 @@ fn logic() -> Vec<Outcome> {
 
 /// The screens a picture is taken of and an audit made of, and how each is
 /// reached from the screen before it.
-const SCREENS: [&str; 30] = [
+const SCREENS: [&str; 31] = [
     "start",
     "paste",
     "failed",
@@ -229,6 +229,7 @@ const SCREENS: [&str; 30] = [
     "automation-leave",
     "profile",
     "profile-split",
+    "profile-options",
     "viewer",
     "people",
     "list-question",
@@ -440,9 +441,15 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
         "profile-split" => {
             stage.app()?.click("profile-layout").await?;
         }
+        "profile-options" => {
+            // Under its button, in the split layout.
+            stage.app()?.click("profile-options").await?;
+        }
         "viewer" => {
-            // With a story up, the picture is chosen in the small menu.
+            // The options closed first; with a story up, the picture is
+            // chosen in the small menu.
             let app = stage.app()?;
+            app.press("escape").await?;
             let seen = app.click("profile-picture").await?;
             if seen
                 .nodes

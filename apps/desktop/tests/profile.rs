@@ -9,7 +9,7 @@ mod common;
 
 use common::{App, focused, open};
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{Role, TestAppContext};
+use gpui_kit::{Role, TestAppContext, px};
 use snob_core::Pk;
 use snob_desktop::backend::scripted::{Asked, Scripted, account};
 use snob_desktop::state::flow::Screen;
@@ -82,7 +82,7 @@ async fn the_account_s_own_profile_opens_from_its_menu_with_its_names_counters_a
             Some("Photo, pinned: an invented caption, number 0")
         );
         assert_eq!(window.find("profile-options").label(), Some("More options"));
-        assert_eq!(window.find("profile-back").label(), Some("Back"));
+        assert_eq!(window.find("band-back").label(), Some("Back"));
     });
     // The profile and the first page of the tab shown: nothing else.
     let asked: Vec<Asked> = app
@@ -99,7 +99,7 @@ async fn the_account_s_own_profile_opens_from_its_menu_with_its_names_counters_a
         ]
     );
 
-    app.click(cx, "profile-back");
+    app.click(cx, "band-back");
     app.until_screen(cx, |screen| *screen == Screen::Home).await;
 }
 
@@ -129,6 +129,51 @@ async fn a_tab_is_read_once_when_it_is_first_shown(cx: &mut TestAppContext) {
         .filter(|asked| *asked == Asked::Tiles(Pk::new(42), Tab::Reposts))
         .count();
     assert_eq!(reposts, 1, "a tab shown again is not read again");
+}
+
+#[gpui_kit::test]
+async fn a_profile_seen_before_shows_what_was_kept_at_once_while_the_band_says_it_loads(
+    cx: &mut TestAppContext,
+) {
+    let app = own_profile(cx, me()).await;
+    assert_eq!(app.label_of(cx, "status"), "", "read: nothing loads");
+    app.click(cx, "band-back");
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+
+    app.backend.hold();
+    app.click(cx, "account");
+    app.click(cx, "menu-profile");
+    app.until_screen(cx, |screen| matches!(screen, Screen::Profile(_)))
+        .await;
+    app.until(cx, |window, _| {
+        window.try_find(("profile-tile", 0usize)).is_some()
+    })
+    .await;
+    app.in_window(cx, |window, _| {
+        assert_eq!(
+            window.find(("profile-tile", 0usize)).label(),
+            Some("Photo, pinned: an invented caption, number 0")
+        );
+        assert!(window.try_find(("profile-highlight", 0usize)).is_some());
+        assert!(window.try_find("profile-reading").is_none(), "no ring");
+    });
+    assert_eq!(app.label_of(cx, "status"), "Loading the profile\u{2026}");
+
+    // The reads it makes anyway are asked all the same, and answer.
+    app.backend.release();
+    app.until(cx, |window, _| {
+        window
+            .try_find("status")
+            .is_some_and(|status| status.label().unwrap_or_default().is_empty())
+    })
+    .await;
+    let tiles = app
+        .backend
+        .asked()
+        .into_iter()
+        .filter(|asked| *asked == Asked::Tiles(Pk::new(42), Tab::Posts))
+        .count();
+    assert_eq!(tiles, 2, "read again on the second visit");
 }
 
 #[gpui_kit::test]
@@ -267,7 +312,7 @@ async fn another_account_s_list_is_asked_about_first_and_a_no_reads_nothing(
     assert!(theirs(&app), "a yes reads it");
 
     // Back the way it came: the profile, the list, the own profile.
-    app.click(cx, "people-back");
+    app.click(cx, "band-back");
     app.until_screen(
         cx,
         |screen| matches!(screen, Screen::Profile(who) if who.pk == Pk::new(1000)),
@@ -337,6 +382,37 @@ async fn a_story_up_offers_the_story_or_the_picture_and_reads_nothing_of_the_sto
     app.click(cx, "profile-picture");
     app.click(cx, "profile-open-picture");
     assert!(shown(&app, cx, "photo-viewer"));
+}
+
+#[gpui_kit::test]
+async fn each_menu_opens_under_what_opened_it_in_both_layouts(cx: &mut TestAppContext) {
+    let app = own_profile(cx, Scripted::with(vec![account(9001, "someone", true)])).await;
+    for _ in 0..2 {
+        app.click(cx, "profile-options");
+        app.in_window(cx, |window, _| {
+            let button = window.find("profile-options").bounds();
+            let menu = window.find("profile-menu").bounds();
+            assert!(
+                (menu.right() - button.right()).abs() <= px(1.),
+                "{menu:?} ends where {button:?} does"
+            );
+            assert!(menu.top() >= button.bottom(), "{menu:?} under {button:?}");
+        });
+        app.press(cx, "escape");
+
+        app.click(cx, "profile-picture");
+        app.in_window(cx, |window, _| {
+            let picture = window.find("profile-picture").bounds();
+            let menu = window.find("profile-menu").bounds();
+            assert!(
+                (menu.left() - picture.left()).abs() <= px(1.),
+                "{menu:?} starts where {picture:?} does"
+            );
+            assert!(menu.top() >= picture.bottom(), "{menu:?} under {picture:?}");
+        });
+        app.press(cx, "escape");
+        app.click(cx, "profile-layout");
+    }
 }
 
 #[gpui_kit::test]

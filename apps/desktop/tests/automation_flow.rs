@@ -194,6 +194,8 @@ async fn a_step_added_is_kept_at_once_and_undo_takes_it_back(cx: &mut TestAppCon
     });
     assert!(disabled(&app, cx, "editor-undo"), "nothing to undo yet");
 
+    app.click(cx, "editor-triggers");
+    settle(&app, cx);
     click(&app, cx, ("trigger-schedule", 0usize));
     settle(&app, cx);
     assert_eq!(
@@ -474,6 +476,8 @@ async fn a_failure_to_keep_is_said_under_the_canvas(cx: &mut TestAppContext) {
         script.save_fails("the disk is full");
     });
     let app = in_editor(cx, backend.clone()).await;
+    app.click(cx, "editor-triggers");
+    settle(&app, cx);
     click(&app, cx, ("trigger-schedule", 0usize));
     settle(&app, cx);
     app.in_window(cx, |window, _| {
@@ -591,4 +595,20 @@ async fn a_step_dragged_is_kept_where_it_is_dropped_and_an_arrow_is_drawn_from_i
             Some("Those two steps are already joined.")
         );
     });
+}
+
+#[gpui_kit::test]
+async fn the_bands_way_back_leaves_the_editor_then_the_automations_page(cx: &mut TestAppContext) {
+    let backend = scripted(vec![daily()]);
+    let app = in_editor(cx, backend).await;
+    assert!(!disabled(&app, cx, "band-back"));
+    app.click(cx, "band-back");
+    settle(&app, cx);
+    assert!(
+        shown(&app, cx, "automation-edit"),
+        "on the automation's page"
+    );
+    app.click(cx, "band-back");
+    settle(&app, cx);
+    assert!(shown(&app, cx, "automations-create"), "on the list");
 }

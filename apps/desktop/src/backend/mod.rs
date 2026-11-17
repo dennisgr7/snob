@@ -238,8 +238,14 @@ pub trait Backend: Send + Sync + 'static {
     fn profile(&self, who: Named) -> Answer<Result<Profile, Unread>>;
 
     /// The first page of `who`'s `tab`, its small pictures on disk: one
-    /// request, asked once the tab is shown.
+    /// request, asked once the tab is shown. A post's picture already kept
+    /// is not downloaded again.
     fn tiles(&self, who: Named, tab: Tab) -> Answer<Result<Tiles, Unread>>;
+
+    /// The first page of `who`'s `tab` the account in use was last shown,
+    /// at once: **read from its cache, nothing sent**. None when nothing is
+    /// kept.
+    fn tiles_kept(&self, who: Named, tab: Tab) -> Answer<Option<Tiles>>;
 
     /// `who`'s picture at the largest size its profile names, on disk:
     /// fetched from the CDN once, for the viewer. None when there is none.

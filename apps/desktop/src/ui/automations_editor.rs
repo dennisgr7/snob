@@ -212,6 +212,7 @@ impl Shell {
         if self.automations.is_none() {
             return;
         }
+        let has_a_trigger = crate::state::shelf::has_a_trigger(&automation);
         let name = {
             let typed = automation.name.clone();
             cx.new(|cx| InputState::new(window, cx).default_value(typed))
@@ -235,7 +236,7 @@ impl Shell {
                 leaving: None,
                 _naming: naming,
             });
-            page.editor = super::automations::Editor::new(cx);
+            page.editor = super::automations::Editor::new(has_a_trigger, cx);
         }
         window.focus(&self.title, cx);
         // Fitted once it has been drawn, which is what tells how big the
@@ -421,18 +422,36 @@ impl Shell {
         cx.notify();
     }
 
-    /// A press on an item of the panel: its step is put on the canvas.
-    pub(crate) fn insert_a_step(&mut self, item: Item, cx: &mut Context<Self>) {
+    /// A press on an item of the panel: its step is put on the canvas. The
+    /// first trigger lets the panel go: it shows the kinds of step, the
+    /// first of them focused.
+    pub(crate) fn insert_a_step(
+        &mut self,
+        item: Item,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let in_use = self.active().map(|account| account.named.pk);
         let Some(step) = item.step(in_use) else {
             return;
         };
-        let Some(edit) = self.edit_mut() else {
+        let now = cx.background_executor().now();
+        let Some(page) = &mut self.automations else {
+            return;
+        };
+        let Some(edit) = &mut page.edit else {
             return;
         };
         let at = suggested_place(edit.state.automation(), step.stage());
         edit.said = None;
         edit.selected = edit.state.insert(step, at);
+        let has_a_trigger = crate::state::shelf::has_a_trigger(edit.state.automation());
+        let editor = &mut page.editor;
+        if editor.shelf.follow(has_a_trigger) {
+            editor.shelf_since = Some(now);
+            editor.search = None;
+            window.focus(&editor.kinds[0], cx);
+        }
         tracing::info!(action = "automation_insert", "action");
         self.keep_the_copy(cx);
         cx.notify();
@@ -694,6 +713,8 @@ impl Shell {
                 (fields, Some(url))
             }
             Step::Filter { only } => (Fields::Filter { only: *only }, None),
+            // Nothing to say of it: it runs when somebody runs it.
+            Step::Manual {} => return,
         };
         let (focus, cancel) = (cx.focus_handle(), cx.focus_handle());
         match first {
@@ -921,7 +942,7 @@ impl Shell {
             return;
         };
         let id = edit.state.automation().id.clone();
-        page.editor = super::automations::Editor::new(cx);
+        page.editor = super::automations::Editor::new(true, cx);
         match &kept {
             Some(_) if page.open.as_ref().is_some_and(|open| open.id == id) => {}
             Some(_) => {

@@ -5,7 +5,7 @@
 //! and a row in its history, as `watch.toml`'s runs leave one ([`Recorded`]).
 
 use anyhow::Result;
-use snob_core::automation::{Automation, Planned, Read, WATCH_TOML};
+use snob_core::automation::{Automation, Planned, Read, Started, Step, WATCH_TOML};
 use snob_core::model::printable;
 use snob_core::{Epoch, Pk};
 use snob_engine::app::App;
@@ -69,10 +69,15 @@ impl Recorded {
 }
 
 /// One run of `automation`, kept as a file.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what a run is handed, each from its own place"
+)]
 pub(super) async fn run_automation(
     paths: &AppPaths,
     secrets: &SecretStore,
     automation: &Automation,
+    started: Started,
     printing: Printing,
     with_progress: bool,
     timing: RunTiming,
@@ -83,6 +88,7 @@ pub(super) async fn run_automation(
         paths,
         secrets,
         automation,
+        started,
         printing,
         with_progress,
         timing,
@@ -95,10 +101,17 @@ pub(super) async fn run_automation(
     summary
 }
 
+/// One run, reading what the triggers it follows lead to: a schedule's
+/// alone when one came round, every trigger's when somebody ran it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what a run is handed, each from its own place"
+)]
 async fn run_program(
     paths: &AppPaths,
     secrets: &SecretStore,
     automation: &Automation,
+    started: Started,
     printing: Printing,
     with_progress: bool,
     timing: RunTiming,
@@ -129,7 +142,7 @@ async fn run_program(
         Ok(delivery) => delivery,
         Err(e) => return refused(e),
     };
-    let reads = automation.planned_reads();
+    let reads = automation.reads_when(started);
     let monitor = |delivered: bool| -> Vec<Planned> {
         reads
             .iter()
@@ -382,6 +395,7 @@ pub(super) async fn run_due(
             paths,
             secrets,
             automation,
+            Started::BySchedule,
             printing,
             with_progress,
             timing,
@@ -393,12 +407,15 @@ pub(super) async fn run_due(
     ran
 }
 
-/// Whether any automation is kept as a file.
-pub(super) fn any_kept(paths: &AppPaths) -> bool {
+/// Whether any automation kept as a file has a schedule: one only ever run
+/// by hand gives a scheduled run or a timer nothing to wait for.
+pub(super) fn any_on_a_schedule(paths: &AppPaths) -> bool {
     automations::all(paths)
         .automations
         .iter()
-        .any(|automation| automation.id != WATCH_TOML)
+        .filter(|automation| automation.id != WATCH_TOML)
+        .flat_map(|automation| &automation.nodes)
+        .any(|node| node.enabled && matches!(node.step, Step::Schedule { .. }))
 }
 
 /// The automation `id`, or why there is none to run.

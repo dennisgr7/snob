@@ -1,10 +1,12 @@
 //! What a view shows at once while the requests it makes anyway run: an
 //! account as the latest answer about it showed it ([`Shown`]), its small
-//! picture, and the other pictures a view drew ([`Drawing`]), under
+//! picture, its highlights ([`KeptTray`]), the first page of each of its tabs
+//! ([`KeptGrid`]), and the other pictures a view drew ([`Drawing`]), under
 //! `accounts/<viewer>/cache/`.
 //!
-//! **Filled only from answers already paid for, never a reason to send or to
-//! skip a request** (AGENTS.md, "Local data"). **Kept by the account that saw
+//! **Filled only from answers already paid for, never a reason to send a
+//! request**, nor to skip one but a post's thumbnail already kept, which
+//! never changes (AGENTS.md, "Local data"). **Kept by the account that saw
 //! it**: what a private account showed one viewer is in that viewer's
 //! directory, never another's. An account is found by pk, never by name, a
 //! highlight by its id and a post by its code. Everything here
@@ -23,6 +25,8 @@ use crate::paths::{self, AccountPaths};
 
 const PROFILES: &str = "profiles";
 const PICTURES: &str = "pictures";
+const TRAYS: &str = "trays";
+const GRIDS: &str = "grids";
 
 /// A picture a view drew besides an account's small one, kept under a name of
 /// its own and swept by the same rule.
@@ -51,6 +55,11 @@ impl Drawing {
 /// The most one kept account is read: a few short strings and numbers, and a
 /// bio Instagram holds to 150 characters.
 const MAX_SHOWN_BYTES: u64 = 64 * 1024;
+
+/// The most a kept tray or grid is read: a first page holds a dozen posts,
+/// each caption's first line at most the 2,200 characters Instagram allows a
+/// caption, and a tray some hundred highlights' short titles.
+const MAX_LIST_BYTES: u64 = 256 * 1024;
 
 /// How long an entry nobody's answer renewed is kept: the 30 days old
 /// captures are kept for (`store::snapshots::prune`).
@@ -121,10 +130,106 @@ impl Shown {
     }
 }
 
+/// A tab of an account's page, as its kept first page is named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Tab {
+    /// The grid itself.
+    Posts,
+    Reels,
+    Reposts,
+    Tagged,
+}
+
+impl Tab {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Posts => "posts",
+            Self::Reels => "reels",
+            Self::Reposts => "reposts",
+            Self::Tagged => "tagged",
+        }
+    }
+}
+
+/// An account's highlights as the latest read of its profile showed them,
+/// none when it showed none; each cover is the [`Drawing::Cover`] of its id.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptTray {
+    #[serde(default)]
+    pub highlights: Vec<KeptHighlight>,
+}
+
+/// A highlight of a [`KeptTray`]. **Its title is another person's words**,
+/// passed through `snob_core::model::printable` before it is kept.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptHighlight {
+    pub id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+/// The first page of a grid or a tab as it was last shown; each thumbnail is
+/// the [`Drawing::Thumb`] of its post's code.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptGrid {
+    #[serde(default)]
+    pub posts: Vec<KeptPost>,
+    /// There were more past it.
+    #[serde(default)]
+    pub more: bool,
+}
+
+/// A post of a [`KeptGrid`], as its tile showed it. **Its strings are
+/// another person's words**, passed through `snob_core::model::printable`
+/// before they are kept.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptPost {
+    pub code: String,
+    #[serde(default)]
+    pub kind: Option<KeptKind>,
+    /// The first line of its caption.
+    #[serde(default)]
+    pub caption: Option<String>,
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub taken_at: Option<Epoch>,
+    #[serde(default)]
+    pub likes: Option<u64>,
+    #[serde(default)]
+    pub comments: Option<u64>,
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+/// What a kept post is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeptKind {
+    Photo,
+    Video,
+    Reel,
+    /// A carousel, and how many items it holds.
+    Carousel(usize),
+}
+
 impl AccountPaths {
     /// What the viewer was last shown of account `pk` ([`Shown`]).
     pub fn cached_profile(&self, pk: Pk) -> PathBuf {
         self.cache_dir().join(PROFILES).join(format!("{pk}.json"))
+    }
+
+    /// The highlights of account `pk` the viewer was last shown ([`KeptTray`]).
+    pub fn cached_tray(&self, pk: Pk) -> PathBuf {
+        self.cache_dir().join(TRAYS).join(format!("{pk}.json"))
+    }
+
+    /// The first page of account `pk`'s `tab` the viewer was last shown
+    /// ([`KeptGrid`]).
+    pub fn cached_grid(&self, pk: Pk, tab: Tab) -> PathBuf {
+        self.cache_dir()
+            .join(GRIDS)
+            .join(format!("{pk}-{}.json", tab.name()))
     }
 
     /// The small picture of account `pk`, as the CDN served it.
@@ -149,13 +254,49 @@ impl AccountPaths {
 /// What `account` was last shown of `pk`: none when nothing is kept, or the
 /// file does not read as one. **Reads one file and sends nothing.**
 pub fn load(account: &AccountPaths, pk: Pk) -> Option<Shown> {
+    read_kept(&account.cached_profile(pk), MAX_SHOWN_BYTES)
+}
+
+/// `file` read as a `T` up to `most` bytes: none when it is not there or
+/// does not read as one.
+fn read_kept<T: serde::de::DeserializeOwned>(file: &Path, most: u64) -> Option<T> {
     let mut text = String::new();
-    std::fs::File::open(account.cached_profile(pk))
+    std::fs::File::open(file)
         .ok()?
-        .take(MAX_SHOWN_BYTES)
+        .take(most)
         .read_to_string(&mut text)
         .ok()?;
     serde_json::from_str(&text).ok()
+}
+
+/// The highlights of `pk` `account` was last shown, as [`load`] reads.
+pub fn load_tray(account: &AccountPaths, pk: Pk) -> Option<KeptTray> {
+    read_kept(&account.cached_tray(pk), MAX_LIST_BYTES)
+}
+
+/// Keeps `tray` as the highlights of `pk` `account` was last shown, as
+/// [`save`] keeps.
+pub fn save_tray(account: &AccountPaths, pk: Pk, tray: &KeptTray) -> std::io::Result<bool> {
+    let contents = serde_json::to_vec(tray).map_err(std::io::Error::other)?;
+    keep(account, TRAYS, &account.cached_tray(pk), &contents)
+}
+
+/// The first page of `pk`'s `tab` `account` was last shown, as [`load`]
+/// reads.
+pub fn load_grid(account: &AccountPaths, pk: Pk, tab: Tab) -> Option<KeptGrid> {
+    read_kept(&account.cached_grid(pk, tab), MAX_LIST_BYTES)
+}
+
+/// Keeps `grid` as the first page of `pk`'s `tab` `account` was last shown,
+/// as [`save`] keeps.
+pub fn save_grid(
+    account: &AccountPaths,
+    pk: Pk,
+    tab: Tab,
+    grid: &KeptGrid,
+) -> std::io::Result<bool> {
+    let contents = serde_json::to_vec(grid).map_err(std::io::Error::other)?;
+    keep(account, GRIDS, &account.cached_grid(pk, tab), &contents)
 }
 
 /// Keeps `shown` as what `account` was last shown of `pk`. `false`, and
@@ -251,7 +392,7 @@ pub fn sweep(account: &AccountPaths) {
 
 fn sweep_at(account: &AccountPaths, now: SystemTime, kept_for: Duration, at_most: u64) {
     let mut found: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
-    let subs = [PROFILES, PICTURES]
+    let subs = [PROFILES, PICTURES, TRAYS, GRIDS]
         .into_iter()
         .chain(Drawing::ALL.map(Drawing::sub));
     for sub in subs {
@@ -462,6 +603,72 @@ mod tests {
             u64::MAX,
         );
         assert_eq!(drawing(&account, Drawing::Cover, "highlight:1"), None);
+    }
+
+    fn grid() -> KeptGrid {
+        KeptGrid {
+            posts: vec![KeptPost {
+                code: "Cabc".into(),
+                kind: Some(KeptKind::Carousel(3)),
+                caption: Some("A first line".into()),
+                taken_at: Some(Epoch::new(1_790_000_000)),
+                likes: Some(12),
+                pinned: true,
+                ..KeptPost::default()
+            }],
+            more: true,
+        }
+    }
+
+    #[test]
+    fn a_tray_and_each_tabs_first_page_are_read_back_and_never_another_accounts() {
+        let root = tempfile::tempdir().unwrap();
+        let (one, other) = (account(root.path(), 42), account(root.path(), 43));
+        let tray = KeptTray {
+            highlights: vec![KeptHighlight {
+                id: "highlight:1".into(),
+                title: Some("Trips".into()),
+            }],
+        };
+        assert_eq!(load_tray(&one, Pk::new(7)), None);
+
+        assert!(save_tray(&one, Pk::new(7), &tray).unwrap());
+        assert!(save_grid(&one, Pk::new(7), Tab::Tagged, &grid()).unwrap());
+
+        assert_eq!(load_tray(&one, Pk::new(7)), Some(tray));
+        assert_eq!(load_grid(&one, Pk::new(7), Tab::Tagged), Some(grid()));
+        assert_eq!(load_grid(&one, Pk::new(7), Tab::Posts), None, "a tab each");
+        assert_eq!(load_tray(&other, Pk::new(7)), None);
+        assert_eq!(load_grid(&other, Pk::new(7), Tab::Tagged), None);
+    }
+
+    #[test]
+    fn a_kept_tray_and_grid_are_swept_with_the_rest() {
+        let root = tempfile::tempdir().unwrap();
+        let account = account(root.path(), 42);
+        save_tray(&account, Pk::new(7), &KeptTray::default()).unwrap();
+        save_grid(&account, Pk::new(7), Tab::Posts, &grid()).unwrap();
+        for file in [
+            account.cached_tray(Pk::new(7)),
+            account.cached_grid(Pk::new(7), Tab::Posts),
+        ] {
+            std::fs::File::options()
+                .write(true)
+                .open(file)
+                .unwrap()
+                .set_modified(SystemTime::now() - Duration::from_secs(3600))
+                .unwrap();
+        }
+
+        sweep_at(
+            &account,
+            SystemTime::now(),
+            Duration::from_secs(60),
+            u64::MAX,
+        );
+
+        assert_eq!(load_tray(&account, Pk::new(7)), None);
+        assert_eq!(load_grid(&account, Pk::new(7), Tab::Posts), None);
     }
 
     #[test]

@@ -749,3 +749,40 @@ async fn no_browser_found_is_said_under_the_field(cx: &mut TestAppContext) {
         "No browser snob can use was found"
     );
 }
+
+#[gpui_kit::test]
+async fn the_band_goes_back_over_the_steps_taken_by_its_arrow_and_its_keys(
+    cx: &mut TestAppContext,
+) {
+    let app = open(cx, Scripted::with(vec![account(42, "me", true)]));
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    assert!(disabled(&app, cx, "band-back"), "nothing before home");
+    app.in_window(cx, |window, _| {
+        let band = window.find("band").bounds();
+        let back = window.find("band-back").bounds();
+        let status = window.find("status").bounds();
+        if !cfg!(target_os = "macos") {
+            let from_the_edge = f32::from(back.left() - band.left());
+            assert!(
+                (from_the_edge - snob_desktop::ui::frame::BACK_FROM_THE_EDGE).abs() <= 1.0,
+                "the way back is {from_the_edge} px from the band's edge"
+            );
+        }
+        assert!(status.left() >= back.right(), "the status after it");
+    });
+
+    app.click(cx, "rail-search");
+    app.until_screen(cx, |screen| *screen == Screen::Search)
+        .await;
+    app.press(cx, snob_desktop::ui::SETTINGS_KEYS);
+    app.until_screen(cx, |screen| *screen == Screen::Settings)
+        .await;
+    assert!(!disabled(&app, cx, "band-back"));
+
+    app.click(cx, "band-back");
+    app.until_screen(cx, |screen| *screen == Screen::Search)
+        .await;
+    app.press(cx, snob_desktop::ui::BACK_KEYS);
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    assert!(disabled(&app, cx, "band-back"));
+}

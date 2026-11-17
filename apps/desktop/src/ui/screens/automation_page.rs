@@ -323,6 +323,7 @@ fn flow(automation: &Automation, next: Option<Next>, look: &Look) -> AnyElement 
     let after = next.map(|next| match next {
         Next::Now => look.tr("automation-next-now"),
         Next::At(at) => look.tr_with("automation-next-at", &[("when", &moment(at))]),
+        Next::ByHand => look.tr("automation-next-by-hand"),
         Next::Never => look.tr("automation-next-never"),
     });
     let card = if rows.is_empty() {

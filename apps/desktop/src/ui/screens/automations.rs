@@ -26,7 +26,7 @@ use crate::state::automations::{self as state, Stage};
 use crate::theme::motion;
 use crate::theme::tokens::{Scheme, shape};
 use crate::ui::assets;
-use crate::ui::automations::{DRIFT_FRAME, Page};
+use crate::ui::automations::Page;
 use crate::ui::look::{Look, color, color_at, sp};
 use crate::ui::parts::{self, Kind, icon};
 use crate::ui::shell::{Phase, Shell};
@@ -95,19 +95,11 @@ pub fn render(
         let ran = page
             .drift
             .at(now.saturating_duration_since(page.born), running);
-        if running && !page.ticking {
-            page.ticking = true;
-            cx.spawn_in(window, async move |this, cx| {
-                cx.background_executor().timer(DRIFT_FRAME).await;
-                this.update(cx, |shell, cx| {
-                    if let Some(page) = &mut shell.automations {
-                        page.ticking = false;
-                    }
-                    cx.notify();
-                })
-                .ok();
-            })
-            .detach();
+        // A frame on each of the display's refreshes, as the ring has: its
+        // place is worked out from the time, so it moves evenly whatever the
+        // rate, and a frame drawn late is never one step behind.
+        if running {
+            window.request_animation_frame();
         }
         let shown = if stage == Stage::Intro {
             phase.presence

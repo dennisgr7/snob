@@ -8,9 +8,10 @@
 //! say what came back to a screen.
 //!
 //! **A profile page is what `snob profile` reads, less the stories**:
-//! `snob_engine::profile::read`, which keeps the profile in the cache a page
-//! is drawn from at once next time, and a tab's first page once the tab is
-//! shown (`posts::first_page`). Its lists are `engine::list`, the yes for
+//! `snob_engine::profile::read`, which keeps the profile and its highlights
+//! in the cache a page is drawn from at once next time, and a tab's first
+//! page once the tab is shown (`posts::first_page`, kept the same way). A
+//! post's thumbnail already kept is not downloaded again. Its lists are `engine::list`, the yes for
 //! another account's given in the app before it is called. Its largest
 //! picture is `snob pfp`'s (`profile::picture`). Pictures come from the CDN
 //! into the account's cache (`cache::Keeper`), never from Instagram's API.
@@ -473,25 +474,35 @@ impl host::Progress for Showing {
     }
 }
 
-/// What a tab's post is, for its tile.
-fn tile_of(post: &snob_engine::posts::Post, thumb: Option<PathBuf>) -> Tile {
-    use snob_engine::posts::PostKind;
-    let printable = snob_core::model::printable;
+/// What a tab's post is, for its tile, as the cache keeps it
+/// (`snob_engine::cache::kept_post`) whether it was read now or before.
+fn tile_of(post: snob_engine::cache::KeptPost, thumb: Option<PathBuf>) -> Tile {
+    use snob_engine::cache::KeptKind;
     Tile {
-        code: post.code.clone(),
+        code: post.code,
         kind: match post.kind {
-            PostKind::Photo => TileKind::Photo,
-            PostKind::Video => TileKind::Video,
-            PostKind::Reel => TileKind::Reel,
-            PostKind::Carousel(items) => TileKind::Carousel(items),
+            Some(KeptKind::Photo) | None => TileKind::Photo,
+            Some(KeptKind::Video) => TileKind::Video,
+            Some(KeptKind::Reel) => TileKind::Reel,
+            Some(KeptKind::Carousel(items)) => TileKind::Carousel(items),
         },
         thumb,
-        caption: Some(printable(post.headline())).filter(|line| !line.trim().is_empty()),
-        owner: Some(printable(&post.owner)).filter(|owner| !owner.is_empty()),
-        taken_at: (post.taken_at != Epoch::default()).then_some(post.taken_at),
-        likes: post.likes.filter(|_| !post.likes_hidden),
+        caption: post.caption,
+        owner: post.owner,
+        taken_at: post.taken_at,
+        likes: post.likes,
         comments: post.comments,
         pinned: post.pinned,
+    }
+}
+
+/// The tab of a profile's page `tab` is read as.
+fn profile_tab(tab: Tab) -> Option<snob_ig::client::ProfileTab> {
+    use snob_ig::client::ProfileTab;
+    match tab {
+        Tab::Posts => None,
+        Tab::Reposts => Some(ProfileTab::Reposts),
+        Tab::Tagged => Some(ProfileTab::Tagged),
     }
 }
 
@@ -923,7 +934,23 @@ impl Backend for Engine {
                 posts: shown.posts,
                 story_up: false,
                 picture: snob_engine::cache::picture(&paths, viewer, who.pk),
-                highlights: Vec::new(),
+                highlights: snob_engine::cache::tray(&paths, viewer, who.pk)
+                    .map(|tray| {
+                        tray.highlights
+                            .into_iter()
+                            .map(|highlight| Highlight {
+                                cover: snob_engine::cache::drawing(
+                                    &paths,
+                                    viewer,
+                                    Drawing::Cover,
+                                    &highlight.id,
+                                ),
+                                id: highlight.id,
+                                title: highlight.title.unwrap_or_default(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 visible: None,
                 you_follow: shown.you_follow,
                 follows_you: shown.follows_you,
@@ -1020,15 +1047,9 @@ impl Backend for Engine {
     fn tiles(&self, who: Named, tab: Tab) -> Answer<Result<Tiles, Unread>> {
         let (paths, secrets) = (self.paths.clone(), self.secrets.clone());
         self.runtime.run(move || async move {
-            use snob_ig::client::ProfileTab;
             let (viewer, app) = opened(&paths, &secrets, None, None)?;
             let username = who.username.clone().ok_or(Unread::Nobody)?;
-            let tab = match tab {
-                Tab::Posts => None,
-                Tab::Reposts => Some(ProfileTab::Reposts),
-                Tab::Tagged => Some(ProfileTab::Tagged),
-            };
-            let grid = snob_engine::posts::first_page(app.client(), &username, who.pk, tab)
+            let grid = snob_engine::posts::first_page(&app, &username, who.pk, profile_tab(tab))
                 .await
                 .map_err(|e| unread(&paths, viewer, &e))?;
             let keeper = app.cache();
@@ -1037,17 +1058,36 @@ impl Backend for Engine {
                 let address = post.items.first().and_then(|item| item.thumb.as_deref());
                 let thumb = match (&keeper, address) {
                     (Some(keeper), Some(address)) => {
-                        keeper
-                            .fetch_drawing(app.client(), Drawing::Thumb, &post.code, address)
-                            .await
+                        keeper.fetch_thumb(app.client(), &post.code, address).await
                     }
                     _ => None,
                 };
-                tiles.push(tile_of(post, thumb));
+                tiles.push(tile_of(snob_engine::cache::kept_post(post), thumb));
             }
             Ok(Tiles {
                 tiles,
                 more: grid.next.is_some(),
+            })
+        })
+    }
+
+    fn tiles_kept(&self, who: Named, tab: Tab) -> Answer<Option<Tiles>> {
+        let paths = self.paths.clone();
+        self.runtime.run(move || async move {
+            let viewer = in_use(&paths)?;
+            let grid = snob_engine::cache::grid(&paths, viewer, who.pk, profile_tab(tab))?;
+            let tiles = grid
+                .posts
+                .into_iter()
+                .map(|post| {
+                    let thumb =
+                        snob_engine::cache::drawing(&paths, viewer, Drawing::Thumb, &post.code);
+                    tile_of(post, thumb)
+                })
+                .collect();
+            Some(Tiles {
+                tiles,
+                more: grid.more,
             })
         })
     }

@@ -10,13 +10,18 @@
 //! its right scrolling alone. What opens over the page (the picture large,
 //! the small menus, the question a list asks) is in `ui::overlays`.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui_kit::base::{Button, FocusTrapElement as _, Scrollbar, TestSupportExt as _};
+use gpui_kit::base::{
+    Align, Button, ElementExt as _, FocusTrapElement as _, Placement, Positioner, Scrollbar,
+    TestSupportExt as _,
+};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Anchor, AnyElement, App, Context, Div, FontWeight, ObjectFit, Role, ScrollDelta, ScrollHandle,
-    Window, anchored, deferred, div, img, px, relative,
+    AnyElement, App, Bounds, Context, Div, FontWeight, ObjectFit, Pixels, Role, ScrollDelta,
+    ScrollHandle, Window, deferred, div, img, px, relative,
 };
 
 use super::handle;
@@ -125,12 +130,17 @@ struct Shown {
     tab: Tab,
     tab_from: (Tab, Instant),
     read: Option<TabRead>,
+    /// The tab's first page the cache kept, shown until it is read.
+    kept: Option<Tiles>,
     shown_since: Instant,
     read_at: Option<Instant>,
+    highlights_since: Option<Instant>,
     scroll: ScrollHandle,
     highlights: ScrollHandle,
     picture_button: gpui_kit::FocusHandle,
     options_button: gpui_kit::FocusHandle,
+    picture_drawn: Rc<Cell<Bounds<Pixels>>>,
+    options_drawn: Rc<Cell<Bounds<Pixels>>>,
 }
 
 /// The profile shown.
@@ -151,17 +161,20 @@ pub fn render(
         tab: page.tab,
         tab_from: page.tab_from,
         read: page.tabs.get(&page.tab).cloned(),
+        kept: page.kept_tabs.get(&page.tab).cloned(),
         shown_since: page.shown_since,
         read_at: page.read_at,
+        highlights_since: page.highlights_since,
         scroll: page.scroll.clone(),
         highlights: page.highlights.clone(),
         picture_button: page.picture_button.clone(),
         options_button: page.options_button.clone(),
+        picture_drawn: page.picture_drawn.clone(),
+        options_drawn: page.options_drawn.clone(),
     };
     let layout = shell.pages.layout;
     let showing = shell.pages.showing;
     let popup = shell.pages.popup.as_ref().map(|popup| popup.kind);
-    let back = shell.can_go_back();
 
     // A layout changed comes in again, from a little under its place.
     let moved = look.moved(motion::ENTER, 10.0, 1.0);
@@ -191,7 +204,7 @@ pub fn render(
     };
     let columns = profile::columns(room, WIDEST_TILE);
 
-    let top = top_bar(back, layout, showing, &look, cx);
+    let top = top_bar(layout, showing, &look, cx);
     let posts = posts(&shown, showing, columns, &look, window, cx);
 
     let page = match layout {
@@ -296,18 +309,9 @@ pub fn render(
         .into_any_element()
 }
 
-/// The way back, and how the page is laid out and its posts shown.
-fn top_bar(
-    back: bool,
-    layout: Layout,
-    showing: Showing,
-    look: &Look,
-    cx: &mut Context<Shell>,
-) -> Div {
-    let back = back.then(|| {
-        parts::small_icon_button("profile-back", look.tr("back"), assets::BACK, look)
-            .on_click(cx.listener(|shell, _, window, cx| shell.go_back(window, cx)))
-    });
+/// How the page is laid out and its posts shown; the way back is the
+/// band's.
+fn top_bar(layout: Layout, showing: Showing, look: &Look, cx: &mut Context<Shell>) -> Div {
     let grid = showing == Showing::Grid;
     let to_split = layout == Layout::Stacked;
     div()
@@ -315,7 +319,6 @@ fn top_bar(
         .flex_wrap()
         .items_center()
         .gap(sp(10.))
-        .children(back)
         .child(div().flex_1())
         .child(
             parts::segmented("profile-showing", look.tr("profile-showing"), look)
@@ -388,11 +391,19 @@ fn card(
         eased(since, look.moved(motion::ENTER, 0.0, 1.0).lasts, window)
     });
 
-    let picture = div()
-        .flex()
-        .flex_col()
-        .child(picture(shown, &named, split, popup, came, look, cx))
-        .children(popup_menu(shell, PopupKind::Picture, look, window, cx));
+    let picture = drawn_at(
+        &shown.picture_drawn,
+        popup == Some(PopupKind::Picture),
+        picture(shown, &named, split, popup, came, look, cx),
+    )
+    .children(popup_menu(
+        shell,
+        PopupKind::Picture,
+        shown.picture_drawn.get(),
+        look,
+        window,
+        cx,
+    ));
     let names = names(shell, shown, &named, look, cx);
     let options = parts::icon_button(
         "profile-options",
@@ -408,15 +419,27 @@ fn card(
     .on_click(cx.listener(|shell, _, window, cx| {
         shell.open_a_popup(PopupKind::Options, window, cx);
     }));
-    let options = div()
-        .flex()
-        .flex_col()
-        .items_end()
-        .child(options)
-        .children(popup_menu(shell, PopupKind::Options, look, window, cx));
+    let options = drawn_at(
+        &shown.options_drawn,
+        popup == Some(PopupKind::Options),
+        options,
+    )
+    .children(popup_menu(
+        shell,
+        PopupKind::Options,
+        shown.options_drawn.get(),
+        look,
+        window,
+        cx,
+    ));
     let about = about(shown, look);
     let counters = counters(shown, came, look, cx);
-    let highlights = highlights(shown, came, look, window);
+    // The highlights come in when a read changes them, not when it says
+    // again what the cache kept.
+    let highlights_came = shown.highlights_since.map_or(1.0, |since| {
+        eased(since, look.moved(motion::ENTER, 0.0, 1.0).lasts, window)
+    });
+    let highlights = highlights(shown, highlights_came, look, window);
     let failed = shown.failed.as_ref().map(|why| {
         let said = unread_words(why, look);
         div()
@@ -553,12 +576,28 @@ fn picture(
         .on_click(cx.listener(|shell, _, window, cx| shell.click_the_picture(window, cx)))
 }
 
+/// What opens a menu, kept where it was last drawn so the menu opens under
+/// it; while that menu is open, the menu follows it on the next frame.
+fn drawn_at(drawn: &Rc<Cell<Bounds<Pixels>>>, open: bool, opener: impl IntoElement) -> Div {
+    let drawn = drawn.clone();
+    div()
+        .flex_none()
+        .on_prepaint(move |bounds, window, _| {
+            if drawn.replace(bounds) != bounds && open {
+                window.request_animation_frame();
+            }
+        })
+        .child(opener)
+}
+
 /// A small menu under what opened it, over everything else: the story or
 /// the picture, or what can be copied of the account. **Copying is all the
-/// options do**: no follow, no write.
+/// options do**: no follow, no write. The picture's starts at its left edge
+/// and the options' ends at their right one.
 fn popup_menu(
     shell: &Shell,
     kind: PopupKind,
+    under: Bounds<Pixels>,
     look: &Look,
     window: &mut Window,
     cx: &mut Context<Shell>,
@@ -638,7 +677,6 @@ fn popup_menu(
         .role(Role::Menu)
         .aria_label(name)
         .occlude()
-        .mt(px(6.))
         .w(sp(250.))
         .p(sp(6.))
         .bg(color(palette.panel))
@@ -656,15 +694,17 @@ fn popup_menu(
                 .children(items)
                 .focus_trap("profile-menu-items", &popup.focus),
         );
-    let anchor = match kind {
-        PopupKind::Picture => Anchor::TopLeft,
-        PopupKind::Options => Anchor::TopRight,
+    let align = match kind {
+        PopupKind::Picture => Align::Start,
+        PopupKind::Options => Align::End,
     };
     Some(
         deferred(
-            anchored()
-                .anchor(anchor)
-                .snap_to_window_with_margin(px(8.))
+            Positioner::side(under)
+                .placement(Placement::Bottom)
+                .align(align)
+                .offset(px(6.))
+                .margin(px(8.))
                 .child(menu),
         )
         .with_priority(1)
@@ -701,13 +741,9 @@ fn names(
         Some(full) => look.tr_with("profile-title", &[("name", full), ("account", &at)]),
         None => at.clone(),
     };
-    let username = div()
+    let username = parts::username(look)
         .font_weight(FontWeight::MEDIUM)
         .text_size(sp(if full.is_some() { 17. } else { 24. }))
-        .text_color(color(palette.emphasis))
-        .underline()
-        .text_decoration_2()
-        .text_decoration_color(color(palette.underline))
         .child(at);
     let marks = [
         verified.then(|| look.tr("profile-verified")),
@@ -885,7 +921,7 @@ fn highlights(shown: &Shown, came: f32, look: &Look, window: &mut Window) -> Opt
         .map(|(at, highlight)| {
             // Each comes in a little after the one before it.
             let delay = Duration::from_millis(40) * at.min(10) as u32;
-            let here = shown.read_at.map_or(1.0, |since| {
+            let here = shown.highlights_since.map_or(1.0, |since| {
                 let since = since + delay;
                 if Instant::now() < since {
                     window.request_animation_frame();
@@ -1114,6 +1150,22 @@ fn tab_content(
     window: &mut Window,
 ) -> AnyElement {
     let visible = shown.profile.as_ref().and_then(|profile| profile.visible);
+    let kept = shown.kept.as_ref().filter(|kept| !kept.tiles.is_empty());
+    let posts = |tiles: &Tiles, window: &mut Window| match showing {
+        Showing::Grid => grid(tiles, shown.shown_since, columns, look, window),
+        Showing::List => list(tiles, shown.shown_since, look, window),
+    };
+    // What could not be read is said above what the cache kept of it.
+    let failed = |said: AnyElement, window: &mut Window| match kept {
+        Some(kept) => div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(said)
+            .child(posts(kept, window))
+            .into_any_element(),
+        None => said,
+    };
     match (visible, &shown.read, &shown.failed) {
         (_, _, Some(_)) if shown.profile.is_none() => div().into_any_element(),
         (Some(false), _, _) => status(
@@ -1122,6 +1174,10 @@ fn tab_content(
             Some(look.tr("profile-private-note")),
             look,
         ),
+        // What the cache kept, while the tab is read again.
+        (None, _, _) | (_, None | Some(TabRead::Reading), _) if let Some(kept) = kept => {
+            posts(kept, window)
+        }
         (None, _, _) | (_, None | Some(TabRead::Reading), _) => div()
             .id("profile-reading")
             .test_support()
@@ -1133,15 +1189,19 @@ fn tab_content(
             .pt(sp(STATUS_PAD))
             .child(parts::ring(26., look, window))
             .into_any_element(),
-        (_, Some(TabRead::Failed(Unread::Failed(_))), _) => status(
-            "profile-tab-failed",
-            look.tr("profile-posts-failed"),
-            None,
-            look,
+        (_, Some(TabRead::Failed(Unread::Failed(_))), _) => failed(
+            status(
+                "profile-tab-failed",
+                look.tr("profile-posts-failed"),
+                None,
+                look,
+            ),
+            window,
         ),
-        (_, Some(TabRead::Failed(why)), _) => {
-            status("profile-tab-failed", unread_words(why, look), None, look)
-        }
+        (_, Some(TabRead::Failed(why)), _) => failed(
+            status("profile-tab-failed", unread_words(why, look), None, look),
+            window,
+        ),
         (_, Some(TabRead::Read(tiles)), _) if tiles.tiles.is_empty() => status(
             "profile-empty",
             look.tr(match shown.tab {
@@ -1152,10 +1212,7 @@ fn tab_content(
             None,
             look,
         ),
-        (_, Some(TabRead::Read(tiles)), _) => match showing {
-            Showing::Grid => grid(tiles, shown.shown_since, columns, look, window),
-            Showing::List => list(tiles, shown.shown_since, look, window),
-        },
+        (_, Some(TabRead::Read(tiles)), _) => posts(tiles, window),
     }
 }
 

@@ -153,7 +153,13 @@ impl Reads {
 /// profile answered in the account's cache (`App::profile_named`).
 pub async fn read(app: &App, typed: &str, reads: Reads, known: Option<Pk>) -> Result<Profile> {
     let info = app.profile_named(target::clean(typed), known).await?;
-    of(app.client(), info, app.viewer().pk, reads).await
+    let profile = of(app.client(), info, app.viewer().pk, reads).await?;
+    // The tray this read asked for, or knew it had none of: kept for a view
+    // to show at once next time (`cache`).
+    if let Some(keeper) = app.cache() {
+        keeper.tray(profile.pk, &profile.highlights);
+    }
+    Ok(profile)
 }
 
 /// [`read`] on a client alone, which keeps nothing: for a test against a

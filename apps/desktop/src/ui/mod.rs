@@ -42,9 +42,18 @@ actions!(
         PaletteDown,
         /// Goes to the item above, or below, in the account's menu.
         MenuUp,
-        MenuDown
+        MenuDown,
+        /// One step back, as the band's arrow does.
+        GoBack
     ]
 );
+
+/// The keys that go one step back: the system's own for it.
+pub const BACK_KEYS: &str = if cfg!(target_os = "macos") {
+    "cmd-["
+} else {
+    "alt-left"
+};
 
 /// The keys that open the settings: the system's own for it.
 pub const SETTINGS_KEYS: &str = if cfg!(target_os = "macos") {
@@ -75,6 +84,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", Dismiss, Some("Snob")),
         KeyBinding::new(SETTINGS_KEYS, OpenSettings, Some("Snob")),
         KeyBinding::new(PALETTE_KEYS, OpenPalette, Some("Snob")),
+        KeyBinding::new(BACK_KEYS, GoBack, Some("Snob")),
         KeyBinding::new("up", PaletteUp, Some("SnobPalette")),
         KeyBinding::new("down", PaletteDown, Some("SnobPalette")),
         KeyBinding::new("up", MenuUp, Some("SnobMenu")),

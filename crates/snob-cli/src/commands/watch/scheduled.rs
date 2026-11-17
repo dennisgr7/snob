@@ -14,7 +14,7 @@ use crate::cli::WatchRunArgs;
 use crate::report;
 use crate::ui;
 
-use super::automation::{Recorded, any_kept, run_due};
+use super::automation::{Recorded, any_on_a_schedule, run_due};
 use super::delivery::delivery_from;
 use super::run::{Printing, account_databases, run_viewers, settle_all};
 use super::schedule::{describe_schedule, schedule_from, when_from};
@@ -42,7 +42,7 @@ pub(super) async fn scheduled(
         && configured
             .as_ref()
             .is_none_or(super::schedule::names_no_schedule)
-        && any_kept(paths)
+        && any_on_a_schedule(paths)
     {
         return only_the_app(&args, &secrets, paths, in_use).await;
     }

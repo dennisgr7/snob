@@ -916,7 +916,12 @@ impl Shell {
         } else if self.signing_out.is_some() {
             self.keep_signed_in(window, cx);
         } else if self.menu.is_none() && self.is_editing() {
-            if !self.dismiss_an_editor_overlay(window, cx) {
+            // What is over the canvas, then the panel's search, then its way
+            // back to the kinds, and only then the editor itself.
+            if !self.dismiss_an_editor_overlay(window, cx)
+                && !self.close_the_search(window, cx)
+                && !self.back_to_the_kinds(window, cx)
+            {
                 self.leave_the_editor(window, cx);
             }
         } else if self.menu.is_none() && self.has_an_automation_open() {

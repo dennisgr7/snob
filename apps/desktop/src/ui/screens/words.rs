@@ -60,6 +60,7 @@ pub fn schedule_words(spec: &Spec, look: &Look) -> String {
 pub fn step_detail(step: &Step, look: &Look) -> Option<String> {
     match step {
         Step::Schedule { when } => Some(schedule_words(when, look)),
+        Step::Manual {} => Some(look.tr("node-manual")),
         Step::Read { account, .. } => Some(match account {
             None => look.tr("node-no-account"),
             Some(account) => match account.name() {

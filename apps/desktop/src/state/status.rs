@@ -19,6 +19,9 @@ pub enum Status {
     /// A read waits on the engine's browser, which is starting: said while
     /// nothing was answered for as long as the browser stays open idle.
     Starting,
+    /// The profile shown, or the tab shown of it, is being read: what was
+    /// kept of it is shown meanwhile.
+    Loading,
     /// An update is being fetched: a whole number from 0 to 100, when the
     /// size is known.
     Downloading {
@@ -36,8 +39,9 @@ impl Status {
             Self::Paused { .. } => 1,
             Self::Resuming => 2,
             Self::Starting => 3,
-            Self::Downloading { .. } => 4,
-            Self::UpdateAvailable => 5,
+            Self::Loading => 4,
+            Self::Downloading { .. } => 5,
+            Self::UpdateAvailable => 6,
         }
     }
 
@@ -60,6 +64,11 @@ impl Band {
         self.clear_kind(&status);
         self.on.push(status);
         self.on.sort_by_key(Status::rank);
+    }
+
+    /// Whether something of `status`'s kind is on, shown or not.
+    pub fn holds(&self, status: &Status) -> bool {
+        self.on.iter().any(|on| on.same_kind(status))
     }
 
     /// Turns off whatever is on of `status`'s kind.
@@ -155,6 +164,18 @@ mod tests {
         );
         band.clear_download();
         assert_eq!(band.shown(), Some(&Status::UpdateAvailable));
+    }
+
+    #[test]
+    fn the_engine_starting_says_more_than_a_profile_loading() {
+        let mut band = Band::default();
+        band.set(Status::Downloading { percent: None });
+        band.set(Status::Loading);
+        assert_eq!(band.shown(), Some(&Status::Loading));
+        band.set(Status::Starting);
+        assert_eq!(band.shown(), Some(&Status::Starting));
+        band.clear_kind(&Status::Starting);
+        assert_eq!(band.shown(), Some(&Status::Loading));
     }
 
     #[test]

@@ -20,7 +20,7 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{Bounds, Context, Entity, FocusHandle, Pixels, Point, Subscription, Window};
 use snob_core::Pk;
-use snob_core::automation::{Account, Only, Read, Step};
+use snob_core::automation::{Account, Only, Read, Stage as Kind, Step};
 
 use super::assets;
 use super::look::Look;
@@ -28,15 +28,10 @@ use super::shell::Shell;
 use crate::backend::{Automation, Next, Run};
 use crate::state::automations::{Canvas, Drift, Glide, Stage};
 use crate::state::editing::Editing;
+use crate::state::shelf::Shelf;
 use crate::state::steps::{ScheduleForm, WebhookForm};
 
 use super::automations_editor::{Dialog, Leave, NodeMenu, Wire};
-
-/// How often the grid behind the introduction is drawn again while it
-/// drifts: sixty times a second, whatever the display's rate. It moves a few
-/// pixels a second, and a frame for every refresh of a fast display would
-/// cost the processor for nothing.
-pub const DRIFT_FRAME: Duration = Duration::from_micros(16_667);
 
 /// The editor's four kinds of steps, in the order its panel lists them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +45,7 @@ pub enum Steps {
 impl Steps {
     pub const ALL: [Self; 4] = [Self::Triggers, Self::Actions, Self::Filters, Self::Outputs];
 
-    fn at(self) -> usize {
+    pub fn at(self) -> usize {
         match self {
             Self::Triggers => 0,
             Self::Actions => 1,
@@ -59,10 +54,29 @@ impl Steps {
         }
     }
 
+    /// The kind of step these are.
+    pub fn kind(self) -> Kind {
+        match self {
+            Self::Triggers => Kind::Trigger,
+            Self::Actions => Kind::Action,
+            Self::Filters => Kind::Filter,
+            Self::Outputs => Kind::Output,
+        }
+    }
+
+    pub fn of(kind: Kind) -> Self {
+        match kind {
+            Kind::Trigger => Self::Triggers,
+            Kind::Action => Self::Actions,
+            Kind::Filter => Self::Filters,
+            Kind::Output => Self::Outputs,
+        }
+    }
+
     /// What the panel offers of this kind.
     pub fn items(self) -> Vec<Item> {
         match self {
-            Self::Triggers => vec![Item::Schedule, Item::Soon("trigger-webhook")],
+            Self::Triggers => vec![Item::Schedule, Item::Manual, Item::Soon("trigger-webhook")],
             Self::Actions => Read::all().into_iter().map(Item::Read).collect(),
             Self::Filters => Only::ALL.into_iter().map(Item::Filter).collect(),
             Self::Outputs => vec![
@@ -78,6 +92,7 @@ impl Steps {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     Schedule,
+    Manual,
     Read(Read),
     Filter(Only),
     Webhook,
@@ -90,6 +105,7 @@ impl Item {
     pub fn of(step: &Step) -> Self {
         match step {
             Step::Schedule { .. } => Self::Schedule,
+            Step::Manual {} => Self::Manual,
             Step::Read { what, .. } => Self::Read(what.clone()),
             Step::Filter { only } => Self::Filter(*only),
             Step::Webhook(_) => Self::Webhook,
@@ -100,6 +116,7 @@ impl Item {
     pub fn id(&self) -> &'static str {
         match self {
             Self::Schedule => "trigger-schedule",
+            Self::Manual => "trigger-manual",
             Self::Read(read) => match read {
                 Read::Lists => "read-lists",
                 Read::Unfollowers => "read-unfollowers",
@@ -125,6 +142,7 @@ impl Item {
     pub fn drawing(&self) -> &'static str {
         match self {
             Self::Schedule => assets::SCHEDULE,
+            Self::Manual => assets::RUN,
             Self::Read(Read::Posts { .. } | Read::Picture { .. }) => assets::PHOTO,
             Self::Read(_) => assets::FOLLOWERS,
             Self::Filter(_) => assets::CONDITION,
@@ -135,8 +153,9 @@ impl Item {
     }
 
     /// The step it puts on the canvas, as good as it can be before
-    /// anything is said: a schedule every day, an action as the account in
-    /// use unless it is about another. None for what is not there yet.
+    /// anything is said: a schedule every day, a manual trigger, an action as
+    /// the account in use unless it is about another. None for what is not
+    /// there yet.
     pub fn step(&self, in_use: Option<Pk>) -> Option<Step> {
         Some(match self {
             Self::Schedule => Step::Schedule {
@@ -147,6 +166,7 @@ impl Item {
                 .spec()
                 .unwrap_or_default(),
             },
+            Self::Manual => Step::Manual {},
             Self::Read(what) => Step::Read {
                 account: (!what.is_about_another()).then(|| Account::own(in_use)),
                 what: what.clone(),
@@ -187,10 +207,9 @@ pub(crate) struct Page {
     pub left: Option<Stage>,
     pub since: Instant,
     /// The grid behind the introduction: how long it has drifted, on a
-    /// clock that starts with the page, and whether a frame is on its way.
+    /// clock that starts with the page.
     pub drift: Drift,
     pub born: Instant,
-    pub ticking: bool,
     pub editor: Editor,
     _watching: Subscription,
 }
@@ -250,8 +269,16 @@ pub(crate) struct Editor {
     pub focus: FocusHandle,
     /// Where the canvas was last drawn, which the pointer is measured from.
     pub bounds: Rc<Cell<Bounds<Pixels>>>,
-    /// Each kind of step: whether it is unfolded, and since when.
-    pub open: [(bool, Option<Instant>); 4],
+    /// The panel of steps: what it shows, and since when it shows it.
+    pub shelf: Shelf,
+    pub shelf_since: Option<Instant>,
+    /// The search in the steps of one kind, while it is open.
+    pub search: Option<Search>,
+    /// Each kind's way in, the way back to them and the magnifier: where
+    /// focus goes as the panel moves.
+    pub kinds: [FocusHandle; 4],
+    pub shelf_back: FocusHandle,
+    pub shelf_search: FocusHandle,
     /// **Whether the canvas still shows what it was fitted to**: it is
     /// fitted again when the window changes size, until the person moves
     /// or zooms it.
@@ -260,8 +287,17 @@ pub(crate) struct Editor {
     pub fitted_for: Cell<gpui_kit::Size<Pixels>>,
 }
 
+/// The search in the panel's steps: its field, and since when it is open.
+pub(crate) struct Search {
+    pub input: Entity<InputState>,
+    pub since: Instant,
+    _typing: Subscription,
+}
+
 impl Editor {
-    pub(crate) fn new(cx: &mut Context<Shell>) -> Self {
+    /// **Held at the triggers** for an automation that has none
+    /// (`state::shelf`).
+    pub(crate) fn new(has_a_trigger: bool, cx: &mut Context<Shell>) -> Self {
         let now = cx.background_executor().now();
         Self {
             glide: Glide::still(Canvas::default()),
@@ -271,8 +307,12 @@ impl Editor {
             ctrl: false,
             focus: cx.focus_handle().tab_stop(true),
             bounds: Rc::default(),
-            // **The triggers are unfolded**: an automation starts with one.
-            open: [(true, None), (false, None), (false, None), (false, None)],
+            shelf: Shelf::new(has_a_trigger),
+            shelf_since: None,
+            search: None,
+            kinds: std::array::from_fn(|_| cx.focus_handle()),
+            shelf_back: cx.focus_handle(),
+            shelf_search: cx.focus_handle(),
             fitted: true,
             fitted_for: Cell::default(),
         }
@@ -299,16 +339,6 @@ impl Editor {
     pub fn canvas_here(&self, cx: &gpui_kit::App) -> Canvas {
         let reduce = Look::now(cx).settings.reduce_motion;
         self.glide.at(self.since_glide(cx), reduce)
-    }
-
-    /// Whether `steps` is unfolded.
-    pub fn is_open(&self, steps: Steps) -> bool {
-        self.open[steps.at()].0
-    }
-
-    /// Since when `steps` was last folded or unfolded: never, at a start.
-    pub fn toggled(&self, steps: Steps) -> Option<Instant> {
-        self.open[steps.at()].1
     }
 
     /// The center of the canvas on the window.
@@ -345,8 +375,7 @@ impl Page {
             since: now,
             drift: Drift::default(),
             born: now,
-            ticking: false,
-            editor: Editor::new(cx),
+            editor: Editor::new(true, cx),
             _watching: watching,
         }
     }
@@ -750,13 +779,93 @@ impl Shell {
         }
     }
 
-    /// Unfolds a kind of step in the panel, or folds it.
-    pub(crate) fn toggle_the_steps(&mut self, steps: Steps, cx: &mut Context<Self>) {
+    /// Into a kind of step in the panel, its way back focused.
+    pub(crate) fn enter_the_steps(
+        &mut self,
+        steps: Steps,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let now = cx.background_executor().now();
-        if let Some(page) = &mut self.automations {
-            let open = &mut page.editor.open[steps.at()];
-            *open = (!open.0, Some(now));
+        let Some(page) = &mut self.automations else {
+            return;
+        };
+        let editor = &mut page.editor;
+        if editor.shelf.enter(steps.kind()) {
+            editor.shelf_since = Some(now);
+            editor.search = None;
+            window.focus(&editor.shelf_back, cx);
             cx.notify();
         }
+    }
+
+    /// Back to the kinds of step, the one just left focused. Whether it
+    /// went: never while the panel is held at the triggers.
+    pub(crate) fn back_to_the_kinds(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let now = cx.background_executor().now();
+        let Some(page) = &mut self.automations else {
+            return false;
+        };
+        let editor = &mut page.editor;
+        let left = match editor.shelf.at() {
+            crate::state::shelf::At::In(kind) => Steps::of(kind),
+            crate::state::shelf::At::Kinds => return false,
+        };
+        if !editor.shelf.back() {
+            return false;
+        }
+        editor.shelf_since = Some(now);
+        editor.search = None;
+        window.focus(&editor.kinds[left.at()], cx);
+        cx.notify();
+        true
+    }
+
+    /// The search in the steps shown, opened and focused, or closed and
+    /// emptied.
+    pub(crate) fn toggle_the_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let open = self
+            .automations
+            .as_ref()
+            .is_some_and(|page| page.editor.search.is_some());
+        if open {
+            self.close_the_search(window, cx);
+            return;
+        }
+        let placeholder = Look::now(cx).tr("editor-shelf-search-hint");
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+        let typing = cx.subscribe_in(&input, window, |_, _, event: &InputEvent, _, cx| {
+            if let InputEvent::Change = event {
+                cx.notify();
+            }
+        });
+        input.update(cx, |input, cx| input.focus(window, cx));
+        let now = cx.background_executor().now();
+        if let Some(page) = &mut self.automations {
+            page.editor.search = Some(Search {
+                input,
+                since: now,
+                _typing: typing,
+            });
+        }
+        cx.notify();
+    }
+
+    /// Closes the search in the panel, focus back on its magnifier. Whether
+    /// there was one open.
+    pub(crate) fn close_the_search(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(page) = &mut self.automations else {
+            return false;
+        };
+        if page.editor.search.take().is_none() {
+            return false;
+        }
+        window.focus(&page.editor.shelf_search, cx);
+        cx.notify();
+        true
     }
 }

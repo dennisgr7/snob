@@ -423,12 +423,12 @@ pub const CELL: f32 = 44.0;
 
 /// How fast that grid drifts, in logical pixels a second: down and to the
 /// right, slowly enough to be read as calm rather than as something to
-/// follow.
-const DRIFT: (f64, f64) = (7.0, 3.5);
+/// follow. 7 by 3.5 was reported as too slow to be noticed.
+const DRIFT: (f64, f64) = (10.0, 5.0);
 
 /// How long a wave of light takes to cross one of its lengths, and how long
-/// that length is: one every nine seconds or so.
-const WAVE_EVERY: f64 = 9.0;
+/// that length is: one every seven seconds or so.
+const WAVE_EVERY: f64 = 7.0;
 const WAVE_LENGTH: f64 = 420.0;
 
 /// How long the grid has drifted: it runs while it is shown and looked at,
@@ -863,8 +863,8 @@ mod tests {
         assert!(ink_near(&still, 5.0, 5.0) < 0.05);
         assert!(ink_near(&still, 230.0, 350.0) > ink_near(&still, 5.0, 5.0));
 
-        // A second later every line has moved by less than a cell's tenth
-        // of the way, and the same again after a day.
+        // A second later every line has moved less than a quarter of a
+        // cell, and the same again after a day.
         for at in [0, 86_400] {
             let one = drifting_grid(size, middle, SECS(at));
             let next = drifting_grid(size, middle, SECS(at) + SECS(1));

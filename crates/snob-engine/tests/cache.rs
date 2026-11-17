@@ -146,6 +146,48 @@ async fn a_profile_read_sends_the_same_requests_with_the_cache_as_without() {
 }
 
 #[tokio::test]
+async fn a_tray_is_kept_with_the_same_requests_as_without() {
+    use snob_engine::profile::{self, MutualPolicy, Reads};
+    let (_root, sandbox) = sandbox();
+    let (app, session) = signed_in(&sandbox, world::ME, "kept-lists").await;
+    let me = Pk::new(world::ME);
+    let someone = Pk::new(world::SOMEONE);
+    let reads = Reads {
+        mutual: MutualPolicy::Defer,
+        stories: false,
+    };
+
+    let without = sent_by(&session, async {
+        profile::fetch(app.client(), "someone", me, reads, Some(someone))
+            .await
+            .unwrap();
+    })
+    .await;
+    assert_eq!(cache::tray(&sandbox.paths, me, someone), None);
+
+    let with = sent_by(&session, async {
+        profile::read(&app, "someone", reads, Some(someone))
+            .await
+            .unwrap();
+    })
+    .await;
+
+    assert_eq!(with, without, "keeping adds and takes no request");
+    let titles: Vec<_> = cache::tray(&sandbox.paths, me, someone)
+        .expect("the tray is kept")
+        .highlights
+        .into_iter()
+        .map(|highlight| highlight.title)
+        .collect();
+    assert_eq!(titles, [Some("Trips".into()), Some("Food".into())]);
+    assert_eq!(
+        cache::tray(&sandbox.paths, Pk::new(world::SOMEONE), someone),
+        None,
+        "kept by the account that saw it"
+    );
+}
+
+#[tokio::test]
 async fn a_private_profile_one_account_saw_is_never_shown_to_another() {
     let (_root, sandbox) = sandbox();
     let (app, _) = signed_in(&sandbox, world::ME, "private-me").await;

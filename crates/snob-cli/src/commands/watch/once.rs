@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use snob_core::Pk;
+use snob_core::automation::Started;
 use snob_engine::exit::ExitCode;
 use snob_store::config;
 use snob_store::paths::AppPaths;
@@ -11,7 +12,7 @@ use crate::cli::WatchOnceArgs;
 use crate::report;
 use crate::ui;
 
-use super::automation::{Recorded, any_kept, named, run_automation, run_due};
+use super::automation::{Recorded, any_on_a_schedule, named, run_automation, run_due};
 use super::delivery::delivery_from;
 use super::run::{Printing, run_viewers, settle_all};
 use super::watched::watched_from;
@@ -59,7 +60,7 @@ pub(super) async fn once(
             && configured
                 .as_ref()
                 .is_none_or(super::schedule::names_no_schedule)
-            && any_kept(paths);
+            && any_on_a_schedule(paths);
         let due = if only_the_app {
             None
         } else {
@@ -196,6 +197,10 @@ async fn by_id(
                 );
                 return Ok(ExitCode::Ok);
             }
+            (Next::ByHand, _) => {
+                tracing::debug!("not due: it runs only when somebody runs it");
+                return Ok(ExitCode::Ok);
+            }
             (Next::Never, _) => {
                 return Err(anyhow::anyhow!(
                     "this automation never comes round: it is not finished, or nothing matches \
@@ -211,10 +216,16 @@ async fn by_id(
         return Ok(ExitCode::Interrupted);
     }
     super::run::power_is_back(paths);
+    let started = if args.when_due {
+        Started::BySchedule
+    } else {
+        Started::ByHand
+    };
     let summary = run_automation(
         paths,
         secrets,
         &automation,
+        started,
         Printing::watched(args.output.json),
         !args.progress.no_progress,
         timing,

@@ -1939,7 +1939,9 @@ pub struct WatchOnceArgs {
     pub when_due: bool,
 
     /// Run the automation with this id, made in the app, instead of
-    /// watch.toml: its accounts, its filters and its own webhook
+    /// watch.toml: its accounts, its filters and its own webhook. Every
+    /// trigger of it counts, a manual one too; with --when-due, only its
+    /// schedules do
     #[arg(long, value_name = "ID", conflicts_with = "target")]
     pub automation: Option<String>,
 

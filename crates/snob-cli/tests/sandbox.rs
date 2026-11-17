@@ -11754,6 +11754,55 @@ async fn a_release_is_fetched_in_the_background_and_applied_on_a_cold_start() {
     assert!(after["staged"].is_null(), "{text}");
 }
 
+/// An automation with a manual trigger alone runs when somebody runs it and
+/// never on a timer: `--when-due` finds it due for nothing, and a run by hand
+/// reads its action.
+#[tokio::test]
+async fn an_automation_run_by_hand_is_never_due_and_runs_when_asked() {
+    use snob_core::automation::{Account, Automation, Read, Step};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    log_in(tmp.path(), &instagram);
+
+    let paths = snob_store::paths::AppPaths::rooted_at(tmp.path());
+    let mut automation = Automation::new("abcd5678", "Fans, by hand");
+    let trigger = automation.insert(Step::Manual {}, (0, 0));
+    let action = automation.insert(
+        Step::Read {
+            account: Some(Account::own(Some(PK))),
+            what: Read::Fans,
+        },
+        (300, 0),
+    );
+    automation.connect(trigger, action).unwrap();
+    snob_store::automations::save(&paths, &automation).unwrap();
+
+    let out = snob(
+        tmp.path(),
+        Some(&instagram),
+        &["watch", "once", "--automation", "abcd5678", "--when-due"],
+    );
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    let runs = snob_engine::automations::runs(&paths, "abcd5678", 10).unwrap();
+    assert!(runs.is_empty(), "a timer never runs it");
+
+    let out = snob(
+        tmp.path(),
+        Some(&instagram),
+        &["watch", "once", "--automation", "abcd5678"],
+    );
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("Your fans: 1 account"),
+        "{}",
+        stdout(&out)
+    );
+    let runs = snob_engine::automations::runs(&paths, "abcd5678", 10).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].outcome.as_deref(), Some("ok"));
+}
+
 /// An automation made in the app runs through `snob watch once
 /// --automation`: its action is read through the same engine, its finding
 /// goes to its own webhook, and its history keeps the run.

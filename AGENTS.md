@@ -523,16 +523,21 @@ compile; the session is an explicit header on the one client meant to carry it.
   sign-out.
 - **The views' cache** (`accounts/<pk>/cache/`, `snob_store::cache`,
   `snob_engine::cache`): what the account was last shown of each account,
-  by pk (`profiles/<pk>.json`: names, bio, counts, how the two stand), and
-  the small pictures it was shown (`pictures/<pk>.jpg`), and the other
-  pictures a view drew (`cache::Drawing`: an account's largest, a
-  highlight's cover, a post's thumbnail), so a view shows the
-  last known values at once while its usual requests run. **It adds no
-  request and takes none away**: filled only where an answer already
-  arrives (`App::profile_named`, which a list's resolve, a profile read and
-  the monitor read through; the counter poll; a picture a view downloads
-  from the CDN, `Keeper::fetch_picture` and `fetch_drawing`),
-  never read to decide whether to ask, so it has no refresh rule. **Kept by
+  by pk (`profiles/<pk>.json`: names, bio, counts, how the two stand), its
+  highlights (`trays/<pk>.json`) and the first page of each of its tabs
+  (`grids/<pk>-<tab>.json`), the small pictures it was shown
+  (`pictures/<pk>.jpg`), and the other pictures a view drew
+  (`cache::Drawing`: an account's largest, a highlight's cover, a post's
+  thumbnail), so a view shows the last known values at once while its
+  usual requests run. **It adds no request, and takes none away but a
+  post's thumbnail already kept**, which never changes
+  (`Keeper::fetch_thumb`; a highlight's cover is downloaded again, as it
+  can change): filled only where an answer already arrives
+  (`App::profile_named`, which a list's resolve, a profile read and the
+  monitor read through; the tray `profile::read` asks for; the first page
+  `posts::first_page` reads; the counter poll; a picture a view downloads
+  from the CDN, `Keeper::fetch_picture` and `fetch_drawing`), never read
+  to decide whether to ask, so it has no refresh rule. **Kept by
   the account that saw it**, so what a private account showed one account
   is never another's; nothing is kept once the session is signed out, and
   the directory is never made where the account's is not. One sweep: 30
@@ -991,7 +996,11 @@ one webhook (`can_join`), a disabled step left out of a run.
   --when-due` run every automation that is due, from its last start in
   `shared.db`'s `automation_runs` (its history, the newest 100); `watch once
   --automation <id>` runs one now, which the app starts
-  (`automations::run_now`). An app automation's webhook gets its own headers
+  (`automations::run_now`). **A manual trigger** (`Step::Manual`) is never
+  due: a scheduled run reads only what a schedule leads to, a run by hand
+  what every trigger does (`Automation::reads_when`), and one with no
+  schedule is `Next::ByHand`, which neither the scheduled mode nor a timer
+  waits for. An app automation's webhook gets its own headers
   and **never the keyring's token or signing key**, set up for `watch.toml`'s
   address; its report is event `automation.found` (`wire::found_payload`).
 
@@ -1129,13 +1138,18 @@ computer: the disk it is on, and each account's, signed in or not, with
 its cache to clear and its history to delete after a question. A clearing
 or a deletion is the shell's and runs on in the engine whatever screen is
 shown. Once somebody is signed in the frame
-opens on a rail of sections (home, search, automations). Home and search
+opens on a rail of sections (home, search, automations), and the band
+holds a way back over every step taken (`state::flow`'s trail, at most
+`MOST_STEPS_BACK`; also Alt+Left and the pointer's back button), out of
+the editor and an automation's page first. Home and search
 are a title until what a scan shows comes next; automations has an
 introduction shown once an account, a list with its search, an
 automation's page (its runs on the left, its flow in words, a pencil to
 edit, a run now), and an editor on the engine's automations ("Automations"):
-steps put from the panel, moved, joined and configured in a dialog (a
-schedule, an action's account and consent, a webhook), disabled from a
+steps put from the panel (a kind of step at a time, searched, and held
+at the triggers until the automation has one), moved, joined and
+configured in a dialog (a schedule, an action's account and consent, a
+webhook), disabled from a
 node's menu, **kept at every change** with undo, and an unfinished one
 asked about on leaving (discard, or back to the editor). The automations
 run in the command line's scheduler, never in the app. From the account's menu
@@ -1211,7 +1225,10 @@ its version is the release's ("Release and packaging"). GPUI comes through
   app's.** The report makes accounts anonymous and is copied by the person,
   never sent.
 - **A profile page reads what `snob profile` reads, less the stories**
-  (`Backend::profile`, `tiles`, `list`): a ring says a story is up and its
+  (`Backend::profile`, `tiles`, `list`), and shows what the cache kept of
+  it, its highlights and its tabs' first pages at once while those reads
+  run (`profile_kept`, `tiles_kept`, which send nothing), the band saying
+  it loads until they answer: a ring says a story is up and its
   menu's "Open story" opens nothing, reads nothing and marks nothing as
   seen. **Another account's list is asked about in the app's own question
   before anything of it is sent**, and only a yes calls `engine::list`
