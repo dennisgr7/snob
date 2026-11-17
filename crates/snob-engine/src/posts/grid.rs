@@ -7,7 +7,8 @@ use snob_ig::client::{IgClient, ProfileTab};
 use snob_ig::pace::Pace;
 use snob_ig::shortcode::MediaPk;
 
-use super::{MOST_PAGES, Post, rest_before_a_page};
+use super::{MOST_PAGES, Post};
+use crate::engine::rest_before_a_page;
 
 /// A profile's grid as far as it was read.
 #[derive(Debug, Clone)]
@@ -103,6 +104,33 @@ pub fn reached(posts: &[Post], until: &[MediaPk]) -> Option<MediaPk> {
         .map(|post| post.pk)
 }
 
+/// The profile a grid or a tab is read from, or the username of one the
+/// viewer is not shown ([`crate::engine::target::shown_to`]).
+enum Opened {
+    Shown(Box<snob_ig::model::WebProfileInfo>),
+    Hidden(String),
+}
+
+async fn opened(
+    client: &IgClient,
+    typed: &str,
+    viewer: snob_core::Pk,
+    known: Option<snob_core::Pk>,
+) -> Result<Opened> {
+    let info = client
+        .profile_named(crate::engine::target::clean(typed), known)
+        .await?;
+    Ok(if crate::engine::target::shown_to(&info, viewer) {
+        Opened::Shown(Box::new(info))
+    } else {
+        Opened::Hidden(info.username)
+    })
+}
+
+fn not_shown(username: String) -> (Fetched, GridRead) {
+    (Fetched::Hidden { username }, GridRead::default())
+}
+
 /// [`fetch_grid`], stopping early at a post the reader already has: no page is
 /// asked for once the pages read hold one of `until` ([`reached`]), so a reader
 /// that comes back each day pays for the new posts and not for the grid.
@@ -115,17 +143,10 @@ pub async fn read_grid(
     at_least: usize,
     until: &[MediaPk],
 ) -> Result<(Fetched, GridRead)> {
-    let info = client
-        .profile_named(crate::engine::target::clean(typed), known)
-        .await?;
-    if !crate::engine::target::shown_to(&info, viewer) {
-        return Ok((
-            Fetched::Hidden {
-                username: info.username,
-            },
-            GridRead::default(),
-        ));
-    }
+    let info = match opened(client, typed, viewer, known).await? {
+        Opened::Hidden(username) => return Ok(not_shown(username)),
+        Opened::Shown(info) => *info,
+    };
     let declared = info.posts.map(|p| p.count);
     // Zero is an answer the profile already gave, as in `highlights`.
     if declared == Some(0) {
@@ -175,17 +196,10 @@ pub async fn read_tab(
     at_least: usize,
     until: &[MediaPk],
 ) -> Result<(Fetched, GridRead)> {
-    let info = client
-        .profile_named(crate::engine::target::clean(typed), known)
-        .await?;
-    if !crate::engine::target::shown_to(&info, viewer) {
-        return Ok((
-            Fetched::Hidden {
-                username: info.username,
-            },
-            GridRead::default(),
-        ));
-    }
+    let info = match opened(client, typed, viewer, known).await? {
+        Opened::Hidden(username) => return Ok(not_shown(username)),
+        Opened::Shown(info) => *info,
+    };
     let mut grid = Grid::of(&info.username, Some(tab), Some(info.id));
     let first = client
         .profile_tab(tab, info.id, &grid.username, None)

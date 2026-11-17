@@ -10,7 +10,8 @@ use snob_ig::model::post::{Comment, CommentsPage};
 use snob_ig::pace::Pace;
 use snob_ig::shortcode::CommentPk;
 
-use super::{Post, digits, rest_before_a_page};
+use super::{Post, digits};
+use crate::engine::rest_before_a_page;
 
 /// One comment, or a reply shown under one, filtered for a terminal.
 #[derive(Debug, Clone)]

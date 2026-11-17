@@ -294,7 +294,7 @@ pub async fn mutuals(
 
     // **A rest a sitting owes is paid first**, before the list is opened,
     // as a list walk pays it: these pages are part of the account's sitting.
-    if rest_before_a_page(client).await? {
+    if crate::engine::rest_before_a_page(client, "the list").await? {
         return Err(snob_ig::error::IgError::Canceled.into());
     }
     // **Opened as a person opens it**: a look at the profile first, as long
@@ -313,7 +313,8 @@ pub async fn mutuals(
         // **A step between pages, as a person scrolling the list makes**, the
         // same one a list walk takes.
         if page_number > 0
-            && (rest_before_a_page(client).await? || client.step_between(&Pace::default()).await)
+            && (crate::engine::rest_before_a_page(client, "the list").await?
+                || client.step_between(&Pace::default()).await)
         {
             return Err(snob_ig::error::IgError::Canceled.into());
         }
@@ -342,20 +343,6 @@ pub async fn mutuals(
         people,
         complete,
     })
-}
-
-/// Pays a rest the account's sitting owes before a page of the mutual list,
-/// saying so (`host::info`): no bar draws for this walk, and a front would
-/// otherwise stand still for minutes without a word.
-async fn rest_before_a_page(client: &IgClient) -> Result<bool> {
-    Ok(client
-        .rest_before_a_page(&Pace::default(), |left| {
-            crate::host::info(&format!(
-                "Resting {} between sittings before the next page of the list.",
-                crate::sentences::rest_left(left)
-            ));
-        })
-        .await?)
 }
 
 /// A profile picture, downloaded.

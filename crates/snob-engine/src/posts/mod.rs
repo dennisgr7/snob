@@ -30,7 +30,6 @@ use snob_ig::pace::{PAGES_PER_SITTING, Pace};
 use snob_ig::shortcode::{self, MediaPk, Opens, Shortcode};
 
 use crate::exit::{ExitCode, ExitError};
-use crate::host;
 use crate::media::{Best, Kind, Named};
 
 mod comments;
@@ -552,20 +551,6 @@ pub async fn fetch_link(client: &IgClient, link: &Shortcode) -> Result<Post> {
     post.asked_from = link.opens();
     post.code = link.code().to_string();
     Ok(post)
-}
-
-/// Pays a rest the account's sitting owes before a page of `of` that a command
-/// reads on its own, saying so on standard error, since nothing else would say
-/// why it went quiet for minutes.
-async fn rest_before_a_page(client: &IgClient, of: &str) -> Result<bool> {
-    Ok(client
-        .rest_before_a_page(&Pace::default(), |left| {
-            host::info(&format!(
-                "Resting {} between sittings before the next page of {of}.",
-                crate::sentences::rest_left(left)
-            ));
-        })
-        .await?)
 }
 
 #[cfg(test)]

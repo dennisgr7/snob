@@ -158,68 +158,22 @@ pub async fn save_telling(
     dir: &Path,
     bounds: Bounds,
 ) -> Result<(Value, usize)> {
-    use anyhow::Context as _;
-
-    std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
-    let directory = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
-    let started = std::time::Instant::now();
-    let (mut saved, mut failed, mut left) = (Vec::new(), Vec::new(), Vec::new());
-    let mut fetched: u64 = 0;
-    for file in files {
-        if client.pacer().cancel_token().is_canceled() {
-            return Err(ExitError::new(ExitCode::Interrupted, "stopped").into());
-        }
-        if let Some(why) = bounds.passed(fetched, started) {
-            left.push(serde_json::json!({ "item": file.number, "why": why }));
-            continue;
-        }
-        let item = post.items.get(file.number.wrapping_sub(1));
-        // What the best tracks weigh, when they are tried: fetched whether
-        // or not they end as the file kept, so counted when they do not.
-        let tried = crate::media::best_weight(&file);
-        match crate::media::save_file_saying(client, &file, &directory).await {
-            Ok((kept, note)) => {
-                let (path, already) = match kept {
-                    Saved::Now(path) => (path, false),
-                    Saved::Already(path) => (path, true),
-                };
-                let bytes = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
-                if !already {
-                    fetched = fetched.saturating_add(bytes);
-                    // A note is the best tracks given up for the smaller
-                    // file: both were fetched.
-                    if note.is_some() {
-                        fetched = fetched.saturating_add(tried);
-                    }
-                }
-                // To a program, without the address a failure's words name.
-                let note = note.map(|note| crate::media::without_addresses(&note));
-                saved.push(serde_json::json!({
-                    "item": file.number,
-                    "pk": item.and_then(|item| item.pk.clone()),
-                    "kind": item.map(|item| item.kind.label()),
-                    "file": path.file_name().map(|name| name.to_string_lossy().into_owned()),
-                    "bytes": bytes,
-                    "already": already,
-                    "note": note,
-                }));
+    let files = files
+        .into_iter()
+        .map(|file| {
+            let item = post.items.get(file.number.wrapping_sub(1));
+            // What the best tracks weigh, when they are tried: fetched whether
+            // or not they end as the file kept, so counted when they do not.
+            crate::media::Listed {
+                tried: crate::media::best_weight(&file),
+                pk: item.and_then(|item| item.pk.clone()),
+                kind: item.map(|item| item.kind.label().to_string()),
+                noted: true,
+                file,
             }
-            Err(e) if crate::media::was_canceled(&e) => {
-                return Err(ExitError::new(ExitCode::Interrupted, "stopped").into());
-            }
-            // A push-back, or the cooldown it started: the run ends, with
-            // no further file asked for.
-            Err(e) if crate::media::stopped_the_run(&e) => return Err(e),
-            Err(e) => {
-                // What it may have fetched before it failed counts too.
-                fetched = fetched.saturating_add(tried);
-                failed.push(serde_json::json!({
-                    "item": file.number,
-                    "why": crate::media::without_addresses(&e.to_string()),
-                }));
-            }
-        }
-    }
+        })
+        .collect();
+    let kept = crate::media::keep_listed(client, files, dir, bounds).await?;
     let about = post_document(post, None);
     let document = serde_json::json!({
         "post": {
@@ -230,11 +184,11 @@ pub async fn save_telling(
             "kind": about.kind,
             "taken_at": about.taken_at,
         },
-        "directory": directory.to_string_lossy(),
-        "saved": saved,
-        "failed": failed,
-        "left": left,
-        "bytes": fetched,
+        "directory": kept.directory.to_string_lossy(),
+        "saved": kept.saved,
+        "failed": kept.failed,
+        "left": kept.left,
+        "bytes": kept.bytes,
     });
     let failures = document["failed"].as_array().map_or(0, Vec::len);
     Ok((document, failures))

@@ -356,6 +356,23 @@ pub async fn ask_consent_with(
     Ok(())
 }
 
+/// Pays a rest the account's sitting owes before the next page of `of`, and
+/// says so ([`crate::host::info`]): a page read with no bar of its own would
+/// otherwise stand still for minutes. `true` when the wait was stopped.
+pub(crate) async fn rest_before_a_page(
+    client: &snob_ig::client::IgClient,
+    of: &str,
+) -> Result<bool> {
+    Ok(client
+        .rest_before_a_page(&snob_ig::pace::Pace::default(), |left| {
+            crate::host::info(&format!(
+                "Resting {} between sittings before the next page of {of}.",
+                crate::sentences::rest_left(left)
+            ));
+        })
+        .await?)
+}
+
 /// A complete stored capture of account 1's followers, the row the storage
 /// paths serve from.
 #[cfg(test)]

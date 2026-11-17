@@ -332,9 +332,9 @@ fn main() -> anyhow::Result<()> {
         cx.on_app_quit(move |_| {
             let (runtime, paths, secrets) = leaving.clone();
             async move {
-                let finished = runtime
-                    .handle()
-                    .spawn(async move { snob_engine::browser::owner::finish(&secrets, &paths).await });
+                let finished = runtime.handle().spawn(async move {
+                    snob_engine::browser::owner::finish(&secrets, &paths).await
+                });
                 let _ = finished.await;
                 tracing::info!("the app stopped");
             }

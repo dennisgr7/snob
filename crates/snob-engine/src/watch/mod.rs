@@ -2,8 +2,8 @@
 //! allowed to conclude from it.
 //!
 //! A run ([`tick`]) reads the account's lists as any command does, through
-//! `engine::list`, and its posts ([`posts`]), compares them against what was
-//! last reported, and is recorded once its report is queued ([`commit`]).
+//! `engine::list`, and its posts ([`posts`]), compares them (`stored`) against
+//! what was last reported, and is recorded once its report is queued ([`commit`]).
 //! [`check`] says what a run would find, writing nothing; [`webhook`] gets a
 //! report to wherever the person wants it.
 //!
@@ -11,6 +11,8 @@
 
 pub mod check;
 pub mod posts;
+mod stored;
+mod tick;
 pub mod webhook;
 
 use anyhow::Result;
@@ -23,6 +25,15 @@ use self::posts::{PostsReport, PostsSkipped};
 use crate::app::{App, Viewer};
 use crate::engine::{self, ListOutcome, ListQuery, Provenance, target};
 use crate::exit::ExitCode;
+
+use stored::compare;
+pub use stored::from_store;
+#[doc(hidden)]
+pub use stored::record_from_store;
+#[cfg(test)]
+use tick::refusal;
+use tick::refused_outcome;
+pub use tick::tick;
 
 /// What one list has to report.
 #[derive(Debug, Clone)]
@@ -499,414 +510,12 @@ impl TickReport {
     }
 }
 
-/// The most specific reason every list on a run was refused.
-fn refused_outcome(lists: &[TickList], posts: Option<PostsSkipped>) -> ExitCode {
-    let of_posts = match posts {
-        Some(PostsSkipped::Cooldown) => Some(ExitCode::RateLimited),
-        Some(PostsSkipped::Incomplete(reason, said)) => {
-            Some(said.unwrap_or_else(|| crate::exit::from_stop_reason(reason)))
-        }
-        _ => None,
-    };
-    lists
-        .iter()
-        .find_map(|list| match list.skipped {
-            Some(Skipped::NobodyLooked(Provenance::Cooldown)) => Some(ExitCode::RateLimited),
-            // What Instagram said beats what the store had to record
-            // (`ListOutcome::stopped_by`).
-            Some(Skipped::Incomplete(reason, said)) => {
-                Some(said.unwrap_or_else(|| crate::exit::from_stop_reason(reason)))
-            }
-            _ => None,
-        })
-        .or(of_posts)
-        .unwrap_or(ExitCode::Error)
-}
-
-/// Goes and looks, then reports what changed since the last time it did.
-///
-/// Nothing is concluded from a list this run did not verify, or one that came
-/// back short. **The mark does not move for a refused list**: what was never
-/// reported stays unreported, and the next run says it.
-pub async fn tick(app: &mut App, watched: &Watched) -> Result<TickReport> {
-    let args = watched.list_args();
-    let before = app.client().pacer().spent();
-    // A tick is an action: counters a previous tick read, on this App, are
-    // not this tick's.
-    app.client().pacer().begin_action();
-
-    let mut lists = Vec::new();
-    let mut usable = Vec::new();
-    // Whose account this turned out to be, taken from the engine's answer
-    // rather than from the viewer: on a third party they are different, and the
-    // id the engine reports is the one that cannot be wrong about it.
-    let mut pk: Option<Pk> = None;
-
-    let kinds: &[ListKind] = if watched.lists() {
-        &[ListKind::Followers, ListKind::Following]
-    } else {
-        &[]
-    };
-    for &kind in kinds {
-        // A canceled walk comes back `Ok`, so without this the loop would go on
-        // to the second list, and `App::resolved_target` drops the remembered
-        // counters once the first walk has begun, so it would ask Instagram
-        // again after the user was told "Stopping and saving what has been
-        // fetched…".
-        //
-        // **The monitor's battery stop too**, asked again here rather than only
-        // between pages.
-        let power_stop =
-            !app.cancel().is_canceled() && app.stop_between_pages().is_some_and(|stop| stop());
-        if app.cancel().is_canceled() || power_stop {
-            // Said once: a walk the battery stopped has already said so.
-            if power_stop && !a_list_was_canceled(&lists) {
-                app.warn(crate::sentences::BATTERY_CRITICAL_SKIP);
-            }
-            lists.push(TickList {
-                kind,
-                skipped: Some(Skipped::Incomplete(StopReason::Canceled, None)),
-            });
-            continue;
-        }
-
-        // A cooldown stops *this list*; everything else stops the run.
-        let outcome = match engine::list(app, &args, kind).await {
-            Ok((_, outcome)) => outcome,
-            Err(e) if crate::exit::from_chain(&e) == Some(ExitCode::RateLimited) => {
-                lists.push(TickList {
-                    kind,
-                    skipped: Some(Skipped::Incomplete(
-                        StopReason::RateLimit,
-                        Some(ExitCode::RateLimited),
-                    )),
-                });
-                continue;
-            }
-            Err(e) => return Err(e),
-        };
-        pk = Some(outcome.account_pk);
-
-        let skipped = refusal(&outcome);
-        if skipped.is_none() {
-            usable.push((kind, outcome.snapshot_id));
-        }
-        lists.push(TickList { kind, skipped });
-    }
-
-    // The posts, after the lists, in the same action: the profile the lists
-    // opened is the one the grid follows (`posts::look` says the order).
-    let after_lists = app.client().pacer().spent() > before;
-    let battery_said = a_list_was_canceled(&lists);
-    let looked_at_posts = posts::look(app, watched, after_lists, battery_said).await?;
-    let posts_skipped = looked_at_posts.as_ref().and_then(|look| look.skipped);
-
-    let pk = match (
-        pk.or(looked_at_posts.as_ref().and_then(|look| look.pk)),
-        watched.name(),
-    ) {
-        (Some(pk), _) => pk,
-        (None, None) => app.viewer().pk,
-        (None, Some(name)) => {
-            let name = target::clean(name);
-            // The refusal carries the code `outcome()` would have produced,
-            // not a bare error, so a first tick during a cooldown exits 5 like
-            // the same tick on a walked account, and the `--json` stream does
-            // not say `"error"` about a state that lifts on its own.
-            accounts::find_pk_by_username(app.db().conn(), name)?.ok_or_else(|| {
-                crate::sentences::refuse_nothing_looked_at(
-                    name,
-                    refused_outcome(&lists, posts_skipped),
-                )
-            })?
-        }
-    };
-
-    // Read before the comparison, and both handed back, so that whatever
-    // commits this report writes the same two numbers the renames were read
-    // against.
-    let at = snob_core::clock::now();
-    let head = store::history_head(app.db().conn())?;
-
-    // Nothing is written here.
-    let mut compared = compare(app, pk, &usable, head)?;
-    let (tick_posts, read_posts, posts_commit) = match looked_at_posts {
-        Some(look) => {
-            compared.report.posts = look.report;
-            (
-                Some(TickPosts {
-                    skipped: look.skipped,
-                }),
-                look.read,
-                look.commit,
-            )
-        }
-        None => (None, Vec::new(), None),
-    };
-
-    Ok(TickReport {
-        viewer: app.viewer().clone(),
-        report: compared.report,
-        requests: app.client().pacer().spent().saturating_sub(before),
-        lists,
-        posts: tick_posts,
-        timing: None,
-        read_posts,
-        posts_commit,
-        committable: compared.marks,
-        at,
-        rename_cursor: compared.rename_cursor,
-        renames_sent: compared.renames_sent,
-    })
-}
-
-/// Whether a list of this run was stopped before it ended: by Ctrl+C, or by
-/// the battery, which the walk it stopped has said already.
-fn a_list_was_canceled(lists: &[TickList]) -> bool {
-    lists.iter().any(|list| {
-        matches!(
-            list.skipped,
-            Some(Skipped::Incomplete(StopReason::Canceled, _))
-        )
-    })
-}
-
-/// Whether a list may be the basis of a comparison, and why not when it may not.
-fn refusal(outcome: &ListOutcome) -> Option<Skipped> {
-    if !outcome.provenance.describes_now() {
-        return Some(Skipped::NobodyLooked(outcome.provenance));
-    }
-    if !outcome.is_complete() {
-        // `stopped_by` rather than the reason alone.
-        return Some(Skipped::Incomplete(outcome.reason, outcome.stopped_by));
-    }
-    None
-}
-
-/// Reads the report without touching the network, and without recording it.
-///
-/// **It takes `&App`, and that is the guard rather than a convention.**
-pub fn from_store(app: &App, typed: Option<&str>) -> Result<WatchReport> {
-    Ok(look(app, typed)?.1.report)
-}
-
-/// Reads the report and records having made it, the way a tick does.
-#[doc(hidden)]
-pub fn record_from_store(app: &mut App, typed: Option<&str>) -> Result<WatchReport> {
-    let (pk, compared) = look(app, typed)?;
-
-    let (_, db, _) = app.parts();
-    store::commit_report(
-        db,
-        pk,
-        &compared.marks,
-        snob_core::clock::now(),
-        compared.rename_cursor,
-        &compared.renames_sent,
-        None,
-        None,
-    )?;
-
-    Ok(compared.report)
-}
-
-/// The comparison both entry points make, and what committing it would write.
-fn look(app: &App, typed: Option<&str>) -> Result<(Pk, Compared)> {
-    let (pk, username) = resolve(app, typed)?;
-
-    // From the view, so an interrupted walk cannot become a basis for
-    // comparison.
-    let mut usable = Vec::new();
-    for kind in [ListKind::Followers, ListKind::Following] {
-        if let Some(latest) = snapshots::latest_complete(app.db().conn(), pk, kind)? {
-            usable.push((kind, latest.id));
-        }
-    }
-
-    // Read before the comparison, so a rename filed while it runs lands on the
-    // next report's side rather than being marked as said without having been
-    // said.
-    let head = store::history_head(app.db().conn())?;
-    let mut compared = compare(app, pk, &usable, head)?;
-    compared.report.username = username;
-    Ok((pk, compared))
-}
-
-/// Compares each named capture against its receipt.
-///
-/// `head` is the rename history's newest row, read by the caller **before** this
-/// runs: a rename filed while the comparison is in progress then lands on the
-/// next report's side rather than being filed as said without having been said.
-fn compare(app: &App, pk: Pk, usable: &[(ListKind, i64)], head: i64) -> Result<Compared> {
-    let mut followers = None;
-    let mut following = None;
-    for &(kind, snapshot_id) in usable {
-        let report = list_report(app, pk, kind, snapshot_id)?;
-        match kind {
-            ListKind::Followers => followers = report,
-            ListKind::Following => following = report,
-        }
-    }
-
-    // Renames are looked for among the members of **every list this run
-    // verified**: somebody only in `following` is exactly the `unfollowers`
-    // set.
-    let verified: Vec<&ListReport> = [followers.as_ref(), following.as_ref()]
-        .into_iter()
-        .flatten()
-        .filter(|report| report.verified())
-        .collect();
-
-    // What this run announces, and the history rows behind them.
-    //
-    // **Already-sent is asked per row, not per watermark** (`007_renames_sent`).
-    let mut renamed: Vec<Rename> = Vec::new();
-    let mut announcing: Vec<i64> = Vec::new();
-    if !verified.is_empty() {
-        let since = store::rename_cursor(app.db().conn(), pk)?;
-        let already = store::renames_already_sent(app.db().conn(), pk)?;
-        let mut seen = std::collections::HashSet::new();
-        for report in &verified {
-            for rename in
-                store::renames_since(app.db().conn(), report.basis.mark_to(), since, head)?
-            {
-                if already.contains(&rename.history_id) {
-                    continue;
-                }
-                if seen.insert(rename.pk) {
-                    announcing.push(rename.history_id);
-                    renamed.push(rename);
-                }
-            }
-        }
-    }
-
-    // Whether the cursor may move, which is a different question from whether
-    // there was anything to report.
-    //
-    // Only when **every list this account has a capture of** is accounted for.
-    //
-    // - A baseline accounts for its list only on the account's **first**
-    //   report: the monitor starts now, and history from before it is not news.
-    let verified_kinds: Vec<ListKind> = verified.iter().map(|report| report.kind).collect();
-    // The lists this report actually spoke about: what the marks name, and the
-    // one answer to "which lists did this run report on" that the cursor below
-    // reads too.
-    //
-    // **The cursor hangs off this list and not off a second copy of it.**
-    let marks: Vec<(ListKind, i64)> = [followers.as_ref(), following.as_ref()]
-        .into_iter()
-        .flatten()
-        .map(|report| (report.kind, report.basis.mark_to()))
-        .collect();
-
-    let first_report = store::mark(app.db().conn(), pk, ListKind::Followers)?.is_none()
-        && store::mark(app.db().conn(), pk, ListKind::Following)?.is_none();
-
-    let mut every_list_accounted_for = true;
-    for kind in [ListKind::Followers, ListKind::Following] {
-        if verified_kinds.contains(&kind) {
-            continue;
-        }
-        if !snapshots::any_capture(app.db().conn(), pk, kind)? {
-            continue; // nothing was ever captured, so nothing was missed
-        }
-        if first_report && marks.iter().any(|&(marked, _)| marked == kind) {
-            continue; // the seeding baseline
-        }
-        every_list_accounted_for = false;
-    }
-
-    // Nothing filed after `head` is inside the window: `renames_since` enforces
-    // it.
-    let covered = (!marks.is_empty() && every_list_accounted_for).then_some(head);
-
-    Ok(Compared {
-        report: WatchReport {
-            account_pk: pk,
-            username: users::name(app.db().conn(), pk)?,
-            is_self: app.viewer().pk == pk,
-            followers,
-            following,
-            renamed,
-            posts: None,
-        },
-        marks,
-        rename_cursor: covered,
-        renames_sent: announcing,
-    })
-}
-
 /// A comparison, and what committing it would have to write.
 struct Compared {
     report: WatchReport,
     marks: Vec<(ListKind, i64)>,
     rename_cursor: Option<i64>,
     renames_sent: Vec<i64>,
-}
-
-fn list_report(app: &App, pk: Pk, kind: ListKind, snapshot_id: i64) -> Result<Option<ListReport>> {
-    let conn = app.db().conn();
-    // `find_usable`, not `find`: an id that names a walk which stopped short
-    // answers `None` here rather than handing back a capture with accounts
-    // missing from it.
-    let Some(latest) = snapshots::find_usable(conn, snapshot_id)? else {
-        return Ok(None);
-    };
-
-    let mark = store::mark(conn, pk, kind)?;
-    // A receipt whose capture has been pruned carries no baseline, so it is
-    // handed to `decide` as the absence it is and the next report starts over.
-    let Some(basis) = Basis::decide(mark.and_then(|m| m.snapshot_id), Some(latest.id)) else {
-        return Ok(None);
-    };
-
-    let diff = match basis {
-        // Nothing is reported and nothing is read: a baseline has no earlier
-        // capture, and an unchanged list has nothing new in it.
-        Basis::Baseline { .. } | Basis::Unchanged { .. } => ListDiff::default(),
-        Basis::Compare { before, after } => {
-            // The baseline is read through `find_usable` too, not just the
-            // newer capture.
-            //
-            // It takes a second process's `prune` landing in between, **and the
-            // three reads are one moment for that reason**: inside one read
-            // transaction (rolled back when it drops, having written nothing)
-            // the capture found is the capture whose members are read.
-            let moment = conn.unchecked_transaction()?;
-            let Some(_) = snapshots::find_usable(&moment, before)? else {
-                return Ok(None);
-            };
-            ListDiff::between(
-                &snapshots::members(&moment, before)?,
-                &snapshots::members(&moment, after)?,
-            )
-        }
-    };
-
-    Ok(Some(ListReport {
-        kind,
-        basis,
-        since: mark.map(|m| m.compared_at),
-        until: latest.taken_at.unwrap_or_default(),
-        diff,
-        total: latest.member_count as usize,
-    }))
-}
-
-/// Which account this is about, from storage alone.
-fn resolve(app: &App, typed: Option<&str>) -> Result<(Pk, Option<String>)> {
-    let Some(typed) = typed else {
-        let viewer = app.viewer();
-        return Ok((viewer.pk, viewer.username.clone()));
-    };
-
-    let name = target::clean(typed);
-    let Some(pk) = accounts::find_pk_by_username(app.db().conn(), name)? else {
-        return Err(crate::sentences::refuse_never_walked(name));
-    };
-
-    Ok((pk, users::name(app.db().conn(), pk)?))
 }
 
 #[cfg(test)]
