@@ -67,7 +67,7 @@ Rust 2024, resolver 3. Dependencies point one way:
 | `snob-core` | The domain: `Pk`, the models (the JSON contract), set arithmetic, an automation (`automation.rs`), the monitor's diff and schedule, webhook signing and the one constant-time comparison (`watch::sign::same`), `Secret`, `Session`, the `RateBudget` trait and cooldown policy, `clock`. | Do I/O: no file, database, network or directory (`clock` excepted). |
 | `snob-ig` | The Instagram web client: `client/`, `web.rs`, `allowlist.rs`, `pager.rs`, `pace.rs`, `graphql.rs`, `error.rs` (classifying answers), `http.rs` (the only place `reqwest` is configured). | Touch SQLite or the keyring, or drive a browser (it only defines the page's request shapes). |
 | `snob-store` | SQLite (`store/`, migrations in `store/sql/`), paths, the secret store, `accounts.toml`, `watch.toml`, the automations' files (`automations.rs`), the layout's migration, the views' cache (`cache.rs`) and what files weigh (`disk.rs`). | Hold domain logic. |
-| `snob-engine` | What a desktop app links in process: `app.rs` (`App`), `engine/` (cache, consent, cooldown, walks, estimates, monitor), the browser (`headless/`, `cdp/`, `pipe.rs`, `owner/`), jobs' state and supervisor (`jobs/`), signing in (`login.rs`, which hands back a `Stored` and tells a failure apart with `failure_of`) and out (`logout.rs`), the account's card (`viewer.rs`), what a view shows at once (`cache.rs`) and what is kept on disk (`storage.rs`), `relay/`, `update/`, the automations every front reads, keeps and runs (`automations/`), an account's page and its picture as every front reads them (`profile.rs`), reading and saving posts and stories (`posts.rs`, `media.rs`, `files.rs`), `ffmpeg.rs`, `watch/webhook.rs`, `exit.rs`, `log.rs` (the filter every program logs through, and an app's log in files), and `sentences.rs` (the plain sentences of its refusals). `host.rs` is what it is handed: a `Progress` and an `Ask` per run (`host::Front`, given to `App::open`), and a sink for notices. | Depend on `clap`, `console`, `indicatif`, `ratatui`, `crossterm`, `dialoguer`, or on `snob-mcp`/`snob-cli`; ask anybody anything itself; decide how anything looks. |
+| `snob-engine` | What a desktop app links in process: `app.rs` (`App`), the lists (`engine/`: consent, cooldown, freshness, walks, estimates, retention), the monitor (`watch/`: a run, its posts, its check, its webhook), the browser (`browser/`: the one installed, `cdp/`, `headless/`, `owner/`), what is asked of the operating system (`system/`: `pipe.rs`, `detach.rs`, `interrupt.rs`, `parent.rs`, `local_socket.rs`, `power/`, `exe.rs`, `seat.rs`, `env.rs`, `random.rs`), jobs' state and supervisor (`jobs/`), signing in (`login.rs`, which hands back a `Stored` and tells a failure apart with `failure_of`) and out (`logout.rs`), the account's card (`viewer.rs`), what a view shows at once (`cache.rs`) and what is kept on disk (`storage.rs`), `relay/`, `update/`, the automations every front reads, keeps and runs (`automations/`), an account's page and its picture as every front reads them (`profile.rs`), reading and saving posts and stories (`posts.rs`, `media.rs`, `files.rs`), `ffmpeg.rs`, `exit.rs`, `log.rs` (the filter every program logs through, and an app's log in files), and `sentences.rs` (the plain sentences of its refusals). `host.rs` is what it is handed: a `Progress` and an `Ask` per run (`host::Front`, given to `App::open`), and a sink for notices. | Depend on `clap`, `console`, `indicatif`, `ratatui`, `crossterm`, `dialoguer`, or on `snob-mcp`/`snob-cli`; ask anybody anything itself; decide how anything looks. |
 | `snob-mcp` | `snob mcp`: the server over stdio and, with its `http` feature, over HTTP (`http.rs`); its key (`key.rs`), `snob mcp config` (`config.rs`), its arguments (`args.rs`). | Build an Instagram client or open a database; depend on `snob-cli`, its tests included (the lines it builds are parsed in `crates/snob-cli/tests/mcp_lines.rs`). |
 | `snob-cli` | The `snob` binary and its library: `cli.rs`, `main.rs`, `commands/`, `output/`, `report.rs`, `progress.rs` (the bars), `front.rs` (what it hands the engine), `ui/`, and the clap-tied half of jobs (`jobs/argv.rs`, `jobs/start.rs`). It names what it uses of the engine and of the server by their own crates (`snob_engine::`, `snob_mcp::`). | |
 | `snob-fake-ig` | The fake Instagram the tests talk to (`world.rs`) and a tab on it with no browser (`tab.rs`). Never published. | Depend on anything above `snob-ig`; be named outside `[dev-dependencies]` by a crate that ships (`layers.rs`). |
@@ -91,6 +91,17 @@ Inside `snob-cli` and `snob-engine`:
   command line reads (`jobs::Check`, the command line's `jobs::argv::walk_of`),
   and the binary to start for its own processes (`exe::start_as`, this binary
   unless told).
+- **The engine's parts stand on each other one way**, held by
+  `crates/snob-core/tests/layers.rs`, which reads its sources: `system/`
+  names nothing of snob's but `host`; `browser/` nothing but `system/` and
+  what it says (`host`, `sentences`); the lists (`engine/`) nothing of the
+  monitor, an automation, a post or a profile; `media.rs` no post; the
+  monitor (`watch/`) is named by the automations alone, and an automation by
+  no other part. A name that points up fails there: move what is shared
+  down, as `system::sync::lock`, `system::env::flag`, `sentences::label`,
+  `engine::retention` and `media::Bounds` were. **A log line's target is its
+  module**: moving one changes what a saved `SNOB_LOG` selects, so it gets a
+  row in `log::MOVED_IN_THE_ENGINE`.
 - `commands/watch/say.rs` is prose (rewording is free); `wire.rs` is protocol
   (`SENT_SCHEMA = 1`, `PRINTED_SCHEMA = 2`): an edit there is an integration
   change.
@@ -189,7 +200,8 @@ dbus-run-session -- bash -c '
   runs on CI or with `SNOB_TEST_WILDCARD=1`.
 - **Source-reading guards** in `crates/snob-core/tests/`: `no_seen.rs`,
   `keyring.rs`, `sandbox.rs`, `nextest.rs`, `layers.rs` (which crate may depend
-  on which, from the manifests), and `language.rs`, which scans
+  on which, from the manifests, and which part of the engine may name which,
+  from its sources), and `language.rs`, which scans
   `rs sql md toml yml yaml sh ps1 rb json` (this file too) for Spanish (escape
   `i18n-allow`), British spelling (`spelling-allow`), runs of spaces in a
   sentence in `.rs` (`layout-allow`), and a `snob ...` command to type back
@@ -253,7 +265,7 @@ documented reason in the same place.
 - **Every call snob may send is a value in `snob_ig::allowlist`**; call sites
   pass those values, never a path or a name.
 - **The account's tab never leaves the site**: a request or a call naming
-  another origin is refused before any browser starts (`headless/mod.rs`,
+  another origin is refused before any browser starts (`headless/site.rs`,
   against `snob_ig::client::site`).
 - **The tab's guard** (`headless::guard`) pauses every request the page makes
   and every document: GETs go on, a POST only if `allowlist::refused` lets it;
@@ -989,18 +1001,19 @@ adds `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` for the app
 alone (`release.yml`'s job `desktop`, `update::edition::APP_TARGET`,
 `install.sh`).
 
-Platform code compiles only on that OS's CI job:
+Platform code compiles only on that OS's CI job. The engine's is under
+`system/`, but for what a browser alone needs (`browser/`) and the relay:
 
 | File | Windows (`windows-sys`) | Unix (`libc`) |
 |---|---|---|
-| `pipe.rs` | handle list and job object | CDP pipe on fds 3 and 4, own process group |
-| `detach.rs` | own handle list, out of the job | `setsid` |
-| `local_socket.rs` | named pipe, user DACL (`windows_user.rs`) | `0600` socket, `peer_cred` |
-| `owner/end_of_session.rs` | hidden window hearing the session end | |
-| `parent.rs` | ToolHelp, `OpenProcess`, `WaitForSingleObject` | `pidfd` (Linux), `kqueue` (macOS), `getppid` |
-| `headless/` | | `kill(pid, 0)`, `gethostname`, refusing root |
+| `system/pipe.rs` | handle list and job object | CDP pipe on fds 3 and 4, own process group |
+| `system/detach.rs` | own handle list, out of the job | `setsid` |
+| `system/local_socket.rs` | named pipe, user DACL (`windows_user.rs`) | `0600` socket, `peer_cred` |
+| `browser/owner/end_of_session.rs` | hidden window hearing the session end | |
+| `system/parent.rs` | ToolHelp, `OpenProcess`, `WaitForSingleObject` | `pidfd` (Linux), `kqueue` (macOS), `getppid` |
+| `browser/headless/`, `browser/cdp/` | | `kill(pid, 0)`, `gethostname`, refusing root |
 | `relay/`, `snob-mcp`'s `http/socket.rs` | | `peer_cred` against `geteuid` |
-| `power/` | power requests, EcoQoS | logind inhibitor, `SCHED_BATCH` (Linux); `caffeinate` (macOS) |
+| `system/power/` | power requests, EcoQoS | logind inhibitor, `SCHED_BATCH` (Linux); `caffeinate` (macOS) |
 | `snob-store/src/paths.rs` | the data directory's DACL | scratch root opened with `O_NOFOLLOW`, `0700` |
 | `snob-store/src/disk.rs` | `GetDiskFreeSpaceExW` | `statvfs` |
 | `snob_ig::awake` | `QueryUnbiasedInterruptTime` | |
