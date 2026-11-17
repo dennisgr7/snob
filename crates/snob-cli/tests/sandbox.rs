@@ -8257,6 +8257,8 @@ async fn status_shows_what_an_agent_was_told_yes_to() {
     assert_eq!(acts[0]["via"], "chat");
     assert_eq!(acts[0]["client"], "test 0");
     assert_eq!(acts[1]["target"]["username"], "nobody");
+    // Refused after its lookup, and named by the account it was about.
+    assert!(acts[1]["target"]["pk"].is_number(), "{agents}");
     assert_eq!(acts[2]["action"], "fans");
     assert_eq!(acts[2]["write"], false);
     assert_eq!(acts[2]["target"]["username"], "other");

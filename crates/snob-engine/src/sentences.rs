@@ -90,6 +90,17 @@ pub fn held_until(held: &Held) -> String {
     }
 }
 
+/// The refusal of anything that would send during a cooldown: `doing` says
+/// what was not done ("nothing can be sent").
+pub fn refuse_held(held: &Held, doing: &str) -> anyhow::Error {
+    ExitError::new(
+        ExitCode::RateLimited,
+        format!("{}, so {doing}", held_until(held)),
+    )
+    .with_cooldown_until(held.until_ms)
+    .into()
+}
+
 /// The brake on every account, naming the accounts whose push-backs set it.
 fn brake_sentence(until_ms: EpochMs, accounts: &[String]) -> String {
     let named = and_list(accounts).unwrap_or_else(|| "more than one account".to_string());

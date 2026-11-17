@@ -38,18 +38,9 @@ pub async fn run(
     }
     let mut app = common::app(&secrets, paths, false)?;
 
-    // Before an agent's act is recorded: a session that cannot write, or a
-    // cooldown, sends nothing and is not an act.
-    follow::refuse_if_it_cannot_send(&app, verb)?;
-    // Whether anybody can answer is known now, and a run that will refuse
-    // for want of an answer should not pay for a lookup first. The advice
-    // goes in the message: a hint on exit 130 is never shown.
-    if !args.consent.yes && !app.can_ask() {
-        return Err(snob_engine::sentences::refuse_unattended(
-            format!("nothing was {}ed: it needs confirmation", verb.present()),
-            "Pass -y to confirm in advance.".to_string(),
-        ));
-    }
+    // Before an agent's act is recorded: a session that cannot write, a
+    // cooldown, or nobody to ask sends nothing and is not an act.
+    follow::refuse_ahead(&app, verb, args.consent.yes)?;
 
     // **Before the first request**, for a run an agent was told yes to through
     // `snob mcp`: recorded where the person sees it, and refused with nothing
@@ -62,13 +53,16 @@ pub async fn run(
         args.mcp_write_cap,
     )?;
 
-    let done = follow::run(&mut app, verb, &args.target, args.consent.yes).await?;
+    let profile = follow::profile_of(&app, &args.target).await?;
+    // Named by its pk as soon as it is known, so an act whose write then
+    // fails is audited by the account it was about.
     if let Some(id) = act
-        && let Err(e) = snob_store::store::mcp_acts::resolved(app.db().conn(), id, done.profile.id)
+        && let Err(e) = snob_store::store::mcp_acts::resolved(app.db().conn(), id, profile.id)
     {
         // The act stays recorded by the name it was asked about.
         tracing::debug!(error = %e, "the account an act was about could not be stored");
     }
+    let done = follow::write(&mut app, verb, profile, args.consent.yes).await?;
 
     let name = printable(&done.profile.username);
     if done.outcome == Outcome::Declined {

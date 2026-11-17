@@ -344,12 +344,7 @@ pub fn refuse_during_cooldown(app: &App, doing: &str) -> Result<()> {
 /// The refusal [`refuse_during_cooldown`] gives, for `held`: also what
 /// `follow --check-ahead` answers, which has the budget's state and no `App`.
 pub fn in_cooldown(held: &snob_engine::app::Held, doing: &str) -> anyhow::Error {
-    ExitError::new(
-        ExitCode::RateLimited,
-        format!("{}, so {doing}", snob_engine::sentences::held_until(held)),
-    )
-    .with_cooldown_until(held.until_ms)
-    .into()
+    snob_engine::sentences::refuse_held(held, doing)
 }
 
 /// What switching a view to another account came to.

@@ -382,8 +382,11 @@ and then runs the command with that yes, so the engine does not ask again);
 paid from the write bucket on top of the read buckets; refused without a CSRF
 token; sends `Origin`; follows no redirect; and **once in flight it is not
 abandoned on Ctrl+C**, the one exception to "Ctrl+C cancels at once". A front
-that links the engine calls the same function; one that has already asked,
-the app included, passes that yes and is not asked again.
+that links the engine calls the same function, `follow::run`, or its three
+steps (`refuse_ahead`, `profile_of`, `write`) when it keeps something between
+the lookup and the write, as the command line names an agent's act by its pk;
+one that has already asked passes that yes and is not asked again. The app
+offers neither write ("Desktop app").
 
 ### Identity is the pk
 

@@ -42,26 +42,57 @@ pub struct Done {
     pub status: Option<FriendshipStatus>,
 }
 
-/// Follows or unfollows `typed`, or reports that it would change nothing.
+/// Follows or unfollows `typed`, or reports that it would change nothing:
+/// [`refuse_ahead`], [`profile_of`], then [`write`].
 ///
 /// `confirmed` is a yes already given (`-y`, or the one `snob mcp` asked
 /// for). Without it, and with nobody there to ask, nothing is sent.
 pub async fn run(app: &mut App, verb: Verb, typed: &str, confirmed: bool) -> Result<Done> {
-    refuse_if_it_cannot_send(app, verb)?;
-    // Being unable to ask and being told no are two different events.
+    refuse_ahead(app, verb, confirmed)?;
+    let profile = profile_of(app, typed).await?;
+    write(app, verb, profile, confirmed).await
+}
+
+/// What would refuse this write before a profile is read: no CSRF token, a
+/// cooldown, or nobody to ask and no yes given. Nothing is sent.
+pub fn refuse_ahead(app: &App, verb: Verb, confirmed: bool) -> Result<()> {
+    if !app.client().can_write() {
+        return Err(cannot_write(verb));
+    }
+    if let Some(held) = app.held()? {
+        return Err(crate::sentences::refuse_held(&held, NOTHING_SENT));
+    }
+    // Being unable to ask and being told no are two different events, and a
+    // run that will refuse for want of an answer should not pay for a lookup
+    // first. The advice goes in the message: a hint on exit 130 is never
+    // shown.
     if !confirmed && !app.can_ask() {
         return Err(crate::sentences::refuse_unattended(
             format!("nothing was {}ed: it needs confirmation", verb.present()),
             "Pass -y to confirm in advance.".to_string(),
         ));
     }
+    Ok(())
+}
 
+/// The profile `typed` names, read: the one request before the write.
+pub async fn profile_of(app: &App, typed: &str) -> Result<WebProfileInfo> {
     let known = crate::engine::target::known_pk(app, typed)?;
-    let profile = app
+    Ok(app
         .client()
         .profile_named(crate::engine::target::clean(typed), known)
-        .await?;
+        .await?)
+}
 
+/// The write to `profile`, once [`refuse_ahead`] let it through and
+/// [`profile_of`] read it: refused for the viewer's own account, answered
+/// from the profile when it would change nothing, asked unless `confirmed`.
+pub async fn write(
+    app: &mut App,
+    verb: Verb,
+    profile: WebProfileInfo,
+    confirmed: bool,
+) -> Result<Done> {
     // Refusing to follow yourself here rather than letting Instagram do it:
     // its answer is a generic 400 that `classify` cannot tell apart from a
     // real failure, and the user would be told the account is throttled.
@@ -106,23 +137,6 @@ pub async fn run(app: &mut App, verb: Verb, typed: &str, confirmed: bool) -> Res
         outcome,
         status: Some(status),
     })
-}
-
-/// What would refuse this write before a profile is read: no CSRF token,
-/// or a cooldown. Nothing is sent.
-pub fn refuse_if_it_cannot_send(app: &App, verb: Verb) -> Result<()> {
-    if !app.client().can_write() {
-        return Err(cannot_write(verb));
-    }
-    if let Some(held) = app.held()? {
-        return Err(ExitError::new(
-            ExitCode::RateLimited,
-            format!("{}, so {NOTHING_SENT}", crate::sentences::held_until(&held)),
-        )
-        .with_cooldown_until(held.until_ms)
-        .into());
-    }
-    Ok(())
 }
 
 /// The refusal of a session that has no CSRF token to write with.
