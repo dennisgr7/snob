@@ -3,6 +3,9 @@
 //! asked about first**, in the app's own question, and only a yes walks it
 //! (`state::profile::asks_first`). **Nothing is read twice on the way
 //! back**: a page keeps what it read for as long as the way back holds it.
+//! What the cache kept of a profile, its highlights and its tabs' first
+//! pages is shown at once, and the band says it is loading until the reads
+//! it makes anyway answer: **the cache never decides whether to read**.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -23,6 +26,7 @@ use super::Shell;
 use crate::backend::{Listed, Profile, Tiles, Unread, Walked};
 use crate::state::flow::{Event, Named, Screen};
 use crate::state::profile::{self, Layout, PictureClick, Showing, Side, Tab, Zoom};
+use crate::state::status::Status;
 use crate::ui::look::Look;
 
 /// How a tab's first page stands.
@@ -45,9 +49,15 @@ pub(crate) struct ProfilePage {
     /// The tab the underline leaves, and since when.
     pub tab_from: (Tab, Instant),
     pub tabs: HashMap<Tab, TabRead>,
+    /// The first page of each tab the cache kept, shown until the tab is
+    /// read.
+    pub kept_tabs: HashMap<Tab, Tiles>,
     /// How the posts were last shown, and since when: they come in again
     /// when that changes.
     pub shown_since: Instant,
+    /// Since when the highlights are the ones shown: they come in when a
+    /// read changes them, not when it says them again.
+    pub highlights_since: Option<Instant>,
     /// The posts' own scroll in the split layout.
     pub scroll: ScrollHandle,
     pub highlights: ScrollHandle,
@@ -253,6 +263,21 @@ impl Shell {
             }
             _ => {}
         }
+        self.tell_the_band_about_the_page(cx);
+    }
+
+    /// Whether the band says the profile shown is loading: while it, or the
+    /// tab shown of it, is being read.
+    pub(crate) fn tell_the_band_about_the_page(&mut self, cx: &mut Context<Self>) {
+        let loading = self.profile_page().is_some_and(|page| {
+            (page.failed.is_none() && page.profile.as_ref().is_none_or(|profile| !profile.read))
+                || matches!(page.tabs.get(&page.tab), Some(TabRead::Reading))
+        });
+        match (loading, self.band.holds(&Status::Loading)) {
+            (true, false) => self.say(Status::Loading, cx),
+            (false, true) => self.quiet(|band| band.clear_kind(&Status::Loading), cx),
+            _ => {}
+        }
     }
 
     /// Shows what was kept of `who` at once, and reads it now.
@@ -268,7 +293,9 @@ impl Shell {
                 tab: Tab::Posts,
                 tab_from: (Tab::Posts, now),
                 tabs: HashMap::new(),
+                kept_tabs: HashMap::new(),
                 shown_since: now,
+                highlights_since: None,
                 scroll: ScrollHandle::new(),
                 highlights: ScrollHandle::new(),
                 picture_button: cx.focus_handle(),
@@ -279,8 +306,13 @@ impl Shell {
         );
         let pk = who.pk;
         let kept = self.backend.profile_kept(who.clone());
+        let kept_tabs: Vec<_> = Tab::ALL
+            .into_iter()
+            .map(|tab| (tab, self.backend.tiles_kept(who.clone(), tab)))
+            .collect();
         let reading = self.backend.profile(who);
         self.engine_asked(cx);
+        self.tell_the_band_about_the_page(cx);
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Some(kept)) = kept.await {
                 this.update(cx, |this, cx| {
@@ -288,6 +320,23 @@ impl Shell {
                         && page.profile.as_ref().is_none_or(|shown| !shown.read)
                     {
                         page.profile = Some(kept);
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }
+            for (tab, kept) in kept_tabs {
+                let Ok(Some(kept)) = kept.await else {
+                    continue;
+                };
+                this.update(cx, |this, cx| {
+                    if let Some(page) = this.pages.profiles.get_mut(&pk) {
+                        // The posts kept come in, unless the read came first.
+                        if page.tab == tab && !matches!(page.tabs.get(&tab), Some(TabRead::Read(_)))
+                        {
+                            page.shown_since = Instant::now();
+                        }
+                        page.kept_tabs.insert(tab, kept);
                         cx.notify();
                     }
                 })
@@ -324,8 +373,19 @@ impl Shell {
                     }
                 }
                 let visible = profile.visible == Some(true);
+                let ids = |profile: &Profile| -> Vec<String> {
+                    profile.highlights.iter().map(|h| h.id.clone()).collect()
+                };
+                let now = Instant::now();
+                if page
+                    .profile
+                    .as_ref()
+                    .is_none_or(|shown| ids(shown) != ids(&profile))
+                {
+                    page.highlights_since = Some(now);
+                }
                 page.profile = Some(profile);
-                page.read_at = Some(Instant::now());
+                page.read_at = Some(now);
                 page.failed = None;
                 if visible {
                     let tab = page.tab;
@@ -339,6 +399,7 @@ impl Shell {
             }
             None => page.failed = Some(Unread::Failed(String::new())),
         }
+        self.tell_the_band_about_the_page(cx);
         cx.notify();
     }
 
@@ -357,6 +418,7 @@ impl Shell {
         page.tabs.insert(tab, TabRead::Reading);
         let reading = self.backend.tiles(who, tab);
         self.engine_asked(cx);
+        self.tell_the_band_about_the_page(cx);
         cx.spawn_in(window, async move |this, cx| {
             let read = reading.await;
             this.update(cx, |this, cx| {
@@ -367,8 +429,17 @@ impl Shell {
                         Ok(Err(why)) => TabRead::Failed(why),
                         Err(_) => TabRead::Failed(Unread::Failed(String::new())),
                     };
+                    // What was kept is replaced in its place: only posts
+                    // that were not shown come in.
+                    let kept = page
+                        .kept_tabs
+                        .get(&tab)
+                        .is_some_and(|kept| !kept.tiles.is_empty());
+                    if !kept {
+                        page.shown_since = Instant::now();
+                    }
                     page.tabs.insert(tab, read);
-                    page.shown_since = Instant::now();
+                    this.tell_the_band_about_the_page(cx);
                     cx.notify();
                 }
             })
@@ -407,6 +478,7 @@ impl Shell {
         if visible {
             self.read_the_tab(who.pk, tab, window, cx);
         }
+        self.tell_the_band_about_the_page(cx);
         cx.notify();
     }
 

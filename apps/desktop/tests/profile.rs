@@ -132,6 +132,51 @@ async fn a_tab_is_read_once_when_it_is_first_shown(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+async fn a_profile_seen_before_shows_what_was_kept_at_once_while_the_band_says_it_loads(
+    cx: &mut TestAppContext,
+) {
+    let app = own_profile(cx, me()).await;
+    assert_eq!(app.label_of(cx, "status"), "", "read: nothing loads");
+    app.click(cx, "band-back");
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+
+    app.backend.hold();
+    app.click(cx, "account");
+    app.click(cx, "menu-profile");
+    app.until_screen(cx, |screen| matches!(screen, Screen::Profile(_)))
+        .await;
+    app.until(cx, |window, _| {
+        window.try_find(("profile-tile", 0usize)).is_some()
+    })
+    .await;
+    app.in_window(cx, |window, _| {
+        assert_eq!(
+            window.find(("profile-tile", 0usize)).label(),
+            Some("Photo, pinned: an invented caption, number 0")
+        );
+        assert!(window.try_find(("profile-highlight", 0usize)).is_some());
+        assert!(window.try_find("profile-reading").is_none(), "no ring");
+    });
+    assert_eq!(app.label_of(cx, "status"), "Loading the profile\u{2026}");
+
+    // The reads it makes anyway are asked all the same, and answer.
+    app.backend.release();
+    app.until(cx, |window, _| {
+        window
+            .try_find("status")
+            .is_some_and(|status| status.label().unwrap_or_default().is_empty())
+    })
+    .await;
+    let tiles = app
+        .backend
+        .asked()
+        .into_iter()
+        .filter(|asked| *asked == Asked::Tiles(Pk::new(42), Tab::Posts))
+        .count();
+    assert_eq!(tiles, 2, "read again on the second visit");
+}
+
+#[gpui_kit::test]
 async fn the_layout_and_the_way_posts_are_shown_change_from_their_buttons(cx: &mut TestAppContext) {
     let app = own_profile(cx, me()).await;
     assert_eq!(

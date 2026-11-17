@@ -3,6 +3,7 @@
 //! What it was asked is kept, so a test reads back that a screen called what
 //! it should and nothing else. **Only a `testing` build has it.**
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -99,6 +100,9 @@ struct State {
     list_size: usize,
     /// The account whose profile answers as kept from the viewer.
     private: Option<Pk>,
+    /// The highlights and first pages answered, which the cache keeps.
+    kept_trays: HashMap<Pk, Vec<Highlight>>,
+    kept_tiles: HashMap<(Pk, Tab), Tiles>,
     /// The automations kept, in the order they were kept.
     automations: Vec<Automation>,
     runs: Vec<Run>,
@@ -160,6 +164,8 @@ impl Scripted {
             introduced: Vec::new(),
             list_size: 30,
             private: None,
+            kept_trays: HashMap::new(),
+            kept_tiles: HashMap::new(),
             automations: Vec::new(),
             runs: Vec::new(),
             next_run: Next::Never,
@@ -709,7 +715,7 @@ impl Backend for Scripted {
             .then(|| Profile {
                 read: false,
                 story_up: false,
-                highlights: Vec::new(),
+                highlights: state.kept_trays.get(&who.pk).cloned().unwrap_or_default(),
                 visible: None,
                 ..profile_of(&who, &state.accounts, state.private)
             });
@@ -718,7 +724,9 @@ impl Backend for Scripted {
 
     fn profile(&self, who: Named) -> Answer<Result<Profile, Unread>> {
         self.answer(Asked::Profile(who.pk), move |state| {
-            Ok(profile_of(&who, &state.accounts, state.private))
+            let profile = profile_of(&who, &state.accounts, state.private);
+            state.kept_trays.insert(who.pk, profile.highlights.clone());
+            Ok(profile)
         })
     }
 
@@ -727,8 +735,15 @@ impl Backend for Scripted {
             if state.private == Some(who.pk) {
                 return Err(Unread::Hidden);
             }
-            Ok(tiles(tab))
+            let tiles = tiles(tab);
+            state.kept_tiles.insert((who.pk, tab), tiles.clone());
+            Ok(tiles)
         })
+    }
+
+    // Not among what was asked: it reads files alone.
+    fn tiles_kept(&self, who: Named, tab: Tab) -> Answer<Option<Tiles>> {
+        answered(self.state().kept_tiles.get(&(who.pk, tab)).cloned())
     }
 
     fn full_picture(&self, who: Named) -> Answer<Option<PathBuf>> {

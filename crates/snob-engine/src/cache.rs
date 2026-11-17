@@ -2,27 +2,33 @@
 //! anyway run (`snob_store::cache`): read here without a request, and kept
 //! from the answers those requests bring.
 //!
-//! **The cache adds no request and takes none away.** It is filled where an
-//! answer already arrives: a profile read ([`crate::app::App::profile_named`]),
-//! a counter poll (`engine::freshness`), a picture a view downloads from the
-//! CDN for itself ([`Keeper::fetch_picture`], [`Keeper::fetch_drawing`]).
-//! Nothing reads it to decide whether to ask: a view shows it, then shows
-//! what the request answered. There is no rule for when to refresh it, since
-//! nothing refreshes it but those answers.
+//! **The cache adds no request, and takes none away but one**: a post's
+//! thumbnail already kept, which never changes, is not downloaded again
+//! ([`Keeper::fetch_thumb`]). It is filled where an answer already arrives: a
+//! profile read ([`crate::app::App::profile_named`], and its highlights'
+//! tray in [`crate::profile::read`]), the first page of a grid or a tab
+//! ([`crate::posts::first_page`]), a counter poll (`engine::freshness`), a
+//! picture a view downloads from the CDN for itself
+//! ([`Keeper::fetch_picture`], [`Keeper::fetch_drawing`]). Nothing else
+//! reads it to decide whether to ask: a view shows it, then shows what the
+//! request answered. There is no rule for when to refresh it, since nothing
+//! refreshes it but those answers.
 
 use std::path::PathBuf;
 
 use snob_core::model::printable;
 use snob_core::session::Session;
 use snob_core::{Epoch, Pk};
-use snob_ig::client::IgClient;
+use snob_ig::client::{IgClient, ProfileTab};
 use snob_ig::model::{Counters, WebProfileInfo};
-pub use snob_store::cache::Drawing;
-use snob_store::cache::{self, Shown};
+use snob_store::cache::{self, Shown, Tab};
+pub use snob_store::cache::{Drawing, KeptGrid, KeptHighlight, KeptKind, KeptPost, KeptTray};
 use snob_store::paths::{AccountPaths, AppPaths};
 use snob_store::viewer::Card;
 
 use crate::media::{MAX_LARGE_PICTURE, MAX_SMALL_PICTURE, picture_type};
+use crate::posts::{Grid, Post, PostKind};
+use crate::profile::{Highlight, Visibility};
 
 /// What `viewer` was last shown of account `pk`, at once: none when nothing is
 /// kept. For the viewer's own account, what its card says fills what the
@@ -61,6 +67,49 @@ pub fn picture(paths: &AppPaths, viewer: Pk, pk: Pk) -> Option<PathBuf> {
 /// The drawing named `key` that `viewer` was last shown, when one is kept.
 pub fn drawing(paths: &AppPaths, viewer: Pk, drawing: Drawing, key: &str) -> Option<PathBuf> {
     cache::drawing(&paths.account(viewer), drawing, key)
+}
+
+/// The highlights of `pk` that `viewer` was last shown, none when nothing is
+/// kept. **Reads one file and sends nothing.**
+pub fn tray(paths: &AppPaths, viewer: Pk, pk: Pk) -> Option<KeptTray> {
+    cache::load_tray(&paths.account(viewer), pk)
+}
+
+/// The first page of `pk`'s grid (`tab` `None`) or tab that `viewer` was
+/// last shown, none when nothing is kept. **Reads one file and sends
+/// nothing.**
+pub fn grid(paths: &AppPaths, viewer: Pk, pk: Pk, tab: Option<ProfileTab>) -> Option<KeptGrid> {
+    cache::load_grid(&paths.account(viewer), pk, tab_of(tab))
+}
+
+fn tab_of(tab: Option<ProfileTab>) -> Tab {
+    match tab {
+        None => Tab::Posts,
+        Some(ProfileTab::Reels) => Tab::Reels,
+        Some(ProfileTab::Reposts) => Tab::Reposts,
+        Some(ProfileTab::Tagged) => Tab::Tagged,
+    }
+}
+
+/// `post` as its tile shows it, its words made printable: what a grid keeps
+/// of it.
+pub fn kept_post(post: &Post) -> KeptPost {
+    KeptPost {
+        code: post.code.clone(),
+        kind: Some(match post.kind {
+            PostKind::Photo => KeptKind::Photo,
+            PostKind::Video => KeptKind::Video,
+            PostKind::Reel => KeptKind::Reel,
+            PostKind::Carousel(items) => KeptKind::Carousel(items),
+        }),
+        caption: Some(printable(post.headline())).filter(|line| !line.trim().is_empty()),
+        owner: Some(printable(&post.owner)).filter(|owner| !owner.is_empty()),
+        taken_at: (post.taken_at != Epoch::default()).then_some(post.taken_at),
+        // Never read under hidden counts: the number is then a placeholder.
+        likes: post.likes.filter(|_| !post.likes_hidden),
+        comments: post.comments,
+        pinned: post.pinned,
+    }
 }
 
 /// The largest picture of `pk` kept for `viewer`, else its small one.
@@ -136,6 +185,42 @@ impl Keeper {
         );
     }
 
+    /// Keeps the highlights a profile read showed of `pk`: **none when it
+    /// showed none**, a private account's to a viewer who does not follow it
+    /// among them.
+    pub fn tray(&self, pk: Pk, highlights: &Visibility<Vec<Highlight>>) {
+        if !self.may_keep() {
+            return;
+        }
+        let highlights = match highlights {
+            Visibility::Shown(tray) => tray
+                .iter()
+                .map(|highlight| KeptHighlight {
+                    id: highlight.id.clone(),
+                    title: Some(highlight.title.clone()).filter(|title| !title.is_empty()),
+                })
+                .collect(),
+            Visibility::Hidden => Vec::new(),
+        };
+        if let Err(e) = cache::save_tray(&self.account, pk, &KeptTray { highlights }) {
+            tracing::debug!(error = %e, "a tray could not be kept");
+        }
+    }
+
+    /// Keeps the first page of `pk`'s grid or tab a read answered.
+    pub fn grid(&self, pk: Pk, grid: &Grid) {
+        if !self.may_keep() {
+            return;
+        }
+        let kept = KeptGrid {
+            posts: grid.posts.iter().map(kept_post).collect(),
+            more: grid.next.is_some(),
+        };
+        if let Err(e) = cache::save_grid(&self.account, pk, tab_of(grid.tab), &kept) {
+            tracing::debug!(error = %e, "a grid could not be kept");
+        }
+    }
+
     /// Keeps the small picture of `pk` **a view already downloaded**: what
     /// is not a picture, or weighs more than a small one may, is not kept.
     pub fn picture(&self, pk: Pk, bytes: &[u8]) {
@@ -171,6 +256,22 @@ impl Keeper {
         };
         let bytes = downloaded(client, address, cap).await?;
         self.drawing(drawing, key, &bytes)
+    }
+
+    /// The thumbnail of the post `code` at `address`: **the one kept, with
+    /// nothing downloaded, when there is one**, since a post's picture never
+    /// changes; else downloaded and kept as [`Self::fetch_drawing`] does.
+    pub async fn fetch_thumb(
+        &self,
+        client: &IgClient,
+        code: &str,
+        address: &str,
+    ) -> Option<PathBuf> {
+        if let Some(kept) = cache::drawing(&self.account, Drawing::Thumb, code) {
+            return Some(kept);
+        }
+        self.fetch_drawing(client, Drawing::Thumb, code, address)
+            .await
     }
 
     /// Keeps the drawing named `key` **a view already downloaded**: what is
@@ -305,6 +406,78 @@ mod tests {
         assert_eq!(picture(&paths, Pk::new(42), Pk::new(7)), None);
         assert_eq!(picture(&paths, Pk::new(42), Pk::new(8)), None);
         assert!(picture(&paths, Pk::new(42), Pk::new(9)).is_some());
+    }
+
+    #[test]
+    fn a_tray_is_kept_as_shown_and_kept_empty_once_hidden() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, session) = signed_in(root.path());
+        let keeper = Keeper::new(paths.account(Pk::new(42)), &session);
+        let shown = Visibility::Shown(vec![Highlight {
+            id: "highlight:1".into(),
+            title: String::new(),
+            items: Some(3),
+            updated_at: None,
+            cover: Some("https://cdn.invalid/1.jpg".into()),
+        }]);
+
+        keeper.tray(Pk::new(7), &shown);
+        assert_eq!(
+            tray(&paths, Pk::new(42), Pk::new(7)),
+            Some(KeptTray {
+                highlights: vec![KeptHighlight {
+                    id: "highlight:1".into(),
+                    title: None,
+                }],
+            })
+        );
+
+        keeper.tray(Pk::new(7), &Visibility::Hidden);
+        assert_eq!(
+            tray(&paths, Pk::new(42), Pk::new(7)),
+            Some(KeptTray::default())
+        );
+    }
+
+    #[test]
+    fn a_first_page_is_kept_by_its_tab_as_its_tiles_show_it() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, session) = signed_in(root.path());
+        let keeper = Keeper::new(paths.account(Pk::new(42)), &session);
+        let media = serde_json::from_str(
+            r#"{"pk":"2","code":"AAAAAAAAAAC","media_type":8,"taken_at":1790000001,
+            "caption":{"text":"first\u0007 line\nsecond"},"like_count":5,
+            "like_and_view_counts_disabled":true,"comment_count":4,
+            "carousel_media":[{"pk":"21","media_type":1},{"pk":"22","media_type":1}]}"#,
+        )
+        .unwrap();
+        let mut grid = Grid::of("someone", Some(ProfileTab::Tagged), Some(Pk::new(7)));
+        grid.posts = vec![Post::from_media(&media, "owner.two")];
+        grid.next = Some("cursor".into());
+
+        keeper.grid(Pk::new(7), &grid);
+
+        assert_eq!(grid_of(&paths, None), None, "a tab each");
+        assert_eq!(
+            grid_of(&paths, Some(ProfileTab::Tagged)),
+            Some(KeptGrid {
+                posts: vec![KeptPost {
+                    code: "AAAAAAAAAAC".into(),
+                    kind: Some(KeptKind::Carousel(2)),
+                    caption: Some("first line".into()),
+                    owner: Some("owner.two".into()),
+                    taken_at: Some(Epoch::new(1_790_000_001)),
+                    likes: None,
+                    comments: Some(4),
+                    pinned: false,
+                }],
+                more: true,
+            })
+        );
+    }
+
+    fn grid_of(paths: &AppPaths, tab: Option<ProfileTab>) -> Option<KeptGrid> {
+        grid(paths, Pk::new(42), Pk::new(7), tab)
     }
 
     #[test]

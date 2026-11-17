@@ -942,19 +942,24 @@ pub async fn read_tab(
 
 /// The first page of the grid (`tab` `None`) or of a tab of `pk`, an
 /// account already resolved: what a profile page shows once the tab is
-/// shown, with no resolve of its own.
+/// shown, with no resolve of its own. Kept in the account's cache for a view
+/// to show at once next time (`cache::Keeper::grid`).
 pub async fn first_page(
-    client: &IgClient,
+    app: &crate::app::App,
     username: &str,
     pk: snob_core::Pk,
     tab: Option<ProfileTab>,
 ) -> Result<Grid> {
+    let client = app.client();
     let mut grid = Grid::of(username, tab, Some(pk));
     let first = match tab {
         None => client.profile_posts(username, None).await?,
         Some(tab) => client.profile_tab(tab, pk, username, None).await?,
     };
     grid.take(first);
+    if let Some(keeper) = app.cache() {
+        keeper.grid(pk, &grid);
+    }
     Ok(grid)
 }
 

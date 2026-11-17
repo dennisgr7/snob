@@ -506,16 +506,21 @@ compile; the session is an explicit header on the one client meant to carry it.
   sign-out.
 - **The views' cache** (`accounts/<pk>/cache/`, `snob_store::cache`,
   `snob_engine::cache`): what the account was last shown of each account,
-  by pk (`profiles/<pk>.json`: names, bio, counts, how the two stand), and
-  the small pictures it was shown (`pictures/<pk>.jpg`), and the other
-  pictures a view drew (`cache::Drawing`: an account's largest, a
-  highlight's cover, a post's thumbnail), so a view shows the
-  last known values at once while its usual requests run. **It adds no
-  request and takes none away**: filled only where an answer already
-  arrives (`App::profile_named`, which a list's resolve, a profile read and
-  the monitor read through; the counter poll; a picture a view downloads
-  from the CDN, `Keeper::fetch_picture` and `fetch_drawing`),
-  never read to decide whether to ask, so it has no refresh rule. **Kept by
+  by pk (`profiles/<pk>.json`: names, bio, counts, how the two stand), its
+  highlights (`trays/<pk>.json`) and the first page of each of its tabs
+  (`grids/<pk>-<tab>.json`), the small pictures it was shown
+  (`pictures/<pk>.jpg`), and the other pictures a view drew
+  (`cache::Drawing`: an account's largest, a highlight's cover, a post's
+  thumbnail), so a view shows the last known values at once while its
+  usual requests run. **It adds no request, and takes none away but a
+  post's thumbnail already kept**, which never changes
+  (`Keeper::fetch_thumb`; a highlight's cover is downloaded again, as it
+  can change): filled only where an answer already arrives
+  (`App::profile_named`, which a list's resolve, a profile read and the
+  monitor read through; the tray `profile::read` asks for; the first page
+  `posts::first_page` reads; the counter poll; a picture a view downloads
+  from the CDN, `Keeper::fetch_picture` and `fetch_drawing`), never read
+  to decide whether to ask, so it has no refresh rule. **Kept by
   the account that saw it**, so what a private account showed one account
   is never another's; nothing is kept once the session is signed out, and
   the directory is never made where the account's is not. One sweep: 30
@@ -1202,7 +1207,10 @@ its version is the release's ("Release and packaging"). GPUI comes through
   app's.** The report makes accounts anonymous and is copied by the person,
   never sent.
 - **A profile page reads what `snob profile` reads, less the stories**
-  (`Backend::profile`, `tiles`, `list`): a ring says a story is up and its
+  (`Backend::profile`, `tiles`, `list`), and shows what the cache kept of
+  it, its highlights and its tabs' first pages at once while those reads
+  run (`profile_kept`, `tiles_kept`, which send nothing), the band saying
+  it loads until they answer: a ring says a story is up and its
   menu's "Open story" opens nothing, reads nothing and marks nothing as
   seen. **Another account's list is asked about in the app's own question
   before anything of it is sent**, and only a yes calls `engine::list`

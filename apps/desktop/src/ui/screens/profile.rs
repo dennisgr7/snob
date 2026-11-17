@@ -130,8 +130,11 @@ struct Shown {
     tab: Tab,
     tab_from: (Tab, Instant),
     read: Option<TabRead>,
+    /// The tab's first page the cache kept, shown until it is read.
+    kept: Option<Tiles>,
     shown_since: Instant,
     read_at: Option<Instant>,
+    highlights_since: Option<Instant>,
     scroll: ScrollHandle,
     highlights: ScrollHandle,
     picture_button: gpui_kit::FocusHandle,
@@ -158,8 +161,10 @@ pub fn render(
         tab: page.tab,
         tab_from: page.tab_from,
         read: page.tabs.get(&page.tab).cloned(),
+        kept: page.kept_tabs.get(&page.tab).cloned(),
         shown_since: page.shown_since,
         read_at: page.read_at,
+        highlights_since: page.highlights_since,
         scroll: page.scroll.clone(),
         highlights: page.highlights.clone(),
         picture_button: page.picture_button.clone(),
@@ -429,7 +434,12 @@ fn card(
     ));
     let about = about(shown, look);
     let counters = counters(shown, came, look, cx);
-    let highlights = highlights(shown, came, look, window);
+    // The highlights come in when a read changes them, not when it says
+    // again what the cache kept.
+    let highlights_came = shown.highlights_since.map_or(1.0, |since| {
+        eased(since, look.moved(motion::ENTER, 0.0, 1.0).lasts, window)
+    });
+    let highlights = highlights(shown, highlights_came, look, window);
     let failed = shown.failed.as_ref().map(|why| {
         let said = unread_words(why, look);
         div()
@@ -911,7 +921,7 @@ fn highlights(shown: &Shown, came: f32, look: &Look, window: &mut Window) -> Opt
         .map(|(at, highlight)| {
             // Each comes in a little after the one before it.
             let delay = Duration::from_millis(40) * at.min(10) as u32;
-            let here = shown.read_at.map_or(1.0, |since| {
+            let here = shown.highlights_since.map_or(1.0, |since| {
                 let since = since + delay;
                 if Instant::now() < since {
                     window.request_animation_frame();
@@ -1140,6 +1150,22 @@ fn tab_content(
     window: &mut Window,
 ) -> AnyElement {
     let visible = shown.profile.as_ref().and_then(|profile| profile.visible);
+    let kept = shown.kept.as_ref().filter(|kept| !kept.tiles.is_empty());
+    let posts = |tiles: &Tiles, window: &mut Window| match showing {
+        Showing::Grid => grid(tiles, shown.shown_since, columns, look, window),
+        Showing::List => list(tiles, shown.shown_since, look, window),
+    };
+    // What could not be read is said above what the cache kept of it.
+    let failed = |said: AnyElement, window: &mut Window| match kept {
+        Some(kept) => div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(said)
+            .child(posts(kept, window))
+            .into_any_element(),
+        None => said,
+    };
     match (visible, &shown.read, &shown.failed) {
         (_, _, Some(_)) if shown.profile.is_none() => div().into_any_element(),
         (Some(false), _, _) => status(
@@ -1148,6 +1174,10 @@ fn tab_content(
             Some(look.tr("profile-private-note")),
             look,
         ),
+        // What the cache kept, while the tab is read again.
+        (None, _, _) | (_, None | Some(TabRead::Reading), _) if let Some(kept) = kept => {
+            posts(kept, window)
+        }
         (None, _, _) | (_, None | Some(TabRead::Reading), _) => div()
             .id("profile-reading")
             .test_support()
@@ -1159,15 +1189,19 @@ fn tab_content(
             .pt(sp(STATUS_PAD))
             .child(parts::ring(26., look, window))
             .into_any_element(),
-        (_, Some(TabRead::Failed(Unread::Failed(_))), _) => status(
-            "profile-tab-failed",
-            look.tr("profile-posts-failed"),
-            None,
-            look,
+        (_, Some(TabRead::Failed(Unread::Failed(_))), _) => failed(
+            status(
+                "profile-tab-failed",
+                look.tr("profile-posts-failed"),
+                None,
+                look,
+            ),
+            window,
         ),
-        (_, Some(TabRead::Failed(why)), _) => {
-            status("profile-tab-failed", unread_words(why, look), None, look)
-        }
+        (_, Some(TabRead::Failed(why)), _) => failed(
+            status("profile-tab-failed", unread_words(why, look), None, look),
+            window,
+        ),
         (_, Some(TabRead::Read(tiles)), _) if tiles.tiles.is_empty() => status(
             "profile-empty",
             look.tr(match shown.tab {
@@ -1178,10 +1212,7 @@ fn tab_content(
             None,
             look,
         ),
-        (_, Some(TabRead::Read(tiles)), _) => match showing {
-            Showing::Grid => grid(tiles, shown.shown_since, columns, look, window),
-            Showing::List => list(tiles, shown.shown_since, look, window),
-        },
+        (_, Some(TabRead::Read(tiles)), _) => posts(tiles, window),
     }
 }
 

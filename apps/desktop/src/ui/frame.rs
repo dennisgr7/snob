@@ -68,6 +68,7 @@ pub fn status_line(status: &Status, look: &Look) -> (&'static str, String) {
         ),
         Status::Resuming => (assets::RESUMING, look.tr("status-resuming")),
         Status::Starting => (assets::RESUMING, look.tr("status-starting")),
+        Status::Loading => (assets::RESUMING, look.tr("status-loading")),
         Status::Downloading {
             percent: Some(percent),
         } => (
