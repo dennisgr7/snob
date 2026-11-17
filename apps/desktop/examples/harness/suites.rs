@@ -171,34 +171,89 @@ async fn run_scenario(suite: &'static str, lab: &Lab, out: &Path, scenario: &Sce
 }
 
 /// The app's unit tests and its tests of the window in process.
+///
+/// **A run that fails no test is run once more**, and the report keeps what
+/// cargo said the first time: on Windows a test binary just linked can be
+/// held open a moment (by an antivirus scan, or a process a test left), which
+/// fails the build, and a real failure fails twice.
 fn logic() -> Vec<Outcome> {
     let since = Instant::now();
+    let outcome = Outcome::of("logic", "cargo test --features testing", since);
+    let first = match cargo_test() {
+        Ok(ran) => ran,
+        Err(e) => return vec![outcome.failed(format!("cargo did not run: {e}"))],
+    };
+    let (ran, retried) = match &first {
+        Tested::Failed { failed, .. } if failed.is_empty() => match cargo_test() {
+            Ok(again) => (again, Some(first)),
+            Err(e) => return vec![outcome.failed(format!("cargo did not run: {e}"))],
+        },
+        _ => (first, None),
+    };
+    let before = retried.map(|first| match first {
+        Tested::Failed { stderr, .. } => format!(
+            "\nThe first run failed no test, and cargo said:\n{}",
+            last_lines(&stderr)
+        ),
+        Tested::Passed(_) => String::new(),
+    });
+    match ran {
+        Tested::Passed(passed) => vec![outcome.noted(format!(
+            "{passed} tests passed{}",
+            before.unwrap_or_default()
+        ))],
+        Tested::Failed { failed, stderr } if failed.is_empty() => vec![outcome.failed(format!(
+            "{}{}",
+            last_lines(&stderr),
+            before.unwrap_or_default()
+        ))],
+        Tested::Failed { failed, .. } => vec![outcome.failed(failed.join("\n"))],
+    }
+}
+
+/// What one `cargo test` of the app came to.
+enum Tested {
+    Passed(usize),
+    /// The tests that failed, none when the build or a test binary did, and
+    /// what cargo said.
+    Failed {
+        failed: Vec<String>,
+        stderr: String,
+    },
+}
+
+fn cargo_test() -> std::io::Result<Tested> {
     let ran = Command::new(env!("CARGO"))
         .args(["test", "--features", "testing", "--lib", "--tests"])
         .current_dir(app_dir())
-        .output();
-    let outcome = Outcome::of("logic", "cargo test --features testing", since);
-    match ran {
-        Ok(ran) => {
-            let said = String::from_utf8_lossy(&ran.stdout);
-            let passed: usize = said
-                .lines()
-                .filter(|line| line.starts_with("test result:"))
-                .filter_map(|line| line.split_whitespace().nth(3)?.parse::<usize>().ok())
-                .sum();
-            if ran.status.success() {
-                vec![outcome.noted(format!("{passed} tests passed"))]
-            } else {
-                let failed: Vec<&str> = said
-                    .lines()
-                    .filter(|line| line.ends_with("FAILED") || line.starts_with("---- "))
-                    .collect();
-                vec![outcome.failed(failed.join("\n"))]
-            }
-        }
-        Err(e) => vec![outcome.failed(format!("cargo did not run: {e}"))],
+        .output()?;
+    let said = String::from_utf8_lossy(&ran.stdout);
+    if ran.status.success() {
+        let passed = said
+            .lines()
+            .filter(|line| line.starts_with("test result:"))
+            .filter_map(|line| line.split_whitespace().nth(3)?.parse::<usize>().ok())
+            .sum();
+        return Ok(Tested::Passed(passed));
     }
+    Ok(Tested::Failed {
+        failed: said
+            .lines()
+            .filter(|line| line.ends_with("FAILED") || line.starts_with("---- "))
+            .map(str::to_string)
+            .collect(),
+        stderr: String::from_utf8_lossy(&ran.stderr).into_owned(),
+    })
 }
+
+/// The last [`STDERR_LINES`] of what cargo said.
+fn last_lines(said: &str) -> String {
+    let lines: Vec<&str> = said.lines().collect();
+    lines[lines.len().saturating_sub(STDERR_LINES)..].join("\n")
+}
+
+/// How many of cargo's last lines a failure without a failed test shows.
+const STDERR_LINES: usize = 40;
 
 /// The screens a picture is taken of and an audit made of, and how each is
 /// reached from the screen before it.
