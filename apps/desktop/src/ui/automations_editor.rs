@@ -694,6 +694,8 @@ impl Shell {
                 (fields, Some(url))
             }
             Step::Filter { only } => (Fields::Filter { only: *only }, None),
+            // Nothing to say of it: it runs when somebody runs it.
+            Step::Manual {} => return,
         };
         let (focus, cancel) = (cx.focus_handle(), cx.focus_handle());
         match first {

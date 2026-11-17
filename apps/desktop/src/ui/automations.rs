@@ -56,7 +56,7 @@ impl Steps {
     /// What the panel offers of this kind.
     pub fn items(self) -> Vec<Item> {
         match self {
-            Self::Triggers => vec![Item::Schedule, Item::Soon("trigger-webhook")],
+            Self::Triggers => vec![Item::Schedule, Item::Manual, Item::Soon("trigger-webhook")],
             Self::Actions => Read::all().into_iter().map(Item::Read).collect(),
             Self::Filters => Only::ALL.into_iter().map(Item::Filter).collect(),
             Self::Outputs => vec![
@@ -72,6 +72,7 @@ impl Steps {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     Schedule,
+    Manual,
     Read(Read),
     Filter(Only),
     Webhook,
@@ -84,6 +85,7 @@ impl Item {
     pub fn of(step: &Step) -> Self {
         match step {
             Step::Schedule { .. } => Self::Schedule,
+            Step::Manual {} => Self::Manual,
             Step::Read { what, .. } => Self::Read(what.clone()),
             Step::Filter { only } => Self::Filter(*only),
             Step::Webhook(_) => Self::Webhook,
@@ -94,6 +96,7 @@ impl Item {
     pub fn id(&self) -> &'static str {
         match self {
             Self::Schedule => "trigger-schedule",
+            Self::Manual => "trigger-manual",
             Self::Read(read) => match read {
                 Read::Lists => "read-lists",
                 Read::Unfollowers => "read-unfollowers",
@@ -119,6 +122,7 @@ impl Item {
     pub fn drawing(&self) -> &'static str {
         match self {
             Self::Schedule => assets::SCHEDULE,
+            Self::Manual => assets::RUN,
             Self::Read(Read::Posts { .. } | Read::Picture { .. }) => assets::PHOTO,
             Self::Read(_) => assets::FOLLOWERS,
             Self::Filter(_) => assets::CONDITION,
@@ -129,8 +133,9 @@ impl Item {
     }
 
     /// The step it puts on the canvas, as good as it can be before
-    /// anything is said: a schedule every day, an action as the account in
-    /// use unless it is about another. None for what is not there yet.
+    /// anything is said: a schedule every day, a manual trigger, an action as
+    /// the account in use unless it is about another. None for what is not
+    /// there yet.
     pub fn step(&self, in_use: Option<Pk>) -> Option<Step> {
         Some(match self {
             Self::Schedule => Step::Schedule {
@@ -141,6 +146,7 @@ impl Item {
                 .spec()
                 .unwrap_or_default(),
             },
+            Self::Manual => Step::Manual {},
             Self::Read(what) => Step::Read {
                 account: (!what.is_about_another()).then(|| Account::own(in_use)),
                 what: what.clone(),

@@ -243,7 +243,7 @@ pub fn from_watch(config: &WatchConfig) -> Automation {
 }
 
 /// The automation as `watch.toml`, or every step the file cannot hold ([`Problem::NotInWatchToml`]): a
-/// second trigger or webhook, a disabled step, a filter, an action other
+/// second trigger or webhook, a manual trigger, a disabled step, a filter, an action other
 /// than lists and posts, or an arrow the file has no way to say (an action
 /// no trigger leads to, or one that does not lead to the webhook when there
 /// is one).
@@ -286,7 +286,7 @@ pub fn to_watch(automation: &Automation) -> Result<WatchConfig, Vec<Problem>> {
                     format: webhook.format,
                 });
             }
-            Step::Schedule { .. } | Step::Webhook(_) | Step::Filter { .. } => {
+            Step::Schedule { .. } | Step::Manual {} | Step::Webhook(_) | Step::Filter { .. } => {
                 problems.push(not_here(node));
             }
             Step::Read { .. } => {}
@@ -419,6 +419,28 @@ mod tests {
         let problems = to_watch(&automation).unwrap_err();
         assert!(problems.contains(&Problem::NotInWatchToml { node: filter }));
         assert!(problems.contains(&Problem::NotInWatchToml { node: action }));
+    }
+
+    #[test]
+    fn a_manual_trigger_and_what_only_it_starts_are_not_watch_toml_s() {
+        let mut automation = from_watch(&config());
+        let manual = automation.insert(Step::Manual {}, (0, 100));
+        let lists = automation.insert(
+            Step::Read {
+                account: Some(Account::own(None)),
+                what: Read::Lists,
+            },
+            (200, 100),
+        );
+        automation.connect(manual, lists).unwrap();
+        let problems = to_watch(&automation).unwrap_err();
+        assert_eq!(
+            problems,
+            [
+                Problem::NotInWatchToml { node: manual },
+                Problem::NotInWatchToml { node: lists },
+            ]
+        );
     }
 
     #[test]

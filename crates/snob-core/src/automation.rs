@@ -10,6 +10,10 @@
 //! is not read and feeds nothing, a filter lets everything through, and an
 //! output sends nothing.
 //!
+//! **A run follows the triggers that started it**: one its schedule started
+//! reads what a schedule leads to; one started by hand reads what any
+//! trigger does, a manual one included, which no schedule ever starts.
+//!
 //! Pure: no clock, no file, no request. [`Automation::problems`] says what is
 //! missing; [`Automation::program`] is what a finished one runs.
 
@@ -75,6 +79,10 @@ pub enum Step {
     /// A trigger: on the schedule `snob watch` keeps (`--every`, `--on`/`--at`,
     /// `--cron`).
     Schedule { when: Spec },
+    /// A trigger: when somebody runs it, from the app or with `snob watch once
+    /// --automation <id>`, and never on a schedule. Braces, so a key it does
+    /// not know is refused as any other step's is.
+    Manual {},
     /// An action: reads an account.
     Read {
         /// `None` until somebody says whose.
@@ -99,7 +107,7 @@ pub enum Stage {
 impl Step {
     pub fn stage(&self) -> Stage {
         match self {
-            Self::Schedule { .. } => Stage::Trigger,
+            Self::Schedule { .. } | Self::Manual {} => Stage::Trigger,
             Self::Read { .. } => Stage::Action,
             Self::Filter { .. } => Stage::Filter,
             Self::Webhook(_) => Stage::Output,
@@ -478,10 +486,21 @@ impl Problem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
     /// Every enabled trigger's schedule: a run is due when one of them is.
+    /// None for one only ever run by hand.
     pub schedules: Vec<Spec>,
-    /// Every enabled action a trigger leads to, in the order of their steps.
+    /// Every enabled action a trigger leads to, in the order of their steps:
+    /// what a run by hand reads.
     pub reads: Vec<Planned>,
     pub webhook: Option<Webhook>,
+}
+
+/// What started a run, which decides the triggers it follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Started {
+    /// Its schedule came round: it follows the schedules alone.
+    BySchedule,
+    /// Somebody ran it: it follows every trigger.
+    ByHand,
 }
 
 /// One action of a run.
@@ -658,18 +677,22 @@ impl Automation {
         columns
     }
 
-    /// The enabled actions some enabled trigger leads to.
-    fn started(&self) -> Vec<&Node> {
+    /// The enabled actions some enabled trigger a run `by` follows leads to.
+    fn started(&self, by: Started) -> Vec<&Node> {
+        let follows = |trigger: &Node| {
+            trigger.enabled
+                && match by {
+                    Started::BySchedule => matches!(trigger.step, Step::Schedule { .. }),
+                    Started::ByHand => trigger.step.stage() == Stage::Trigger,
+                }
+        };
         self.nodes
             .iter()
             .filter(|node| node.enabled && node.step.stage() == Stage::Action)
             .filter(|action| {
-                self.edges.iter().any(|edge| {
-                    edge.to == action.id
-                        && self.node(edge.from).is_some_and(|trigger| {
-                            trigger.enabled && trigger.step.stage() == Stage::Trigger
-                        })
-                })
+                self.edges
+                    .iter()
+                    .any(|edge| edge.to == action.id && self.node(edge.from).is_some_and(follows))
             })
             .collect()
     }
@@ -743,7 +766,7 @@ impl Automation {
                         problems.push(Problem::RelativeDir { node: id });
                     }
                 }
-                Step::Filter { .. } => {}
+                Step::Manual {} | Step::Filter { .. } => {}
                 Step::Webhook(webhook) => {
                     webhooks += 1;
                     let usable = webhook.url.split_once("://").is_some_and(|(scheme, rest)| {
@@ -764,7 +787,7 @@ impl Automation {
             .any(|node| node.enabled && node.step.stage() == Stage::Trigger)
         {
             problems.push(Problem::NoTrigger);
-        } else if self.started().is_empty() {
+        } else if self.started(Started::ByHand).is_empty() {
             problems.push(Problem::NoAction);
         }
         problems
@@ -776,11 +799,16 @@ impl Automation {
     }
 
     /// Every enabled action an enabled trigger leads to, in the order of
-    /// their steps, whether or not the automation is finished: what
-    /// [`Automation::program`] runs, and what a run by hand of `watch.toml`
-    /// reads, which needs no schedule.
+    /// their steps, whether or not the automation is finished: what a run
+    /// by hand reads, `watch.toml`'s too, which needs no schedule.
     pub fn planned_reads(&self) -> Vec<Planned> {
-        self.started()
+        self.reads_when(Started::ByHand)
+    }
+
+    /// What a run `by` reads: [`Automation::planned_reads`] by hand, and only
+    /// what a schedule leads to when one came round.
+    pub fn reads_when(&self, by: Started) -> Vec<Planned> {
+        self.started(by)
             .into_iter()
             .filter_map(|node| match &node.step {
                 Step::Read {
@@ -1122,5 +1150,44 @@ mod tests {
             automation
         );
         assert!(text.contains(r#""kind":"schedule""#) && text.contains(r#""what":"unfollowers""#));
+    }
+
+    #[test]
+    fn a_manual_trigger_is_written_by_its_kind_alone_and_refuses_a_key_it_does_not_know() {
+        let text = serde_json::to_string(&Step::Manual {}).unwrap();
+        assert_eq!(text, r#"{"kind":"manual"}"#);
+        assert_eq!(
+            serde_json::from_str::<Step>(&text).unwrap(),
+            Step::Manual {}
+        );
+        assert!(serde_json::from_str::<Step>(r#"{"kind":"manual","when":{}}"#).is_err());
+    }
+
+    #[test]
+    fn a_manual_trigger_is_finished_without_a_schedule_and_read_only_by_hand() {
+        let (mut automation, [trigger, action, _, _]) = finished();
+        assert!(automation.remove(trigger));
+        let manual = automation.insert(Step::Manual {}, (0, 0));
+        automation.connect(manual, action).unwrap();
+        assert_eq!(automation.problems(), []);
+        let program = automation.program().unwrap();
+        assert!(program.schedules.is_empty(), "nothing ever comes round");
+        assert_eq!(program.reads.len(), 1);
+        assert!(automation.reads_when(Started::BySchedule).is_empty());
+        assert_eq!(automation.reads_when(Started::ByHand), program.reads);
+    }
+
+    #[test]
+    fn a_scheduled_run_reads_only_what_a_schedule_leads_to() {
+        let (mut automation, [_, action, _, _]) = finished();
+        let manual = automation.insert(Step::Manual {}, (0, 100));
+        let lists = automation.insert(reading(Read::Lists, None), (200, 100));
+        automation.connect(manual, lists).unwrap();
+        let nodes = |reads: Vec<Planned>| reads.iter().map(|read| read.node).collect::<Vec<_>>();
+        assert_eq!(nodes(automation.reads_when(Started::BySchedule)), [action]);
+        assert_eq!(nodes(automation.planned_reads()), [action, lists]);
+        // An action two triggers lead to is read either way.
+        automation.connect(manual, action).unwrap();
+        assert_eq!(nodes(automation.reads_when(Started::BySchedule)), [action]);
     }
 }

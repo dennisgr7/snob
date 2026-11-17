@@ -104,17 +104,20 @@ fn menu(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> 
     } else {
         "node-menu-configure"
     };
-    items.push(
-        item(
-            "node-menu-configure",
-            look.tr(configure),
-            assets::SETTINGS,
-            look,
-        )
-        .on_click(cx.listener(|shell, _, window, cx| {
-            shell.open_the_configuration(window, cx);
-        })),
-    );
+    // A manual trigger has nothing to configure.
+    if !matches!(node.step, Step::Manual {}) {
+        items.push(
+            item(
+                "node-menu-configure",
+                look.tr(configure),
+                assets::SETTINGS,
+                look,
+            )
+            .on_click(cx.listener(|shell, _, window, cx| {
+                shell.open_the_configuration(window, cx);
+            })),
+        );
+    }
     for other in &automation.nodes {
         let joined = automation
             .edges

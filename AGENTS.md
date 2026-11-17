@@ -974,7 +974,11 @@ one webhook (`can_join`), a disabled step left out of a run.
   --when-due` run every automation that is due, from its last start in
   `shared.db`'s `automation_runs` (its history, the newest 100); `watch once
   --automation <id>` runs one now, which the app starts
-  (`automations::run_now`). An app automation's webhook gets its own headers
+  (`automations::run_now`). **A manual trigger** (`Step::Manual`) is never
+  due: a scheduled run reads only what a schedule leads to, a run by hand
+  what every trigger does (`Automation::reads_when`), and one with no
+  schedule is `Next::ByHand`, which neither the scheduled mode nor a timer
+  waits for. An app automation's webhook gets its own headers
   and **never the keyring's token or signing key**, set up for `watch.toml`'s
   address; its report is event `automation.found` (`wire::found_payload`).
 

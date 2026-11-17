@@ -10,7 +10,8 @@
 //!   and cooldown. **Nothing here writes to Instagram.**
 //! - **When one runs**: on its schedules, through `snob watch` (the scheduled
 //!   mode, or a timer running `snob watch once --when-due`), or at once
-//!   ([`run_now`], which starts `snob watch once --automation <id>`). A run
+//!   ([`run_now`], which starts `snob watch once --automation <id>`), the
+//!   only way one with a manual trigger alone runs ([`Next::ByHand`]). A run
 //!   counts from its start, written down before its work
 //!   (`Shared::record_automation_run`).
 
@@ -148,12 +149,14 @@ pub fn runs(paths: &AppPaths, id: &str, limit: usize) -> Result<Vec<AutomationRu
     }
 }
 
-/// When a finished automation runs next: `None` when it is due now, or
-/// never comes round, or is not finished (`next_run` says which).
+/// When a finished automation runs next: due now, at a moment, only when
+/// somebody runs it (a manual trigger and no schedule), or never: not
+/// finished, or no schedule of it comes round again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Next {
     Now,
     At(Epoch),
+    ByHand,
     Never,
 }
 
@@ -168,6 +171,10 @@ pub fn next_run(
     let Ok(program) = automation.program() else {
         return Ok((Next::Never, None));
     };
+    if program.schedules.is_empty() {
+        // Finished with no schedule: every trigger it has is manual.
+        return Ok((Next::ByHand, None));
+    }
     let shared = Shared::open(paths)?;
     let last_run = shared.automation_last_started(&automation.id)?;
     let asked_since = shared.asked_since()?.unwrap_or(now);
@@ -330,5 +337,25 @@ mod tests {
         );
         assert!(remove(&paths, &id).unwrap());
         assert!(remove(&paths, WATCH_TOML).is_err());
+    }
+
+    #[test]
+    fn a_finished_automation_with_a_manual_trigger_alone_runs_only_by_hand() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::rooted_at(root.path());
+        let mut automation = Automation::new("ab12cd34", "By hand");
+        let manual = automation.insert(Step::Manual {}, (0, 0));
+        let lists = automation.insert(
+            Step::Read {
+                account: Some(Account::own(None)),
+                what: Read::Lists,
+            },
+            (200, 0),
+        );
+        automation.connect(manual, lists).unwrap();
+        assert_eq!(
+            next_run(&paths, &automation, Epoch::new(1_700_000_000)).unwrap(),
+            (Next::ByHand, None)
+        );
     }
 }
