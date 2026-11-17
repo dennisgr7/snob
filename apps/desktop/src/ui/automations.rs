@@ -32,12 +32,6 @@ use crate::state::steps::{ScheduleForm, WebhookForm};
 
 use super::automations_editor::{Dialog, Leave, NodeMenu, Wire};
 
-/// How often the grid behind the introduction is drawn again while it
-/// drifts: sixty times a second, whatever the display's rate. It moves a few
-/// pixels a second, and a frame for every refresh of a fast display would
-/// cost the processor for nothing.
-pub const DRIFT_FRAME: Duration = Duration::from_micros(16_667);
-
 /// The editor's four kinds of steps, in the order its panel lists them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Steps {
@@ -187,10 +181,9 @@ pub(crate) struct Page {
     pub left: Option<Stage>,
     pub since: Instant,
     /// The grid behind the introduction: how long it has drifted, on a
-    /// clock that starts with the page, and whether a frame is on its way.
+    /// clock that starts with the page.
     pub drift: Drift,
     pub born: Instant,
-    pub ticking: bool,
     pub editor: Editor,
     _watching: Subscription,
 }
@@ -345,7 +338,6 @@ impl Page {
             since: now,
             drift: Drift::default(),
             born: now,
-            ticking: false,
             editor: Editor::new(cx),
             _watching: watching,
         }
