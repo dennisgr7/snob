@@ -69,32 +69,7 @@ pub struct WebhookConfig {
     pub format: WebhookFormat,
 }
 
-/// The shape of what a webhook is sent: `json`, the report a program reads
-/// and the default, or the report's summary alone as the service at the far
-/// end wants it posted.
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum WebhookFormat {
-    #[default]
-    Json,
-    Slack,
-    Discord,
-    Ntfy,
-    Text,
-}
-
-impl WebhookFormat {
-    /// The word the file spells it with.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Json => "json",
-            Self::Slack => "slack",
-            Self::Discord => "discord",
-            Self::Ntfy => "ntfy",
-            Self::Text => "text",
-        }
-    }
-}
+pub use snob_core::automation::{VideoQuality, WebhookFormat};
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -156,25 +131,6 @@ pub struct PostsConfig {
     /// found, else the file the app plays.
     #[serde(default)]
     pub quality: Option<VideoQuality>,
-}
-
-/// What a saved video is: its best tracks joined by ffmpeg, or the 720p file
-/// with sound the app plays.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum VideoQuality {
-    Best,
-    Compat,
-}
-
-impl VideoQuality {
-    /// The word the file spells it with.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Best => "best",
-            Self::Compat => "compat",
-        }
-    }
 }
 
 fn yes() -> bool {
@@ -503,6 +459,17 @@ impl Default for WatchConfig {
 }
 
 impl WatchConfig {
+    /// Its schedule as written, which `Spec::build` builds.
+    pub fn spec(&self) -> snob_core::watch::schedule::Spec {
+        snob_core::watch::schedule::Spec {
+            every: self.every,
+            on: self.on.clone(),
+            at: self.at.clone(),
+            cron: self.cron.clone(),
+            jitter: self.jitter,
+        }
+    }
+
     /// Brings a schema-1 file to this schema. Every entry in it was read as
     /// the one account there was, so each now names it, and an empty list,
     /// which meant that account's own lists, says so.

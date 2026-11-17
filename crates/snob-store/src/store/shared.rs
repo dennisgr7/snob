@@ -1,7 +1,8 @@
 //! What every account shares: `data/shared.db`, with a migration chain of its
 //! own. The push-backs any account received, so that each account's budget
 //! sees the others' and stops with them ([`snob_core::budget::common_brake`]),
-//! and the monitor's moments, which are the machine's.
+//! the monitor's moments, which are the machine's, and what each automation's
+//! runs came to ([`AutomationRun`]).
 
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -17,7 +18,10 @@ use crate::paths::AppPaths;
 
 /// Every migration of `shared.db`, in the order they are applied. The rules at
 /// the top of [`super::migrations`] hold here too.
-const CHAIN: [&str; 1] = [include_str!("sql/shared/001_pushbacks.sql")];
+const CHAIN: [&str; 2] = [
+    include_str!("sql/shared/001_pushbacks.sql"),
+    include_str!("sql/shared/002_automation_runs.sql"),
+];
 
 static MIGRATIONS: LazyLock<Migrations<'static>> =
     LazyLock::new(|| Migrations::new(CHAIN.iter().map(|sql| M::up(sql)).collect()));
@@ -57,6 +61,24 @@ pub struct PowerWait {
 
 pub struct Shared {
     conn: Connection,
+}
+
+/// How many runs of one automation are kept.
+const RUNS_KEPT: i64 = 100;
+
+/// One run of an automation, as its history lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutomationRun {
+    pub id: i64,
+    pub automation: String,
+    pub started_at: Epoch,
+    /// `None` while it runs, or when it was killed.
+    pub ended_at: Option<Epoch>,
+    /// The exit token (`ok`, `rate_limited`, ...); `None` while it runs.
+    pub outcome: Option<String>,
+    pub requests: u32,
+    /// Plain sentences, one a line.
+    pub summary: String,
 }
 
 impl Shared {
@@ -167,6 +189,84 @@ impl Shared {
     /// answers with the moment kept.
     pub fn ask_since(&self, at: Epoch) -> Result<Epoch, StoreError> {
         self.keep_first(ASKED_SINCE, at)
+    }
+
+    /// Writes down that a run of `automation` starts, before any of its work
+    /// (**a run counts from its start**), and forgets all but its newest
+    /// runs. Answers with the row [`Self::finish_automation_run`] fills in.
+    pub fn record_automation_run(&self, automation: &str, at: Epoch) -> Result<i64, StoreError> {
+        self.conn.execute(
+            "INSERT INTO automation_runs (automation, started_at) VALUES (?1, ?2)",
+            params![automation, at.get()],
+        )?;
+        let id = self.conn.last_insert_rowid();
+        self.conn.execute(
+            "DELETE FROM automation_runs WHERE automation = ?1 AND id NOT IN
+               (SELECT id FROM automation_runs WHERE automation = ?1
+                ORDER BY started_at DESC, id DESC LIMIT ?2)",
+            params![automation, RUNS_KEPT],
+        )?;
+        Ok(id)
+    }
+
+    /// What the run `id` came to.
+    pub fn finish_automation_run(
+        &self,
+        id: i64,
+        at: Epoch,
+        outcome: &str,
+        requests: u32,
+        summary: &str,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE automation_runs SET ended_at = ?2, outcome = ?3, requests = ?4, summary = ?5
+             WHERE id = ?1",
+            params![id, at.get(), outcome, i64::from(requests), summary],
+        )?;
+        Ok(())
+    }
+
+    /// The newest `limit` runs of `automation`, the newest first.
+    pub fn automation_runs(
+        &self,
+        automation: &str,
+        limit: usize,
+    ) -> Result<Vec<AutomationRun>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, automation, started_at, ended_at, outcome, requests, summary
+             FROM automation_runs WHERE automation = ?1
+             ORDER BY started_at DESC, id DESC LIMIT ?2",
+        )?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows = statement.query_map(params![automation, limit], |row| {
+            Ok(AutomationRun {
+                id: row.get(0)?,
+                automation: row.get(1)?,
+                started_at: Epoch::new(row.get(2)?),
+                ended_at: row.get::<_, Option<i64>>(3)?.map(Epoch::new),
+                outcome: row.get(4)?,
+                requests: u32::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+                summary: row.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// When a run of `automation` last started, if one ever did.
+    pub fn automation_last_started(&self, automation: &str) -> Result<Option<Epoch>, StoreError> {
+        Ok(self
+            .automation_runs(automation, 1)?
+            .first()
+            .map(|run| run.started_at))
+    }
+
+    /// Forgets the runs of an automation that is no more.
+    pub fn forget_automation_runs(&self, automation: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "DELETE FROM automation_runs WHERE automation = ?1",
+            params![automation],
+        )?;
+        Ok(())
     }
 
     /// When the monitor last started a run, if it ever wrote one down.

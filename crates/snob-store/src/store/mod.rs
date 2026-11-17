@@ -3,6 +3,7 @@
 
 pub mod accounts;
 pub mod answers;
+pub mod automation_marks;
 pub mod deliveries;
 pub mod forget;
 pub mod mcp_acts;
