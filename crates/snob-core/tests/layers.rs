@@ -266,12 +266,18 @@ const ENGINE_SRC: &str = "crates/snob-engine/src/";
 
 /// What a part of the engine may name of the rest of it, for the parts held
 /// to a list. A part not listed is held to [`ENGINE_NAMED_ONLY_BY`] alone.
-const ENGINE_MAY_NAME: [(&str, &[&str]); 6] = [
+const ENGINE_MAY_NAME: [(&str, &[&str]); 9] = [
     // What the engine is handed, and what it answers with, stand on nothing.
     ("host", &[]),
     ("exit", &[]),
     // The operating system: a notice to say, and nothing else of snob's.
     ("system", &["host"]),
+    // A file kept, and the one program run on it.
+    ("files", &["host"]),
+    ("ffmpeg", &["system"]),
+    // The words: of what the run and the lists hand them, never of a post,
+    // the monitor, the browser or an automation.
+    ("sentences", &["app", "engine", "exit", "system"]),
     // The browser: the system under it, and what it says.
     ("browser", &["host", "sentences", "system"]),
     // The lists: never the monitor, an automation, a post or a profile.
@@ -294,9 +300,10 @@ fn engine_part(file: &str) -> Option<&str> {
     (part != "lib").then_some(part)
 }
 
-/// The parts a source names as `crate::<part>` or `crate::{<part>, ...}`,
-/// outside its comments and above its tests (`mod tests {` at the margin,
-/// where AGENTS.md keeps them).
+/// The parts a source names as `crate::<part>` or in a group,
+/// `crate::{<part>, <part>::{...}}` however it is wrapped, outside its
+/// comments and above its tests (`mod tests {` at the margin, where AGENTS.md
+/// keeps them).
 fn parts_named(source: &str) -> Vec<String> {
     let ident = |text: &str| -> String {
         text.trim_start()
@@ -304,28 +311,45 @@ fn parts_named(source: &str) -> Vec<String> {
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
             .collect()
     };
-    let mut named = Vec::new();
-    for line in source.lines() {
-        if line == "mod tests {" {
-            break;
-        }
-        if line.trim_start().starts_with("//") {
-            continue;
-        }
-        let mut rest = line;
-        while let Some(at) = rest.find("crate::") {
-            let before = rest[..at].chars().next_back();
-            let after = &rest[at + "crate::".len()..];
-            rest = after;
-            if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
-                continue; // another crate's name ending in "crate"
-            }
-            match after.strip_prefix('{') {
-                Some(group) => {
-                    named.extend(group.split('}').next().unwrap_or("").split(',').map(ident))
+    /// The top-level entries of the group `text` opens after its `{`.
+    fn entries(text: &str) -> Vec<&str> {
+        let (mut depth, mut start, mut found) = (0usize, 0, Vec::new());
+        for (at, c) in text.char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' if depth == 0 => {
+                    found.push(&text[start..at]);
+                    return found;
                 }
-                None => named.push(ident(after)),
+                '}' => depth -= 1,
+                ',' if depth == 0 => {
+                    found.push(&text[start..at]);
+                    start = at + 1;
+                }
+                _ => {}
             }
+        }
+        found.push(&text[start..]);
+        found
+    }
+    let code: String = source
+        .lines()
+        .take_while(|line| *line != "mod tests {")
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut named = Vec::new();
+    let mut rest = code.as_str();
+    while let Some(at) = rest.find("crate::") {
+        let before = rest[..at].chars().next_back();
+        let after = &rest[at + "crate::".len()..];
+        rest = after;
+        if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+            continue; // another crate's name ending in "crate"
+        }
+        match after.strip_prefix('{') {
+            Some(group) => named.extend(entries(group).into_iter().map(ident)),
+            None => named.push(ident(after)),
         }
     }
     named.retain(|name| !name.is_empty());
@@ -412,13 +436,21 @@ fn a_part_of_the_engine_that_names_up_is_caught() {
     let source = "\
 //! Says `crate::app` in a comment.
 use crate::{host, system::pipe};
+use crate::{
+    // crate::watch
+    files::{keep, Kept},
+    ffmpeg,
+};
 fn f() { crate::system::env::flag(\"X\"); snob_crate::app::x(); }
     // crate::watch
 mod tests {
     use crate::automations;
 }
 ";
-    assert_eq!(parts_named(source), ["host", "system", "system"]);
+    assert_eq!(
+        parts_named(source),
+        ["host", "system", "files", "ffmpeg", "system"]
+    );
 
     let of = |part: &str, names: &[&str]| {
         (
@@ -440,6 +472,7 @@ mod tests {
             of("system", &["app"]),
             of("engine", &["watch"]),
             of("media", &["posts"]),
+            of("sentences", &["posts"]),
             of("app", &["watch"]),
             of("watch", &["automations"]),
         ]),
@@ -448,6 +481,7 @@ mod tests {
             "engine names crate::watch, which is not its to name",
             "engine names crate::watch, which it stands under",
             "media names crate::posts, which it stands under",
+            "sentences names crate::posts, which it stands under",
             "system names crate::app, which it stands under",
             "watch names crate::automations, which is not its to name",
         ]

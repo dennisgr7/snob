@@ -94,8 +94,10 @@ Inside `snob-cli` and `snob-engine`:
 - **The engine's parts stand on each other one way**, held by
   `crates/snob-core/tests/layers.rs`, which reads its sources: `system/`
   names nothing of snob's but `host`; `browser/` nothing but `system/` and
-  what it says (`host`, `sentences`); the lists (`engine/`) nothing of the
-  monitor, an automation, a post or a profile; `media/` no post; the
+  what it says (`host`, `sentences`); `sentences` nothing but what the run
+  and the lists hand it (`app`, `engine`, `exit`, `system`); `files` and
+  `ffmpeg` nothing above `host` and `system`; the lists (`engine/`) nothing
+  of the monitor, an automation, a post or a profile; `media/` no post; the
   monitor (`watch/`) is named by the automations alone, and an automation by
   no other part. A name that points up fails there: move what is shared
   down, as `system::sync::lock`, `system::env::flag`, `sentences::label`,
