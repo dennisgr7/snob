@@ -194,6 +194,8 @@ async fn a_step_added_is_kept_at_once_and_undo_takes_it_back(cx: &mut TestAppCon
     });
     assert!(disabled(&app, cx, "editor-undo"), "nothing to undo yet");
 
+    app.click(cx, "editor-triggers");
+    settle(&app, cx);
     click(&app, cx, ("trigger-schedule", 0usize));
     settle(&app, cx);
     assert_eq!(
@@ -474,6 +476,8 @@ async fn a_failure_to_keep_is_said_under_the_canvas(cx: &mut TestAppContext) {
         script.save_fails("the disk is full");
     });
     let app = in_editor(cx, backend.clone()).await;
+    app.click(cx, "editor-triggers");
+    settle(&app, cx);
     click(&app, cx, ("trigger-schedule", 0usize));
     settle(&app, cx);
     app.in_window(cx, |window, _| {

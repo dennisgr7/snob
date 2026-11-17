@@ -225,10 +225,7 @@ async fn create_opens_a_canvas_whose_zoom_has_bounds_and_escape_comes_back(
             "editor-zoom-reset",
             "editor-zoom-in",
             "editor-fit",
-            "editor-triggers",
-            "editor-actions",
-            "editor-filters",
-            "editor-outputs",
+            "editor-shelf-search",
         ] {
             let control = window.find(id);
             assert_eq!(control.role(), Some(Role::Button), "{id}");
@@ -236,21 +233,23 @@ async fn create_opens_a_canvas_whose_zoom_has_bounds_and_escape_comes_back(
             let size = control.bounds().size;
             assert!(size.width >= px(24.) && size.height >= px(24.), "{id}");
         }
-        // The triggers unfolded, as there is none yet; the rest folded.
-        assert_eq!(window.find("editor-triggers").expanded(), Some(true));
-        assert_eq!(window.find("editor-actions").expanded(), Some(false));
+        // Held at the triggers, as there is none yet: no way back to the
+        // kinds, and a word on why.
+        assert_eq!(window.find("editor-steps-title").label(), Some("Triggers"));
+        assert!(window.try_find("editor-shelf-back").is_none());
+        assert!(window.try_find("editor-triggers").is_none());
+        assert_eq!(
+            window.find("editor-shelf-first").label(),
+            Some("Every automation starts with a trigger.")
+        );
         let schedule = window.find(("trigger-schedule", 0usize));
         assert_eq!(schedule.role(), Some(Role::Button));
         assert_eq!(schedule.label(), Some("Add: On a schedule"));
-        assert!(window.try_find(("output-api", 1usize)).is_none());
-    });
-
-    app.click(cx, "editor-outputs");
-    settle(&app, cx);
-    app.in_window(cx, |window, _| {
-        assert_eq!(window.find("editor-outputs").expanded(), Some(true));
-        let soon = window.find(("output-api", 1usize));
-        assert_eq!(soon.label(), Some("Call an API, coming soon"));
+        assert_eq!(
+            window.find(("trigger-manual", 1usize)).label(),
+            Some("Add: Manually")
+        );
+        let soon = window.find(("trigger-webhook", 2usize));
         assert_eq!(soon.disabled(), Some(true), "nothing runs behind it");
     });
 
@@ -274,6 +273,97 @@ async fn create_opens_a_canvas_whose_zoom_has_bounds_and_escape_comes_back(
     settle(&app, cx);
     assert_eq!(app.title(cx), ("Automations".to_string(), true));
     assert!(shown(&app, cx, "automations-create"));
+}
+
+#[gpui_kit::test]
+async fn the_panel_goes_into_a_kind_and_back_once_there_is_a_trigger(cx: &mut TestAppContext) {
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    backend.script(|script| {
+        script.introduced(42);
+    });
+    let app = in_automations(cx, backend, still()).await;
+    app.click(cx, "automations-create");
+    settle(&app, cx);
+    app.in_window(cx, |window, cx| {
+        window.click(("trigger-manual", 1usize), cx)
+    });
+    settle(&app, cx);
+
+    // The first trigger lets the panel go: the four kinds, each a way in.
+    app.in_window(cx, |window, _| {
+        assert_eq!(
+            window.find("editor-steps-title").label(),
+            Some("Add a step")
+        );
+        for (id, label) in [
+            ("editor-triggers", "Triggers"),
+            ("editor-actions", "Actions"),
+            ("editor-filters", "Filters"),
+            ("editor-outputs", "Outputs"),
+        ] {
+            let kind = window.find(id);
+            assert_eq!(kind.role(), Some(Role::Button), "{id}");
+            assert_eq!(kind.label(), Some(label));
+        }
+    });
+    assert!(
+        focused(&app, cx, "editor-triggers"),
+        "focus on the first kind"
+    );
+
+    app.click(cx, "editor-outputs");
+    settle(&app, cx);
+    app.in_window(cx, |window, _| {
+        assert_eq!(window.find("editor-steps-title").label(), Some("Outputs"));
+        let soon = window.find(("output-api", 1usize));
+        assert_eq!(soon.label(), Some("Call an API, coming soon"));
+        assert_eq!(soon.disabled(), Some(true), "nothing runs behind it");
+    });
+    assert!(focused(&app, cx, "editor-shelf-back"));
+    app.click(cx, "editor-shelf-back");
+    settle(&app, cx);
+    assert!(shown(&app, cx, "editor-actions"));
+    assert!(
+        focused(&app, cx, "editor-outputs"),
+        "focus on the kind left"
+    );
+
+    // The magnifier opens a search in the kind shown; Escape closes it, and
+    // then goes back to the kinds before it leaves the editor.
+    app.click(cx, "editor-actions");
+    settle(&app, cx);
+    app.click(cx, "editor-shelf-search");
+    settle(&app, cx);
+    assert!(shown(&app, cx, "editor-shelf-field"));
+    app.in_window(cx, |window, cx| window.input("picture", cx));
+    settle(&app, cx);
+    app.in_window(cx, |window, _| {
+        assert!(window.try_find(("read-picture", 5usize)).is_some());
+        assert!(window.try_find(("read-fans", 2usize)).is_none());
+    });
+    app.in_window(cx, |window, cx| window.input("zzz", cx));
+    settle(&app, cx);
+    assert_eq!(
+        app.label_of(cx, "editor-shelf-none"),
+        "No step matches \u{201c}picturezzz\u{201d}"
+    );
+    app.press(cx, "escape");
+    settle(&app, cx);
+    assert!(!shown(&app, cx, "editor-shelf-field"));
+    app.in_window(cx, |window, _| {
+        assert!(
+            window.try_find(("read-fans", 2usize)).is_some(),
+            "all again"
+        );
+    });
+    app.press(cx, "escape");
+    settle(&app, cx);
+    assert!(shown(&app, cx, "editor-filters"), "back at the kinds");
+    assert!(
+        focused(&app, cx, "editor-actions"),
+        "focus on the kind left"
+    );
+    assert_eq!(app.title(cx).0, "Edit automation", "still in the editor");
 }
 
 #[gpui_kit::test]
@@ -387,10 +477,7 @@ async fn tab_reaches_every_control_of_the_editor(cx: &mut TestAppContext) {
         "editor-zoom-reset",
         "editor-zoom-in",
         "editor-fit",
-        "editor-triggers",
-        "editor-actions",
-        "editor-filters",
-        "editor-outputs",
+        "editor-shelf-search",
     ];
     for _ in 0..40 {
         app.press(cx, "tab");

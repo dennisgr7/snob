@@ -1120,8 +1120,10 @@ are a title until what a scan shows comes next; automations has an
 introduction shown once an account, a list with its search, an
 automation's page (its runs on the left, its flow in words, a pencil to
 edit, a run now), and an editor on the engine's automations ("Automations"):
-steps put from the panel, moved, joined and configured in a dialog (a
-schedule, an action's account and consent, a webhook), disabled from a
+steps put from the panel (a kind of step at a time, searched, and held
+at the triggers until the automation has one), moved, joined and
+configured in a dialog (a schedule, an action's account and consent, a
+webhook), disabled from a
 node's menu, **kept at every change** with undo, and an unfinished one
 asked about on leaving (discard, or back to the editor). The automations
 run in the command line's scheduler, never in the app. From the account's menu
