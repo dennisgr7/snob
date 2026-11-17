@@ -1,7 +1,8 @@
 //! The window: the frame every screen is in ([`frame`]) and its rail of
 //! sections ([`rail`]), the screens ([`screens`]), what they are built from ([`parts`]), and the one view
 //! that holds them and does what they ask ([`shell`]), with what the
-//! automations section holds while it is shown ([`automations`]); what opens over a
+//! automations section holds while it is shown ([`automations`]) and what
+//! its editor's person does ([`automations_editor`]); what opens over a
 //! profile ([`overlays`]) and a list moved out to a window of its own
 //! ([`detached`]).
 //!
@@ -13,6 +14,7 @@ use gpui_kit::{App, KeyBinding, actions};
 
 pub mod assets;
 pub mod automations;
+pub mod automations_editor;
 pub mod detached;
 pub mod frame;
 pub mod look;

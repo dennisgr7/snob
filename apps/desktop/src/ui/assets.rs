@@ -72,6 +72,10 @@ icons! {
     PHOTO = "photo.svg";
     REPOST = "repost.svg";
     MENTION = "mention.svg";
+    EDIT = "edit.svg";
+    UNDO = "undo.svg";
+    REDO = "redo.svg";
+    CHECK = "check.svg";
 }
 
 /// The drawing of the browser the engine calls `name`: its own mark, drawn
@@ -111,7 +115,7 @@ mod tests {
 
     #[test]
     fn every_drawing_named_is_built_in_and_is_a_drawing() {
-        assert_eq!(ALL.len(), 52);
+        assert_eq!(ALL.len(), 56);
         for (name, bytes) in ALL {
             let loaded = Assets.load(name).unwrap().expect("built in");
             assert_eq!(&*loaded, *bytes);

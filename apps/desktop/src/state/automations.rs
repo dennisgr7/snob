@@ -1,15 +1,16 @@
 //! The automations section, apart from how it is drawn: whether an account
 //! is still owed its introduction, which automations a search shows, the
-//! editor's canvas (how far it is moved and zoomed), and the grid that
-//! drifts behind the introduction.
+//! editor's canvas (how far it is moved and zoomed, where a step is and
+//! what is under a point of it), and the grid that drifts behind the
+//! introduction.
 //!
 //! **The introduction is shown once an account**: "Get started" is
 //! remembered for the account in use (`prefs::Prefs::introduced`), and an
 //! account signed in later is shown it in its turn.
 //!
-//! **Nothing here runs an automation, and nothing is kept of one**: there is
-//! no backend for them yet, so the list is empty and the editor's canvas
-//! holds no node.
+//! **Nothing here runs an automation**: what is kept of one is
+//! `snob_engine::automations`'s, reached through the backend; the editor's
+//! working copy is `editing`.
 //!
 //! **No window and no clock**: a moment is handed in as how long something
 //! has run, and every move ends in a fixed state but the grid's drift, which
@@ -19,6 +20,7 @@ use std::f64::consts::TAU;
 use std::time::Duration;
 
 use snob_core::Pk;
+use snob_core::automation::{Automation, NodeId};
 
 use super::settings::fold;
 use crate::theme::motion;
@@ -67,24 +69,22 @@ pub enum Stage {
     Intro,
     /// The automations, a search among them and "Create".
     List,
-    /// The canvas a new automation is drawn on.
+    /// One automation: its runs, its flow in words, and the way to its
+    /// editor.
+    Page,
+    /// The canvas an automation is drawn on.
     Editor,
 }
 
-/// The stage shown to an account owed the introduction or not, with the
-/// editor open or not.
-pub fn stage(owed: bool, editing: bool) -> Stage {
-    match (owed, editing) {
-        (true, _) => Stage::Intro,
-        (false, true) => Stage::Editor,
-        (false, false) => Stage::List,
+/// The stage shown to an account owed the introduction or not, with an
+/// automation open or not, and its editor open or not.
+pub fn stage(owed: bool, open: bool, editing: bool) -> Stage {
+    match (owed, open, editing) {
+        (true, _, _) => Stage::Intro,
+        (false, _, true) => Stage::Editor,
+        (false, true, false) => Stage::Page,
+        (false, false, false) => Stage::List,
     }
-}
-
-/// An automation, as the list shows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Automation {
-    pub name: String,
 }
 
 /// The automations `typed` asks for, in their order: those whose name holds
@@ -113,6 +113,21 @@ const ZOOM_STEPS: [f32; 12] = [
 /// How much one logical pixel of the wheel zooms: a notch of three lines of
 /// 20 pixels is some 13%.
 const WHEEL_ZOOMS: f32 = 0.002;
+
+/// How big a step is drawn on the canvas, in the canvas's own units.
+pub const NODE_W: f32 = 210.0;
+pub const NODE_H: f32 = 72.0;
+
+/// How much of a view's width the editor's panel hides at the right, with
+/// its margins.
+pub const PANEL_RESERVE: f32 = 320.0;
+
+/// How much of a view's height the editor's top bar and zoom bar hide, each
+/// above and below.
+pub const BAR_RESERVE: f32 = 72.0;
+
+/// The room kept round what is fitted, in the canvas's own units.
+const FIT_MARGIN: f32 = 40.0;
 
 /// The distance between two dots of the canvas's grid, in the canvas's own
 /// units, at a zoom of 1.
@@ -243,6 +258,15 @@ impl Canvas {
         )
     }
 
+    /// The point of the canvas drawn at `screen`, measured from the middle
+    /// of what shows it: the other way of [`Self::on_screen`].
+    pub fn in_the_canvas(&self, screen: (f32, f32)) -> (f32, f32) {
+        (
+            (screen.0 - self.pan.0) / self.zoom,
+            (screen.1 - self.pan.1) / self.zoom,
+        )
+    }
+
     /// The grid's dots on a view `size` big: how far apart they are and
     /// where the first one is from its top left corner, both in logical
     /// pixels. Every other dot goes as long as they would be closer than
@@ -325,6 +349,71 @@ impl Glide {
     /// Whether it still moves `elapsed` into the glide.
     pub fn moving(&self, elapsed: Duration, reduce: bool) -> bool {
         !reduce && self.from != self.to && elapsed < motion::INTERACTION
+    }
+}
+
+/// The topmost step under the point `at` of the canvas, leaving out
+/// `except`.
+pub fn step_at(automation: &Automation, at: (f32, f32), except: Option<NodeId>) -> Option<NodeId> {
+    automation
+        .nodes
+        .iter()
+        .rev()
+        .filter(|node| Some(node.id) != except)
+        .find(|node| {
+            let (x, y) = (node.at.0 as f32, node.at.1 as f32);
+            at.0 >= x && at.0 <= x + NODE_W && at.1 >= y && at.1 <= y + NODE_H
+        })
+        .map(|node| node.id)
+}
+
+/// Where an arrow leaves a step drawn at `at`: the middle of its right side.
+pub fn leaves_at(at: (i32, i32)) -> (f32, f32) {
+    (at.0 as f32 + NODE_W, at.1 as f32 + NODE_H / 2.0)
+}
+
+/// Where an arrow comes into a step drawn at `at`: the middle of its left
+/// side.
+pub fn comes_in_at(at: (i32, i32)) -> (f32, f32) {
+    (at.0 as f32, at.1 as f32 + NODE_H / 2.0)
+}
+
+/// The corners of the box that holds every step: left, top, right and
+/// bottom, in the canvas's own units. None when there is no step.
+pub fn content_of(automation: &Automation) -> Option<(f32, f32, f32, f32)> {
+    automation.nodes.iter().fold(None, |held, node| {
+        let (x, y) = (node.at.0 as f32, node.at.1 as f32);
+        let (right, bottom) = (x + NODE_W, y + NODE_H);
+        Some(match held {
+            None => (x, y, right, bottom),
+            Some((l, t, r, b)) => (l.min(x), t.min(y), r.max(right), b.max(bottom)),
+        })
+    })
+}
+
+/// The canvas that shows `content` whole, as large as its own size at most,
+/// in what the panel and the bars leave of a view `size` big. With nothing
+/// to show, the canvas at its own size with its middle where that room's is.
+pub fn fitting(content: Option<(f32, f32, f32, f32)>, size: (f32, f32)) -> Canvas {
+    let middle_x = -PANEL_RESERVE / 2.0;
+    let Some((left, top, right, bottom)) = content else {
+        return Canvas::default().panned((middle_x, 0.0));
+    };
+    let free = (
+        (size.0 - PANEL_RESERVE).max(100.0),
+        (size.1 - 2.0 * BAR_RESERVE).max(100.0),
+    );
+    let whole = (
+        right - left + 2.0 * FIT_MARGIN,
+        bottom - top + 2.0 * FIT_MARGIN,
+    );
+    let zoom = (free.0 / whole.0)
+        .min(free.1 / whole.1)
+        .clamp(ZOOM_MIN, 1.0);
+    let center = ((left + right) / 2.0, (top + bottom) / 2.0);
+    Canvas {
+        pan: (middle_x - center.0 * zoom, -center.1 * zoom),
+        zoom,
     }
 }
 
@@ -515,11 +604,40 @@ mod tests {
     }
 
     #[test]
-    fn the_introduction_comes_before_the_list_and_the_editor() {
-        assert_eq!(stage(true, false), Stage::Intro);
-        assert_eq!(stage(true, true), Stage::Intro);
-        assert_eq!(stage(false, false), Stage::List);
-        assert_eq!(stage(false, true), Stage::Editor);
+    fn the_introduction_comes_before_the_list_the_page_and_the_editor() {
+        assert_eq!(stage(true, false, false), Stage::Intro);
+        assert_eq!(stage(true, true, true), Stage::Intro);
+        assert_eq!(stage(false, false, false), Stage::List);
+        assert_eq!(stage(false, true, false), Stage::Page);
+        assert_eq!(stage(false, true, true), Stage::Editor);
+        assert_eq!(stage(false, false, true), Stage::Editor);
+    }
+
+    #[test]
+    fn the_step_under_a_point_is_the_topmost_one_and_arrows_meet_its_sides() {
+        use snob_core::automation::Step;
+        use snob_core::watch::schedule::Spec;
+        let mut automation = Automation::new("a1", "Daily");
+        let step = || Step::Schedule {
+            when: Spec::default(),
+        };
+        let below = automation.insert(step(), (0, 0));
+        let above = automation.insert(step(), (100, 20));
+        assert_eq!(step_at(&automation, (10.0, 10.0), None), Some(below));
+        assert_eq!(step_at(&automation, (150.0, 40.0), None), Some(above));
+        assert_eq!(
+            step_at(&automation, (150.0, 40.0), Some(above)),
+            Some(below)
+        );
+        assert_eq!(step_at(&automation, (-5.0, 10.0), None), None);
+        assert_eq!(leaves_at((0, 0)), (NODE_W, NODE_H / 2.0));
+        assert_eq!(comes_in_at((0, 0)), (0.0, NODE_H / 2.0));
+        let canvas = Canvas::default()
+            .panned((30.0, -12.0))
+            .zoomed_to(1.5, (0.0, 0.0));
+        let there = canvas.on_screen((40.0, 8.0));
+        let back = canvas.in_the_canvas(there);
+        assert!(near(back.0, 40.0) && near(back.1, 8.0));
     }
 
     #[test]
@@ -530,9 +648,8 @@ mod tests {
             "Unfollowers to Slack",
         ]
         .into_iter()
-        .map(|name| Automation {
-            name: name.to_string(),
-        })
+        .enumerate()
+        .map(|(at, name)| Automation::new(format!("a{at}"), name))
         .collect();
         let names = |typed: &str| -> Vec<&str> {
             shown(&all, typed)
@@ -557,6 +674,46 @@ mod tests {
             "with or without accents"
         );
         assert!(names("weekly").is_empty());
+    }
+
+    #[test]
+    fn fitting_shows_every_step_in_what_the_panel_leaves_and_never_zooms_past_its_own_size() {
+        use snob_core::automation::Step;
+        use snob_core::watch::schedule::Spec;
+        let mut automation = Automation::new("a1", "Daily");
+        assert_eq!(content_of(&automation), None);
+        let step = || Step::Schedule {
+            when: Spec::default(),
+        };
+        automation.insert(step(), (-345, -40));
+        automation.insert(step(), (345, 120));
+        let content = content_of(&automation).unwrap();
+        assert_eq!(content, (-345.0, -40.0, 345.0 + NODE_W, 120.0 + NODE_H));
+
+        for size in [(1028.0, 700.0), (728.0, 520.0), (3000.0, 2000.0)] {
+            let canvas = fitting(Some(content), size);
+            assert!(canvas.zoom() <= 1.0 && canvas.zoom() >= ZOOM_MIN);
+            let corners = [(content.0, content.1), (content.2, content.3)];
+            let room = (
+                (-size.0 / 2.0, size.0 / 2.0 - PANEL_RESERVE),
+                (-size.1 / 2.0 + BAR_RESERVE, size.1 / 2.0 - BAR_RESERVE),
+            );
+            for corner in corners {
+                let at = canvas.on_screen(corner);
+                assert!(
+                    at.0 >= room.0.0 - 1.0 && at.0 <= room.0.1 + 1.0,
+                    "{size:?} {at:?}"
+                );
+                assert!(
+                    at.1 >= room.1.0 - 1.0 && at.1 <= room.1.1 + 1.0,
+                    "{size:?} {at:?}"
+                );
+            }
+        }
+        assert_eq!(fitting(Some(content), (3000.0, 2000.0)).zoom(), 1.0);
+        let empty = fitting(None, (1028.0, 700.0));
+        assert_eq!((empty.zoom(), empty.pan().1), (1.0, 0.0));
+        assert!(empty.pan().0 < 0.0, "toward the room the panel leaves");
     }
 
     #[test]

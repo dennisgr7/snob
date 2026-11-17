@@ -227,7 +227,7 @@ fn event_name(event: &Event) -> &'static str {
 /// The app.
 pub struct Shell {
     backend: Arc<dyn Backend>,
-    system: Rc<dyn System>,
+    pub(crate) system: Rc<dyn System>,
     flow: Flow,
     band: Band,
     accounts: Vec<Account>,
@@ -297,6 +297,8 @@ pub struct Shell {
     pub(crate) automations: Option<super::automations::Page>,
     /// The accounts that went past the automations' introduction.
     pub(crate) introduced: Introduced,
+    /// What is asked of the backend to keep automations, one at a time.
+    pub(crate) automation_saves: crate::state::editing::Saves,
     /// The profiles and lists the way back holds, and what is open over
     /// them (`pages`).
     pub(crate) pages: Pages,
@@ -448,6 +450,7 @@ impl Shell {
             frame_since: cx.background_executor().now(),
             pill: (None, None, cx.background_executor().now()),
             automations: None,
+            automation_saves: crate::state::editing::Saves::default(),
             introduced: Introduced::default(),
             pages: Pages::default(),
         }
@@ -904,7 +907,11 @@ impl Shell {
         } else if self.signing_out.is_some() {
             self.keep_signed_in(window, cx);
         } else if self.menu.is_none() && self.is_editing() {
-            self.leave_the_editor(window, cx);
+            if !self.dismiss_an_editor_overlay(window, cx) {
+                self.leave_the_editor(window, cx);
+            }
+        } else if self.menu.is_none() && self.has_an_automation_open() {
+            self.close_the_automation(window, cx);
         } else {
             self.close_the_menu(window, cx);
         }
@@ -1518,6 +1525,9 @@ impl Shell {
     /// Takes what happened: the flow decides what is shown, and what it asks
     /// for beside that is done.
     pub fn happened(&mut self, event: Event, window: &mut Window, cx: &mut Context<Self>) {
+        if self.guard_the_editor(&event, window, cx) {
+            return;
+        }
         tracing::info!(event = event_name(&event), "event");
         let before = self.flow.update();
         for effect in self.flow.on(event) {
@@ -1918,6 +1928,9 @@ impl Shell {
             Screen::Automations => Some(super::automations::Page::new(window, cx)),
             _ => None,
         };
+        if self.automations.is_some() {
+            self.load_the_automations(window, cx);
+        }
         self.menu = None;
         self.signing_out = None;
         self.settle_the_pages(window, cx);

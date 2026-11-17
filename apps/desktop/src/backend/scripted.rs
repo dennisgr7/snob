@@ -12,8 +12,9 @@ use snob_ig::pace::CancelToken;
 use tokio::sync::{oneshot, watch};
 
 use super::{
-    Account, AccountStorage, Answer, Backend, Browsers, Cleared, Forgotten, Highlight, Listed,
-    Loaded, Person, Profile, SignIn, Storage, Tile, TileKind, Tiles, Unread, Walked, answered,
+    Account, AccountStorage, Answer, Automation, Backend, Browsers, Cleared, Forgotten, Highlight,
+    Listed, Loaded, Next, Person, Problem, Profile, Run, SignIn, Storage, Tile, TileKind, Tiles,
+    Unread, Walked, answered,
 };
 use crate::state::flow::{Found, Method, Named, Update};
 use crate::state::prefs::{Appearance, Placement};
@@ -47,6 +48,12 @@ pub enum Asked {
     PictureBytes(Pk),
     SavePicture(Pk),
     List(Pk, Side),
+    Automations,
+    SaveAutomation(Automation),
+    RemoveAutomation(String),
+    NewAutomationId,
+    AutomationRuns(String),
+    RunAutomation(String),
 }
 
 type Held = Box<dyn FnOnce() + Send>;
@@ -92,6 +99,13 @@ struct State {
     list_size: usize,
     /// The account whose profile answers as kept from the viewer.
     private: Option<Pk>,
+    /// The automations kept, in the order they were kept.
+    automations: Vec<Automation>,
+    runs: Vec<Run>,
+    next_run: Next,
+    ids_made: u32,
+    /// Why every save of an automation fails, when it does.
+    save_fails: Option<String>,
 }
 
 /// The scripted backend. Clones are the same backend.
@@ -146,6 +160,11 @@ impl Scripted {
             introduced: Vec::new(),
             list_size: 30,
             private: None,
+            automations: Vec::new(),
+            runs: Vec::new(),
+            next_run: Next::Never,
+            ids_made: 0,
+            save_fails: None,
         })))
     }
 
@@ -198,6 +217,11 @@ impl Scripted {
         for answer in held {
             answer();
         }
+    }
+
+    /// The automations kept now.
+    pub fn automations(&self) -> Vec<Automation> {
+        self.state().automations.clone()
     }
 
     /// Where the window was last said to be.
@@ -379,6 +403,30 @@ impl Script<'_> {
     /// The account `pk` is private, and the viewer does not follow it.
     pub fn private(&mut self, pk: u64) -> &mut Self {
         self.0.private = Some(pk.into());
+        self
+    }
+
+    /// An automation already kept.
+    pub fn automation(&mut self, automation: Automation) -> &mut Self {
+        self.0.automations.push(automation);
+        self
+    }
+
+    /// A run in the history of an automation, wherever it is put.
+    pub fn run(&mut self, run: Run) -> &mut Self {
+        self.0.runs.push(run);
+        self
+    }
+
+    /// When the next run of any automation is said to be.
+    pub fn next_run(&mut self, next: Next) -> &mut Self {
+        self.0.next_run = next;
+        self
+    }
+
+    /// From now on no automation can be kept, for this reason.
+    pub fn save_fails(&mut self, why: &str) -> &mut Self {
+        self.0.save_fails = Some(why.to_string());
         self
     }
 }
@@ -783,6 +831,65 @@ impl Backend for Scripted {
         let mut state = self.state();
         state.asked.push(Asked::CrashShown);
         state.crash = None;
+    }
+
+    fn automations(&self) -> Answer<Vec<Automation>> {
+        self.answer(Asked::Automations, |state| state.automations.clone())
+    }
+
+    fn automation_problems(&self, automation: Automation) -> Answer<Vec<Problem>> {
+        answered(automation.problems())
+    }
+
+    fn save_automation(&self, automation: Automation) -> Answer<Result<(), String>> {
+        self.answer(Asked::SaveAutomation(automation.clone()), move |state| {
+            if let Some(why) = &state.save_fails {
+                return Err(why.clone());
+            }
+            match state
+                .automations
+                .iter_mut()
+                .find(|kept| kept.id == automation.id)
+            {
+                Some(kept) => *kept = automation,
+                None => state.automations.push(automation),
+            }
+            Ok(())
+        })
+    }
+
+    fn remove_automation(&self, id: String) -> Answer<bool> {
+        self.answer(Asked::RemoveAutomation(id.clone()), move |state| {
+            let before = state.automations.len();
+            state.automations.retain(|kept| kept.id != id);
+            before != state.automations.len()
+        })
+    }
+
+    fn new_automation_id(&self) -> Answer<String> {
+        self.answer(Asked::NewAutomationId, |state| {
+            state.ids_made += 1;
+            format!("{:08x}", 0xa0_0000 + state.ids_made)
+        })
+    }
+
+    fn automation_runs(&self, id: String) -> Answer<Vec<Run>> {
+        self.answer(Asked::AutomationRuns(id.clone()), move |state| {
+            state
+                .runs
+                .iter()
+                .filter(|run| run.automation == id)
+                .cloned()
+                .collect()
+        })
+    }
+
+    fn next_automation_run(&self, _: Automation) -> Answer<Next> {
+        answered(self.state().next_run)
+    }
+
+    fn run_automation(&self, id: String) -> Answer<Result<(), String>> {
+        self.answer(Asked::RunAutomation(id), |_| Ok(()))
     }
 }
 

@@ -1071,6 +1071,91 @@ async fn keyboard_alone(stage: &mut Stage<'_>) -> anyhow::Result<()> {
     app.until_screen("settings").await.map(drop)
 }
 
+/// Two automations and a short history of the first, kept where the app
+/// finds them: what a list of them and a page with a history are shown
+/// with. **The same on every run**: the moments are fixed.
+pub fn seed_automations(root: &Path) -> anyhow::Result<()> {
+    use snob_core::Epoch;
+    use snob_core::automation::{Account, Automation, Read, Step, Webhook};
+    use snob_core::watch::schedule::Spec;
+    use snob_store::paths::AppPaths;
+
+    let paths = AppPaths::rooted_at(root);
+    let every = |text: &str| Spec {
+        every: Some(snob_core::duration::parse(text).unwrap_or_default()),
+        ..Spec::default()
+    };
+    let mut daily = Automation::new("00000a01", "Daily followers");
+    let trigger = daily.insert(Step::Schedule { when: every("6h") }, (-345, -40));
+    let lists = daily.insert(
+        Step::Read {
+            account: Some(Account::own(None)),
+            what: Read::Lists,
+        },
+        (-115, -40),
+    );
+    let changes = daily.insert(
+        Step::Filter {
+            only: snob_core::automation::Only::Changes,
+        },
+        (115, -40),
+    );
+    let hook = daily.insert(
+        Step::Webhook(Webhook {
+            url: "https://example.com/hook".to_string(),
+            ..Webhook::default()
+        }),
+        (345, -40),
+    );
+    for (from, to) in [(trigger, lists), (lists, changes), (changes, hook)] {
+        daily.connect(from, to).map_err(|why| anyhow!("{why}"))?;
+    }
+    let mut pictures = Automation::new("00000a02", "Profile pictures");
+    let weekly = Spec {
+        on: vec!["mon".to_string()],
+        at: vec!["09:00".to_string()],
+        ..Spec::default()
+    };
+    pictures.insert(Step::Schedule { when: weekly }, (-345, -40));
+    for automation in [&daily, &pictures] {
+        snob_store::automations::save(&paths, automation)
+            .map_err(|e| anyhow!("an automation was not kept: {e}"))?;
+    }
+    let shared = snob_store::store::shared::Shared::open(&paths)
+        .map_err(|e| anyhow!("the shared database did not open: {e}"))?;
+    let runs = [
+        (
+            1_790_000_000,
+            "ok",
+            14,
+            "Read 120 followers and 98 following.
+Two came, one went.",
+        ),
+        (
+            1_789_978_400,
+            "rate_limited",
+            6,
+            "Instagram asked for a pause after the first list.",
+        ),
+        (
+            1_789_956_800,
+            "ok",
+            14,
+            "Read 119 followers and 98 following.
+Nothing changed.",
+        ),
+    ];
+    for (at, outcome, requests, summary) in runs {
+        let id = shared
+            .record_automation_run("00000a01", Epoch::new(at))
+            .map_err(|e| anyhow!("a run was not written down: {e}"))?;
+        shared
+            .finish_automation_run(id, Epoch::new(at + 95), outcome, requests, summary)
+            .map_err(|e| anyhow!("a run was not finished: {e}"))?;
+    }
+    Ok(())
+}
+
 /// Left, top, width and height of `id`.
 pub fn bounds(seen: &Answer, id: &str) -> anyhow::Result<(f32, f32, f32, f32)> {
     let [left, top, width, height] = node(seen, id)?.bounds;
@@ -1149,7 +1234,7 @@ async fn automations_introduced_once(stage: &mut Stage<'_>) -> anyhow::Result<()
         .await?;
     expect_eq(
         label(&seen, "title")?.as_str(),
-        "New automation",
+        "Edit automation",
         "the editor's title",
     )?;
     let (left, top, width, height) = bounds(&seen, "editor-canvas")?;

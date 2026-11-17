@@ -58,6 +58,7 @@ pub fn render(
     }
     over.extend(question(shell, look, cx));
     over.extend(viewer(shell, look, window, cx));
+    over.extend(super::screens::automation_dialogs(shell, look, cx));
     over
 }
 

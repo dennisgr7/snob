@@ -13,6 +13,9 @@ use super::look::{Look, sp};
 use super::shell::{Phase, Shell};
 use crate::state::flow::{Method, Named, Place, Screen};
 
+mod automation_dialogs;
+mod automation_editor;
+mod automation_page;
 mod automations;
 mod failed;
 mod home;
@@ -24,6 +27,7 @@ mod splash;
 mod start;
 mod waiting;
 mod welcome;
+mod words;
 
 /// An account as a sentence names it: its username with the at sign, or
 /// its number while no name is known.
@@ -77,6 +81,16 @@ fn column(phase: Phase) -> Div {
         .relative()
         .top(px(phase.rise))
         .opacity(phase.presence)
+}
+
+/// What the editor of automations has open over the window: a menu, a
+/// step's dialog, the question asked on leaving.
+pub fn automation_dialogs(
+    shell: &mut Shell,
+    look: &crate::ui::look::Look,
+    cx: &mut Context<Shell>,
+) -> Vec<AnyElement> {
+    automation_dialogs::render(shell, look, cx)
 }
 
 /// The screen the shell shows.

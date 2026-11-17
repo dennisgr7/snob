@@ -202,7 +202,7 @@ fn logic() -> Vec<Outcome> {
 
 /// The screens a picture is taken of and an audit made of, and how each is
 /// reached from the screen before it.
-const SCREENS: [&str; 24] = [
+const SCREENS: [&str; 30] = [
     "start",
     "paste",
     "failed",
@@ -221,6 +221,12 @@ const SCREENS: [&str; 24] = [
     "automations",
     "automations-list",
     "automations-editor",
+    "automations-listed",
+    "automation-page",
+    "automation-flow",
+    "automation-menu",
+    "automation-schedule",
+    "automation-leave",
     "profile",
     "profile-split",
     "viewer",
@@ -349,9 +355,82 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
             })
             .await?;
         }
-        "profile" => {
-            // The account in use is `someone`.
+        "automations-listed" => {
+            // Back from the empty editor, two automations kept, and the
+            // section entered again so that it reads them.
             let app = stage.app()?;
+            app.press("escape").await?;
+            app.until("the list", |seen| {
+                scenarios::bounds(seen, "automations-create").is_ok()
+            })
+            .await?;
+            scenarios::seed_automations(&stage.root)?;
+            let app = stage.app()?;
+            app.click("rail-home").await?;
+            app.until_screen("home").await?;
+            app.click("rail-automations").await?;
+            app.until_screen("automations").await?;
+            app.until("the automations", |seen| {
+                scenarios::bounds(seen, "automation#0").is_ok()
+            })
+            .await?;
+        }
+        "automation-page" => {
+            let app = stage.app()?;
+            app.click("automation#0").await?;
+            app.until("the history", |seen| {
+                scenarios::bounds(seen, "automation-run-row#0").is_ok()
+            })
+            .await?;
+        }
+        "automation-flow" => {
+            let app = stage.app()?;
+            app.click("automation-edit").await?;
+            app.until("the flow", |seen| scenarios::bounds(seen, "node#4").is_ok())
+                .await?;
+        }
+        "automation-menu" => {
+            // A step is chosen and its menu opened with the keyboard.
+            let app = stage.app()?;
+            app.click("node#2").await?;
+            app.press("enter").await?;
+            app.until("the menu", |seen| {
+                scenarios::bounds(seen, "node-menu").is_ok()
+            })
+            .await?;
+        }
+        "automation-schedule" => {
+            let app = stage.app()?;
+            app.press("escape").await?;
+            app.click("node#1").await?;
+            app.press("enter").await?;
+            app.click("node-menu-configure").await?;
+            app.until("the dialog", |seen| {
+                scenarios::bounds(seen, "step-dialog").is_ok()
+            })
+            .await?;
+        }
+        "automation-leave" => {
+            // A step taken off leaves the action without a trigger.
+            let app = stage.app()?;
+            app.press("escape").await?;
+            app.click("node#1").await?;
+            app.press("enter").await?;
+            app.click("node-menu-remove").await?;
+            app.click("editor-back").await?;
+            app.until("the question", |seen| {
+                scenarios::bounds(seen, "leave-question").is_ok()
+            })
+            .await?;
+        }
+        "profile" => {
+            // The account in use is `someone`. What the editor asked is
+            // answered first.
+            let app = stage.app()?;
+            let seen = app.look().await?;
+            if scenarios::bounds(&seen, "leave-discard").is_ok() {
+                app.click("leave-discard").await?;
+            }
             app.click("account").await?;
             app.click("menu-profile").await?;
             app.until_screen("profile").await?;

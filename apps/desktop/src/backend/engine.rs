@@ -33,8 +33,9 @@ use snob_store::viewer::Card;
 use tokio::sync::watch;
 
 use super::{
-    Account, AccountStorage, Answer, Backend, Browsers, Cleared, Forgotten, Highlight, Listed,
-    Loaded, Person, Profile, SignIn, Storage, Tile, TileKind, Tiles, Unread, Walked, answered,
+    Account, AccountStorage, Answer, Automation, Backend, Browsers, Cleared, Forgotten, Highlight,
+    Listed, Loaded, Next, Person, Problem, Profile, Run, SignIn, Storage, Tile, TileKind, Tiles,
+    Unread, Walked, answered,
 };
 use crate::report;
 use crate::runtime::Runtime;
@@ -1210,6 +1211,83 @@ impl Backend for Engine {
                 "history was forgotten"
             );
             forgotten
+        })
+    }
+
+    fn automations(&self) -> Answer<Vec<Automation>> {
+        let paths = self.paths.clone();
+        self.runtime.run(move || async move {
+            let kept = snob_engine::automations::all(&paths);
+            for sentence in &kept.unreadable {
+                tracing::warn!(why = %sentence, "an automation could not be read");
+            }
+            kept.automations
+        })
+    }
+
+    fn automation_problems(&self, automation: Automation) -> Answer<Vec<Problem>> {
+        let paths = self.paths.clone();
+        self.runtime
+            .run(move || async move { snob_engine::automations::problems(&paths, &automation) })
+    }
+
+    fn save_automation(&self, automation: Automation) -> Answer<Result<(), String>> {
+        let (paths, secrets) = (self.paths.clone(), self.secrets.clone());
+        self.runtime.run(move || async move {
+            snob_engine::automations::save(&paths, &secrets, &automation).map_err(|e| {
+                let why = e.to_string();
+                log::failed(&e.context("an automation could not be kept"));
+                why
+            })
+        })
+    }
+
+    fn remove_automation(&self, id: String) -> Answer<bool> {
+        let paths = self.paths.clone();
+        self.runtime.run(move || async move {
+            snob_engine::automations::remove(&paths, &id).unwrap_or_else(|e| {
+                log::failed(&e.context("an automation could not be removed"));
+                false
+            })
+        })
+    }
+
+    fn new_automation_id(&self) -> Answer<String> {
+        let paths = self.paths.clone();
+        self.runtime
+            .run(move || async move { snob_engine::automations::new_id(&paths) })
+    }
+
+    fn automation_runs(&self, id: String) -> Answer<Vec<Run>> {
+        let paths = self.paths.clone();
+        self.runtime.run(move || async move {
+            snob_engine::automations::runs(&paths, &id, 50).unwrap_or_default()
+        })
+    }
+
+    fn next_automation_run(&self, automation: Automation) -> Answer<Next> {
+        let paths = self.paths.clone();
+        self.runtime.run(move || async move {
+            snob_engine::automations::next_run(&paths, &automation, snob_core::clock::now())
+                .map_or(Next::Never, |(next, _)| next)
+        })
+    }
+
+    fn run_automation(&self, id: String) -> Answer<Result<(), String>> {
+        // A test build's files are a sandbox's, and the `snob` it would start
+        // knows nothing of it: nothing is started.
+        if cfg!(feature = "testing") {
+            return crate::backend::answered(Err(
+                "a test build starts no run of an automation".to_string()
+            ));
+        }
+        let paths = self.paths.clone();
+        self.runtime.run(move || async move {
+            snob_engine::automations::run_now(&paths, &id, &[]).map_err(|e| {
+                let why = e.to_string();
+                log::failed(&e.context("an automation could not be started"));
+                why
+            })
         })
     }
 }
