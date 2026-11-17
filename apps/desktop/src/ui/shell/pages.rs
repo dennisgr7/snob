@@ -4,14 +4,16 @@
 //! (`state::profile::asks_first`). **Nothing is read twice on the way
 //! back**: a page keeps what it read for as long as the way back holds it.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Instant;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyWindowHandle, Context, Entity, FocusHandle, Pixels, Point, ScrollHandle, SharedString,
-    UniformListScrollHandle, WeakEntity, Window,
+    AnyWindowHandle, Bounds, Context, Entity, FocusHandle, Pixels, Point, ScrollHandle,
+    SharedString, UniformListScrollHandle, WeakEntity, Window,
 };
 use snob_core::Pk;
 use snob_ig::pace::CancelToken;
@@ -53,6 +55,9 @@ pub(crate) struct ProfilePage {
     /// back when what they opened closes.
     pub picture_button: FocusHandle,
     pub options_button: FocusHandle,
+    /// Where each was last drawn: what its menu opens under.
+    pub picture_drawn: Rc<Cell<Bounds<Pixels>>>,
+    pub options_drawn: Rc<Cell<Bounds<Pixels>>>,
 }
 
 /// One of an account's lists, as far as it is read. **Read on until nothing
@@ -258,6 +263,8 @@ impl Shell {
                 highlights: ScrollHandle::new(),
                 picture_button: cx.focus_handle(),
                 options_button: cx.focus_handle(),
+                picture_drawn: Rc::default(),
+                options_drawn: Rc::default(),
             },
         );
         let pk = who.pk;

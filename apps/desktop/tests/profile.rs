@@ -9,7 +9,7 @@ mod common;
 
 use common::{App, focused, open};
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{Role, TestAppContext};
+use gpui_kit::{Role, TestAppContext, px};
 use snob_core::Pk;
 use snob_desktop::backend::scripted::{Asked, Scripted, account};
 use snob_desktop::state::flow::Screen;
@@ -337,6 +337,37 @@ async fn a_story_up_offers_the_story_or_the_picture_and_reads_nothing_of_the_sto
     app.click(cx, "profile-picture");
     app.click(cx, "profile-open-picture");
     assert!(shown(&app, cx, "photo-viewer"));
+}
+
+#[gpui_kit::test]
+async fn each_menu_opens_under_what_opened_it_in_both_layouts(cx: &mut TestAppContext) {
+    let app = own_profile(cx, Scripted::with(vec![account(9001, "someone", true)])).await;
+    for _ in 0..2 {
+        app.click(cx, "profile-options");
+        app.in_window(cx, |window, _| {
+            let button = window.find("profile-options").bounds();
+            let menu = window.find("profile-menu").bounds();
+            assert!(
+                (menu.right() - button.right()).abs() <= px(1.),
+                "{menu:?} ends where {button:?} does"
+            );
+            assert!(menu.top() >= button.bottom(), "{menu:?} under {button:?}");
+        });
+        app.press(cx, "escape");
+
+        app.click(cx, "profile-picture");
+        app.in_window(cx, |window, _| {
+            let picture = window.find("profile-picture").bounds();
+            let menu = window.find("profile-menu").bounds();
+            assert!(
+                (menu.left() - picture.left()).abs() <= px(1.),
+                "{menu:?} starts where {picture:?} does"
+            );
+            assert!(menu.top() >= picture.bottom(), "{menu:?} under {picture:?}");
+        });
+        app.press(cx, "escape");
+        app.click(cx, "profile-layout");
+    }
 }
 
 #[gpui_kit::test]

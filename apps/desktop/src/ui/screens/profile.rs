@@ -10,13 +10,18 @@
 //! its right scrolling alone. What opens over the page (the picture large,
 //! the small menus, the question a list asks) is in `ui::overlays`.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui_kit::base::{Button, FocusTrapElement as _, Scrollbar, TestSupportExt as _};
+use gpui_kit::base::{
+    Align, Button, ElementExt as _, FocusTrapElement as _, Placement, Positioner, Scrollbar,
+    TestSupportExt as _,
+};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Anchor, AnyElement, App, Context, Div, FontWeight, ObjectFit, Role, ScrollDelta, ScrollHandle,
-    Window, anchored, deferred, div, img, px, relative,
+    AnyElement, App, Bounds, Context, Div, FontWeight, ObjectFit, Pixels, Role, ScrollDelta,
+    ScrollHandle, Window, deferred, div, img, px, relative,
 };
 
 use super::handle;
@@ -131,6 +136,8 @@ struct Shown {
     highlights: ScrollHandle,
     picture_button: gpui_kit::FocusHandle,
     options_button: gpui_kit::FocusHandle,
+    picture_drawn: Rc<Cell<Bounds<Pixels>>>,
+    options_drawn: Rc<Cell<Bounds<Pixels>>>,
 }
 
 /// The profile shown.
@@ -157,6 +164,8 @@ pub fn render(
         highlights: page.highlights.clone(),
         picture_button: page.picture_button.clone(),
         options_button: page.options_button.clone(),
+        picture_drawn: page.picture_drawn.clone(),
+        options_drawn: page.options_drawn.clone(),
     };
     let layout = shell.pages.layout;
     let showing = shell.pages.showing;
@@ -388,11 +397,19 @@ fn card(
         eased(since, look.moved(motion::ENTER, 0.0, 1.0).lasts, window)
     });
 
-    let picture = div()
-        .flex()
-        .flex_col()
-        .child(picture(shown, &named, split, popup, came, look, cx))
-        .children(popup_menu(shell, PopupKind::Picture, look, window, cx));
+    let picture = drawn_at(
+        &shown.picture_drawn,
+        popup == Some(PopupKind::Picture),
+        picture(shown, &named, split, popup, came, look, cx),
+    )
+    .children(popup_menu(
+        shell,
+        PopupKind::Picture,
+        shown.picture_drawn.get(),
+        look,
+        window,
+        cx,
+    ));
     let names = names(shell, shown, &named, look, cx);
     let options = parts::icon_button(
         "profile-options",
@@ -408,12 +425,19 @@ fn card(
     .on_click(cx.listener(|shell, _, window, cx| {
         shell.open_a_popup(PopupKind::Options, window, cx);
     }));
-    let options = div()
-        .flex()
-        .flex_col()
-        .items_end()
-        .child(options)
-        .children(popup_menu(shell, PopupKind::Options, look, window, cx));
+    let options = drawn_at(
+        &shown.options_drawn,
+        popup == Some(PopupKind::Options),
+        options,
+    )
+    .children(popup_menu(
+        shell,
+        PopupKind::Options,
+        shown.options_drawn.get(),
+        look,
+        window,
+        cx,
+    ));
     let about = about(shown, look);
     let counters = counters(shown, came, look, cx);
     let highlights = highlights(shown, came, look, window);
@@ -553,12 +577,28 @@ fn picture(
         .on_click(cx.listener(|shell, _, window, cx| shell.click_the_picture(window, cx)))
 }
 
+/// What opens a menu, kept where it was last drawn so the menu opens under
+/// it; while that menu is open, the menu follows it on the next frame.
+fn drawn_at(drawn: &Rc<Cell<Bounds<Pixels>>>, open: bool, opener: impl IntoElement) -> Div {
+    let drawn = drawn.clone();
+    div()
+        .flex_none()
+        .on_prepaint(move |bounds, window, _| {
+            if drawn.replace(bounds) != bounds && open {
+                window.request_animation_frame();
+            }
+        })
+        .child(opener)
+}
+
 /// A small menu under what opened it, over everything else: the story or
 /// the picture, or what can be copied of the account. **Copying is all the
-/// options do**: no follow, no write.
+/// options do**: no follow, no write. The picture's starts at its left edge
+/// and the options' ends at their right one.
 fn popup_menu(
     shell: &Shell,
     kind: PopupKind,
+    under: Bounds<Pixels>,
     look: &Look,
     window: &mut Window,
     cx: &mut Context<Shell>,
@@ -638,7 +678,6 @@ fn popup_menu(
         .role(Role::Menu)
         .aria_label(name)
         .occlude()
-        .mt(px(6.))
         .w(sp(250.))
         .p(sp(6.))
         .bg(color(palette.panel))
@@ -656,15 +695,17 @@ fn popup_menu(
                 .children(items)
                 .focus_trap("profile-menu-items", &popup.focus),
         );
-    let anchor = match kind {
-        PopupKind::Picture => Anchor::TopLeft,
-        PopupKind::Options => Anchor::TopRight,
+    let align = match kind {
+        PopupKind::Picture => Align::Start,
+        PopupKind::Options => Align::End,
     };
     Some(
         deferred(
-            anchored()
-                .anchor(anchor)
-                .snap_to_window_with_margin(px(8.))
+            Positioner::side(under)
+                .placement(Placement::Bottom)
+                .align(align)
+                .offset(px(6.))
+                .margin(px(8.))
                 .child(menu),
         )
         .with_priority(1)
