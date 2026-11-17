@@ -65,27 +65,34 @@ const OURS: [&str; 7] = [
     "snob_desktop",
 ];
 
-/// Where a module of the engine was, and where it is since the engine's were
-/// grouped: the browser's under `browser`, the operating system's under
-/// `system`, the monitor's under `watch`. The longer name first where one
+/// Where a module of the engine was, and where its lines are since the
+/// engine's were grouped: the browser's under `browser`, the operating
+/// system's under `system`, the monitor's under `watch`, and a command that
+/// moved into the engine under its own name. The longer name first where one
 /// begins another; `::engine` last, which held the monitor.
-const MOVED_IN_THE_ENGINE: [(&str, &str); 16] = [
-    ("::cdp", "::browser::cdp"),
-    ("::headless", "::browser::headless"),
-    ("::owner", "::browser::owner"),
-    ("::detach", "::system::detach"),
-    ("::exe", "::system::exe"),
-    ("::interrupt", "::system::interrupt"),
-    ("::local_socket", "::system::local_socket"),
-    ("::parent", "::system::parent"),
-    ("::pipe", "::system::pipe"),
-    ("::power", "::system::power"),
-    ("::random", "::system::random"),
-    ("::seat", "::system::seat"),
-    ("::engine::watch_posts", "::watch::posts"),
-    ("::engine::watch", "::watch"),
-    ("::engine::check", "::watch::check"),
-    ("::engine", "::watch"),
+///
+/// **More, never less**: the monitor's own module holds what was
+/// `engine::watch`, and a target selects its children, so a spec for the old
+/// name selects the webhook's lines too.
+const MOVED_IN_THE_ENGINE: [(&str, &[&str]); 17] = [
+    ("::cdp", &["::browser::cdp"]),
+    ("::headless", &["::browser::headless"]),
+    ("::owner", &["::browser::owner"]),
+    ("::detach", &["::system::detach"]),
+    ("::exe", &["::system::exe"]),
+    ("::interrupt", &["::system::interrupt"]),
+    ("::local_socket", &["::system::local_socket"]),
+    ("::parent", &["::system::parent"]),
+    ("::pipe", &["::system::pipe"]),
+    ("::power", &["::system::power"]),
+    ("::random", &["::system::random"]),
+    ("::seat", &["::system::seat"]),
+    ("::engine::watch_posts", &["::watch::posts"]),
+    ("::engine::watch", &["::watch", "::engine::retention"]),
+    ("::engine::check", &["::watch::check"]),
+    ("::engine", &["::watch"]),
+    // `snob_cli`'s, which the engine performs now.
+    ("::commands::follow", &["::follow"]),
 ];
 
 /// A `SNOB_LOG` spec with, ahead of every pair that names a module by where
@@ -108,10 +115,13 @@ fn with_moved_targets(spec: &str) -> String {
             .filter(|rest| rest.is_empty() || rest.starts_with("::") || rest.starts_with('['))
     }
     /// Where the engine's `module` is now, when it was moved.
-    fn grouped(module: &str) -> Option<String> {
+    fn grouped(module: &str) -> Vec<String> {
         MOVED_IN_THE_ENGINE
             .iter()
-            .find_map(|(was, is)| under(module, was).map(|rest| format!("{is}{rest}")))
+            .find_map(|(was, now)| {
+                under(module, was).map(|rest| now.iter().map(|is| format!("{is}{rest}")).collect())
+            })
+            .unwrap_or_default()
     }
 
     let mut pairs = Vec::new();
@@ -119,7 +129,11 @@ fn with_moved_targets(spec: &str) -> String {
         let pair = pair.trim();
         let (target, level) = pair.split_at(pair.find('=').unwrap_or(pair.len()));
         if let Some(module) = under(target, "snob_engine") {
-            pairs.extend(grouped(module).map(|now| format!("snob_engine{now}{level}")));
+            pairs.extend(
+                grouped(module)
+                    .into_iter()
+                    .map(|now| format!("snob_engine{now}{level}")),
+            );
             continue;
         }
         let Some(module) = under(target, "snob_cli") else {
@@ -129,7 +143,11 @@ fn with_moved_targets(spec: &str) -> String {
             Some(rest) => pairs.push(format!("snob_mcp{rest}{level}")),
             None => {
                 pairs.push(format!("snob_engine{module}{level}"));
-                pairs.extend(grouped(module).map(|now| format!("snob_engine{now}{level}")));
+                pairs.extend(
+                    grouped(module)
+                        .into_iter()
+                        .map(|now| format!("snob_engine{now}{level}")),
+                );
                 if module.is_empty() || module.starts_with('[') {
                     pairs.push(format!("snob_mcp{module}{level}"));
                 }
@@ -883,6 +901,15 @@ mod tests {
         assert!(old.would_enable("snob_engine::watch::posts", &Level::TRACE));
         assert!(old.would_enable("snob_engine::watch::check", &Level::DEBUG));
         assert!(!old.would_enable("snob_engine::watch::webhook", &Level::INFO));
+
+        // The monitor's run went to its own module and its retention stayed
+        // with the lists; a follow went from the command to the engine.
+        let split =
+            chosen("snob_engine::engine::watch=debug,snob_cli::commands::follow=debug,warn");
+        assert!(split.would_enable("snob_engine::watch", &Level::DEBUG));
+        assert!(split.would_enable("snob_engine::engine::retention", &Level::DEBUG));
+        assert!(!split.would_enable("snob_engine::engine::walk", &Level::DEBUG));
+        assert!(split.would_enable("snob_engine::follow", &Level::DEBUG));
 
         // The lists' module held the monitor, and a module that only begins
         // like one that moved did not move.
