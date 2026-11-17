@@ -1,10 +1,7 @@
 //! `snob stories`: what an account has up right now, and how to keep a copy.
 //!
-//! **Downloading a story does not mark it as seen.**
-//!
-//! **It asks no consent** (AGENTS.md, "Consent"): the question covers walking
-//! somebody's followers and following, and a story is what its account
-//! shows whoever opens the profile.
+//! The read is the engine's (`snob_engine::stories`), with the rules it
+//! keeps. **Downloading a story does not mark it as seen.**
 
 use std::path::Path;
 
@@ -14,7 +11,6 @@ use snob_core::model::printable;
 use snob_engine::app::{App, Viewer};
 use snob_engine::exit::ExitCode;
 use snob_engine::media::{self, Stories, Story, left_of, posted_of};
-use snob_ig::client::IgClient;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
 
@@ -33,7 +29,7 @@ pub async fn run(args: StoriesArgs, store: SecretStore, paths: &AccountPaths) ->
     let typed = common::target_or_own(&app, args.target.as_deref()).await?;
 
     let known = snob_engine::engine::target::known_pk_of(&app, args.target.as_deref(), &typed)?;
-    let stories = fetch(app.client(), &typed, known).await?;
+    let stories = snob_engine::stories::named(app.client(), &typed, known).await?;
 
     if app.cancel().is_canceled() {
         return Ok(ExitCode::Interrupted);
@@ -141,7 +137,7 @@ async fn browse(
                 false,
                 async |app: &mut App| {
                     let known = snob_engine::engine::target::known_pk(app, &name)?;
-                    let stories = fetch(app.client(), &name, known).await?;
+                    let stories = snob_engine::stories::named(app.client(), &name, known).await?;
                     if stories.items.is_empty() {
                         anyhow::bail!("@{} has no stories up for it", printable(&stories.username));
                     }
@@ -165,30 +161,6 @@ fn no_such_story(stories: &Stories, number: usize) -> anyhow::Error {
             n => format!("{n} stories"),
         }
     )
-}
-
-/// The network half: the profile and the reel, each paid for inside the client,
-/// kept apart from the session and the filesystem so a test can drive it.
-pub async fn fetch(
-    client: &IgClient,
-    typed: &str,
-    known: Option<snob_core::Pk>,
-) -> Result<Stories> {
-    let profile = client
-        .profile_named(snob_engine::engine::target::clean(typed), known)
-        .await?;
-
-    let Some(reel) = client.stories(profile.id, &profile.username).await? else {
-        return Ok(Stories {
-            username: profile.username,
-            items: Vec::new(),
-        });
-    };
-
-    Ok(Stories {
-        username: profile.username,
-        items: reel.items.iter().map(media::story_from).collect(),
-    })
 }
 
 /// Prints the listing. The numbers here are what `--download` takes.

@@ -1,6 +1,6 @@
-//! Stories and highlight items once they are read, and how they are kept:
-//! the words a listing and a view both use for them, and the downloads from
-//! the CDN. `stories`, `highlights`, `profile` and their views all share it.
+//! Stories and highlight items once they are read (`stories`, `highlights`),
+//! and how they are kept: the words a listing and a view both use for them,
+//! and the downloads from the CDN. `profile` and every view share it.
 
 use std::path::{Path, PathBuf};
 

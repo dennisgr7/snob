@@ -23,7 +23,9 @@ use snob_ig::pace::Pace;
 
 use crate::app::App;
 use crate::engine::target;
+use crate::highlights::{self, Highlight};
 use crate::media::{self, Story};
+use crate::stories;
 
 /// How many pages of the mutual list are walked before the rest is counted
 /// rather than named.
@@ -109,22 +111,6 @@ pub enum Visibility<T> {
     Shown(T),
     /// Private, and the viewer does not follow it.
     Hidden,
-}
-
-/// One highlight as the tray lists it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Highlight {
-    /// `highlight:<id>`, the spelling the items are fetched with.
-    pub id: String,
-    /// Filtered: it came off somebody else's profile. Empty when the
-    /// highlight has none, which happens.
-    pub title: String,
-    pub items: Option<u64>,
-    /// When something was last added to it.
-    pub updated_at: Option<Epoch>,
-    /// Its cover's address, for a view to draw ([`cover_of`]). Not in the
-    /// JSON contract.
-    pub cover: Option<String>,
 }
 
 impl Profile {
@@ -231,23 +217,8 @@ async fn of(client: &IgClient, info: WebProfileInfo, viewer: Pk, reads: Reads) -
         })
     };
 
-    // The profile already says how many there are; a count of zero is the
-    // answer, and asking the tray for it spent a request on an empty list.
-    let highlights = if visible && info.highlight_reel_count == Some(0) {
-        Visibility::Shown(Vec::new())
-    } else if visible {
-        let tray = client.highlights_tray(info.id, &info.username).await?;
-        Visibility::Shown(
-            tray.into_iter()
-                .map(|h| Highlight {
-                    cover: cover_of(&h),
-                    id: h.id,
-                    title: printable(h.title.as_deref().unwrap_or("")),
-                    items: h.media_count,
-                    updated_at: h.updated_timestamp,
-                })
-                .collect(),
-        )
+    let highlights = if visible {
+        Visibility::Shown(highlights::entries(client, &info).await?)
     } else {
         Visibility::Hidden
     };
@@ -260,10 +231,8 @@ async fn of(client: &IgClient, info: WebProfileInfo, viewer: Pk, reads: Reads) -
     } else if visible && info.latest_reel_media == Some(0) {
         Some(Visibility::Shown(Vec::new()))
     } else if visible {
-        let reel = client.stories(info.id, &info.username).await?;
         Some(Visibility::Shown(
-            reel.map(|r| r.items.iter().map(media::story_from).collect())
-                .unwrap_or_default(),
+            stories::of(client, info.id, &info.username).await?,
         ))
     } else {
         Some(Visibility::Hidden)
@@ -387,20 +356,6 @@ async fn rest_before_a_page(client: &IgClient) -> Result<bool> {
             ));
         })
         .await?)
-}
-
-/// The address of `highlight`'s cover, the square picture the profile
-/// shows above its title, as the tray hands it out
-/// (`cover_media.cropped_image_version`, on the REST and GraphQL trays
-/// alike).
-pub fn cover_of(highlight: &snob_ig::model::Highlight) -> Option<String> {
-    highlight
-        .cover_media
-        .as_ref()?
-        .cropped_image_version
-        .as_ref()
-        .map(|v| v.url.clone())
-        .filter(|url| !url.is_empty())
 }
 
 /// A profile picture, downloaded.

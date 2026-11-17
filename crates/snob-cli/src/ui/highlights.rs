@@ -13,12 +13,12 @@ use snob_core::model::printable;
 use snob_engine::app::Viewer;
 use snob_engine::exit::ExitCode;
 use snob_engine::files::ABANDONED_AFTER;
+use snob_engine::highlights::{self, Highlight, Tray};
 use snob_engine::media::{Saved, Story, save_story};
 use snob_ig::client::IgClient;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 
-use crate::commands::highlights::{Entry, Tray, items_of_entry};
 use crate::ui::accounts::{self, Browsed, Picked};
 use crate::ui::browser::busy::Busy;
 use crate::ui::browser::input::{self, Action, Raw, page, watching_cancel_keys};
@@ -534,7 +534,7 @@ pub(crate) async fn walk_in(
     folders: &mut [Folder],
 ) -> Result<bool> {
     if folders[index].items.is_none() {
-        let items = items_of_entry(client, tray, &tray.entries[index]).await?;
+        let items = highlights::items(client, tray, &tray.entries[index]).await?;
         folders[index].opened = vec![None; items.len()];
         folders[index].selected = 0;
         folders[index].items = Some(items);
@@ -771,7 +771,12 @@ fn draw_items(
 /// The heading of one open folder, `@someone · "trip" · 3 items`, for this
 /// browser and for the same folder opened from the profile card, so the two
 /// cannot name it two ways. An untitled one is named by its number.
-pub(crate) fn folder_title(username: &str, entry: &Entry, index: usize, items: usize) -> String {
+pub(crate) fn folder_title(
+    username: &str,
+    entry: &Highlight,
+    index: usize,
+    items: usize,
+) -> String {
     let name = if entry.title.is_empty() {
         format!("highlight {}", index + 1)
     } else {
@@ -786,7 +791,7 @@ pub(crate) fn folder_title(username: &str, entry: &Entry, index: usize, items: u
 
 /// One folder as a table row: number dim, title, the best count known
 /// right-aligned under its name, and when it last grew, dim as an aside.
-fn tray_row(index: usize, entry: &Entry, folder: &Folder, colors: bool) -> Row<'static> {
+fn tray_row(index: usize, entry: &Highlight, folder: &Folder, colors: bool) -> Row<'static> {
     let dim = tui::paint(colors, tui::DIM);
     let count = match folder.items.as_ref() {
         Some(items) => items.len().to_string(),
@@ -823,8 +828,8 @@ mod tests {
     use super::*;
     use snob_engine::media::Kind;
 
-    fn entry(title: &str, declared: Option<u64>) -> Entry {
-        Entry {
+    fn entry(title: &str, declared: Option<u64>) -> Highlight {
+        Highlight {
             id: "highlight:1".into(),
             title: title.into(),
             declared_items: declared,

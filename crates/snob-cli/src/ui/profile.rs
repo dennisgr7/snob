@@ -22,6 +22,7 @@ use snob_engine::app::{App, Viewer};
 use snob_engine::engine;
 use snob_engine::exit::ExitCode;
 use snob_engine::files::ABANDONED_AFTER;
+use snob_engine::highlights::{Highlight, Tray};
 use snob_engine::media::Story;
 use snob_engine::posts::Fetched;
 use snob_ig::client::IgClient;
@@ -29,8 +30,7 @@ use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
 
 use crate::commands::common;
-use crate::commands::highlights::{Entry, Tray};
-use crate::commands::profile::{Highlight, Profile, Visibility, badges};
+use crate::commands::profile::{Profile, Visibility, badges};
 use crate::report;
 use crate::ui::accounts::{self, Browsed, Picked};
 use crate::ui::browser::busy::Busy;
@@ -267,7 +267,7 @@ impl Media {
         let tray = Tray {
             username: profile.username.clone(),
             entries: match &profile.highlights {
-                Visibility::Shown(list) => list.iter().map(entry_of).collect(),
+                Visibility::Shown(list) => list.clone(),
                 Visibility::Hidden => Vec::new(),
             },
         };
@@ -1113,19 +1113,7 @@ fn draw_level(
     }
 }
 
-/// One highlight of the profile as the tray type the fetchers take.
-fn entry_of(h: &Highlight) -> Entry {
-    Entry {
-        id: h.id.clone(),
-        title: h.title.clone(),
-        declared_items: h.items,
-        created_at: None,
-        updated_at: h.updated_at,
-        cover: h.cover.clone(),
-    }
-}
-
-fn entry_title(entry: &Entry) -> String {
+fn entry_title(entry: &Highlight) -> String {
     if entry.title.is_empty() {
         "(untitled)".to_string()
     } else {
@@ -3057,7 +3045,8 @@ mod tests {
             highlights: Visibility::Shown(vec![Highlight {
                 id: "highlight:1".to_string(),
                 title: "trip".to_string(),
-                items: Some(5),
+                declared_items: Some(5),
+                created_at: None,
                 updated_at: None,
                 cover: None,
             }]),
@@ -3221,24 +3210,17 @@ mod tests {
         );
     }
 
-    /// A profile highlight becomes the tray type without inventing a date.
+    /// A highlight with no title is said to have none, not drawn blank.
     #[test]
-    fn a_profile_highlight_becomes_a_tray_entry() {
-        let entry = entry_of(&Highlight {
+    fn a_highlight_with_no_title_is_called_untitled() {
+        let entry = Highlight {
             id: "highlight:9".to_string(),
             title: String::new(),
-            items: Some(3),
+            declared_items: Some(3),
+            created_at: None,
             updated_at: Some(Epoch::new(5)),
-            cover: Some("https://x.cdninstagram.com/cover.jpg".to_string()),
-        });
-        assert_eq!(
-            entry.cover.as_deref(),
-            Some("https://x.cdninstagram.com/cover.jpg")
-        );
-        assert_eq!(entry.id, "highlight:9");
-        assert_eq!(entry.declared_items, Some(3));
-        assert_eq!(entry.created_at, None);
-        assert_eq!(entry.updated_at, Some(Epoch::new(5)));
+            cover: None,
+        };
         assert_eq!(entry_title(&entry), "(untitled)");
     }
 

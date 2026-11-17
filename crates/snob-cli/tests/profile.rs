@@ -151,7 +151,7 @@ async fn an_account_with_nobody_in_common_costs_no_mutual_request() {
         Visibility::Shown(list) => {
             assert_eq!(list.len(), 1);
             assert_eq!(list[0].title, "trip");
-            assert_eq!(list[0].items, Some(5));
+            assert_eq!(list[0].declared_items, Some(5));
         }
         Visibility::Hidden => panic!("a public account hides nothing"),
     }

@@ -1,20 +1,36 @@
-//! `snob highlights` against a mock server: what is asked, what is not, and
-//! how the tray becomes the numbered listing the command acts on.
+//! An account's highlights (`snob_engine::highlights`) against a mock
+//! server: what is asked, what is not, and how the wire tray becomes the
+//! entries every front lists.
 //!
-//! The binary-level behavior — the file names, the refusals by number, the
-//! GET-only property — is in `sandbox.rs` beside the story tests it mirrors.
-//! What is here is the library half: the visibility rule, the mapping from
-//! the wire tray to the listing, and the prefixed reel id the items are
-//! fetched with.
+//! What `snob highlights` does with them (the file names, the refusals by
+//! number, the GET-only property) is in the command line's `sandbox.rs`.
 
-mod common;
+use std::sync::Arc;
 
-use common::{ME as VIEWER, client};
-use snob_cli::commands::highlights::{Fetched, fetch_tray, items_of_entry};
+use snob_core::Pk;
+use snob_core::budget::UnlimitedRateBudget;
+use snob_core::session::{Session, SessionOrigin};
+use snob_engine::highlights::{self, Fetched};
+use snob_ig::client::IgClient;
+use snob_ig::pace::Pacer;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// The fields `fetch_tray` reads from the profile, and nothing else.
+const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                  (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
+
+/// The account the client is signed in as: the id inside its `sessionid`.
+const VIEWER: Pk = Pk::new(42);
+
+/// A client of the mock server, signed in as [`VIEWER`].
+fn client(server: &MockServer) -> IgClient {
+    let session = Session::from_sessionid("42%3AAbCdEfGh%3A20", UA, SessionOrigin::Paste).unwrap();
+    IgClient::new(session, Pacer::new(Arc::new(UnlimitedRateBudget)))
+        .unwrap()
+        .with_base_url(server.uri().parse().unwrap())
+}
+
+/// The fields the tray's read takes from the profile, and nothing else.
 fn profile_body(id: u64, private: bool, followed: bool) -> String {
     format!(
         r#"{{"data":{{"user":{{"id":"{id}","username":"someone",
@@ -44,7 +60,7 @@ async fn a_private_account_you_do_not_follow_is_not_asked_for_its_tray() {
     let server = MockServer::start().await;
     mount_profile(&server, profile_body(7, true, false)).await;
 
-    let fetched = fetch_tray(&client(&server), "someone", VIEWER, None)
+    let fetched = highlights::tray(&client(&server), "someone", VIEWER, None)
         .await
         .unwrap();
 
@@ -78,7 +94,7 @@ async fn a_followed_private_account_serves_its_tray() {
         .mount(&server)
         .await;
 
-    let fetched = fetch_tray(&client(&server), "someone", VIEWER, None)
+    let fetched = highlights::tray(&client(&server), "someone", VIEWER, None)
         .await
         .unwrap();
 
@@ -126,10 +142,13 @@ async fn the_items_are_asked_for_under_the_prefixed_id() {
         .await;
 
     let client = client(&server);
-    let Fetched::Tray(tray) = fetch_tray(&client, "someone", VIEWER, None).await.unwrap() else {
+    let Fetched::Tray(tray) = highlights::tray(&client, "someone", VIEWER, None)
+        .await
+        .unwrap()
+    else {
         panic!("visible");
     };
-    let items = items_of_entry(&client, &tray, &tray.entries[0])
+    let items = highlights::items(&client, &tray, &tray.entries[0])
         .await
         .unwrap();
 
@@ -167,10 +186,13 @@ async fn a_deleted_highlight_answers_empty_rather_than_failing() {
         .await;
 
     let client = client(&server);
-    let Fetched::Tray(tray) = fetch_tray(&client, "someone", VIEWER, None).await.unwrap() else {
+    let Fetched::Tray(tray) = highlights::tray(&client, "someone", VIEWER, None)
+        .await
+        .unwrap()
+    else {
         panic!("visible");
     };
-    let items = items_of_entry(&client, &tray, &tray.entries[0])
+    let items = highlights::items(&client, &tray, &tray.entries[0])
         .await
         .unwrap();
     assert!(items.is_empty());
@@ -189,7 +211,7 @@ async fn a_profile_with_no_highlights_is_not_asked_for_its_tray() {
     )
     .await;
 
-    let Fetched::Tray(tray) = fetch_tray(&client(&server), "someone", VIEWER, None)
+    let Fetched::Tray(tray) = highlights::tray(&client(&server), "someone", VIEWER, None)
         .await
         .unwrap()
     else {

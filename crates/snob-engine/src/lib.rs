@@ -17,7 +17,8 @@
 //!   [`app`], [`engine`], [`sentences`];
 //! - an account on this computer: [`account`], [`login`] (from another
 //!   machine, [`relay`]), [`logout`], [`viewer`], [`cache`], [`storage`];
-//! - what is read besides a list: [`profile`], [`posts`], [`media`], and
+//! - what is read besides a list: [`profile`], [`posts`], [`stories`],
+//!   [`highlights`], what a story is and how one is kept ([`media`]), and
 //!   the files they are kept in ([`files`], [`ffmpeg`]);
 //! - what runs by itself: the monitor ([`watch`]), [`automations`], [`jobs`];
 //! - the program itself: [`log`], [`update`].
@@ -35,6 +36,7 @@ pub mod engine;
 pub mod exit;
 pub mod ffmpeg;
 pub mod files;
+pub mod highlights;
 pub mod host;
 pub mod jobs;
 pub mod log;
@@ -48,6 +50,7 @@ pub mod relay;
 pub mod sandbox;
 pub mod sentences;
 pub mod storage;
+pub mod stories;
 pub mod system;
 pub mod update;
 pub mod viewer;

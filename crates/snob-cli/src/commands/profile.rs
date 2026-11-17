@@ -6,7 +6,7 @@ use snob_engine::app::{App, Viewer};
 use snob_engine::engine::target;
 use snob_engine::exit::ExitCode;
 pub use snob_engine::profile::{
-    Highlight, Mutual, MutualPolicy, Profile, Reads, Relation, Visibility, fetch, read,
+    Mutual, MutualPolicy, Profile, Reads, Relation, Visibility, fetch, read,
 };
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
@@ -187,7 +187,7 @@ fn as_json(profile: &Profile) -> serde_json::Value {
                     "number": index + 1,
                     "id": h.id,
                     "title": h.title,
-                    "items": h.items,
+                    "items": h.declared_items,
                     "updated_at": h.updated_at,
                 }))
                 .collect::<Vec<_>>()
@@ -383,7 +383,7 @@ fn as_text(profile: &Profile, explicit_target: bool, hints: bool) -> String {
                     "  {:>2}  {}  {}",
                     index + 1,
                     console::pad_str(&clip(&h.title, 24), width, console::Alignment::Left, None),
-                    match h.items {
+                    match h.declared_items {
                         Some(1) => "1 item".to_string(),
                         Some(n) => format!("{n} items"),
                         None => String::new(),
@@ -536,7 +536,7 @@ fn as_markdown(profile: &Profile) -> String {
                     "| {} | {} | {} | {} |\n",
                     index + 1,
                     output::md::escape(&h.title),
-                    h.items.map(|n| n.to_string()).unwrap_or_default(),
+                    h.declared_items.map(|n| n.to_string()).unwrap_or_default(),
                     h.updated_at
                         .map(snob_engine::sentences::stored_on)
                         .unwrap_or_default()
@@ -583,6 +583,7 @@ mod tests {
     use super::*;
     use snob_core::model::User;
     use snob_core::{Epoch, Pk};
+    use snob_engine::highlights::Highlight;
     use snob_engine::media::Story;
 
     fn person(name: &str) -> User {
@@ -639,7 +640,8 @@ mod tests {
             highlights: Visibility::Shown(vec![Highlight {
                 id: "highlight:1".to_string(),
                 title: "trip".to_string(),
-                items: Some(5),
+                declared_items: Some(5),
+                created_at: None,
                 updated_at: None,
                 cover: None,
             }]),
@@ -777,7 +779,8 @@ mod tests {
         profile.highlights = Visibility::Shown(vec![Highlight {
             id: "highlight:1".to_string(),
             title: html.to_string(),
-            items: Some(1),
+            declared_items: Some(1),
+            created_at: None,
             updated_at: None,
             cover: None,
         }]);
@@ -825,7 +828,8 @@ mod tests {
         profile.highlights = Visibility::Shown(vec![Highlight {
             id: "highlight:1".into(),
             title: "trip".into(),
-            items: Some(5),
+            declared_items: Some(5),
+            created_at: None,
             updated_at: Some(Epoch::new(1_773_489_600)),
             cover: Some("https://cdn.example/cover.jpg".into()),
         }]);

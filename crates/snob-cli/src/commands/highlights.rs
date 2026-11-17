@@ -1,23 +1,18 @@
 //! `snob highlights`: the reels an account chose to keep on its profile, and how
 //! to keep a copy.
 //!
-//! AGENTS.md says why the two are not one command with a flag.
-//!
-//! **Reading a highlight does not mark it as seen.**
-//!
-//! **A private account the viewer does not follow is told apart from an account
-//! with nothing kept.**
+//! AGENTS.md says why the two are not one command with a flag. The reads are
+//! the engine's (`snob_engine::highlights`), with the rules they keep.
 
 use std::path::Path;
 
 use anyhow::{Result, anyhow};
 use comfy_table::Cell;
-use snob_core::Epoch;
 use snob_core::model::printable;
 use snob_engine::app::{App, Viewer};
 use snob_engine::exit::{ExitCode, ExitError};
+use snob_engine::highlights::{self, Fetched, Highlight, Tray};
 use snob_engine::media::{self, Story, download_many, was_canceled};
-use snob_ig::client::IgClient;
 use snob_ig::pace::Pace;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
@@ -27,42 +22,6 @@ use crate::commands::common::{self, Switched};
 use crate::output::Presentation;
 use crate::output::media::empty_document;
 use crate::ui;
-use snob_engine::media::story_from;
-use snob_engine::profile::cover_of;
-
-/// One tray entry: the cover the profile shows, not yet its items.
-#[derive(Debug, Clone)]
-pub struct Entry {
-    /// `highlight:<id>`, the spelling the items are fetched with.
-    pub id: String,
-    /// Filtered: it came off somebody else's profile and it is going to a
-    /// terminal. Empty when the highlight has none, which happens.
-    pub title: String,
-    /// The count the tray declares.
-    pub declared_items: Option<u64>,
-    pub created_at: Option<Epoch>,
-    /// When something was last added to it.
-    pub updated_at: Option<Epoch>,
-    /// Its cover's address, for a view to draw ([`cover_of`]).
-    pub cover: Option<String>,
-}
-
-/// The tray, gathered before anything is printed.
-#[derive(Debug, Clone)]
-pub struct Tray {
-    /// As Instagram spells it, not as it was typed.
-    pub username: String,
-    pub entries: Vec<Entry>,
-}
-
-/// What the tray request could see.
-pub enum Fetched {
-    Tray(Tray),
-    /// Private, and the viewer does not follow it.
-    Hidden {
-        username: String,
-    },
-}
 
 pub async fn run(
     args: HighlightsArgs,
@@ -95,7 +54,7 @@ pub async fn run(
     let typed = common::target_or_own(&app, args.target.as_deref()).await?;
 
     let known = snob_engine::engine::target::known_pk_of(&app, args.target.as_deref(), &typed)?;
-    let tray = match fetch_tray(app.client(), &typed, app.viewer().pk, known).await? {
+    let tray = match highlights::tray(app.client(), &typed, app.viewer().pk, known).await? {
         Fetched::Tray(tray) => tray,
         Fetched::Hidden { username } => {
             // An answer, not a failure: the account was found and this is
@@ -206,7 +165,7 @@ async fn browse(
             let from = s.app.viewer();
             let switched = common::switch(store, paths, from, &to, false, async |app: &mut App| {
                 let known = snob_engine::engine::target::known_pk(app, &name)?;
-                match fetch_tray(app.client(), &name, app.viewer().pk, known).await? {
+                match highlights::tray(app.client(), &name, app.viewer().pk, known).await? {
                     Fetched::Tray(tray) if !tray.entries.is_empty() => Ok(tray),
                     Fetched::Tray(tray) => {
                         Err(anyhow!("@{} has no highlights", printable(&tray.username)))
@@ -269,7 +228,7 @@ async fn inside_one(
     number: usize,
     args: &HighlightsArgs,
 ) -> Result<ExitCode> {
-    let items = items_of_entry(app.client(), tray, &tray.entries[number - 1]).await?;
+    let items = highlights::items(app.client(), tray, &tray.entries[number - 1]).await?;
     if app.cancel().is_canceled() {
         return Ok(ExitCode::Interrupted);
     }
@@ -339,58 +298,6 @@ async fn inside_one(
     )
 }
 
-/// The network half of the tray, kept apart from the session and the filesystem
-/// so a test can drive it against a mock server.
-pub async fn fetch_tray(
-    client: &IgClient,
-    typed: &str,
-    viewer: snob_core::Pk,
-    known: Option<snob_core::Pk>,
-) -> Result<Fetched> {
-    let info = client
-        .profile_named(snob_engine::engine::target::clean(typed), known)
-        .await?;
-
-    // The same three-way rule as `profile`: a private account serves its
-    // reels only to its followers, and asking would spend a request on an
-    // empty answer and then say "none" for an account that has some.
-    if !snob_engine::engine::target::shown_to(&info, viewer) {
-        return Ok(Fetched::Hidden {
-            username: info.username,
-        });
-    }
-
-    // Zero is an answer the profile already gave; see `profile`.
-    let tray = if info.highlight_reel_count == Some(0) {
-        Vec::new()
-    } else {
-        client.highlights_tray(info.id, &info.username).await?
-    };
-    Ok(Fetched::Tray(Tray {
-        username: info.username,
-        entries: tray
-            .into_iter()
-            .map(|h| Entry {
-                cover: cover_of(&h),
-                id: h.id,
-                title: printable(h.title.as_deref().unwrap_or("")),
-                declared_items: h.media_count,
-                created_at: h.created_at,
-                updated_at: h.updated_timestamp,
-            })
-            .collect(),
-    }))
-}
-
-/// The items of one entry of `tray`.
-pub async fn items_of_entry(client: &IgClient, tray: &Tray, entry: &Entry) -> Result<Vec<Story>> {
-    let ids: Vec<String> = tray.entries.iter().map(|e| e.id.clone()).collect();
-    let Some(reel) = client.highlight(&entry.id, &ids, &tray.username).await? else {
-        return Ok(Vec::new());
-    };
-    Ok(reel.items.iter().map(story_from).collect())
-}
-
 /// The sentence for a tray number nobody has, shared by every path that
 /// takes one so they cannot drift.
 fn no_such_highlight(tray: &Tray, number: usize) -> anyhow::Error {
@@ -415,7 +322,7 @@ fn empty_highlight(tray: &Tray, number: usize) -> String {
 
 /// `("Trip") `, or nothing for an untitled entry — a parenthetical that can
 /// sit in the middle of a sentence either way.
-fn titled(entry: &Entry) -> String {
+fn titled(entry: &Highlight) -> String {
     if entry.title.is_empty() {
         String::new()
     } else {
@@ -467,7 +374,7 @@ async fn download_entries(
             return Err(ExitError::new(ExitCode::Interrupted, "stopped").into());
         }
         let entry = &tray.entries[number - 1];
-        let items = match items_of_entry(app.client(), tray, entry).await {
+        let items = match highlights::items(app.client(), tray, entry).await {
             Ok(items) => items,
             // The user, not the server: stopped as the downloads below stop.
             Err(e) if was_canceled(&e) => return Err(e),
@@ -606,7 +513,7 @@ fn tray_table(tray: &Tray, presentation: Presentation) -> String {
     for (index, entry) in tray.entries.iter().enumerate() {
         table.add_row([
             Cell::new(index + 1),
-            // Already filtered in `fetch_tray`; the dash keeps an untitled
+            // Already filtered when the tray was read; the dash keeps an untitled
             // entry's row from reading as a rendering defect.
             Cell::new(if entry.title.is_empty() {
                 "-"
@@ -709,31 +616,8 @@ fn items_json(tray: &Tray, number: usize, items: &[Story], format: Format) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snob_core::Epoch;
     use snob_ig::error::IgError;
-
-    /// A highlight's cover is the tray's cropped picture, and nothing when
-    /// the tray gives none or an empty address.
-    #[test]
-    fn a_highlights_cover_is_its_cropped_picture() {
-        let tray: snob_ig::model::HighlightsTray = serde_json::from_value(serde_json::json!({
-            "tray": [
-                {"id": "highlight:1", "cover_media": {"cropped_image_version":
-                    {"url": "https://x.cdninstagram.com/cover.jpg", "width": 150, "height": 150}}},
-                {"id": "highlight:2", "cover_media": null},
-                {"id": "highlight:3", "cover_media": {"cropped_image_version": {"url": ""}}},
-            ]
-        }))
-        .unwrap();
-        let covers: Vec<Option<String>> = tray.tray.iter().map(cover_of).collect();
-        assert_eq!(
-            covers,
-            [
-                Some("https://x.cdninstagram.com/cover.jpg".to_string()),
-                None,
-                None
-            ]
-        );
-    }
 
     /// Every entry not saved is counted, the ones never tried included.
     #[test]
@@ -775,7 +659,7 @@ mod tests {
         Tray {
             username: "someone".into(),
             entries: vec![
-                Entry {
+                Highlight {
                     id: "highlight:1".into(),
                     title: "Trip".into(),
                     declared_items: Some(2),
@@ -783,7 +667,7 @@ mod tests {
                     updated_at: Some(Epoch::new(1_773_576_000)),
                     cover: None,
                 },
-                Entry {
+                Highlight {
                     id: "highlight:2".into(),
                     title: String::new(),
                     declared_items: None,

@@ -1074,13 +1074,13 @@ async fn queries_since(server: &MockServer, since: usize) -> Vec<String> {
 /// over the whole tray, and `reels_media` is never asked.
 #[tokio::test]
 async fn highlights_are_read_through_the_tray_and_highlights_queries() {
-    use snob_cli::commands::highlights::{Fetched, fetch_tray, items_of_entry};
+    use snob_engine::highlights::{self, Fetched};
 
     let world = World::new();
     let server = world.serve_web().await;
     let tmp = tempfile::tempdir().unwrap();
     let app = app_on(&server, &world, tmp.path());
-    let Fetched::Tray(tray) = fetch_tray(app.client(), "someone", common::ME, None)
+    let Fetched::Tray(tray) = highlights::tray(app.client(), "someone", common::ME, None)
         .await
         .unwrap()
     else {
@@ -1100,7 +1100,7 @@ async fn highlights_are_read_through_the_tray_and_highlights_queries() {
     );
 
     let since = common::requests(&server).await;
-    let items = items_of_entry(app.client(), &tray, &tray.entries[0])
+    let items = highlights::items(app.client(), &tray, &tray.entries[0])
         .await
         .unwrap();
     let urls: Vec<String> = items.iter().filter_map(|s| s.url.clone()).collect();
@@ -1177,7 +1177,7 @@ async fn stories_are_read_through_the_gallery_in_the_trays_order() {
         }
     };
 
-    let stories = snob_cli::commands::stories::fetch(app.client(), "user3", None)
+    let stories = snob_engine::stories::named(app.client(), "user3", None)
         .await
         .unwrap();
     assert_eq!(stories.username, "user3");
@@ -1191,7 +1191,7 @@ async fn stories_are_read_through_the_gallery_in_the_trays_order() {
     );
 
     let since = common::requests(&server).await;
-    let stories = snob_cli::commands::stories::fetch(app.client(), "someone", None)
+    let stories = snob_engine::stories::named(app.client(), "someone", None)
         .await
         .unwrap();
     assert_eq!(stories.items.len(), 2);
