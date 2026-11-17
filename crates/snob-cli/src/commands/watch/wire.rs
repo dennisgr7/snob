@@ -418,6 +418,80 @@ pub(super) fn payload(tick: &TickReport, run_id: &str, event: &str) -> serde_jso
     body
 }
 
+/// The event an automation's report of an action other than lists and posts
+/// goes as.
+pub(super) fn found_event(news: bool) -> &'static str {
+    if news {
+        "automation.found"
+    } else {
+        "automation.heartbeat"
+    }
+}
+
+/// How many accounts a report of an action names at most, the rest counted.
+const FOUND_MOST: usize = 1_000;
+
+/// What an automation's action other than lists and posts reports: which
+/// automation and action, as whom, what it found after its filters, and
+/// what changed since the last report when a filter asks for it.
+///
+/// **This is protocol**, as [`payload`] is.
+pub(super) fn found_payload(
+    automation: &snob_core::automation::Automation,
+    found: &snob_engine::automations::read::Found,
+    viewer: &Viewer,
+    run_id: &str,
+    event: &str,
+    at: Epoch,
+) -> serde_json::Value {
+    use snob_engine::automations::read::Changes;
+
+    let accounts = |users: &[User]| -> Vec<serde_json::Value> {
+        users.iter().take(FOUND_MOST).map(account_json).collect()
+    };
+    let changes = match &found.changes {
+        None => serde_json::Value::Null,
+        Some(Changes::Baseline) => serde_json::json!({ "baseline": true }),
+        Some(Changes::Since {
+            since,
+            added,
+            removed,
+        }) => serde_json::json!({
+            "baseline": false,
+            "since": since,
+            "added": accounts(added),
+            "removed": accounts(removed),
+            "complete": added.len() <= FOUND_MOST && removed.len() <= FOUND_MOST,
+        }),
+    };
+    serde_json::json!({
+        "schema": SENT_SCHEMA,
+        "event": event,
+        "run": {
+            "id": run_id,
+            "at": at,
+            "tool": { "name": "snob", "version": env!("CARGO_PKG_VERSION") },
+        },
+        "automation": { "id": automation.id, "name": printable(&automation.name) },
+        "action": {
+            "step": found.node,
+            "what": found.what.as_str(),
+            "account": found.username.as_deref().map(printable),
+        },
+        "viewer": viewer.json(),
+        "total": found.total,
+        "count": found.accounts.len(),
+        "accounts": accounts(&found.accounts),
+        "complete": found.accounts.len() <= FOUND_MOST,
+        "changes": changes,
+        "stored_since": found.stored_since,
+        "picture": found.picture.as_ref().map(|picture| serde_json::json!({
+            "path": picture.path.as_ref().map(|path| printable(&path.to_string_lossy())),
+            "new": picture.new,
+        })),
+    })
+}
+
 /// What `snob watch check` posts.
 pub(super) fn preflight_body(run_id: &str, at: Epoch) -> serde_json::Value {
     serde_json::json!({

@@ -7,13 +7,12 @@ use snob_engine::exit::{ExitCode, ExitError};
 use snob_store::config;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
-use snob_store::store::{Store, deliveries};
 
 use crate::cli::WatchDeliverArgs;
 use crate::ui;
 
 use super::delivery::delivery_from;
-use super::run::{account_databases, drain_all, settle_all};
+use super::run::{drain_all, owed_all, settle_all};
 use super::wire::deliver_json;
 
 pub(super) async fn deliver(
@@ -43,21 +42,12 @@ pub(super) async fn deliver(
         .with_hint("\"snob watch setup\" configures one, or pass --webhook <url>")
         .into());
     };
-    let shown = snob_engine::watch::webhook::shown_str(&delivery.destination);
+    let shown = snob_engine::watch::webhook::shown(&delivery.destination);
 
     let cancel = snob_engine::interrupt::install();
     let tried = drain_all(paths, &cancel, &delivery, true).await;
 
-    // What is left for this address, every account's queue together.
-    let mut left = deliveries::Owed::default();
-    for account in account_databases(paths) {
-        if let Ok(Some(db)) = Store::open_existing(&account)
-            && let Ok(owed) = deliveries::owed(db.conn(), Some(&delivery.destination))
-        {
-            left.waiting += owed.waiting;
-            left.elsewhere += owed.elsewhere;
-        }
-    }
+    let left = owed_all(paths, &delivery.destination);
 
     if args.output.json {
         ui::say!(

@@ -3,10 +3,12 @@
 //! Everything here is arranged around one rule: **this client cannot carry the
 //! session.**
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use snob_core::secret::Secret;
 use snob_core::watch::sign;
 use snob_ig::http::{self, reqwest};
+use snob_store::config::{WebhookConfig, WebhookFormat};
+use snob_store::secrets::Stored;
 use url::Url;
 
 /// How much of an error response is read back to show the user.
@@ -188,6 +190,222 @@ impl WebhookClient {
     }
 }
 
+/// What a run was given for its webhook besides the file: the flags.
+#[derive(Debug, Clone, Default)]
+pub struct Given {
+    pub webhook: Option<String>,
+    pub header: Vec<String>,
+    pub sign_with: Option<String>,
+    pub heartbeat: bool,
+    pub format: Option<WebhookFormat>,
+}
+
+/// What this run would send, worked out without touching the keyring or the
+/// network.
+pub struct Planned {
+    /// With the stored `Authorization` as its `token`, when this run sends
+    /// it: never among the plain headers.
+    pub webhook: Webhook,
+    pub heartbeat: bool,
+    pub format: WebhookFormat,
+}
+
+/// Decides what to send, and what to say about it: the headers of the file
+/// and the flags merged, and the keyring's token and signing key sent only to
+/// the address they were set up for.
+///
+/// **The warnings come back rather than being printed**, because a decision that
+/// prints is a decision that cannot be checked.
+pub fn plan(
+    args: &Given,
+    from_file: Option<&WebhookConfig>,
+    stored_token: Stored,
+    stored_key: Stored,
+) -> Result<(Option<Planned>, Vec<String>)> {
+    let mut warnings: Vec<String> = Vec::new();
+
+    // Whether the credential store could be consulted at all, asked before the
+    // secrets are unwrapped.
+    let store_unreadable = stored_token.is_unreachable() || stored_key.is_unreachable();
+    let (stored_token, stored_key) = (stored_token.found(), stored_key.found());
+
+    let Some(url) = args
+        .webhook
+        .clone()
+        .or_else(|| from_file.map(|w| w.url.clone()))
+    else {
+        if !args.header.is_empty()
+            || args.sign_with.is_some()
+            || args.heartbeat
+            || args.format.is_some()
+        {
+            warnings.push(
+                "there is no webhook, so nothing is sent and those options do nothing".to_string(),
+            );
+        }
+        return Ok((None, warnings));
+    };
+
+    // Never the address itself: the likeliest one that does not parse is one
+    // hand-edited without its scheme, where `shown` cannot take a Slack or
+    // Discord secret out of the path, and this is the error every scheduled run
+    // fails with into the log of an unattended service.
+    let url = Url::parse(&url).with_context(|| {
+        if args.webhook.is_some() {
+            "the address given with --webhook is not an address"
+        } else {
+            "the webhook's url in watch.toml is not an address"
+        }
+    })?;
+
+    // Whether this run is posting to the address the configuration was written
+    // for.
+    //
+    // `snob watch once --webhook https://webhook.site/<id>` is precisely what
+    // somebody does to see what the payload looks like, and the file's headers
+    // and the keyring token must not follow it to a host nobody configured.
+    //
+    // **An origin there is nothing to compare against is not a match.**
+    let configured_origin = from_file
+        .and_then(|w| Url::parse(&w.url).ok())
+        .map(|configured| configured.origin());
+    let same_destination = match &configured_origin {
+        Some(origin) => *origin == url.origin(),
+        None => args.webhook.is_none(),
+    };
+
+    // Every message below names the address, and the address may carry a
+    // password: `check` refuses one, but these are built before it runs, and a
+    // refusal that printed the secret first is not a refusal.
+    let shown = shown(url.as_str());
+
+    /// Names the origin a stored credential belongs to, for a warning about not
+    /// sending it.
+    fn configured_for(origin: Option<&url::Origin>) -> String {
+        origin.map_or_else(
+            || "the configuration".to_string(),
+            |o| o.ascii_serialization(),
+        )
+    }
+
+    // Headers from the file first, then the ones typed, so a flag can override
+    // a configured one of the same name -- the last one wins at the request.
+    let mut headers: Vec<(String, String)> = from_file
+        .filter(|_| same_destination)
+        .map(|w| {
+            w.headers
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !same_destination && from_file.is_some_and(|w| !w.headers.is_empty()) {
+        warnings.push(format!(
+            "{shown} is not the address in the configuration, so the headers configured there are \
+             not sent with it. Pass what this one needs with --header."
+        ));
+    }
+
+    for raw in &args.header {
+        let (name, value) = raw.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!("\"{raw}\" is not a header; write it as \"Name: value\"")
+        })?;
+        headers.push((name.trim().to_string(), value.trim().to_string()));
+    }
+
+    // Stored secrets fill in what was not passed.
+    //
+    // The guard looks at the **merged** list, not only at the flags, or a
+    // configured `Authorization` and a stored token would both go out.
+    let authorization_given = headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
+    let token = match stored_token.filter(|_| !authorization_given) {
+        Some(token) if same_destination => Some(token),
+        Some(_) => {
+            warnings.push(format!(
+                "the stored token was set up for {}, so it is not sent to {shown}. Pass one with \
+                 --header \"Authorization: ...\" if this address needs it.",
+                configured_for(configured_origin.as_ref()),
+            ));
+            None
+        }
+        None => None,
+    };
+
+    let key = match args.sign_with.clone() {
+        // An empty `--sign-with` is not a request to sign with nothing: it is
+        // `--sign-with ${SNOB_KEY}` in a unit file where the variable is unset.
+        Some(given) if given.trim().is_empty() => bail!(
+            "--sign-with was given an empty value. If that came from an environment variable \
+             that is not set, leave the flag out: the key stored by \"snob watch setup\" is \
+             used when it is absent."
+        ),
+        Some(given) => Some(Secret::from(given)),
+        // The same gate as the token.
+        None if same_destination => stored_key,
+        None => {
+            if stored_key.is_some() {
+                warnings.push(format!(
+                    "the stored signing key was set up for {}, so the report sent to {shown} is \
+                     not signed. Pass one with --sign-with if this address checks the signature.",
+                    configured_for(configured_origin.as_ref()),
+                ));
+            }
+            None
+        }
+    };
+
+    // Said whatever the file asks for, because the file is what says a
+    // credential was ever meant to travel. **It names only what is really
+    // missing**: a key from `--sign-with` or `SNOB_SIGNING_KEY` still signs,
+    // and a header still authenticates, and a warning that said otherwise sent
+    // somebody looking for a fault there was not.
+    let authenticated = authorization_given || token.is_some();
+    if store_unreadable && from_file.is_some() {
+        let (stored, goes_out, pass) = match (authenticated, key.is_some()) {
+            (true, true) => (None, "", ""),
+            (true, false) => (Some("signing key"), "unsigned", "it with --sign-with"),
+            (false, true) => (Some("token"), "unauthenticated", "it with --header"),
+            (false, false) => (
+                Some("token or signing key"),
+                "unauthenticated and unsigned",
+                "them with --header and --sign-with",
+            ),
+        };
+        if let Some(stored) = stored {
+            warnings.push(format!(
+                "the system keyring could not be read, so any {stored} stored by \
+                 \"snob watch setup\" is not being used: this report goes out {goes_out}. \
+                 Pass {pass}, or run where the keyring is reachable."
+            ));
+        }
+    }
+
+    Ok((
+        Some(Planned {
+            webhook: Webhook {
+                url,
+                headers,
+                key,
+                token,
+            },
+            heartbeat: args.heartbeat || from_file.is_some_and(|w| w.heartbeat),
+            // The file's format is the file's address's: Slack's shape posted
+            // to another address given with --webhook would be refused there.
+            format: args
+                .format
+                .or_else(|| {
+                    from_file
+                        .filter(|w| args.webhook.as_deref().is_none_or(|given| given == w.url))
+                        .map(|w| w.format)
+                })
+                .unwrap_or_default(),
+        }),
+        warnings,
+    ))
+}
+
 /// Why a request got no answer, in words that never carry the address.
 ///
 /// **Not `reqwest::Error`'s own `Display`**, which ends in ` for url (<the
@@ -214,7 +432,7 @@ fn unanswered(error: reqwest::Error, url: &Url) -> String {
 /// `text` with the address replaced by [`shown`]'s, and where the path or the
 /// query is the credential, each of those on its own too.
 fn without_address(text: &str, url: &Url) -> String {
-    let shown = shown(url);
+    let shown = shown_url(url);
     if shown == url.as_str() {
         return text.to_string();
     }
@@ -275,7 +493,7 @@ const HIDDEN: &str = "...";
 ///
 /// **An address with no host is shown as one that does not parse**
 /// ([`unparsed`]).
-pub fn shown(url: &Url) -> String {
+fn shown_url(url: &Url) -> String {
     if url.host_str().is_none() {
         return unparsed(url.as_str());
     }
@@ -354,7 +572,9 @@ fn secret_path(host: &str) -> Option<Option<&'static str>> {
     }
 }
 
-/// [`shown`], asked of an address held as a string (the outbox's, the file's).
+/// The address as it may be shown to a person or written to a log
+/// ([`shown_url`]'s rules), from the string it is held as (the outbox's, the
+/// file's, a flag's).
 ///
 /// **An address that does not parse is never shown as it came**: `shown`'s
 /// rules cannot be applied to what has no parts, and the likeliest such
@@ -367,11 +587,11 @@ fn secret_path(host: &str) -> Option<Option<&'static str>> {
 /// there the "host" would be the user and the start of the password; the `@`
 /// might as well be a path's, and what follows it the end of a secret path, so
 /// nothing around it is shown.
-pub fn shown_str(address: &str) -> String {
-    Url::parse(address).map_or_else(|_| unparsed(address), |url| shown(&url))
+pub fn shown(address: &str) -> String {
+    Url::parse(address).map_or_else(|_| unparsed(address), |url| shown_url(&url))
 }
 
-/// The host of an address that does not parse, as [`shown_str`] says.
+/// The host of an address that does not parse, as [`shown`] says.
 fn unparsed(address: &str) -> String {
     // A scheme only where what precedes `://` could be one, so that a `://`
     // later in a path does not make the path a scheme.
@@ -464,7 +684,7 @@ pub fn check(webhook: &Webhook) -> Result<()> {
             "{} is the cloud instance metadata service, which answers to anything that can \
              reach it and hands back the machine's own credentials. snob will not post \
              to it over any scheme.",
-            shown(&webhook.url)
+            shown_url(&webhook.url)
         );
     }
 
@@ -476,7 +696,7 @@ pub fn check(webhook: &Webhook) -> Result<()> {
              The report carries account names, and any header you configured -- a token, \
              usually -- travels with it in the clear. Use https, or an address on your own \
              network.",
-            shown(&webhook.url)
+            shown_url(&webhook.url)
         ),
         other => bail!("\"{other}\" is not an address this can post to; use https"),
     }
@@ -719,7 +939,7 @@ mod tests {
     /// message that names one.
     #[test]
     fn the_shown_address_keeps_everything_but_the_credential() {
-        let shown = shown(&Url::parse("https://alice:hunter2@host.test/hook").unwrap());
+        let shown = shown_url(&Url::parse("https://alice:hunter2@host.test/hook").unwrap());
         assert_eq!(shown, "https://host.test/hook");
     }
 
@@ -733,13 +953,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            shown(&chat),
+            shown_url(&chat),
             "https://chat.googleapis.com/v1/spaces/AAAA/messages?..."
         );
         let flow = Url::parse("https://host.test/hook?sp=x&sig=S-secret#part").unwrap();
-        assert_eq!(shown(&flow), "https://host.test/hook?...");
+        assert_eq!(shown_url(&flow), "https://host.test/hook?...");
         let empty = Url::parse("https://host.test/hook?#").unwrap();
-        assert_eq!(shown(&empty), "https://host.test/hook");
+        assert_eq!(shown_url(&empty), "https://host.test/hook");
     }
 
     /// An address held as a string loses the same parts, and one that does not
@@ -747,26 +967,26 @@ mod tests {
     #[test]
     fn an_address_held_as_a_string_is_shown_the_same_way() {
         assert_eq!(
-            shown_str("https://alice:hunter2@host.test/hook"),
+            shown("https://alice:hunter2@host.test/hook"),
             "https://host.test/hook"
         );
         assert_eq!(
-            shown_str("https://hooks.slack.com/services/T0000/B0000/XXXXYYYY"),
+            shown("https://hooks.slack.com/services/T0000/B0000/XXXXYYYY"),
             "https://hooks.slack.com/services/..."
         );
-        assert_eq!(shown_str("n8n.local/hook"), "n8n.local/...");
+        assert_eq!(shown("n8n.local/hook"), "n8n.local/...");
         assert_eq!(
-            shown_str("hooks.slack.com/services/T0000/B0000/XXXXYYYY"),
+            shown("hooks.slack.com/services/T0000/B0000/XXXXYYYY"),
             "hooks.slack.com/..."
         );
-        assert_eq!(shown_str("n8n.local"), "n8n.local");
+        assert_eq!(shown("n8n.local"), "n8n.local");
         // A host that is itself the secret is hidden however it came.
         assert_eq!(
-            shown_str("eoAbC123.m.pipedream.net/hook"),
+            shown("eoAbC123.m.pipedream.net/hook"),
             "....m.pipedream.net/..."
         );
         assert_eq!(
-            shown_str("eoAbC123.m.pipedream.net:443/x"),
+            shown("eoAbC123.m.pipedream.net:443/x"),
             "....m.pipedream.net/..."
         );
         let pipedream = Url::parse("https://eoabc123.m.pipedream.net/hook").unwrap();
@@ -790,15 +1010,15 @@ mod tests {
         // What came before an `@` is somebody's credential, a `://` in the
         // path is no scheme, and a host that does not parse is still a host.
         assert_eq!(
-            shown_str("https://alice:hunter2@exa mple.test/hook?key=K"),
+            shown("https://alice:hunter2@exa mple.test/hook?key=K"),
             "https://exa mple.test/..."
         );
         assert_eq!(
-            shown_str("hooks.slack.com/services/T0/x://B0/XXXXYYYY"),
+            shown("hooks.slack.com/services/T0/x://B0/XXXXYYYY"),
             "hooks.slack.com/..."
         );
         assert_eq!(
-            shown_str("hooks.slack.com\\services\\XXXXYYYY"),
+            shown("hooks.slack.com\\services\\XXXXYYYY"),
             "hooks.slack.com/..."
         );
         // A password holding a `/`, `?` or `#` unencoded is why the address
@@ -808,17 +1028,17 @@ mod tests {
             "https://alice:hun?ter2@n8n.local/hook",
             "https://alice:hun#ter2@n8n.local/hook",
         ] {
-            let shown = shown_str(address);
+            let shown = shown(address);
             assert_eq!(shown, "https://.../...", "{address}");
         }
         // A port is left out, and so is whatever follows a colon in an
         // address with no scheme; an address literal is kept whole.
         assert_eq!(
-            shown_str("https://n8n.local:99999/hook"),
+            shown("https://n8n.local:99999/hook"),
             "https://n8n.local/..."
         );
         assert_eq!(
-            shown_str("https://[fd00::1]:99999/hook"),
+            shown("https://[fd00::1]:99999/hook"),
             "https://[fd00::1]/..."
         );
     }
@@ -838,8 +1058,8 @@ mod tests {
         ] {
             let url = Url::parse(address).expect("an opaque URL parses");
             assert!(url.cannot_be_a_base(), "{address}");
-            assert_eq!(shown(&url), expected, "{address}");
-            assert_eq!(shown_str(address), expected, "{address}");
+            assert_eq!(shown_url(&url), expected, "{address}");
+            assert_eq!(shown(address), expected, "{address}");
             let said = without_address(&format!("no answer from {address}"), &url);
             assert_eq!(said, format!("no answer from {expected}"));
         }
@@ -849,31 +1069,37 @@ mod tests {
     #[test]
     fn a_webhook_whose_path_is_the_secret_is_shown_without_it() {
         let slack = Url::parse("https://hooks.slack.com/services/T0000/B0000/XXXXYYYY").unwrap();
-        assert_eq!(shown(&slack), "https://hooks.slack.com/services/...");
+        assert_eq!(shown_url(&slack), "https://hooks.slack.com/services/...");
         let discord =
             Url::parse("https://discord.com/api/webhooks/123456/abcdef-token?wait=true").unwrap();
-        assert_eq!(shown(&discord), "https://discord.com/api/webhooks/...?...");
+        assert_eq!(
+            shown_url(&discord),
+            "https://discord.com/api/webhooks/...?..."
+        );
         let zapier = Url::parse("https://hooks.zapier.com/hooks/catch/123/abc-key/").unwrap();
-        assert_eq!(shown(&zapier), "https://hooks.zapier.com/hooks/catch/...");
+        assert_eq!(
+            shown_url(&zapier),
+            "https://hooks.zapier.com/hooks/catch/..."
+        );
         let ifttt = Url::parse("https://maker.ifttt.com/trigger/run/with/key/abc-key").unwrap();
-        assert_eq!(shown(&ifttt), "https://maker.ifttt.com/trigger/...");
+        assert_eq!(shown_url(&ifttt), "https://maker.ifttt.com/trigger/...");
         let teams = Url::parse(
             "https://contoso.webhook.office.com/webhookb2/1@2/IncomingWebhook/abc-key/3",
         )
         .unwrap();
         assert_eq!(
-            shown(&teams),
+            shown_url(&teams),
             "https://contoso.webhook.office.com/webhookb2/..."
         );
         // Make's path is the token and nothing else, and a path on one of
         // those hosts without the segment that names the service goes whole.
         let make = Url::parse("https://hook.eu1.make.com/abc-token").unwrap();
-        assert_eq!(shown(&make), "https://hook.eu1.make.com/...");
+        assert_eq!(shown_url(&make), "https://hook.eu1.make.com/...");
         let odd = Url::parse("https://hooks.slack.com/T0000/B0000/XXXXYYYY").unwrap();
-        assert_eq!(shown(&odd), "https://hooks.slack.com/...");
+        assert_eq!(shown_url(&odd), "https://hooks.slack.com/...");
         // Anybody else's path is the address, and stays.
         let own = Url::parse("https://n8n.local/webhook/snob").unwrap();
-        assert_eq!(shown(&own), "https://n8n.local/webhook/snob");
+        assert_eq!(shown_url(&own), "https://n8n.local/webhook/snob");
     }
 
     /// Every spelling of the same receivers hides the same path: the host
@@ -941,11 +1167,11 @@ mod tests {
             ),
         ] {
             let url = Url::parse(address).unwrap();
-            assert_eq!(shown(&url), expected, "{address}");
+            assert_eq!(shown_url(&url), expected, "{address}");
         }
         // A name that only ends the same way is somebody else's.
         let own = Url::parse("https://notdiscord.com/api/webhooks/snob").unwrap();
-        assert_eq!(shown(&own), "https://notdiscord.com/api/webhooks/snob");
+        assert_eq!(shown_url(&own), "https://notdiscord.com/api/webhooks/snob");
     }
 
     /// A report that found nobody listening says why, and not where: the

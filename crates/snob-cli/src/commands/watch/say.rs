@@ -190,6 +190,96 @@ pub(super) fn describe_tick(tick: &TickReport) -> Vec<String> {
     lines
 }
 
+/// How many accounts a person is named before the rest are counted.
+const FOUND_NAMED: usize = 20;
+
+/// What an automation's action other than lists and posts found, as a person
+/// reads it.
+pub(super) fn found_lines(found: &snob_engine::automations::read::Found) -> Vec<String> {
+    use snob_core::automation::Read;
+    use snob_engine::automations::read::Changes;
+
+    let whose = match found.username.as_deref() {
+        Some(name) => format!("@{}'s", printable(name)),
+        None => "Your".to_string(),
+    };
+    let what = match &found.what {
+        Read::Lists => "followers and following",
+        Read::Unfollowers => "unfollowers",
+        Read::Fans => "fans",
+        Read::Friends => "friends",
+        Read::Posts { .. } => "posts",
+        Read::Picture { .. } => "profile picture",
+        Read::KnownFollowers => "followers you follow",
+        Read::FriendsInCommon => "friends in common with you",
+    };
+    let mut lines = Vec::new();
+    if let Some(picture) = &found.picture {
+        lines.push(match (&picture.path, picture.new) {
+            (Some(path), true) => format!(
+                "{whose} {what} is new, saved as {}.",
+                printable(&path.to_string_lossy())
+            ),
+            (Some(_), false) => format!("{whose} {what} has not changed."),
+            (None, _) => format!("{whose} {what} was read."),
+        });
+        return lines;
+    }
+    let stored = found
+        .stored_since
+        .map(|at| {
+            format!(
+                ", from lists read on {}",
+                snob_engine::sentences::stored_on(at)
+            )
+        })
+        .unwrap_or_default();
+    let named = |sign: &str, users: &[User], lines: &mut Vec<String>| {
+        for user in users.iter().take(FOUND_NAMED) {
+            lines.push(format!("  {sign}{}", name_of(user)));
+        }
+        if users.len() > FOUND_NAMED {
+            lines.push(format!("  and {} more", users.len() - FOUND_NAMED));
+        }
+    };
+    match &found.changes {
+        Some(Changes::Baseline) => lines.push(format!(
+            "{whose} {what}: {}{stored}, the baseline the next run compares against.",
+            accounts(found.accounts.len())
+        )),
+        Some(Changes::Since {
+            since,
+            added,
+            removed,
+        }) => {
+            lines.push(format!(
+                "{whose} {what} since {}: {} new, {} gone{stored}.",
+                snob_engine::sentences::stored_on(*since),
+                added.len(),
+                removed.len()
+            ));
+            named("+ ", added, &mut lines);
+            named("- ", removed, &mut lines);
+        }
+        None => {
+            lines.push(format!(
+                "{whose} {what}: {}{stored}.",
+                accounts(found.accounts.len())
+            ));
+            named("", &found.accounts, &mut lines);
+        }
+    }
+    lines
+}
+
+fn accounts(n: usize) -> String {
+    if n == 1 {
+        "1 account".to_string()
+    } else {
+        format!("{n} accounts")
+    }
+}
+
 /// When a run the schedule asked for was due, began and ended, and how late it
 /// began when that is late (`RunTiming::late`).
 pub(super) fn timing_line(timing: &snob_engine::engine::watch::RunTiming) -> Option<String> {

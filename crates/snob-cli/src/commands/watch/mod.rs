@@ -15,6 +15,7 @@ pub(super) mod status;
 pub(super) mod say;
 pub(super) mod wire;
 
+mod automation;
 mod check;
 mod deliver;
 mod diff;

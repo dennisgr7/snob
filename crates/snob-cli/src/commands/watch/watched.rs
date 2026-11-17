@@ -20,24 +20,21 @@ pub(super) fn watched_from(
         return vec![from_entry(&name, entry).read_as(viewer)];
     }
 
+    // Through the automation the file is, as the app reads it: one model
+    // for both (`snob_engine::automations`). Its own entry for each, not the
+    // first of a name: two viewers can watch one account, and one's consent
+    // is not the other's.
     let listed: Vec<Watched> = configured
-        .into_iter()
-        .flat_map(|c| c.accounts.iter())
-        .map(|account| {
-            let watched = if account.is_own() {
-                Watched::own().watching(account.lists, posts_of(account))
-            } else {
-                // Its own entry, not the first of that name: two viewers can
-                // watch one account, and one's consent is not the other's.
-                from_entry(&account.target, Some(account))
-            };
-            watched.read_as(account.viewer.or(in_use))
+        .map(|config| {
+            snob_engine::automations::watched(
+                &snob_store::automations::from_watch(config).planned_reads(),
+                in_use,
+            )
         })
-        .collect();
+        .unwrap_or_default();
 
-    // A file with no `[[account]]` at all means the obvious thing rather than
-    // nothing: somebody who configured a schedule and a webhook and never
-    // mentioned an account meant their own.
+    // No file at all means the obvious thing rather than nothing, as a file
+    // with no `[[account]]` does (`from_watch`): your own lists.
     if listed.is_empty() {
         vec![Watched::own().read_as(in_use)]
     } else {

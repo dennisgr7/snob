@@ -11753,3 +11753,78 @@ async fn a_release_is_fetched_in_the_background_and_applied_on_a_cold_start() {
     assert_eq!(after["applied"]["to"], "9.9.9", "{text}");
     assert!(after["staged"].is_null(), "{text}");
 }
+
+/// An automation made in the app runs through `snob watch once
+/// --automation`: its action is read through the same engine, its finding
+/// goes to its own webhook, and its history keeps the run.
+#[tokio::test]
+async fn an_automation_made_in_the_app_runs_reports_and_is_remembered() {
+    use snob_core::automation::{Account, Automation, Read, Step, Webhook, WebhookFormat};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    let hook = receiver(200).await;
+    log_in(tmp.path(), &instagram);
+
+    let paths = snob_store::paths::AppPaths::rooted_at(tmp.path());
+    let mut automation = Automation::new("abcd1234", "My fans");
+    let trigger = automation.insert(
+        Step::Schedule {
+            when: snob_core::watch::schedule::Spec {
+                every: Some(std::time::Duration::from_secs(6 * 3600)),
+                ..Default::default()
+            },
+        },
+        (0, 0),
+    );
+    let action = automation.insert(
+        Step::Read {
+            account: Some(Account::own(Some(PK))),
+            what: Read::Fans,
+        },
+        (300, 0),
+    );
+    let output = automation.insert(
+        Step::Webhook(Webhook {
+            url: format!("{}/webhook/snob", hook.uri()),
+            format: WebhookFormat::Text,
+            ..Webhook::default()
+        }),
+        (600, 0),
+    );
+    automation.connect(trigger, action).unwrap();
+    automation.connect(action, output).unwrap();
+    snob_store::automations::save(&paths, &automation).unwrap();
+
+    let out = snob(
+        tmp.path(),
+        Some(&instagram),
+        &["watch", "once", "--automation", "abcd1234"],
+    );
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("Your fans: 1 account"),
+        "{}",
+        stdout(&out)
+    );
+    let sent = posted(&hook).await;
+    assert_eq!(sent.len(), 1, "one finding, one report");
+    let event = sent[0]
+        .headers
+        .get("x-snob-event")
+        .and_then(|value| value.to_str().ok());
+    assert_eq!(event, Some("automation.found"));
+    assert!(String::from_utf8_lossy(&sent[0].body).contains("@user2"));
+
+    let runs = snob_engine::automations::runs(&paths, "abcd1234", 10).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].outcome.as_deref(), Some("ok"));
+    assert!(runs[0].summary.contains("Your fans"), "{}", runs[0].summary);
+
+    let out = snob(
+        tmp.path(),
+        Some(&instagram),
+        &["watch", "once", "--automation", "nothere"],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+}

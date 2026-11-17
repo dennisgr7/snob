@@ -117,12 +117,9 @@ pub(super) async fn preflight(
     }
 
     // The address as `check` may print it, with any path secret cut off.
-    let shown = delivery.as_ref().map(|d| {
-        (
-            snob_engine::watch::webhook::shown_str(&d.destination),
-            d.signed,
-        )
-    });
+    let shown = delivery
+        .as_ref()
+        .map(|d| (snob_engine::watch::webhook::shown(&d.destination), d.signed));
 
     if let Some(line) = not_posted(
         shown
@@ -141,7 +138,7 @@ pub(super) async fn preflight(
         report.checked.push(
             check::webhook_of(
                 &delivery.client,
-                snob_engine::watch::webhook::shown_str(&delivery.destination),
+                snob_engine::watch::webhook::shown(&delivery.destination),
                 delivery.signed,
                 &id,
                 &made.body,

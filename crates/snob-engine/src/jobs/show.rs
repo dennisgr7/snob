@@ -445,20 +445,33 @@ pub fn whole(seen: &Seen, now: i64, check: Check) -> Value {
 
 /// Waits, at most `wait`, for the job to be over, and reads it again.
 pub async fn settle(account: &AccountPaths, seen: Seen, wait: Duration) -> Result<Seen> {
-    let deadline = tokio::time::Instant::now() + wait;
     let token = crate::interrupt::install();
+    Ok(wait_until(account, seen, wait, Status::is_over, &token)
+        .await?
+        .0)
+}
+
+/// Reads the job again until `enough` takes its status, for `within` at
+/// most, or until `token` is canceled: the job as last read, and whether
+/// the wait was canceled.
+pub async fn wait_until(
+    account: &AccountPaths,
+    seen: Seen,
+    within: Duration,
+    enough: impl Fn(Status) -> bool,
+    token: &snob_ig::pace::CancelToken,
+) -> Result<(Seen, bool)> {
+    let deadline = tokio::time::Instant::now() + within;
     let mut seen = seen;
-    while !seen.status.is_over() && tokio::time::Instant::now() < deadline {
-        if token
-            .sleep_or_cancel(Duration::from_millis(250).min(deadline - tokio::time::Instant::now()))
-            .await
-        {
-            break;
+    while !enough(seen.status) && tokio::time::Instant::now() < deadline {
+        let pause = Duration::from_millis(100).min(deadline - tokio::time::Instant::now());
+        if token.sleep_or_cancel(pause).await {
+            return Ok((seen, true));
         }
         seen =
             super::look(account, &seen.id, now())?.ok_or_else(|| no_such_job(seen.id.as_str()))?;
     }
-    Ok(seen)
+    Ok((seen, false))
 }
 
 /// How a finished job ended, for a person: its exit, and, when it left a

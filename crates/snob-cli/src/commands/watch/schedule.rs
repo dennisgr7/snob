@@ -1,7 +1,7 @@
 //! The schedule, from the flags or from the file.
 
 use anyhow::Result;
-use snob_core::watch::schedule::{self, Schedule, Weekday};
+use snob_core::watch::schedule::{Schedule, ScheduleError, Spec};
 use snob_store::config::WatchConfig;
 
 use crate::cli::WatchRunArgs;
@@ -9,14 +9,7 @@ use crate::report;
 
 /// The schedule as written, before it is built: whichever of the two sources
 /// won, in the words it was given in.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(super) struct When {
-    cron: Option<String>,
-    at: Vec<String>,
-    on: Vec<String>,
-    every: Option<std::time::Duration>,
-    jitter: Option<std::time::Duration>,
-}
+pub(super) type When = Spec;
 
 /// Resolves which source the schedule comes from.
 ///
@@ -30,8 +23,8 @@ pub(super) fn when_from(args: &WatchRunArgs, configured: Option<&WatchConfig>) -
     let jitter = args.jitter.or_else(|| configured.and_then(|c| c.jitter));
 
     let mut when = match (given, configured) {
-        (true, _) => When::from(args),
-        (false, Some(config)) => When::from(config),
+        (true, _) => of_args(args),
+        (false, Some(config)) => config.spec(),
         (false, None) => When::default(),
     };
     when.jitter = jitter;
@@ -39,107 +32,39 @@ pub(super) fn when_from(args: &WatchRunArgs, configured: Option<&WatchConfig>) -
 }
 
 /// The schedule as the command line wrote it.
-impl From<&WatchRunArgs> for When {
-    fn from(args: &WatchRunArgs) -> Self {
-        Self {
-            cron: args.cron.clone(),
-            at: args.at.clone(),
-            on: args.on.clone(),
-            every: args.every,
-            jitter: args.jitter,
-        }
+fn of_args(args: &WatchRunArgs) -> When {
+    Spec {
+        cron: args.cron.clone(),
+        at: args.at.clone(),
+        on: args.on.clone(),
+        every: args.every,
+        jitter: args.jitter,
     }
 }
 
-/// The schedule as the file wrote it.
-impl From<&WatchConfig> for When {
-    fn from(config: &WatchConfig) -> Self {
-        Self {
-            cron: config.cron.clone(),
-            at: config.at.clone(),
-            on: config.on.clone(),
-            every: config.every,
-            jitter: config.jitter,
-        }
-    }
-}
-
-/// The two halves of a calendar, parsed and checked together.
-pub(super) fn calendar_from<S: AsRef<str>>(days: &[S], times: &[S]) -> Result<Schedule> {
-    let days = days_named(days)?;
-    let times = times
-        .iter()
-        .map(|time| schedule::parse_time(time.as_ref()).map_err(anyhow::Error::from))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(Schedule::calendar(&days, &times)?)
-}
-
-/// The `--on` half, parsed, for both of the schedules that have one.
-fn days_named<S: AsRef<str>>(days: &[S]) -> Result<Vec<Weekday>> {
-    days.iter()
-        .map(|day| {
-            let day = day.as_ref();
-            Weekday::parse(day)
-                .ok_or_else(|| anyhow::anyhow!("\"{day}\" is not a day (try mon, thu)"))
-        })
-        .collect()
-}
+pub(super) use snob_core::watch::schedule::calendar_from;
 
 /// Whether `config` names no schedule at all: no `every`, `at`, `on` or `cron`.
 pub(super) fn names_no_schedule(config: &WatchConfig) -> bool {
-    config.every.is_none() && config.at.is_empty() && config.on.is_empty() && config.cron.is_none()
+    config.spec().names_none()
 }
 
 /// Builds the schedule from the flags, or the file, or explains what is
-/// missing.
+/// missing (`Spec::build`, the one place a schedule is built).
 ///
 /// **A flag replaces the schedule rather than merging with it.**
 pub(super) fn schedule_from(
     args: &WatchRunArgs,
     configured: Option<&WatchConfig>,
 ) -> Result<Schedule> {
-    let When {
-        cron,
-        at,
-        on,
-        every,
-        jitter,
-    } = when_from(args, configured);
-
-    let mut schedule = if let Some(expression) = &cron {
-        Schedule::cron(expression)?
-    } else if at.is_empty()
-        && !on.is_empty()
-        && let Some(every) = every
-    {
-        // Days and an interval and no time of day. This branch has to come
-        // before the calendar one: a calendar is a set of minutes, days-only
-        // names none, and it would be refused with "a calendar needs a time of
-        // day" without `every` being looked at — the one shape README.md and
-        // AGENTS.md both advertise.
-        Schedule::days(&days_named(&on)?, every)?
-    } else if !at.is_empty() || !on.is_empty() {
-        calendar_from(&on, &at)?
-    } else if let Some(every) = every {
-        Schedule::every(every)?
-    } else {
-        return Err(anyhow::anyhow!(
+    match when_from(args, configured).build() {
+        Err(ScheduleError::Empty) => Err(anyhow::anyhow!(
             "how often should this run?\n\
              Run \"snob watch setup\" once, or say it here: \"--every 6h\", \
              \"--on mon,thu --at 09:00\", or \"--cron '0 9 * * 1,4'\"."
-        ));
-    };
-
-    // An interval alongside a calendar is a floor on it, not a second schedule.
-    if let Some(every) = every
-        && (cron.is_some() || !at.is_empty())
-    {
-        schedule = schedule.and_every(every)?;
+        )),
+        built => Ok(built?),
     }
-    if let Some(jitter) = jitter {
-        schedule = schedule.with_jitter(jitter);
-    }
-    Ok(schedule)
 }
 
 /// The opening line, so somebody starting this can see it understood them.
@@ -165,6 +90,7 @@ pub(super) fn describe_schedule(when: &When, schedule: &Schedule, now: bool) -> 
 mod tests {
     use super::*;
     use crate::commands::watch::fixtures::watch_toml;
+    use snob_core::watch::schedule;
 
     /// `--jitter` is not one of the schedule halves, and is not dropped with
     /// them.

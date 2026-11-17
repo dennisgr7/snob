@@ -22,6 +22,10 @@ use crate::state::flow::{Found, Method, Named, Update};
 use crate::state::prefs::{Appearance, Placement};
 use crate::state::profile::{Side, Tab};
 
+pub use snob_core::automation::{Automation, Problem};
+pub use snob_engine::automations::Next;
+pub use snob_store::store::shared::AutomationRun as Run;
+
 pub mod engine;
 #[cfg(feature = "testing")]
 pub mod scripted;
@@ -260,6 +264,34 @@ pub trait Backend: Send + Sync + 'static {
         walked: watch::Sender<Walked>,
         stop: CancelToken,
     ) -> Answer<Result<Listed, Unread>>;
+
+    /// Every automation, `watch.toml`'s first (`snob_engine::automations`).
+    /// Read from files: nothing is sent.
+    fn automations(&self) -> Answer<Vec<Automation>>;
+
+    /// What keeps `automation` from running among the others: its own
+    /// problems and its clashes with every other one.
+    fn automation_problems(&self, automation: Automation) -> Answer<Vec<Problem>>;
+
+    /// Keeps `automation`, finished or not, and says why when it could
+    /// not be kept.
+    fn save_automation(&self, automation: Automation) -> Answer<Result<(), String>>;
+
+    /// Removes the automation `id` and its history: never `watch.toml`'s.
+    fn remove_automation(&self, id: String) -> Answer<bool>;
+
+    /// An id no automation has.
+    fn new_automation_id(&self) -> Answer<String>;
+
+    /// The newest runs of the automation `id`, the newest first.
+    fn automation_runs(&self, id: String) -> Answer<Vec<Run>>;
+
+    /// When `automation` is next due, from its schedules and its last run.
+    fn next_automation_run(&self, automation: Automation) -> Answer<Next>;
+
+    /// Starts a run of the automation `id` at once, as `snob watch once
+    /// --automation <id>`: the answer is whether it started.
+    fn run_automation(&self, id: String) -> Answer<Result<(), String>>;
 }
 
 /// An account's profile, as its page shows it. Every string was made

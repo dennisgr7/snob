@@ -8,6 +8,7 @@
 
 pub mod account;
 pub mod app;
+pub mod automations;
 pub mod browser;
 pub mod cache;
 pub mod cdp;

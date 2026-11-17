@@ -12,7 +12,7 @@ use std::sync::LazyLock;
 use rusqlite_migration::{M, Migrations};
 
 /// Every migration, in the order they are applied.
-pub(crate) const CHAIN: [&str; 21] = [
+pub(crate) const CHAIN: [&str; 22] = [
     include_str!("sql/001_initial.sql"),
     include_str!("sql/002_watch.sql"),
     include_str!("sql/003_deliveries.sql"),
@@ -34,6 +34,7 @@ pub(crate) const CHAIN: [&str; 21] = [
     include_str!("sql/019_run_posts.sql"),
     include_str!("sql/020_run_times.sql"),
     include_str!("sql/021_lookup_indexes.sql"),
+    include_str!("sql/022_automation_marks.sql"),
 ];
 
 /// What `user_version` counts up to.

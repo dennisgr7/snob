@@ -16,6 +16,7 @@
 mod calendar;
 mod next;
 mod parse;
+mod spec;
 
 use std::time::Duration;
 
@@ -29,6 +30,7 @@ use parse::{FieldSet, parse_cron};
 
 pub use next::{due, due_asked_since, due_moment, next_after, wake_at};
 pub use parse::{Weekday, parse_time};
+pub use spec::{Spec, calendar_from};
 
 /// The shortest gap between two runs.
 ///

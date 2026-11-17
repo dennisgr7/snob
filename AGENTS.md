@@ -64,10 +64,10 @@ Rust 2024, resolver 3. Dependencies point one way:
 
 | Crate | Holds | Must not |
 |---|---|---|
-| `snob-core` | The domain: `Pk`, the models (the JSON contract), set arithmetic, the monitor's diff and schedule, webhook signing and the one constant-time comparison (`watch::sign::same`), `Secret`, `Session`, the `RateBudget` trait and cooldown policy, `clock`. | Do I/O: no file, database, network or directory (`clock` excepted). |
+| `snob-core` | The domain: `Pk`, the models (the JSON contract), set arithmetic, an automation (`automation.rs`), the monitor's diff and schedule, webhook signing and the one constant-time comparison (`watch::sign::same`), `Secret`, `Session`, the `RateBudget` trait and cooldown policy, `clock`. | Do I/O: no file, database, network or directory (`clock` excepted). |
 | `snob-ig` | The Instagram web client: `client/`, `web.rs`, `allowlist.rs`, `pager.rs`, `pace.rs`, `graphql.rs`, `error.rs` (classifying answers), `http.rs` (the only place `reqwest` is configured). | Touch SQLite or the keyring, or drive a browser (it only defines the page's request shapes). |
-| `snob-store` | SQLite (`store/`, migrations in `store/sql/`), paths, the secret store, `accounts.toml`, `watch.toml`, the layout's migration, the views' cache (`cache.rs`) and what files weigh (`disk.rs`). | Hold domain logic. |
-| `snob-engine` | What a desktop app links in process: `app.rs` (`App`), `engine/` (cache, consent, cooldown, walks, estimates, monitor), the browser (`headless/`, `cdp/`, `pipe.rs`, `owner/`), jobs' state and supervisor (`jobs/`), signing in (`login.rs`, which hands back a `Stored` and tells a failure apart with `failure_of`) and out (`logout.rs`), the account's card (`viewer.rs`), what a view shows at once (`cache.rs`) and what is kept on disk (`storage.rs`), `relay/`, `update/`, an account's page and its picture as every front reads them (`profile.rs`), reading and saving posts and stories (`posts.rs`, `media.rs`, `files.rs`), `ffmpeg.rs`, `watch/webhook.rs`, `exit.rs`, `log.rs` (the filter every program logs through, and an app's log in files), and `sentences.rs` (the plain sentences of its refusals). `host.rs` is what it is handed: a `Progress` and an `Ask` per run (`host::Front`, given to `App::open`), and a sink for notices. | Depend on `clap`, `console`, `indicatif`, `ratatui`, `crossterm`, `dialoguer`, or on `snob-mcp`/`snob-cli`; ask anybody anything itself; decide how anything looks. |
+| `snob-store` | SQLite (`store/`, migrations in `store/sql/`), paths, the secret store, `accounts.toml`, `watch.toml`, the automations' files (`automations.rs`), the layout's migration, the views' cache (`cache.rs`) and what files weigh (`disk.rs`). | Hold domain logic. |
+| `snob-engine` | What a desktop app links in process: `app.rs` (`App`), `engine/` (cache, consent, cooldown, walks, estimates, monitor), the browser (`headless/`, `cdp/`, `pipe.rs`, `owner/`), jobs' state and supervisor (`jobs/`), signing in (`login.rs`, which hands back a `Stored` and tells a failure apart with `failure_of`) and out (`logout.rs`), the account's card (`viewer.rs`), what a view shows at once (`cache.rs`) and what is kept on disk (`storage.rs`), `relay/`, `update/`, the automations every front reads, keeps and runs (`automations/`), an account's page and its picture as every front reads them (`profile.rs`), reading and saving posts and stories (`posts.rs`, `media.rs`, `files.rs`), `ffmpeg.rs`, `watch/webhook.rs`, `exit.rs`, `log.rs` (the filter every program logs through, and an app's log in files), and `sentences.rs` (the plain sentences of its refusals). `host.rs` is what it is handed: a `Progress` and an `Ask` per run (`host::Front`, given to `App::open`), and a sink for notices. | Depend on `clap`, `console`, `indicatif`, `ratatui`, `crossterm`, `dialoguer`, or on `snob-mcp`/`snob-cli`; ask anybody anything itself; decide how anything looks. |
 | `snob-mcp` | `snob mcp`: the server over stdio and, with its `http` feature, over HTTP (`http.rs`); its key (`key.rs`), `snob mcp config` (`config.rs`), its arguments (`args.rs`). | Build an Instagram client or open a database; depend on `snob-cli`, its tests included (the lines it builds are parsed in `crates/snob-cli/tests/mcp_lines.rs`). |
 | `snob-cli` | The `snob` binary and its library: `cli.rs`, `main.rs`, `commands/`, `output/`, `report.rs`, `progress.rs` (the bars), `front.rs` (what it hands the engine), `ui/`, and the clap-tied half of jobs (`jobs/argv.rs`, `jobs/start.rs`). It names what it uses of the engine and of the server by their own crates (`snob_engine::`, `snob_mcp::`). | |
 | `snob-fake-ig` | The fake Instagram the tests talk to (`world.rs`) and a tab on it with no browser (`tab.rs`). Never published. | Depend on anything above `snob-ig`; be named outside `[dev-dependencies]` by a crate that ships (`layers.rs`). |
@@ -354,7 +354,9 @@ out of the help and out of an MCP child's environment.
   covers somebody's followers and following, and `profile` walks only the
   viewer's own following.
 - `watch once` has no `-y`: the monitor's consent is `watch.toml`. An entry with
-  `lists = false` reads posts only and needs none.
+  `lists = false` reads posts only and needs none. An automation's is the yes
+  stored with its action (`Account::consent`), and one that walks another
+  account's lists without it is not finished (`Problem::NoConsent`).
 
 ### The write regime
 
@@ -479,6 +481,11 @@ compile; the session is an explicit header on the one client meant to carry it.
   `watch::commit_report`: thirty days, and each account's newest 36.
 - Jobs under `accounts/<pk>/jobs/<id>/`, `0600` on Unix: a result kept a day,
   a job a week, at most 50.
+- **Automations** (`snob_store::automations`): one JSON file each in the
+  configuration directory's `automations/`, written whole under a lock and
+  named by its id; their runs in `shared.db` (`automation_runs`, the newest
+  100 each), what each action found last in the reading account's database
+  (`automation_marks`). Removing one forgets its runs.
 - **An app's log** (`logs/`, `snob_engine::log`): one JSON object a line,
   five files of 1 MiB, nothing older than fourteen days; a command still
   writes its lines to standard error. Every string of a line goes through
@@ -526,7 +533,8 @@ compile; the session is an explicit header on the one client meant to carry it.
   deletes from its database what it walked and what the monitor made of it
   (`snapshot_members`, `snapshots`, `watch_marks`, `watch_runs`,
   `watch_deliveries`, `watch_renames`, `watch_renames_sent`, `watch_posts`,
-  `own_writes`, `username_history`, `accounts`, `users`), its jobs and their
+  `own_writes`, `automation_marks`, `username_history`, `accounts`, `users`),
+  its jobs and their
   results and its cache, then `VACUUM`s. **It keeps everything a rule reads
   before sending**: `rate_budget`, `sitting`, `cooldowns`, `account_reads`,
   `answers`, `mcp_acts`, `watch_post_marks` (and the account rows it names),
@@ -939,6 +947,37 @@ draw pixels it gets kitty's protocol, iTerm2's images or sixel
   `watch::LATE_AFTER` (30 min) beyond its jitter. What it reports as spent is
   what the pacer was charged.
 
+### Automations
+
+`snob watch` and the app's automations are one thing: steps on a canvas
+joined by arrows (`snob_core::automation`), triggers to actions to filters to
+one webhook (`can_join`), a disabled step left out of a run.
+
+- **`watch.toml` is the automation `watch`** (`snob_store::automations::
+  from_watch`), and `snob watch` builds its entries from it
+  (`snob_engine::automations::watched`); the app writes it back only when
+  the file can hold it (`to_watch`, else `Problem::NotInWatchToml`). The
+  others are JSON files under the configuration directory's `automations/`,
+  no secret in them.
+- **What an action reads**: lists and posts are the monitor's tick; the rest
+  (`automations::read`: unfollowers, fans, friends, the friends two accounts
+  have in common, who of the people you follow follow an account, a profile
+  picture) read every list through `engine::list`. **Nothing writes to
+  Instagram.** An account's lists or posts are read by one automation at most
+  (`clashes_with`), since what has been reported of them is kept once.
+- **Filters**: verified, unverified, public, private (`filters::Filter`), and
+  "changes": what came and went since the last report, against the mark
+  `automation_marks` keeps in the reading account's database, moved in the
+  transaction that queues the report.
+- **When**: each schedule trigger is a `watch.toml` schedule (`Spec`, built in
+  one place). `snob watch` (the scheduled mode) and a timer's `watch once
+  --when-due` run every automation that is due, from its last start in
+  `shared.db`'s `automation_runs` (its history, the newest 100); `watch once
+  --automation <id>` runs one now, which the app starts
+  (`automations::run_now`). An app automation's webhook gets its own headers
+  and **never the keyring's token or signing key**, set up for `watch.toml`'s
+  address; its report is event `automation.found` (`wire::found_payload`).
+
 ## Platforms
 
 Releases: `x86_64-pc-windows-msvc` (`x86-64-v2`, Windows 11 only),
@@ -1074,9 +1113,14 @@ or a deletion is the shell's and runs on in the engine whatever screen is
 shown. Once somebody is signed in the frame
 opens on a rail of sections (home, search, automations). Home and search
 are a title until what a scan shows comes next; automations has an
-introduction shown once an account, a list with its search, and an editor
-whose canvas is moved and zoomed but holds nothing yet: **there is no
-backend for automations**, and nothing there runs. From the account's menu
+introduction shown once an account, a list with its search, an
+automation's page (its runs on the left, its flow in words, a pencil to
+edit, a run now), and an editor on the engine's automations ("Automations"):
+steps put from the panel, moved, joined and configured in a dialog (a
+schedule, an action's account and consent, a webhook), disabled from a
+node's menu, **kept at every change** with undo, and an unfinished one
+asked about on leaving (discard, or back to the editor). The automations
+run in the command line's scheduler, never in the app. From the account's menu
 (and the palette), the account's own **profile page**, the same page for
 any other account opened from one of its lists: the picture (large,
 zoomed, copied or saved from a viewer of its own), the names, the bio, the
@@ -1109,7 +1153,8 @@ its version is the release's ("Release and packaging"). GPUI comes through
   (`paste.rs`), what the palette offers (`commands.rs`), what the settings
   hold and what their search shows (`settings.rs`, `storage.rs`), what is
   remembered between runs (`prefs.rs`), when the app rests (`rest.rs`),
-  the automations section (`automations.rs`), and how a profile is laid
+  the automations section (`automations.rs`), the automation being edited
+  with its undo and its saves (`editing.rs`), and how a profile is laid
   out, zoomed and when its lists ask first (`profile.rs`). No window, clock
   or network there.
 - **A theme or a language chosen holds whatever the system says**; the

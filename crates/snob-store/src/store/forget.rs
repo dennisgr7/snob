@@ -18,10 +18,12 @@ use super::{Store, StoreError};
 ///   it saw. When the monitor last started is `shared.db`'s too, so its
 ///   schedule holds.
 /// - `own_writes`: the follows and unfollows applied to a stored list.
+/// - `automation_marks`: what each automation's actions found last.
 /// - `username_history`, `accounts`, `users`: the accounts seen and their
 ///   names, but the rows `watch_post_marks` still names.
-pub const FORGOTTEN: [&str; 12] = [
+pub const FORGOTTEN: [&str; 13] = [
     "snapshot_members",
+    "automation_marks",
     "watch_marks",
     "watch_runs",
     "watch_deliveries",
@@ -142,6 +144,8 @@ mod tests {
                  INSERT INTO watch_posts (account_pk, media_pk, code, taken_at, first_seen_at)
                    VALUES (3, '7', 'C', 0, 0);
                  INSERT INTO own_writes (at, target_pk, verb) VALUES (0, 2, 'follow');
+                 INSERT INTO automation_marks (automation, node, taken_at, members)
+                   VALUES ('a1', 2, 0, '[2]');
                  INSERT INTO rate_budget (bucket, tat_ms, emission_ms, burst_ms, updated_at_ms)
                    VALUES ('pace', 1, 1, 1, 1);
                  INSERT INTO sitting (id, pages, last_page_at) VALUES (1, 4, 0);

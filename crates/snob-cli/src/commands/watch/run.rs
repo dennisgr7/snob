@@ -202,6 +202,21 @@ pub(super) async fn drain_all(
     tried
 }
 
+/// What every account's queue still owes, to `destination` and elsewhere,
+/// read the way [`drain_all`] reads the queues it drains.
+pub(super) fn owed_all(paths: &AppPaths, destination: &str) -> snob_store::store::deliveries::Owed {
+    let mut left = snob_store::store::deliveries::Owed::default();
+    for account in account_databases(paths) {
+        if let Ok(Some(db)) = Store::open_existing(&account)
+            && let Ok(owed) = snob_store::store::deliveries::owed(db.conn(), Some(destination))
+        {
+            left.waiting += owed.waiting;
+            left.elsewhere += owed.elsewhere;
+        }
+    }
+    left
+}
+
 /// Retention for every account's database, with no session needed.
 pub(super) fn settle_all(paths: &AppPaths) {
     let now = snob_core::clock::now();
@@ -313,6 +328,11 @@ impl Printing {
         }
     }
 
+    /// Whether every result is one line of JSON.
+    pub(super) fn json(self) -> bool {
+        self.json
+    }
+
     pub(super) fn unattended(json: bool) -> Self {
         Self {
             json,
@@ -337,6 +357,9 @@ pub(super) struct RunSummary {
     pub(super) code: ExitCode,
     /// The last failure, unprinted.
     pub(super) failed: Option<anyhow::Error>,
+    /// What each account's tick found and each failure, as a person reads
+    /// them: an automation's history keeps them.
+    pub(super) said: Vec<String>,
 }
 
 impl RunSummary {
@@ -356,6 +379,7 @@ struct Tally {
     /// Each with the account it was read as, for a failure told in JSON to
     /// name: several are opened in one run, so the one acting last is not it.
     failures: Vec<(Option<Viewer>, anyhow::Error)>,
+    said: Vec<String>,
 }
 
 impl Default for Tally {
@@ -364,6 +388,7 @@ impl Default for Tally {
             spent: 0,
             code: ExitCode::Ok,
             failures: Vec::new(),
+            said: Vec::new(),
         }
     }
 }
@@ -371,7 +396,9 @@ impl Default for Tally {
 impl Tally {
     /// Prints every failure but the last, which the summary carries, and
     /// leaves the account the last was read as for its caller's print to name.
-    fn summary(self, printing: Printing) -> RunSummary {
+    fn summary(mut self, printing: Printing) -> RunSummary {
+        self.said
+            .extend(self.failures.iter().map(|(_, e)| format!("{e:#}")));
         let (print_here, failed) = to_print_and_to_return(self.failures);
         for (viewer, earlier) in print_here {
             report::print_error_as(&earlier, printing.wording(), viewer.as_ref());
@@ -384,6 +411,7 @@ impl Tally {
             spent: self.spent,
             code: self.code,
             failed,
+            said: self.said,
         }
     }
 }
@@ -424,7 +452,10 @@ async fn run_accounts(
         tally.spent += charged;
 
         match outcome {
-            Ok(tick) => tally.code = first_reason(tally.code, tick.outcome()),
+            Ok(tick) => {
+                tally.code = first_reason(tally.code, tick.outcome());
+                tally.said.extend(describe_tick(&tick));
+            }
             Err(e) => {
                 // A tick that failed is still a tick that happened, and the run
                 // log says "one row per tick, including the ticks that found

@@ -1931,11 +1931,17 @@ pub struct WatchOnceArgs {
     #[arg(value_parser = username)]
     pub target: Option<String>,
 
-    /// Run only if the schedule in watch.toml says a run is due, and
-    /// otherwise exit 0 having sent nothing. For a timer that asks often:
-    /// "snob watch unit" prints one
+    /// Run only what is due: watch.toml when its schedule says so, and each
+    /// automation made in the app whose schedule says so; otherwise exit 0
+    /// having sent nothing. For a timer that asks often: "snob watch unit"
+    /// prints one
     #[arg(long)]
     pub when_due: bool,
+
+    /// Run the automation with this id, made in the app, instead of
+    /// watch.toml: its accounts, its filters and its own webhook
+    #[arg(long, value_name = "ID", conflicts_with = "target")]
+    pub automation: Option<String>,
 
     #[command(flatten)]
     pub output: StatusOutputArgs,

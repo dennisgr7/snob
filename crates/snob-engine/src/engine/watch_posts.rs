@@ -256,9 +256,9 @@ async fn read(
     has_files: bool,
 ) -> Result<PostsLook> {
     let canceled = || PostsSkipped::Incomplete(StopReason::Canceled, None);
-    let opened = watched
-        .name()
-        .and_then(|name| app.resolved_target(Some(name)));
+    // Asked as the lists asked, the own account (no name) included: what
+    // their resolve remembered is reused for both.
+    let opened = app.resolved_target(watched.name());
 
     let (pk, username, declared) = match opened {
         // The lists of this run opened the profile: the grid follows it, a
@@ -270,7 +270,9 @@ async fn read(
             }
             let name = target
                 .username
-                .unwrap_or_else(|| target::clean(watched.name().unwrap_or_default()).to_string());
+                .or_else(|| watched.name().map(|name| target::clean(name).to_string()))
+                .or_else(|| app.viewer().username.clone())
+                .unwrap_or_default();
             (target.pk, name, None)
         }
         None => {

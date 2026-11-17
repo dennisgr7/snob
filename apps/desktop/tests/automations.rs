@@ -210,7 +210,7 @@ async fn create_opens_a_canvas_whose_zoom_has_bounds_and_escape_comes_back(
     let app = in_automations(cx, backend, still()).await;
     app.click(cx, "automations-create");
     settle(&app, cx);
-    assert_eq!(app.title(cx), ("New automation".to_string(), true));
+    assert_eq!(app.title(cx), ("Edit automation".to_string(), true));
 
     let zoom = |app: &App, cx: &mut TestAppContext| app.label_of(cx, "editor-zoom-reset");
     assert_eq!(zoom(&app, cx), "Zoom at 100 %. Back to 100 %");
@@ -219,13 +219,16 @@ async fn create_opens_a_canvas_whose_zoom_has_bounds_and_escape_comes_back(
         assert_eq!(window.find("editor-zoom").role(), Some(Role::Toolbar));
         for id in [
             "editor-back",
+            "editor-undo",
+            "editor-redo",
             "editor-zoom-out",
             "editor-zoom-reset",
             "editor-zoom-in",
             "editor-fit",
             "editor-triggers",
-            "editor-conditions",
             "editor-actions",
+            "editor-filters",
+            "editor-outputs",
         ] {
             let control = window.find(id);
             assert_eq!(control.role(), Some(Role::Button), "{id}");
@@ -235,22 +238,20 @@ async fn create_opens_a_canvas_whose_zoom_has_bounds_and_escape_comes_back(
         }
         // The triggers unfolded, as there is none yet; the rest folded.
         assert_eq!(window.find("editor-triggers").expanded(), Some(true));
-        assert_eq!(window.find("editor-conditions").expanded(), Some(false));
         assert_eq!(window.find("editor-actions").expanded(), Some(false));
         let schedule = window.find(("trigger-schedule", 0usize));
-        assert_eq!(schedule.role(), Some(Role::ListItem));
-        assert_eq!(schedule.label(), Some("On a schedule"));
-        assert!(window.try_find(("action-api", 1usize)).is_none());
+        assert_eq!(schedule.role(), Some(Role::Button));
+        assert_eq!(schedule.label(), Some("Add: On a schedule"));
+        assert!(window.try_find(("output-api", 1usize)).is_none());
     });
 
-    app.click(cx, "editor-actions");
+    app.click(cx, "editor-outputs");
     settle(&app, cx);
     app.in_window(cx, |window, _| {
-        assert_eq!(window.find("editor-actions").expanded(), Some(true));
-        assert_eq!(
-            window.find(("action-api", 1usize)).label(),
-            Some("Call an API")
-        );
+        assert_eq!(window.find("editor-outputs").expanded(), Some(true));
+        let soon = window.find(("output-api", 1usize));
+        assert_eq!(soon.label(), Some("Call an API, coming soon"));
+        assert_eq!(soon.disabled(), Some(true), "nothing runs behind it");
     });
 
     app.click(cx, "editor-zoom-in");
@@ -387,8 +388,9 @@ async fn tab_reaches_every_control_of_the_editor(cx: &mut TestAppContext) {
         "editor-zoom-in",
         "editor-fit",
         "editor-triggers",
-        "editor-conditions",
         "editor-actions",
+        "editor-filters",
+        "editor-outputs",
     ];
     for _ in 0..40 {
         app.press(cx, "tab");
@@ -398,4 +400,32 @@ async fn tab_reaches_every_control_of_the_editor(cx: &mut TestAppContext) {
         }
     }
     assert!(wanted.is_empty(), "Tab never comes to {wanted:?}");
+}
+
+#[gpui_kit::test]
+async fn the_wheel_zooms_from_the_middle_of_an_empty_canvas(cx: &mut TestAppContext) {
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    backend.script(|script| {
+        script.introduced(42);
+    });
+    let app = in_automations(cx, backend, still()).await;
+    app.click(cx, "automations-create");
+    settle(&app, cx);
+    let middle = app.in_window(cx, |window, _| {
+        window.find("editor-canvas").bounds().center()
+    });
+    app.in_window(cx, |window, cx| {
+        window.dispatch_event(
+            PlatformInput::Scroll(ScrollEvent {
+                position: middle,
+                delta: ScrollDelta::Pixels(point(px(0.), px(240.))),
+                modifiers: Modifiers::default(),
+                ..ScrollEvent::default()
+            }),
+            cx,
+        );
+    });
+    settle(&app, cx);
+    let percent = app.label_of(cx, "editor-zoom-reset");
+    assert!(!percent.starts_with("Zoom at 100 "), "{percent}");
 }

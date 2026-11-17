@@ -7,6 +7,7 @@
 //!
 //! An account is identified by its numeric `pk`, never by its username.
 
+pub mod automation;
 pub mod budget;
 pub mod clock;
 pub mod duration;

@@ -783,7 +783,7 @@ pub(super) fn describe_config(config: &WatchConfig) -> Vec<String> {
     let address = config
         .webhook
         .as_ref()
-        .map(|webhook| printable(&snob_engine::watch::webhook::shown_str(&webhook.url)));
+        .map(|webhook| printable(&snob_engine::watch::webhook::shown(&webhook.url)));
 
     match (&config.webhook, &address) {
         (Some(webhook), Some(address)) => {
