@@ -7,7 +7,9 @@ use serde_json::{Value, json};
 use snob_ig::client::page::{PageError, PageRequest, PageResponse};
 use snob_ig::page_values::{self, PageValues};
 
-use super::{COMMAND_TIMEOUT, LOAD_TIMEOUT, Live, PAGE_WIRE_CAP, SETTLE, broken, origin_of};
+use super::live::Live;
+use super::site::origin_of;
+use super::{COMMAND_TIMEOUT, LOAD_TIMEOUT, PAGE_WIRE_CAP, SETTLE, broken};
 use crate::browser::cdp::Cdp;
 
 /// Sends the tab somewhere, waits for it to finish loading, and gives the

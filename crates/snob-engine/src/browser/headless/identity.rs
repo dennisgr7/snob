@@ -6,8 +6,9 @@ use serde_json::{Value, json};
 use snob_ig::pace::CancelToken;
 use snob_store::paths::AppPaths;
 
+use super::COMMAND_TIMEOUT;
+use super::launch::attach_to_a_tab;
 use super::tab::{evaluate, navigate_tab};
-use super::{COMMAND_TIMEOUT, attach_to_a_tab};
 use crate::browser::cdp::Cdp;
 
 /// What this browser says about the machine: the brands, the architecture, the

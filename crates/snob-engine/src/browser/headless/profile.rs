@@ -9,7 +9,8 @@ use snob_core::Pk;
 use snob_core::session::Session;
 use snob_store::paths::AppPaths;
 
-use super::{COMMAND_TIMEOUT, Live};
+use super::COMMAND_TIMEOUT;
+use super::live::Live;
 
 /// Makes sure the browser carries this session, and only this account, and says
 /// whether it does: `false` when it keeps a later login of the account instead.

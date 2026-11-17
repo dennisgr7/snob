@@ -13,7 +13,7 @@
 //! - The User-Agent says `HeadlessChrome`: `--user-agent` with the launched
 //!   browser's own.
 //! - That flag blanks the high-entropy client hints: they are asked once of a
-//!   browser started without it, and kept ([`machine_hints`]).
+//!   browser started without it, and kept ([`identity::machine_hints`]).
 //! - `setUserAgentOverride` holds for one target: every target is paused as
 //!   it attaches and handed the same override (`cdp::OnAttach`).
 //! - `document.hasFocus()` was `false`: focus is emulated.
@@ -25,37 +25,49 @@
 //!
 //! Left knowingly: WebGL is absent headless. No video reaches the page and
 //! every request the app sends is judged before it leaves ([`guard`]).
+//!
+//! **Its parts**: this file keeps the browsers of a process, one an account,
+//! and takes each request to a tab that is ready for it ([`Headless`]);
+//! `launch` starts a browser and gives it its identity (`identity`), on
+//! the account's `profile`; `live` is one while it runs, and builds a
+//! request beside its document; `answer` is what the tab says back;
+//! `tab` moves it and sends from it; `site` holds it to Instagram's own;
+//! `guard` judges what the page sends and `listen` hears what it is
+//! told; `write_back` keeps the cookies it rotated.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
-use serde_json::{Value, json};
 use snob_core::Pk;
 use snob_core::session::Session;
-use snob_ig::allowlist::{Operation, Rediscovered};
-use snob_ig::client::page::{Method, PageError, PageRequest, PageResponse, PushedBack};
-use snob_ig::model::web::{RouteAnswer, document_pk, route_answer};
-use snob_ig::pace::CancelToken;
-use snob_ig::web::{Ask, Call, Seen, SentToken, Told, Unbuilt};
-use snob_store::paths::{AccountPaths, AppPaths};
+use snob_ig::allowlist::Rediscovered;
+use snob_ig::client::page::{PageError, PageRequest, PageResponse, PushedBack};
+use snob_ig::web::{Call, Told};
+use snob_store::paths::AppPaths;
 
-use crate::browser::cdp::Cdp;
 use crate::system::sync::lock;
 
+mod answer;
 mod guard;
 mod identity;
+mod launch;
 mod listen;
+mod live;
 pub mod profile;
+mod site;
 mod tab;
 pub(crate) mod write_back;
 
-use identity::{machine_hints, metadata};
+use answer::{answer_on, own_answer, refuse};
+pub use launch::{RemoteLogin, for_a_remote_login};
+pub(crate) use launch::{SCREEN, refuse_root};
+use live::Live;
 pub use profile::ProfileMark;
 use profile::sync_cookies;
-use tab::{fetch, navigate, navigate_and_read};
+use site::{host_of, on_the_site};
+use tab::{fetch, navigate};
 
 /// How long a navigation may take to finish loading.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(45);
@@ -110,21 +122,6 @@ const APP_CALLS_QUIET: Duration = Duration::from_secs(1);
 /// message on the pipe, where every character outside printable ASCII is six
 /// bytes (`\uXXXX`) and a quote or backslash two.
 const PAGE_WIRE_CAP: u64 = (crate::system::pipe::MAX_MESSAGE_BYTES - 2 * 1024 * 1024) as u64;
-
-/// How much of the app's answers the browser keeps for the listener to read:
-/// enough for a page's API calls, which are what it judges, and no more.
-const LISTENING_BUFFER: u64 = 1024 * 1024;
-
-/// The screen the browser says it is on: the commonest desktop size.
-pub(crate) const SCREEN: (u32, u32) = (1920, 1080);
-
-/// The strip at the bottom of that screen a taskbar keeps for itself.
-///
-/// A headless screen is all work area, so `screen.availHeight` equaled
-/// `screen.height` — measured, 1080 of 1080 — which no desktop with a taskbar
-/// or a dock reports. The window fills what is left, from the corner, rather
-/// than sitting at (10,10) and running off the bottom edge.
-const TASKBAR: u32 = 48;
 
 /// The browsers of this process, once something has asked for them.
 static HEADLESS: OnceLock<Arc<Headless>> = OnceLock::new();
@@ -297,272 +294,6 @@ pub(crate) struct Open {
     pub(crate) idle: Duration,
     /// Instagram has pushed back on it.
     pub(crate) latched: bool,
-}
-
-struct Live {
-    cdp: Cdp,
-    /// The profile it runs on: the account's own.
-    profile: std::path::PathBuf,
-    /// The DevTools session of the tab the requests are sent from.
-    tab: String,
-    /// The origin the tab is on. `about:blank` until the first request.
-    origin: String,
-    /// The isolated world the requests are sent from, with the loader of the
-    /// document it was made in; `None` until one is made.
-    world: Option<(String, i64)>,
-    /// The values the document that world was made in carries, read with it.
-    page: snob_ig::page_values::PageValues,
-    /// Whether its cookies have been checked ([`sync_cookies`]): from then on
-    /// the mark names the session the browser holds ([`Live::held`]).
-    checked: bool,
-    /// What is known about the profile; see [`ProfileMark`].
-    mark: ProfileMark,
-    /// What the listener to the app's traffic shares with the requests sent
-    /// from the same tab; see [`listen`].
-    listened: Arc<listen::Shared>,
-    /// The write of snob's the tab's guard lets out, armed as it is sent
-    /// ([`built_and_sent`]); see [`guard::Armed`].
-    armed: Arc<guard::Armed>,
-    /// Where a push-back heard on it is recorded: the account's own.
-    account: AccountPaths,
-    /// The loader of the last document whose token the owner log named
-    /// ([`Live::build`]), so that each document's is named once.
-    token_named: Option<String>,
-    /// The document the last [`Ask::Document`] loaded, by its loader, and
-    /// the path it was asked for: the only one a write may be built on
-    /// ([`Live::build`]).
-    asked_document: Option<(String, String)>,
-    /// What it was last moved to (`power::qos`), and when; `None` until it
-    /// has been. See [`Headless::keep_mode`].
-    mode: Option<(crate::system::power::qos::Mode, std::time::Instant)>,
-}
-
-impl Live {
-    /// The session the browser holds, by its fingerprint, once its cookies have
-    /// been checked: the one it was handed, a later login it kept instead
-    /// ([`sync_cookies`]), or what a write-back stored from it.
-    fn held(&self) -> Option<&str> {
-        self.checked.then_some(())?;
-        self.mark.session.as_deref()
-    }
-
-    /// What the browser holds for the site it was sending to: read before it
-    /// closes, for [`write_back`].
-    async fn cookies(&self) -> Option<snob_ig::login::BrowserCookies> {
-        self.held()?;
-        let host = lock(&self.listened.site).clone()?;
-        let cookies = self
-            .cdp
-            .cookies()
-            .await
-            .map_err(|e| tracing::debug!(error = %e, "could not read the browser's cookies"))
-            .ok()?;
-        crate::browser::cdp::collect_for(&cookies, &host)
-    }
-
-    /// Whether the browser holds exactly `session`'s `sessionid`.
-    async fn holds(&self, session: &Session) -> bool {
-        self.cookies()
-            .await
-            .is_some_and(|jar| jar.sessionid.expose() == session.sessionid.expose())
-    }
-
-    /// The same, with the session it was handed, for this process's own
-    /// write-back.
-    async fn jar(&self, pk: Pk) -> Option<write_back::Rotated> {
-        let handed = self.held()?.to_string();
-        let jar = self.cookies().await?;
-        Some(write_back::Rotated::new(pk, handed, jar))
-    }
-
-    /// The values the tab's current document carries, with the web session id
-    /// its app last sent from that document: what a request built like the
-    /// app's is built from.
-    ///
-    /// **The document is checked first**, as for a request sent: the app can
-    /// load another one by itself, and values read from the old document would
-    /// go out beside the new one's calls.
-    async fn page_values(&mut self) -> Result<snob_ig::page_values::PageValues, PageError> {
-        tab::isolated_world(self).await?;
-        let mut values = self.page.clone();
-        values.web_session = self.world.as_ref().and_then(|(loader, _)| {
-            lock(&self.listened.documents)
-                .get(loader)
-                .and_then(|document| document.web_session.clone())
-        });
-        Ok(values)
-    }
-
-    /// The loader of the document the tab is on, as the world was last made.
-    fn loader(&self) -> String {
-        self.world
-            .as_ref()
-            .map(|(loader, _)| loader.clone())
-            .unwrap_or_default()
-    }
-
-    /// Whether the document `loader` names is the one the last
-    /// [`Ask::Document`] loaded at `path`.
-    fn made_from(&self, loader: &str, path: &str) -> bool {
-        self.asked_document
-            .as_ref()
-            .is_some_and(|(asked, at)| !loader.is_empty() && asked == loader && at == path)
-    }
-
-    /// The request `call` asks for, built as `session` from the tab's current
-    /// document: its values, the app's calls on it, and what the app last sent
-    /// with the operation asked, from any document
-    /// ([`snob_ig::web::build_call`]): its variables, whose flags are copied,
-    /// and the number it sent the read under.
-    ///
-    /// **A value only the app's calls carry is waited for**, up to
-    /// [`APP_CALLS_PATIENCE`]: the app sends them as its document boots, a
-    /// moment after the load.
-    ///
-    /// **A write is built only on the document it is made from**: the one the
-    /// last [`Ask::Document`] loaded at `call`'s referrer, still the tab's.
-    ///
-    /// **A read is made from the page the tab is on**: the queries the app
-    /// sends about an account it is not showing (a profile's, a hover card's,
-    /// the story viewer's) go out as it sends them, from the page it is on, on
-    /// that page's route, so the `Referer` and `__crn` agree with where the tab
-    /// really is rather than with a page it never went to
-    /// ([`Live::made_from_where_the_tab_is`]).
-    ///
-    /// **What the live check asks is said in the owner log**, at debug: once
-    /// per document, which of its two tokens the app's Relay and Comet calls
-    /// carry; and for a query built, whether it took the app's variables or its
-    /// own, and which keys its variables and the app's for the same operation
-    /// on this document each lack.
-    async fn build(&mut self, session: &Session, call: &Call) -> Result<PageRequest, PageError> {
-        let deadline = tokio::time::Instant::now() + APP_CALLS_PATIENCE;
-        loop {
-            let page = self.page_values().await?;
-            let loader = self.loader();
-            if matches!(call.ask, Ask::Write { .. }) && !self.made_from(&loader, &call.referrer) {
-                tracing::debug!("a write asked on a document it was not made from");
-                return Err(PageError::NotReady(
-                    "the profile this write is made from".into(),
-                ));
-            }
-            let call = self.made_from_where_the_tab_is(call).await;
-            // A std lock, released before anything is awaited.
-            let (built, token, apps) = {
-                let mut documents = lock(&self.listened.documents);
-                let asked = match &call.ask {
-                    Ask::Query { operation, .. } => Some(*operation),
-                    _ => None,
-                };
-                let variables = asked
-                    .and_then(|operation| documents.template(operation))
-                    .map(str::to_string);
-                let doc_id = asked
-                    .and_then(|operation| documents.rediscovered().get(operation))
-                    .map(str::to_string);
-                let rest_token = documents.rest_token().map(str::to_string);
-                let document = documents.entry(&loader);
-                let token = document.calls.sent_token(&page);
-                let built = snob_ig::web::build_call(
-                    &call,
-                    &page,
-                    &mut document.calls,
-                    session.ds_user_id,
-                    &Seen {
-                        variables: variables.as_deref(),
-                        doc_id: doc_id.as_deref(),
-                        rest_token: rest_token.as_deref(),
-                    },
-                );
-                let apps = match &call.ask {
-                    Ask::Query { operation, .. } => document
-                        .calls
-                        .variables_sent(*operation)
-                        .map(str::to_string),
-                    _ => None,
-                };
-                (built, token, apps)
-            };
-            if token != SentToken::NotYet && self.token_named.as_deref() != Some(&loader) {
-                tracing::debug!(
-                    ?token,
-                    "the token the app's Relay and Comet calls carry on this document"
-                );
-                self.token_named = Some(loader);
-            }
-            match built {
-                Err(Unbuilt::Missing(missing))
-                    if missing.waits_on_the_app() && tokio::time::Instant::now() < deadline =>
-                {
-                    tokio::time::sleep(APP_CALLS_POLL).await;
-                }
-                Ok(request) => {
-                    say_the_variables(&call, &request, apps.as_deref());
-                    return Ok(request);
-                }
-                built => return built.map_err(PageError::from),
-            }
-        }
-    }
-
-    /// The numbers the app was seen to send the registry's reads under:
-    /// what a request built from them is held to the allowlist with.
-    fn rediscovered(&self) -> Rediscovered {
-        lock(&self.listened.documents).rediscovered().clone()
-    }
-
-    /// `call`, made from the page the tab is on ([`snob_ig::web::made_from`]),
-    /// which is read from the tab itself: a page that could not be read
-    /// leaves the call as it was asked.
-    async fn made_from_where_the_tab_is(&mut self, call: &Call) -> Call {
-        let Some(path) = tab::path_of(self).await else {
-            return call.clone();
-        };
-        let made = snob_ig::web::made_from(call, &path);
-        if made.referrer != call.referrer {
-            tracing::debug!(
-                "a read is made from the page the tab is on, not the one it was asked from"
-            );
-        }
-        made
-    }
-}
-
-/// Says in the owner log, for a query built as `request`, whether it took
-/// the app's variables, with only what is asked made snob's, or its own; and,
-/// when the app sent the same operation on the document (`apps`), which keys
-/// each side's variables lack. Names only.
-fn say_the_variables(call: &Call, request: &PageRequest, apps: Option<&str>) {
-    let Ask::Query {
-        operation,
-        variables: asked,
-    } = &call.ask
-    else {
-        return;
-    };
-    let Some(ours) = request.body.as_deref().and_then(|body| {
-        url::form_urlencoded::parse(body.as_bytes())
-            .find(|(name, _)| name == "variables")
-            .map(|(_, value)| value.into_owned())
-    }) else {
-        return;
-    };
-    let operation = operation.friendly_name();
-    let the_apps = ours != *asked;
-    tracing::debug!(
-        operation,
-        the_apps,
-        "a query's variables: the app's flags, or snob's own"
-    );
-    if let Some((ours_lack, apps_lack)) =
-        apps.and_then(|apps| snob_ig::web::keys_each_lacks(&ours, apps))
-    {
-        tracing::debug!(
-            operation,
-            ?ours_lack,
-            ?apps_lack,
-            "the keys snob's variables and the app's each lack"
-        );
-    }
 }
 
 impl Headless {
@@ -907,9 +638,7 @@ impl Headless {
         }
         if live.origin != origin {
             // The site the listener counts, when it is not Instagram's own.
-            *lock(&live.listened.site) = url::Url::parse(&origin)
-                .ok()
-                .and_then(|u| u.host_str().map(str::to_string));
+            *lock(&live.listened.site) = host_of(&origin);
             navigate(live, &format!("{origin}/")).await?;
             // What the first load handed this profile, for the live check:
             // device cookies are never made up, only kept and noted.
@@ -963,7 +692,8 @@ impl Headless {
             if crate::browser::owner::signed_out(&self.paths, session) {
                 return Err(PageError::SignedOutHere);
             }
-            let error = match self.start(session, account).await {
+            let error = match launch::for_requests(&self.paths, &self.heard, session, account).await
+            {
                 Err(e) => e,
                 Ok(started) => return Ok(started),
             };
@@ -997,604 +727,6 @@ impl Headless {
             }
         }
     }
-
-    /// Starts the browser.
-    async fn start(&self, session: &Session, account: &Account) -> Result<Live> {
-        let (profile, _) = profile::for_account(&self.paths, session.ds_user_id)?;
-        let mut mark = ProfileMark::read(&profile);
-        // The browser that made the profile, while it is still installed; then
-        // the one the session names; then the first found.
-        let made_it = mark.browser.as_deref().and_then(|path| {
-            crate::browser::detect_all()
-                .into_iter()
-                .find(|b| b.path == path)
-        });
-        let browser = made_it
-            .or_else(|| {
-                session
-                    .browser
-                    .as_deref()
-                    .and_then(crate::browser::detect_named)
-            })
-            .or_else(crate::browser::detect)
-            .ok_or_else(|| {
-                anyhow!(
-                    "snob sends its requests from a browser, and no Chrome, Edge, Brave or \
-                     Chromium was found on this machine.\n\
-                     Install Chrome, Edge or Brave (or Chromium on Linux), or set \
-                     SNOB_NO_BROWSER=1 to send them directly — which Instagram can tell \
-                     apart from a browser."
-                )
-            })?;
-        refuse_root()?;
-        // A profile nothing has claimed yet, or whose browser is gone: from
-        // here on it is this one's.
-        let claim = mark.browser.as_deref() != Some(browser.path.as_path());
-        mark.browser = Some(browser.path.clone());
-        // The User-Agent of the binary being started, never the one stored with
-        // the session, pinned at login or not.
-        let user_agent = browser.user_agent();
-
-        // What this browser says about the machine, asked of it once without
-        // `--user-agent` (which blanks it) and kept. See `machine_hints`.
-        let hints = machine_hints(&browser, &self.paths).await;
-
-        let flags = windowless_flags(&user_agent);
-        let cancel = CancelToken::default();
-        let launched = crate::browser::cdp::launch_headless(&browser, &profile, &flags)
-            .with_context(|| format!("could not start {} without a window", browser.name))?;
-        let cdp = Cdp::connect(launched, &cancel).await?;
-        if claim {
-            mark.write(&profile);
-        }
-
-        let (full_version, user_agent) = running_build(&cdp, &browser).await?;
-
-        // Attached before the plan below is set, so the dispatcher only
-        // registers the tab: the calls after the plan are the one place the
-        // tab is given its identity.
-        let Tab {
-            session: tab,
-            target: tab_target,
-        } = attach_to_a_tab(&cdp).await?;
-
-        // **Every target, not only the tab.** A worker, a frame and the service
-        // worker the site registers are targets of their own, and
-        // `setUserAgentOverride` holds for the one it was sent to; measured, a
-        // service worker's requests carried no client hints at all.
-        let metadata = metadata(&user_agent, &full_version, hints.as_ref());
-        let identity = json!({ "userAgent": user_agent, "userAgentMetadata": metadata });
-        let page_commands = vec![
-            ("Emulation.setUserAgentOverride", identity.clone()),
-            // A headless tab never has focus, and `document.hasFocus()` said
-            // so — measured false — where a page somebody is looking at says
-            // true.
-            (
-                "Emulation.setFocusEmulationEnabled",
-                json!({ "enabled": true }),
-            ),
-            // The guard's pauses, judged by the rule set just below.
-            ("Fetch.enable", guard::patterns()),
-        ];
-        cdp.connection()
-            .set_on_attach(crate::browser::cdp::OnAttach {
-                page: page_commands.clone(),
-                worker: vec![
-                    ("Network.setUserAgentOverride", identity),
-                    ("Fetch.enable", guard::patterns()),
-                ],
-            });
-        // Created here so the guard can read what the app is seen to send,
-        // and which write of snob's to let through.
-        let listened = Arc::new(listen::Shared::default());
-        let judged = Arc::clone(&listened);
-        let armed = Arc::new(guard::Armed::default());
-        let expected = Arc::clone(&armed);
-        cdp.connection().set_pause_rule(Arc::new(move |params| {
-            let documents = lock(&judged.documents);
-            guard::judge(params, documents.rediscovered(), &expected)
-        }));
-        cdp.browser_call(
-            "Target.setAutoAttach",
-            json!({
-                "autoAttach": true,
-                "waitForDebuggerOnStart": true,
-                "flatten": true,
-                // The service and shared workers, which belong to the browser
-                // rather than to a tab. The tab's own are asked for on it.
-                "filter": [
-                    { "type": "service_worker", "exclude": false },
-                    { "type": "shared_worker", "exclude": false },
-                    { "exclude": true },
-                ],
-            }),
-        )
-        .await?;
-
-        for (method, params) in page_commands {
-            cdp.page_call(&tab, method, params, COMMAND_TIMEOUT).await?;
-        }
-        cdp.page_call(
-            &tab,
-            "Target.setAutoAttach",
-            json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true }),
-            COMMAND_TIMEOUT,
-        )
-        .await?;
-        // So that a tab that crashes says so, and the request waiting on it
-        // fails at once rather than at its timeout: `Inspector.targetCrashed`
-        // is only sent to a session that asked for the domain.
-        cdp.page_call(&tab, "Inspector.enable", json!({}), COMMAND_TIMEOUT)
-            .await?;
-
-        // The calls Instagram's own app makes on this tab are listened to for
-        // push-back (`listen`): their answers, with room for a page's worth and
-        // no more, and the tab's address as it changes, which is where an
-        // in-app route to the challenge shows without a request.
-        cdp.page_call(
-            &tab,
-            "Network.enable",
-            json!({
-                "maxTotalBufferSize": LISTENING_BUFFER,
-                "maxResourceBufferSize": LISTENING_BUFFER / 4,
-                "maxPostDataSize": 65_536,
-            }),
-            COMMAND_TIMEOUT,
-        )
-        .await?;
-        cdp.browser_call(
-            "Target.setDiscoverTargets",
-            json!({ "discover": true, "filter": [{ "type": "page" }] }),
-        )
-        .await?;
-        *lock(&account.listened) = Some(Arc::clone(&listened));
-        // Told on to whoever asked to hear, the moment it happens; ends with
-        // the browser, when the latch goes.
-        let mut heard = listened.latch.heard();
-        let tell = self.heard.clone();
-        let pk = session.ds_user_id;
-        tokio::spawn(async move {
-            let cause = match heard.wait_for(Option::is_some).await {
-                Ok(cause) => cause.clone(),
-                Err(_) => return,
-            };
-            if let Some(cause) = cause {
-                let _ = tell.send((pk, cause));
-            }
-        });
-        let account_paths = self.paths.account(pk);
-        tokio::spawn(listen::listen(
-            cdp.connection().clone(),
-            tab.clone(),
-            tab_target,
-            Arc::clone(&listened),
-            account_paths.clone(),
-        ));
-
-        Ok(Live {
-            cdp,
-            profile,
-            tab,
-            origin: "about:blank".to_string(),
-            world: None,
-            page: snob_ig::page_values::PageValues::default(),
-            checked: false,
-            mark,
-            listened,
-            armed,
-            account: account_paths,
-            token_named: None,
-            asked_document: None,
-            mode: None,
-        })
-    }
-}
-
-/// `request`, unless the allowlist refuses it, a read under a number the app
-/// was seen to send it under (`found`) as well as under the registry's:
-/// then nothing is sent, and it is said as the defect of snob's it is.
-fn refuse(request: &PageRequest, found: &Rediscovered) -> Result<(), PageError> {
-    match snob_ig::allowlist::refused_with(request, found) {
-        Some(what) => {
-            tracing::error!(request = %what, "refused a call snob may not send");
-            Err(PageError::NotAllowed(what))
-        }
-        None => Ok(()),
-    }
-}
-
-/// The tab's answer to `call`, asked as `session`: what its document says, or
-/// the answer to the request it asks for, built beside the document's values
-/// ([`Live::build`]) and sent from the isolated world.
-async fn answer_on(live: &mut Live, session: &Session, call: &Call) -> Result<Told, PageError> {
-    match &call.ask {
-        Ask::Viewer => signed_in(live, session).await.map(Told::Viewer),
-        Ask::Tray => {
-            signed_in(live, session).await?;
-            tab::tray(live).await.map(Told::Tray)
-        }
-        Ask::Pk { name } => {
-            signed_in(live, session).await?;
-            let route = format!("/{name}/");
-            let envelope = {
-                let loader = live.loader();
-                lock(&live.listened.documents)
-                    .get(&loader)
-                    .is_some_and(|document| document.calls.made_a_route_call())
-            };
-            if !envelope {
-                tracing::debug!(
-                    "a name's pk is read from its profile document: the app made no route call to copy"
-                );
-                return pk_of_the_document(live, call, &route).await;
-            }
-            tracing::debug!("a name's pk is asked of the route definitions");
-            let answer = built_and_sent(live, session, call).await?;
-            let pk = route_answer(&answer.body, &route);
-            Ok(Told::Pk { answer, pk })
-        }
-        Ask::Document { path } => {
-            live.asked_document = None;
-            let mut answer = loaded(live, call, path).await?;
-            let bundles = snob_ig::graphql::bundles_in(&answer.body);
-            answer.body.clear();
-            if (200..300).contains(&answer.status) {
-                signed_in(live, session).await?;
-                if path != "/" {
-                    let sent = the_apps_query(live, Operation::ProfilePage).await;
-                    let settled = the_apps_calls_paused(live).await;
-                    tracing::debug!(
-                        sent = sent.is_some(),
-                        settled,
-                        "the app's profile query on the profile document, and its calls paused"
-                    );
-                }
-                live.asked_document = Some((live.loader(), path.clone()));
-            }
-            Ok(Told::Document { answer, bundles })
-        }
-        Ask::Asset { url } => {
-            if let Some(what) = snob_ig::allowlist::refused_asset(&call.origin, url) {
-                tracing::error!(request = %what, "refused a download snob may not make");
-                return Err(PageError::NotAllowed(what));
-            }
-            asset(live, call, url).await.map(Told::Asset)
-        }
-        Ask::Query { .. }
-        | Ask::Rest { .. }
-        | Ask::Navigation { .. }
-        | Ask::Statuses { .. }
-        | Ask::Write { .. } => built_and_sent(live, session, call).await.map(Told::Answer),
-    }
-}
-
-/// The file at `url`, fetched from the isolated world as the app's own page
-/// would fetch one from the CDN: the browser's TLS and HTTP/2, `Sec-Fetch-*`,
-/// the page's `Referer` and none of the site's cookies, which are not the
-/// CDN's.
-async fn asset(live: &mut Live, call: &Call, url: &str) -> Result<PageResponse, PageError> {
-    if let Some(cause) = live.listened.latch.get() {
-        return Err(PageError::PushedBack(cause));
-    }
-    let world = tab::isolated_world(live).await?;
-    match tab::fetch_asset(live, world, url, call.cap, call.timeout_ms).await {
-        Ok(response) => Ok(response),
-        Err(e) => Err(live.listened.latch.get().map_or(e, PageError::PushedBack)),
-    }
-}
-
-/// Who the tab's document was served to, when that is `session`'s account
-/// ([`snob_ig::web::viewer_of`], as a built call checks it).
-async fn signed_in(
-    live: &mut Live,
-    session: &Session,
-) -> Result<snob_ig::page_values::Viewer, PageError> {
-    let page = live.page_values().await?;
-    Ok(snob_ig::web::viewer_of(&page, session.ds_user_id)?.clone())
-}
-
-/// The request `call` asks for, built on the tab's document, held to the
-/// allowlist, and sent from the isolated world.
-async fn built_and_sent(
-    live: &mut Live,
-    session: &Session,
-    call: &Call,
-) -> Result<PageResponse, PageError> {
-    let request = live.build(session, call).await?;
-    refuse(&request, &live.rediscovered())?;
-    let world = tab::isolated_world(live).await?;
-    // The guard refuses every follow and unfollow but the one it expects,
-    // until the fetch has answered or is given up.
-    let expecting = matches!(call.ask, Ask::Write { .. }).then(|| live.armed.expect(&request));
-    let response = fetch(live, world, &request).await;
-    drop(expecting);
-    own_answer(live, &request, response?).await
-}
-
-/// The tab goes to `path` on the call's origin, a navigation the allowlist
-/// lets out, and the document it lands on is the answer.
-async fn loaded(live: &mut Live, call: &Call, path: &str) -> Result<PageResponse, PageError> {
-    let request = PageRequest {
-        method: Method::Get,
-        url: format!("{}{path}", call.origin),
-        headers: Vec::new(),
-        referrer: format!("{}{}", call.origin, call.referrer),
-        body: None,
-        navigate: true,
-        cap: call.cap,
-        timeout_ms: call.timeout_ms,
-    };
-    refuse(&request, &Rediscovered::default())?;
-    let response = navigate_and_read(live, &request.url).await?;
-    own_answer(live, &request, response).await
-}
-
-/// The pk behind `route`, read from the profile document the tab loads for it:
-/// the id of the route props the document embeds.
-///
-/// **The app's own profile query is a second witness.**
-async fn pk_of_the_document(live: &mut Live, call: &Call, route: &str) -> Result<Told, PageError> {
-    let mut answer = loaded(live, call, route).await?;
-    let from_the_document = document_pk(&answer.body);
-    answer.body.clear();
-    if !(200..300).contains(&answer.status) {
-        tracing::debug!(
-            status = answer.status,
-            "the profile document is not a success"
-        );
-        return Ok(Told::Pk {
-            answer,
-            pk: RouteAnswer::Error,
-        });
-    }
-    let from_the_app = the_apps_query(live, Operation::ProfilePage)
-        .await
-        .and_then(|sent| id_in(&sent));
-    let witnesses = match (from_the_document, from_the_app) {
-        (Some(document), Some(app)) if document == app => "both, and they agree",
-        (Some(_), Some(_)) => "both, and they name two accounts",
-        (Some(_), None) => "the document's props alone",
-        (None, Some(_)) => "the app's query alone",
-        (None, None) => "neither",
-    };
-    tracing::debug!(witnesses, "the pk the profile document named");
-    let pk = match (from_the_document, from_the_app) {
-        (Some(document), Some(app)) if document != app => RouteAnswer::Error,
-        (Some(pk), _) | (None, Some(pk)) => RouteAnswer::Pk(pk),
-        (None, None) => RouteAnswer::Error,
-    };
-    Ok(Told::Pk { answer, pk })
-}
-
-/// The variables the app sent with its own `operation` on the tab's
-/// document, waited for up to [`APP_CALLS_PATIENCE`]; `None` when it sent
-/// none by then.
-async fn the_apps_query(live: &Live, operation: Operation) -> Option<String> {
-    let loader = live.loader();
-    let deadline = tokio::time::Instant::now() + APP_CALLS_PATIENCE;
-    loop {
-        let sent = lock(&live.listened.documents)
-            .get(&loader)
-            .and_then(|document| document.calls.variables_sent(operation))
-            .map(str::to_string);
-        if sent.is_some() || tokio::time::Instant::now() >= deadline {
-            return sent;
-        }
-        tokio::time::sleep(APP_CALLS_POLL).await;
-    }
-}
-
-/// Waits until the app has sent no call from the tab's document for
-/// [`APP_CALLS_QUIET`], up to [`APP_CALLS_PATIENCE`]; says whether it paused by
-/// then.
-async fn the_apps_calls_paused(live: &Live) -> bool {
-    let loader = live.loader();
-    let heard = || {
-        lock(&live.listened.documents)
-            .get(&loader)
-            .map_or(0, |document| document.heard)
-    };
-    let deadline = tokio::time::Instant::now() + APP_CALLS_PATIENCE;
-    let mut last = heard();
-    let mut quiet_since = tokio::time::Instant::now();
-    loop {
-        if quiet_since.elapsed() >= APP_CALLS_QUIET {
-            return true;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return false;
-        }
-        tokio::time::sleep(APP_CALLS_POLL).await;
-        let now = heard();
-        if now != last {
-            last = now;
-            quiet_since = tokio::time::Instant::now();
-        }
-    }
-}
-
-/// The `id` of a query's variables, as the app sends it: a string of digits.
-fn id_in(variables: &str) -> Option<Pk> {
-    let variables: Value = serde_json::from_str(variables).ok()?;
-    match variables.get("id")? {
-        Value::String(id) => id.parse().ok(),
-        Value::Number(id) => id.as_u64().map(Pk::new),
-        _ => None,
-    }
-}
-
-/// One of snob's own answers, on its way back to the client.
-async fn own_answer(
-    live: &Live,
-    request: &PageRequest,
-    response: PageResponse,
-) -> Result<PageResponse, PageError> {
-    let latch = &live.listened.latch;
-    if latch.get().is_none()
-        && let Some(error) = listen::pushed_back(&request.url, &response)
-    {
-        listen::noted_own(&request.url, &response);
-        let recording = listen::heard(
-            live.cdp.connection(),
-            &live.tab,
-            &live.listened,
-            &live.account,
-            &error,
-        );
-        if let Some(recording) = recording {
-            let _ = recording.await;
-        }
-    }
-    match latch.get() {
-        Some(cause) => Err(PageError::PushedBack(cause)),
-        None => Ok(response),
-    }
-}
-
-/// Chromium will not run as root with its sandbox on, and snob does not turn
-/// the sandbox off for anybody: this browser loads pages and media a server
-/// chose, which is what the sandbox is for. Measured: it exits 1 at once, and
-/// "exited with code 1" says nothing about why.
-pub(crate) fn refuse_root() -> Result<()> {
-    #[cfg(unix)]
-    {
-        // SAFETY: `geteuid` takes nothing, touches no memory and cannot fail.
-        if unsafe { libc::geteuid() } == 0 {
-            anyhow::bail!(
-                "snob sends its requests from a browser, and Chromium will not run as root \
-                 with its sandbox on.\n\
-                 Run snob as an ordinary user, or set SNOB_NO_BROWSER=1 to send the requests \
-                 directly — which Instagram can tell apart from a browser."
-            );
-        }
-    }
-    Ok(())
-}
-
-/// The flags a browser without a window starts with, saying `user_agent`.
-fn windowless_flags(user_agent: &str) -> Vec<String> {
-    vec![
-        "--headless=new".to_string(),
-        // Kept although every target is overridden once it attaches: a few requests
-        // belong to no target — the script of a service worker is one — and
-        // without it they would name `HeadlessChrome`.
-        format!("--user-agent={user_agent}"),
-        format!(
-            "--screen-info={{0,0 {}x{} workAreaBottom={TASKBAR}}}",
-            SCREEN.0, SCREEN.1
-        ),
-        "--window-position=0,0".to_string(),
-        format!("--window-size={},{}", SCREEN.0, SCREEN.1 - TASKBAR),
-        // A headless browser has no pointer: `(pointer: fine)` and `(hover:
-        // hover)` were both false, which is a phone's answer on a desktop's
-        // screen.
-        "--blink-settings=primaryPointerType=4,availablePointerTypes=4,\
-         primaryHoverType=2,availableHoverTypes=2"
-            .to_string(),
-    ]
-}
-
-/// The whole version of the build that runs, and the User-Agent that states
-/// it.
-async fn running_build(cdp: &Cdp, browser: &crate::browser::Browser) -> Result<(String, String)> {
-    let version = cdp.browser_call("Browser.getVersion", json!({})).await?;
-    let full_version = version
-        .get("product")
-        .and_then(Value::as_str)
-        .and_then(|product| product.split('/').nth(1))
-        .unwrap_or_default()
-        .to_string();
-    // The build that runs, which is not always the one detection read: an update
-    // waiting for the browser to close puts the new version beside the old, and the old
-    // one is what starts — and what answered the probe.
-    let running = full_version
-        .split('.')
-        .next()
-        .and_then(|major| major.parse::<u32>().ok())
-        .unwrap_or(browser.major_version);
-    let user_agent = browser.user_agent_at(running);
-    Ok((full_version, user_agent))
-}
-
-/// A browser without a window, for a login watched from another machine
-/// (`crate::relay`), on the tab it opened.
-pub struct RemoteLogin {
-    pub cdp: Cdp,
-    /// The DevTools session of its tab.
-    pub tab: String,
-    /// The User-Agent its tab sends, which the session is tied to: the
-    /// running build's, never the `HeadlessChrome` the browser would report.
-    pub user_agent: String,
-}
-
-/// Starts the browser a login watched from another machine happens in, on
-/// `profile`, dressed as every request's browser is, and on `about:blank`.
-///
-/// **The same identity as the requests that follow**, from the first request
-/// the login page sends: the flags, the client hints, the override on every
-/// target, the focus.
-///
-/// **Without the guard** (`guard`): what the person does here is a login, with
-/// its own posts — the form, a two-factor code, a challenge — and none of them
-/// is a call of snob's to judge.
-pub async fn for_a_remote_login(
-    browser: &crate::browser::Browser,
-    profile: &std::path::Path,
-    paths: &AppPaths,
-    cancel: &CancelToken,
-) -> Result<RemoteLogin> {
-    refuse_root()?;
-    let hints = machine_hints(browser, paths).await;
-    let flags = windowless_flags(&browser.user_agent());
-    let launched = crate::browser::cdp::launch_headless(browser, profile, &flags)
-        .with_context(|| format!("could not start {} without a window", browser.name))?;
-    let cdp = Cdp::connect(launched, cancel).await?;
-    let (full_version, user_agent) = running_build(&cdp, browser).await?;
-    let Tab { session: tab, .. } = attach_to_a_tab(&cdp).await?;
-
-    let metadata = metadata(&user_agent, &full_version, hints.as_ref());
-    let identity = json!({ "userAgent": user_agent, "userAgentMetadata": metadata });
-    let page_commands = vec![
-        ("Emulation.setUserAgentOverride", identity.clone()),
-        (
-            "Emulation.setFocusEmulationEnabled",
-            json!({ "enabled": true }),
-        ),
-    ];
-    cdp.connection()
-        .set_on_attach(crate::browser::cdp::OnAttach {
-            page: page_commands.clone(),
-            worker: vec![("Network.setUserAgentOverride", identity)],
-        });
-    cdp.browser_call(
-        "Target.setAutoAttach",
-        json!({
-            "autoAttach": true,
-            "waitForDebuggerOnStart": true,
-            "flatten": true,
-            "filter": [
-                { "type": "service_worker", "exclude": false },
-                { "type": "shared_worker", "exclude": false },
-                { "exclude": true },
-            ],
-        }),
-    )
-    .await?;
-    for (method, params) in page_commands {
-        cdp.page_call(&tab, method, params, COMMAND_TIMEOUT).await?;
-    }
-    cdp.page_call(
-        &tab,
-        "Target.setAutoAttach",
-        json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true }),
-        COMMAND_TIMEOUT,
-    )
-    .await?;
-    Ok(RemoteLogin {
-        cdp,
-        tab,
-        user_agent,
-    })
 }
 
 /// A failure of the browser, or of driving it, as the page reports one.
@@ -1610,108 +742,16 @@ fn newer_login(held_since: Option<snob_core::Epoch>, session: &Session) -> bool 
     held_since.is_none_or(|at| session.created_at > at)
 }
 
-/// Attaches to the tab the browser opened with, in flat mode so its commands
-/// travel on the same pipe.
-async fn attach_to_a_tab(cdp: &Cdp) -> Result<Tab> {
-    let targets = cdp.browser_call("Target.getTargets", json!({})).await?;
-    let page = targets
-        .get("targetInfos")
-        .and_then(Value::as_array)
-        .and_then(|all| {
-            all.iter()
-                .find(|t| t.get("type").and_then(Value::as_str) == Some("page"))
-        })
-        .and_then(|t| t.get("targetId"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("the browser opened no tab"))?
-        .to_string();
-    let attached = cdp
-        .browser_call(
-            "Target.attachToTarget",
-            json!({ "targetId": page, "flatten": true }),
-        )
-        .await?;
-    let session = attached
-        .get("sessionId")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| anyhow!("the browser would not attach to its tab"))?;
-    Ok(Tab {
-        session,
-        target: page,
-    })
-}
-
-/// The tab a browser opened with, as this connection knows it.
-struct Tab {
-    /// The DevTools session its commands travel on.
-    session: String,
-    /// The target it is, whose address the browser reports as it changes.
-    target: String,
-}
-
-/// The host of an origin.
-fn host_of(origin: &str) -> Option<String> {
-    url::Url::parse(origin)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_string))
-}
-
-/// Scheme, host and port, with no trailing slash.
-fn origin_of(url: &str) -> Result<String> {
-    let parsed = url::Url::parse(url).with_context(|| format!("not an address: {url}"))?;
-    Ok(parsed.origin().ascii_serialization())
-}
-
-/// The origin of `url`, when it is the site's own (`snob_ig::client::site`).
-///
-/// **The account's tab is never taken to another site**, whatever handed the
-/// request over, the owner's socket included: the allowlist judges a method
-/// and a path, never a host, and the tab goes to the origin it is told.
-fn on_the_site(url: &str) -> Result<String, PageError> {
-    let site = snob_ig::client::site().origin().ascii_serialization();
-    match origin_of(url) {
-        Ok(origin) if origin == site || a_tests_own_server(&origin) => Ok(origin),
-        _ => {
-            let what = "a request to another site";
-            tracing::error!(request = what, "refused a call snob may not send");
-            Err(PageError::NotAllowed(what.into()))
-        }
-    }
-}
-
-/// A fake Instagram on a loopback port, in a test or a `testing` build, never
-/// a release: the tests of one binary cannot share the one `site()` of a
-/// process, and the owner of a sandbox's browsers is not told its site (it is
-/// started with the sandbox's root alone).
-#[cfg(any(test, feature = "testing"))]
-fn a_tests_own_server(origin: &str) -> bool {
-    url::Url::parse(origin).is_ok_and(|url| {
-        url.scheme() == "http"
-            && matches!(url.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())
-    })
-}
-
-#[cfg(not(any(test, feature = "testing")))]
-fn a_tests_own_server(_: &str) -> bool {
-    false
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use serde_json::json;
+    use snob_ig::allowlist::Operation;
+    use snob_ig::client::page::Method;
+    use snob_ig::model::web::RouteAnswer;
+    use snob_ig::web::Ask;
+    use snob_store::paths::AccountPaths;
 
-    #[test]
-    fn an_origin_has_no_path_and_no_trailing_slash() {
-        assert_eq!(
-            origin_of("https://www.instagram.com/api/v1/x/?a=1").unwrap(),
-            "https://www.instagram.com"
-        );
-        assert_eq!(
-            origin_of("http://127.0.0.1:8765/api/v1/x/").unwrap(),
-            "http://127.0.0.1:8765"
-        );
-    }
+    use super::*;
 
     /// Paths at `root` where accounts 42 and 43 have the directory a version
     /// before the signed-in list left (`AccountPaths::signed_in`): never
