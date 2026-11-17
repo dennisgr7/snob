@@ -17,13 +17,7 @@ use crate::host::{Front, Progress, Wait};
 use crate::sentences::label;
 use crate::system::interrupt;
 
-/// The account the run is acting as, when there is one.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Viewer {
-    pub pk: Pk,
-    /// Absent until the first run resolves it. Cosmetic: nothing blocks on it.
-    pub username: Option<String>,
-}
+pub use crate::facts::{ConsentInAdvance, Held, Viewer};
 
 impl Viewer {
     /// The name, filtered for anything that is going to draw it.
@@ -138,14 +132,6 @@ pub fn pacer_saying_a_line(paths: &AccountPaths, cancel: CancelToken) -> Result<
     )
 }
 
-/// Until when this account may send nothing, and why.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Held {
-    pub until_ms: EpochMs,
-    /// The accounts whose push-backs stopped every account, named.
-    pub braked: Vec<String>,
-}
-
 /// [`Pacer::cooldown`], and whether it is the brake on every account.
 pub fn held(pacer: &Pacer, paths: Option<&AppPaths>) -> Result<Option<Held>> {
     let Some(until_ms) = pacer.cooldown()? else {
@@ -175,17 +161,6 @@ pub fn held_by(
         _ => Vec::new(),
     };
     Held { until_ms, braked }
-}
-
-/// How a run could have been given consent before it started.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ConsentInAdvance {
-    /// `-y` on the command line.
-    #[default]
-    Flag,
-    /// An `[[account]]` in `watch.toml` carrying the answer somebody gave once,
-    /// which is what `snob watch setup` writes.
-    WatchConfig,
 }
 
 pub struct App {

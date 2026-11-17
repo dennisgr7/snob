@@ -266,22 +266,27 @@ const ENGINE_SRC: &str = "crates/snob-engine/src/";
 
 /// What a part of the engine may name of the rest of it, for the parts held
 /// to a list. A part not listed is held to [`ENGINE_NAMED_ONLY_BY`] alone.
-const ENGINE_MAY_NAME: [(&str, &[&str]); 9] = [
+const ENGINE_MAY_NAME: [(&str, &[&str]); 10] = [
     // What the engine is handed, and what it answers with, stand on nothing.
     ("host", &[]),
     ("exit", &[]),
+    // What a run knows of itself and of a list, as data.
+    ("facts", &[]),
     // The operating system: a notice to say, and nothing else of snob's.
     ("system", &["host"]),
     // A file kept, and the one program run on it.
     ("files", &["host"]),
     ("ffmpeg", &["system"]),
-    // The words: of what the run and the lists hand them, never of a post,
-    // the monitor, the browser or an automation.
-    ("sentences", &["app", "engine", "exit", "system"]),
+    // The words: of what a run knows, never of the run itself, a list, a
+    // post, the monitor, the browser or an automation.
+    ("sentences", &["exit", "facts", "system"]),
     // The browser: the system under it, and what it says.
     ("browser", &["host", "sentences", "system"]),
     // The lists: never the monitor, an automation, a post or a profile.
-    ("engine", &["app", "exit", "host", "sentences", "system"]),
+    (
+        "engine",
+        &["app", "exit", "facts", "host", "sentences", "system"],
+    ),
     // Stories and the files a download keeps: never a post.
     ("media", &["exit", "ffmpeg", "files", "host", "sentences"]),
 ];
@@ -380,8 +385,54 @@ fn engine_broken(named: &[(String, Vec<String>)]) -> Vec<String> {
             }
         }
     }
+    broken.extend(reached_through(named));
     broken.sort();
     broken.dedup();
+    broken
+}
+
+/// What a part held to parts that are themselves held reaches through the
+/// names of those it names: only held parts, and never itself. So a part
+/// low enough to be held cannot stand on the run or a list by way of one it
+/// may name (`browser`, through `sentences`, on `app`).
+fn reached_through(named: &[(String, Vec<String>)]) -> Vec<String> {
+    let held = |part: &str| ENGINE_MAY_NAME.iter().any(|(held, _)| *held == part);
+    let names_of = |part: &str| -> Vec<&str> {
+        named
+            .iter()
+            .filter(|(of, _)| of == part)
+            .flat_map(|(_, names)| names.iter().map(String::as_str))
+            .filter(|name| *name != part)
+            .collect()
+    };
+    let mut broken = Vec::new();
+    for (part, may) in ENGINE_MAY_NAME {
+        if !may.iter().all(|name| held(name)) {
+            continue;
+        }
+        // What it names itself is held by its list; what those name is not.
+        let mut seen: Vec<&str> = names_of(part);
+        let mut next: Vec<&str> = seen
+            .iter()
+            .filter(|name| held(name))
+            .flat_map(|name| names_of(name))
+            .collect();
+        while let Some(name) = next.pop() {
+            if seen.contains(&name) {
+                continue;
+            }
+            seen.push(name);
+            if name == part {
+                broken.push(format!("{part} reaches itself through what it names"));
+            } else if !held(name) {
+                broken.push(format!(
+                    "{part} reaches crate::{name} through what it names, which it stands under"
+                ));
+            } else {
+                next.extend(names_of(name));
+            }
+        }
+    }
     broken
 }
 
@@ -473,13 +524,17 @@ mod tests {
             of("engine", &["watch"]),
             of("media", &["posts"]),
             of("sentences", &["posts"]),
+            of("browser", &["sentences"]),
+            of("exit", &["app"]),
             of("app", &["watch"]),
             of("watch", &["automations"]),
         ]),
         [
             "app names crate::watch, which is not its to name",
+            "browser reaches crate::posts through what it names, which it stands under",
             "engine names crate::watch, which is not its to name",
             "engine names crate::watch, which it stands under",
+            "exit names crate::app, which it stands under",
             "media names crate::posts, which it stands under",
             "sentences names crate::posts, which it stands under",
             "system names crate::app, which it stands under",

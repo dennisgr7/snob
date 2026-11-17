@@ -20,49 +20,7 @@ use snob_store::store::{accounts, snapshots, users};
 use crate::app::App;
 use crate::exit::ExitCode;
 
-/// Where a returned list came from, in the sense that decides whether two of
-/// them may be crossed against each other.
-///
-/// It is whether anything in **this run** established that it still describes
-/// the account: two lists a month apart are fine to cross if both counters were
-/// checked just now and neither had moved, and two lists an hour apart are not
-/// fine if nobody looked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Provenance {
-    /// Walked in this run. It is the account as it is.
-    Walked,
-    /// Stored, and a counter poll in this run said it had not moved.
-    CounterVerified,
-    /// Stored, served during a cooldown. Nothing may be spent to check.
-    Cooldown,
-    /// Stored, served because the counter poll failed. No evidence either way.
-    PollFailed,
-    /// Stored, served because `--offline` said not to look.
-    CacheFlag,
-    /// Stored, served because the counter moved but the list was walked less
-    /// than [`ListQuery::walk_at_most_every`] ago.
-    WalkedRecently,
-}
-
-impl Provenance {
-    /// Whether this list is known to describe the account as it is now.
-    pub fn describes_now(self) -> bool {
-        matches!(self, Self::Walked | Self::CounterVerified)
-    }
-
-    /// The word a program reads this by (`--progress-json`'s `served` event,
-    /// which `snob mcp` hands an agent as `served`).
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Walked => "walked",
-            Self::CounterVerified => "stored_unchanged",
-            Self::Cooldown => "stored_in_cooldown",
-            Self::PollFailed => "stored_after_failed_poll",
-            Self::CacheFlag => "stored",
-            Self::WalkedRecently => "stored_walked_recently",
-        }
-    }
-}
+pub use crate::facts::Provenance;
 
 #[derive(Debug)]
 pub struct ListOutcome {

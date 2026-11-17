@@ -35,6 +35,7 @@ pub mod browser;
 pub mod cache;
 pub mod engine;
 pub mod exit;
+pub mod facts;
 pub mod ffmpeg;
 pub mod files;
 pub mod follow;
