@@ -30,6 +30,6 @@
     "@astrojs/check": "0.9.12",
     "@playwright/test": "1.65.0",
     "typescript": "6.0.3",
-    "wrangler": "4.160.1"
+    "wrangler": "4.163.0"
   }
 }
