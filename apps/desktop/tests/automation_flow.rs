@@ -134,7 +134,7 @@ async fn the_list_opens_a_page_with_its_history_its_flow_in_words_and_a_pencil(
         assert_eq!(row.role(), Some(Role::Button));
         assert_eq!(
             row.label(),
-            Some("Daily lists. Followers and following (Your account). Every 6h")
+            Some("Daily lists. Followers and following (Your account). Every 6 hours")
         );
     });
 
@@ -166,7 +166,7 @@ async fn the_list_opens_a_page_with_its_history_its_flow_in_words_and_a_pencil(
         assert_eq!(steps.role(), Some(Role::List));
         assert_eq!(
             window.find(("automation-step", 0usize)).label(),
-            Some("Starts. On a schedule. Every 6h")
+            Some("Starts. On a schedule. Every 6 hours")
         );
         assert_eq!(
             window.find(("automation-step", 1usize)).label(),
@@ -195,7 +195,7 @@ async fn a_step_added_is_kept_at_once_and_undo_takes_it_back(cx: &mut TestAppCon
     app.in_window(cx, |window, _| {
         assert_eq!(
             window.find(("node", 1usize)).label(),
-            Some("Starts. On a schedule. Every 6h")
+            Some("Starts. On a schedule. Every 6 hours")
         );
         assert_eq!(window.find(("node", 2usize)).role(), Some(Role::Button));
     });
@@ -448,57 +448,226 @@ async fn an_arrow_let_go_near_an_input_joins_the_steps_and_far_from_one_does_not
     assert_eq!((edge.from, edge.to), (1, 2));
 }
 
-#[gpui_kit::test]
-async fn the_schedule_dialog_says_the_engines_reason_as_it_is_typed_and_saves_what_builds(
-    cx: &mut TestAppContext,
-) {
-    let mut empty = daily();
-    empty.nodes[0].step = Step::Schedule {
-        when: Spec::default(),
-    };
-    let backend = scripted(vec![empty]);
-    let app = in_editor(cx, backend.clone()).await;
+/// `daily` with its trigger's schedule `when`.
+fn on_schedule(when: Spec) -> Automation {
+    let mut automation = daily();
+    automation.nodes[0].step = Step::Schedule { when };
+    automation
+}
+
+/// The dialog of the trigger, open.
+fn configure_the_trigger(app: &App, cx: &mut TestAppContext) {
     app.in_window(cx, |window, cx| window.right_click(("node", 1usize), cx));
     app.click(cx, "node-menu-configure");
-    settle(&app, cx);
+    settle(app, cx);
+}
+
+fn the_trigger(backend: &Scripted) -> Step {
+    backend.automations()[0].nodes[0].step.clone()
+}
+
+#[gpui_kit::test]
+async fn the_schedule_dialog_says_what_is_wrong_in_the_persons_words_and_saves_what_builds(
+    cx: &mut TestAppContext,
+) {
+    let backend = scripted(vec![on_schedule(Spec::default())]);
+    let app = in_editor(cx, backend.clone()).await;
+    configure_the_trigger(&app, cx);
     app.in_window(cx, |window, _| {
         let dialog = window.find("step-dialog");
         assert_eq!(dialog.role(), Some(Role::Dialog));
         assert_eq!(dialog.label(), Some("Trigger configuration"));
         assert_eq!(window.find("dialog-problems").role(), Some(Role::Status));
+        assert_eq!(
+            window.find(("schedule-time", 0usize)).focused(),
+            Some(true),
+            "a schedule that says nothing yet starts at its time"
+        );
     });
     assert!(disabled(&app, cx, "dialog-save"), "no schedule is said yet");
 
     app.in_window(cx, |window, cx| window.input("soon", cx));
     settle(&app, cx);
-    assert!(disabled(&app, cx, "dialog-save"), "not a duration");
+    assert!(disabled(&app, cx, "dialog-save"), "not a time");
+    let why = "\u{201c}soon\u{201d} is not a time of day; write it as 09:00.";
+    assert_eq!(app.label_of(cx, "dialog-problems"), why);
+    app.in_window(cx, |window, _| {
+        assert_eq!(window.find("dialog-save").description(), Some(why));
+    });
 
     app.in_window(cx, |window, cx| {
         window.press("ctrl-a", cx);
-        window.input("6h", cx);
+        window.input("09:00", cx);
     });
     settle(&app, cx);
-    assert!(shown(&app, cx, "dialog-save"));
     assert!(!disabled(&app, cx, "dialog-save"));
     assert!(!shown(&app, cx, "dialog-problems"));
     app.click(cx, "dialog-save");
     settle(&app, cx);
     assert_eq!(
-        backend.automations()[0].nodes[0].step,
-        Step::Schedule { when: every("6h") }
+        the_trigger(&backend),
+        Step::Schedule {
+            when: Spec {
+                at: vec!["09:00".to_string()],
+                ..Spec::default()
+            }
+        }
     );
     assert!(!shown(&app, cx, "step-dialog"));
+}
+
+#[gpui_kit::test]
+async fn a_wrong_hour_is_said_in_the_apps_language_and_save_says_why_it_is_off(
+    cx: &mut TestAppContext,
+) {
+    let backend = scripted(vec![on_schedule(Spec::default())]);
+    let app = open_with(cx, backend, spanish());
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    app.click(cx, "rail-automations");
+    app.until_screen(cx, |screen| *screen == Screen::Automations)
+        .await;
+    settle(&app, cx);
+    click(&app, cx, ("automation", 0usize));
+    settle(&app, cx);
+    app.click(cx, "automation-edit");
+    settle(&app, cx);
+    configure_the_trigger(&app, cx);
+    app.in_window(cx, |window, cx| window.input("25:00", cx));
+    settle(&app, cx);
+    let why = "\u{ab}25:00\u{bb} no es una hora del d\u{ed}a; escr\u{ed}bela como 09:00."; // i18n-allow
+    assert_eq!(app.label_of(cx, "dialog-problems"), why);
+    assert!(disabled(&app, cx, "dialog-save"));
+    app.in_window(cx, |window, _| {
+        assert_eq!(window.find("dialog-save").description(), Some(why));
+    });
+}
+
+#[gpui_kit::test]
+async fn every_month_on_the_first_monday_saves_the_days_the_engine_reads(cx: &mut TestAppContext) {
+    let backend = scripted(vec![daily()]);
+    let app = in_editor(cx, backend.clone()).await;
+    configure_the_trigger(&app, cx);
+    assert_eq!(
+        app.in_window(cx, |window, _| window
+            .find("schedule-frequency-day")
+            .checked()),
+        Some(true),
+        "every six hours is a day's"
+    );
+    app.click(cx, "schedule-frequency-month");
+    settle(&app, cx);
+    app.click(cx, "schedule-by-weekday");
+    settle(&app, cx);
+    click(&app, cx, ("schedule-nth", 0usize));
+    click(&app, cx, ("schedule-nth-weekday", 0usize));
+    click(&app, cx, ("schedule-time", 0usize));
+    app.in_window(cx, |window, cx| window.input("09:00", cx));
+    settle(&app, cx);
+    assert!(!disabled(&app, cx, "dialog-save"));
+    app.click(cx, "dialog-save");
+    settle(&app, cx);
+    assert_eq!(
+        the_trigger(&backend),
+        Step::Schedule {
+            when: Spec {
+                at: vec!["09:00".to_string()],
+                days: vec!["first mon".to_string()],
+                ..Spec::default()
+            }
+        }
+    );
+    app.in_window(cx, |window, _| {
+        assert_eq!(
+            window.find(("node", 1usize)).label(),
+            Some("Starts. On a schedule. The first Monday of the month at 09:00"),
+            "the canvas says the days"
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn every_few_months_starts_from_the_month_chosen_and_escape_closes_the_months_first(
+    cx: &mut TestAppContext,
+) {
+    let backend = scripted(vec![daily()]);
+    let app = in_editor(cx, backend.clone()).await;
+    configure_the_trigger(&app, cx);
+    app.click(cx, "schedule-frequency-month");
+    settle(&app, cx);
+    click(&app, cx, ("schedule-every-months", 3usize));
+    settle(&app, cx);
+    app.click(cx, "schedule-first-month");
+    settle(&app, cx);
+    assert!(shown(&app, cx, "schedule-first-month-options"));
+    app.press(cx, "escape");
+    settle(&app, cx);
+    assert!(!shown(&app, cx, "schedule-first-month-options"));
+    assert!(shown(&app, cx, "step-dialog"), "the dialog stays");
+
+    app.click(cx, "schedule-first-month");
+    settle(&app, cx);
+    click(&app, cx, ("schedule-first-month-option", 1usize));
+    settle(&app, cx);
+    assert_eq!(
+        app.label_of(cx, "schedule-first-month"),
+        "Starting in: February"
+    );
+    click(&app, cx, ("schedule-time", 0usize));
+    app.in_window(cx, |window, cx| window.input("08:00", cx));
+    settle(&app, cx);
+    app.click(cx, "dialog-save");
+    settle(&app, cx);
+    assert_eq!(
+        the_trigger(&backend),
+        Step::Schedule {
+            when: Spec {
+                at: vec!["08:00".to_string()],
+                months: ["feb", "may", "aug", "nov"].map(str::to_string).to_vec(),
+                days: vec!["1".to_string()],
+                ..Spec::default()
+            }
+        }
+    );
+}
+
+#[gpui_kit::test]
+async fn a_cron_automation_opens_in_advanced_and_is_saved_unchanged(cx: &mut TestAppContext) {
+    let cron = Spec {
+        cron: Some("0  9 * * 1-5".to_string()),
+        jitter: Some(Duration::from_secs(120)),
+        ..Spec::default()
+    };
+    let backend = scripted(vec![on_schedule(cron.clone())]);
+    let app = in_editor(cx, backend.clone()).await;
+    configure_the_trigger(&app, cx);
+    app.in_window(cx, |window, _| {
+        assert_eq!(
+            window.find("schedule-frequency-advanced").checked(),
+            Some(true)
+        );
+        assert_eq!(
+            window.find("schedule-advanced-kept").label(),
+            Some("The choices cannot show this schedule, so it is kept here as it is written.")
+        );
+        assert_eq!(window.find("schedule-every").focused(), Some(true));
+    });
+    assert!(!disabled(&app, cx, "dialog-save"));
+    app.click(cx, "dialog-save");
+    settle(&app, cx);
+    assert_eq!(the_trigger(&backend), Step::Schedule { when: cron });
 }
 
 #[gpui_kit::test]
 async fn a_dialogs_focused_field_has_room_for_its_ring_on_every_side_and_stays_in_its_place(
     cx: &mut TestAppContext,
 ) {
-    let backend = scripted(vec![daily()]);
+    // A cron opens in Advanced, its first field across the dialog.
+    let backend = scripted(vec![on_schedule(Spec {
+        cron: Some("0 9 * * 1".to_string()),
+        ..Spec::default()
+    })]);
     let app = in_editor(cx, backend).await;
-    app.in_window(cx, |window, cx| window.right_click(("node", 1usize), cx));
-    app.click(cx, "node-menu-configure");
-    settle(&app, cx);
+    configure_the_trigger(&app, cx);
     app.in_window(cx, |window, _| {
         let field = window.find("schedule-every");
         assert_eq!(field.focused(), Some(true));
@@ -948,7 +1117,7 @@ async fn the_list_is_a_grid_of_cards_each_with_its_name_its_steps_and_when_it_ru
         assert_eq!(first.role(), Some(Role::Button));
         assert_eq!(
             first.label(),
-            Some("Daily lists. Followers and following (Your account). Every 6h")
+            Some("Daily lists. Followers and following (Your account). Every 6 hours")
         );
         assert_eq!(
             second.label(),
@@ -983,13 +1152,35 @@ async fn a_card_says_its_steps_and_when_it_runs_in_the_apps_language(cx: &mut Te
     app.in_window(cx, |window, _| {
         assert_eq!(
             window.find(("automation", 0usize)).label(),
-            Some("Daily lists. Seguidores y seguidos (Tu cuenta). Cada 6h") // i18n-allow
+            Some("Daily lists. Seguidores y seguidos (Tu cuenta). Cada 6 horas") // i18n-allow
         );
         assert_eq!(
             window.find(("automation", 1usize)).label(),
             Some("Fans by hand. Fans (@other) \u{2192} Solo lo que cambi\u{f3}. A mano") // i18n-allow
         );
     });
+}
+
+#[gpui_kit::test]
+async fn a_card_says_the_days_and_months_a_schedule_runs_on(cx: &mut TestAppContext) {
+    let monthly = on_schedule(Spec {
+        days: vec!["1".to_string(), "15".to_string()],
+        months: vec!["mar".to_string(), "sep".to_string()],
+        at: vec!["08:00".to_string()],
+        ..Spec::default()
+    });
+    let app = in_list(cx, scripted(vec![monthly])).await;
+    assert_eq!(
+        app.in_window(cx, |window, _| window
+            .find(("automation", 0usize))
+            .label()
+            .map(str::to_string)),
+        Some(
+            "Daily lists. Followers and following (Your account). \
+             On the 1st and 15th of March and September at 08:00"
+                .to_string()
+        )
+    );
 }
 
 #[gpui_kit::test]

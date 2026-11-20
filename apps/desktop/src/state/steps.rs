@@ -1,10 +1,11 @@
-//! What the editor's dialogs turn what is typed into: a schedule written in
-//! words, a webhook's address and headers, and whose account an action
-//! reads, with the yes that another account's lists need.
+//! What the editor's dialogs turn what is typed into: a webhook's address
+//! and headers, and whose account an action reads, with the yes that
+//! another account's lists need. A schedule is its own
+//! ([`super::schedule`]).
 //!
-//! **What is wrong with it is the engine's to say**: a schedule is built by
-//! `Spec::build`, and everything else is judged by `Automation::problems`
-//! on a copy that holds the step as typed ([`problems_of`]).
+//! **What is wrong with it is the engine's to say**: it is judged by
+//! `Automation::problems` on a copy that holds the step as typed
+//! ([`problems_of`]).
 //!
 //! No window and no clock: the moment of a yes is handed in.
 
@@ -14,77 +15,11 @@ use std::path::PathBuf;
 use snob_core::automation::{
     Account, Automation, NodeId, Problem, Read, Step, VideoQuality, Webhook, WebhookFormat,
 };
-use snob_core::watch::schedule::Spec;
-use snob_core::{Epoch, Pk, duration};
-
-/// The words typed, apart: days and times are told apart by commas or
-/// spaces, whichever they were typed with.
-fn words(text: &str) -> Vec<String> {
-    text.split(|c: char| c == ',' || c.is_whitespace())
-        .filter(|word| !word.is_empty())
-        .map(str::to_string)
-        .collect()
-}
+use snob_core::{Epoch, Pk};
 
 fn nothing_as_none(text: &str) -> Option<String> {
     let text = text.trim();
     (!text.is_empty()).then(|| text.to_string())
-}
-
-/// A schedule as its five fields are typed.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ScheduleForm {
-    pub every: String,
-    pub on: String,
-    pub at: String,
-    pub cron: String,
-    pub jitter: String,
-    /// Months and days of the month, not typed here yet: kept as written,
-    /// so saving the dialog does not drop them.
-    pub months: Vec<String>,
-    pub days: Vec<String>,
-}
-
-impl ScheduleForm {
-    /// The fields of a schedule already written.
-    pub fn of(spec: &Spec) -> Self {
-        Self {
-            every: spec.every.map(duration::format).unwrap_or_default(),
-            on: spec.on.join(", "),
-            at: spec.at.join(", "),
-            cron: spec.cron.clone().unwrap_or_default(),
-            jitter: spec.jitter.map(duration::format).unwrap_or_default(),
-            months: spec.months.clone(),
-            days: spec.days.clone(),
-        }
-    }
-
-    /// The schedule as written, or what is wrong with a duration typed.
-    pub fn spec(&self) -> Result<Spec, String> {
-        let span = |text: &str| -> Result<_, String> {
-            match nothing_as_none(text) {
-                Some(text) => duration::parse(&text).map(Some),
-                None => Ok(None),
-            }
-        };
-        Ok(Spec {
-            every: span(&self.every)?,
-            on: words(&self.on),
-            at: words(&self.at),
-            cron: nothing_as_none(&self.cron),
-            jitter: span(&self.jitter)?,
-            months: self.months.clone(),
-            days: self.days.clone(),
-        })
-    }
-
-    /// Why it cannot be used, in the engine's words, or nothing.
-    pub fn problem(&self) -> Option<String> {
-        match self.spec() {
-            Ok(spec) => spec.build().err().map(|why| why.to_string()),
-            Err(why) => Some(why),
-        }
-    }
 }
 
 /// An action's settings as they are chosen and typed.
@@ -237,67 +172,12 @@ pub fn problems_of(automation: &Automation, id: NodeId, step: Step) -> Vec<Probl
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     fn account_of(step: Step) -> Account {
         let Step::Read { account, .. } = step else {
             panic!("an action");
         };
         account.unwrap()
-    }
-
-    #[test]
-    fn a_schedule_typed_is_the_one_the_engine_builds_or_the_reason_it_cannot() {
-        let mut form = ScheduleForm::default();
-        assert!(form.problem().is_some(), "nothing said is no schedule");
-        form.every = "6h".to_string();
-        assert_eq!(form.problem(), None);
-        assert_eq!(
-            form.spec().unwrap().every,
-            Some(Duration::from_secs(21_600))
-        );
-
-        form.every = "soon".to_string();
-        assert!(form.problem().is_some(), "not a duration");
-        form.every = String::new();
-        form.cron = "0 9 * * *".to_string();
-        assert_eq!(form.problem(), None);
-        form.on = "mon, thu".to_string();
-        assert!(
-            form.problem().is_some(),
-            "a cron and days are two schedules"
-        );
-        form.cron = String::new();
-        form.at = "09:00 18:30".to_string();
-        assert_eq!(form.problem(), None);
-        assert_eq!(form.spec().unwrap().on, ["mon", "thu"]);
-        assert_eq!(form.spec().unwrap().at, ["09:00", "18:30"]);
-        form.on = "someday".to_string();
-        assert!(form.problem().is_some());
-    }
-
-    #[test]
-    fn a_schedule_written_comes_back_as_the_fields_it_was_typed_in() {
-        let form = ScheduleForm {
-            every: "2d".to_string(),
-            on: "mon, thu".to_string(),
-            at: "09:00".to_string(),
-            cron: String::new(),
-            jitter: "5m".to_string(),
-            ..ScheduleForm::default()
-        };
-        assert_eq!(ScheduleForm::of(&form.spec().unwrap()), form);
-    }
-
-    #[test]
-    fn months_and_days_of_the_month_outlive_the_form_they_are_not_typed_in() {
-        let spec = Spec {
-            days: vec!["first mon".to_string(), "15".to_string()],
-            months: vec!["jan".to_string(), "jul".to_string()],
-            at: vec!["09:00".to_string()],
-            ..Spec::default()
-        };
-        assert_eq!(ScheduleForm::of(&spec).spec(), Ok(spec));
     }
 
     #[test]

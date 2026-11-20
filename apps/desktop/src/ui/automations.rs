@@ -34,7 +34,7 @@ use crate::state::automations::{
 use crate::state::editing::Editing;
 use crate::state::flow::Screen;
 use crate::state::shelf::Shelf;
-use crate::state::steps::{ScheduleForm, WebhookForm};
+use crate::state::steps::WebhookForm;
 
 use super::automations_editor::{Dialog, Leave, NodeMenu, Wire};
 
@@ -164,12 +164,10 @@ impl Item {
     pub fn step(&self, in_use: Option<Pk>) -> Option<Step> {
         Some(match self {
             Self::Schedule => Step::Schedule {
-                when: ScheduleForm {
-                    every: "1d".to_string(),
-                    ..ScheduleForm::default()
-                }
-                .spec()
-                .unwrap_or_default(),
+                when: snob_core::watch::schedule::Spec {
+                    every: Some(Duration::from_secs(86_400)),
+                    ..Default::default()
+                },
             },
             Self::Manual => Step::Manual {},
             Self::Read(what) => Step::Read {

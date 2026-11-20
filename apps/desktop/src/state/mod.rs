@@ -7,7 +7,8 @@
 //! ([`prefs`]), when the app rests ([`rest`]), the automations section:
 //! its introduction, its list and its editor's canvas ([`automations`]),
 //! the automation the editor holds ([`editing`]), its panel of steps
-//! ([`shelf`]) and what its dialogs turn what is typed into ([`steps`]),
+//! ([`shelf`]), what its dialogs turn what is typed into ([`steps`]) and a
+//! schedule as its dialog chooses it ([`schedule`]),
 //! how a profile page is laid out and what it reads without asking
 //! ([`profile`]), what a list of followers asks for and copies
 //! ([`people`]), and how often the window is drawn while something moves
@@ -25,6 +26,7 @@ pub mod people;
 pub mod prefs;
 pub mod profile;
 pub mod rest;
+pub mod schedule;
 pub mod settings;
 pub mod shelf;
 pub mod status;

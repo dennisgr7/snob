@@ -18,7 +18,9 @@ use super::shell::Shell;
 use crate::backend::Automation;
 use crate::state::editing::{Discard, Leaving, Order, suggested_place};
 use crate::state::flow::Event;
-use crate::state::steps::{ActionForm, ScheduleForm, WebhookForm};
+use crate::state::schedule::{Advanced, Choices, MOST_COUNT, ScheduleForm};
+use crate::state::steps::{ActionForm, WebhookForm};
+use crate::ui::parts::Select;
 use snob_core::automation::VideoQuality;
 
 /// An arrow being drawn: from which step, to where the pointer is, in the
@@ -55,17 +57,52 @@ pub(crate) struct HeaderRow {
     _watching: [Subscription; 2],
 }
 
+/// A time of day typed in a schedule's dialog.
+pub(crate) struct TimeRow {
+    pub input: Entity<InputState>,
+    _watching: Subscription,
+}
+
+/// `watch.toml`'s fields, typed in a schedule's Advanced.
+pub(crate) struct AdvancedFields {
+    pub every: Entity<InputState>,
+    pub on: Entity<InputState>,
+    pub at: Entity<InputState>,
+    pub months: Entity<InputState>,
+    pub days: Entity<InputState>,
+    pub cron: Entity<InputState>,
+    pub jitter: Entity<InputState>,
+}
+
+impl AdvancedFields {
+    fn all(&self) -> [&Entity<InputState>; 7] {
+        [
+            &self.every,
+            &self.on,
+            &self.at,
+            &self.months,
+            &self.days,
+            &self.cron,
+            &self.jitter,
+        ]
+    }
+}
+
+/// A schedule's dialog: what is chosen, and the fields what is typed is
+/// read from.
+pub(crate) struct ScheduleFields {
+    pub form: ScheduleForm,
+    pub count: Entity<InputState>,
+    pub times: Vec<TimeRow>,
+    pub advanced: AdvancedFields,
+    /// The month every few months starts from.
+    pub first_month: Select,
+    _watching: Vec<Subscription>,
+}
+
 /// What a dialog asks for, which depends on the step.
 pub(crate) enum Fields {
-    Schedule {
-        every: Entity<InputState>,
-        on: Entity<InputState>,
-        at: Entity<InputState>,
-        cron: Entity<InputState>,
-        jitter: Entity<InputState>,
-        /// What the fields do not show, kept as it was written.
-        kept: ScheduleForm,
-    },
+    Schedule(Box<ScheduleFields>),
     Action {
         form: ActionForm,
         username: Entity<InputState>,
@@ -92,27 +129,26 @@ pub(crate) struct Dialog {
 }
 
 impl Dialog {
+    /// The schedule as chosen, with what is typed in its fields.
     pub fn schedule_form(&self, cx: &gpui_kit::App) -> Option<ScheduleForm> {
-        let Fields::Schedule {
-            every,
-            on,
-            at,
-            cron,
-            jitter,
-            kept,
-        } = &self.fields
-        else {
+        let Fields::Schedule(fields) = &self.fields else {
             return None;
         };
         let text = |field: &Entity<InputState>| field.read(cx).value().to_string();
-        Some(ScheduleForm {
-            every: text(every),
-            on: text(on),
-            at: text(at),
-            cron: text(cron),
-            jitter: text(jitter),
-            ..kept.clone()
-        })
+        let advanced = &fields.advanced;
+        let mut form = fields.form.clone();
+        form.typed.count = text(&fields.count);
+        form.typed.times = fields.times.iter().map(|row| text(&row.input)).collect();
+        form.typed.advanced = Advanced {
+            every: text(&advanced.every),
+            on: text(&advanced.on),
+            at: text(&advanced.at),
+            months: text(&advanced.months),
+            days: text(&advanced.days),
+            cron: text(&advanced.cron),
+            jitter: text(&advanced.jitter),
+        };
+        Some(form)
     }
 
     pub fn action_form(&self, cx: &gpui_kit::App) -> Option<ActionForm> {
@@ -180,6 +216,78 @@ impl Dialog {
         }
         self.webhook_form(cx).map(|form| form.step())
     }
+}
+
+/// A time of day to type, with `text` in it.
+fn time_row(text: &str, look: &Look, window: &mut Window, cx: &mut Context<Shell>) -> TimeRow {
+    let (input, watching) = field(text, look.tr("schedule-time-hint"), window, cx);
+    TimeRow {
+        input,
+        _watching: watching,
+    }
+}
+
+/// The fields of a schedule's dialog, holding what `form` has typed, and
+/// the field focus goes to first: the one its frequency starts with.
+fn schedule_fields(
+    form: ScheduleForm,
+    look: &Look,
+    window: &mut Window,
+    cx: &mut Context<Shell>,
+) -> (ScheduleFields, Entity<InputState>) {
+    use crate::state::schedule::{DayMode, Frequency};
+    let mut watching = Vec::new();
+    let mut text =
+        |text: &str, placeholder: String, window: &mut Window, cx: &mut Context<Shell>| {
+            let (input, sub) = field(text, placeholder, window, cx);
+            watching.push(sub);
+            input
+        };
+    let typed = form.typed.clone();
+    let typed_in = &typed.advanced;
+    let count = text(&typed.count, String::new(), window, cx);
+    let advanced = AdvancedFields {
+        every: text(&typed_in.every, look.tr("schedule-every-hint"), window, cx),
+        on: text(&typed_in.on, look.tr("schedule-on-hint"), window, cx),
+        at: text(&typed_in.at, look.tr("schedule-at-hint"), window, cx),
+        months: text(
+            &typed_in.months,
+            look.tr("schedule-months-hint"),
+            window,
+            cx,
+        ),
+        days: text(&typed_in.days, look.tr("schedule-days-hint"), window, cx),
+        cron: text(&typed_in.cron, look.tr("schedule-cron-hint"), window, cx),
+        jitter: text(
+            &typed_in.jitter,
+            look.tr("schedule-jitter-hint"),
+            window,
+            cx,
+        ),
+    };
+    let times: Vec<TimeRow> = typed
+        .times
+        .iter()
+        .map(|time| time_row(time, look, window, cx))
+        .collect();
+    let choices = &form.choices;
+    let first = match choices.frequency {
+        Frequency::Advanced => advanced.every.clone(),
+        Frequency::Week => count.clone(),
+        Frequency::Day if choices.day_mode == DayMode::Repeating => count.clone(),
+        Frequency::Day | Frequency::Month | Frequency::Year => times
+            .first()
+            .map_or_else(|| count.clone(), |row| row.input.clone()),
+    };
+    let fields = ScheduleFields {
+        form,
+        count,
+        times,
+        advanced,
+        first_month: Select::new(12, cx),
+        _watching: watching,
+    };
+    (fields, first)
 }
 
 /// A text field that redraws the window as it is typed in.
@@ -679,17 +787,8 @@ impl Shell {
             };
         let (fields, first) = match &step {
             Step::Schedule { when } => {
-                let form = ScheduleForm::of(when);
-                let every = text(&form.every, "schedule-every-hint", window, cx);
-                let fields = Fields::Schedule {
-                    on: text(&form.on, "schedule-on-hint", window, cx),
-                    at: text(&form.at, "schedule-at-hint", window, cx),
-                    cron: text(&form.cron, "schedule-cron-hint", window, cx),
-                    jitter: text(&form.jitter, "schedule-jitter-hint", window, cx),
-                    every: every.clone(),
-                    kept: form.clone(),
-                };
-                (fields, Some(every))
+                let (fields, first) = schedule_fields(ScheduleForm::of(when), &look, window, cx);
+                (Fields::Schedule(Box::new(fields)), Some(first))
             }
             Step::Read { account, what } => {
                 let form = ActionForm::of(account.as_ref(), what);
@@ -790,6 +889,157 @@ impl Shell {
             .dialog
             .as_mut()
             .map(|dialog| &mut dialog.fields)
+    }
+
+    fn schedule_mut(&mut self) -> Option<&mut ScheduleFields> {
+        match self.fields_mut()? {
+            Fields::Schedule(fields) => Some(fields),
+            _ => None,
+        }
+    }
+
+    /// A choice of a schedule's dialog changed.
+    pub(crate) fn change_the_schedule(
+        &mut self,
+        change: impl FnOnce(&mut Choices),
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(fields) = self.schedule_mut() {
+            change(&mut fields.form.choices);
+            cx.notify();
+        }
+    }
+
+    /// How often a schedule repeats. Advanced's fields are filled from the
+    /// choices when they make a schedule (`ScheduleForm::choose`).
+    pub(crate) fn choose_the_frequency(
+        &mut self,
+        frequency: crate::state::schedule::Frequency,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut form) = self
+            .edit_mut()
+            .and_then(|edit| edit.dialog.as_ref())
+            .and_then(|dialog| dialog.schedule_form(cx))
+        else {
+            return;
+        };
+        form.choose(frequency);
+        let Some(fields) = self.schedule_mut() else {
+            return;
+        };
+        let typed = &form.typed.advanced;
+        let wanted = [
+            &typed.every,
+            &typed.on,
+            &typed.at,
+            &typed.months,
+            &typed.days,
+            &typed.cron,
+            &typed.jitter,
+        ];
+        let inputs: Vec<(Entity<InputState>, String)> = fields
+            .advanced
+            .all()
+            .into_iter()
+            .zip(wanted)
+            .map(|(input, text)| (input.clone(), text.clone()))
+            .collect();
+        fields.form = form;
+        for (input, text) in inputs {
+            if input.read(cx).value() != text {
+                input.update(cx, |input, cx| input.set_value(text, window, cx));
+            }
+        }
+        cx.notify();
+    }
+
+    /// One more or one less in a schedule's count, never under one.
+    pub(crate) fn step_the_count(&mut self, by: i32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(fields) = self.schedule_mut() else {
+            return;
+        };
+        let input = fields.count.clone();
+        let now = input.read(cx).value().trim().parse::<u64>().unwrap_or(1);
+        let next = now
+            .saturating_add_signed(i64::from(by))
+            .clamp(1, MOST_COUNT)
+            .to_string();
+        input.update(cx, |input, cx| input.set_value(next, window, cx));
+        cx.notify();
+    }
+
+    /// "Add a time": an empty time of day, focused.
+    pub(crate) fn add_a_time(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let look = Look::now(cx).clone();
+        let row = time_row("", &look, window, cx);
+        row.input.update(cx, |input, cx| input.focus(window, cx));
+        if let Some(fields) = self.schedule_mut() {
+            fields.times.push(row);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn remove_a_time(&mut self, at: usize, cx: &mut Context<Self>) {
+        if let Some(fields) = self.schedule_mut()
+            && at < fields.times.len()
+        {
+            fields.times.remove(at);
+            cx.notify();
+        }
+    }
+
+    /// Opens or closes the months every few months may start from, focus
+    /// on the one chosen while they are open.
+    pub(crate) fn toggle_the_first_months(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(fields) = self.schedule_mut() else {
+            return;
+        };
+        let select = &mut fields.first_month;
+        select.open = !select.open;
+        let chosen = fields.form.choices.first_month.clamp(1, 12) as usize - 1;
+        let focus = if select.open {
+            select.options.get(chosen).cloned()
+        } else {
+            Some(select.field.clone())
+        };
+        if let Some(focus) = focus {
+            window.focus(&focus, cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn choose_the_first_month(
+        &mut self,
+        at: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(fields) = self.schedule_mut() {
+            fields.form.choices.first_month = at as u32 + 1;
+        }
+        self.close_the_first_months(window, cx);
+    }
+
+    /// Closes the months every few months may start from, focus back on
+    /// the field. Whether they were open.
+    pub(crate) fn close_the_first_months(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(fields) = self.schedule_mut() else {
+            return false;
+        };
+        if !fields.first_month.open {
+            return false;
+        }
+        fields.first_month.open = false;
+        let field = fields.first_month.field.clone();
+        window.focus(&field, cx);
+        cx.notify();
+        true
     }
 
     /// Whose account an action reads: the viewer's own, or another's.
@@ -1058,11 +1308,19 @@ impl Shell {
         let Some(edit) = self.edit_mut() else {
             return false;
         };
-        if edit.leaving.is_some() {
+        let (leaving, dialog, menu) = (
+            edit.leaving.is_some(),
+            edit.dialog.is_some(),
+            edit.menu.is_some(),
+        );
+        if leaving {
             self.keep_editing(window, cx);
-        } else if edit.dialog.is_some() {
-            self.close_the_configuration(window, cx);
-        } else if edit.menu.is_some() {
+        } else if dialog {
+            // Escape closes the open month list before the dialog.
+            if !self.close_the_first_months(window, cx) {
+                self.close_the_configuration(window, cx);
+            }
+        } else if menu {
             self.close_the_node_menu(window, cx);
         } else {
             return false;

@@ -18,7 +18,8 @@ use snob_engine::automations::said;
 
 use super::automations::tool_button;
 use super::words::{
-    automation_name, found_lines, moment_words, outcome_words, stage_name, step_detail, step_name,
+    automation_name, found_lines, moment_words, next_run_words, outcome_words, stage_name,
+    step_detail, step_name,
 };
 use crate::backend::{Next, Run};
 use crate::theme::tokens::shape;
@@ -376,14 +377,11 @@ fn flow(automation: &Automation, next: Option<Next>, now: Epoch, look: &Look) ->
         .map(|(at, node)| step_row(at, node, look))
         .collect();
     let card = card("automation-flow", look.tr("automation-flow"), look);
-    let after = next.map(|next| match next {
-        Next::Now => look.tr("automation-next-now"),
-        Next::At(at) => look.tr_with(
+    let after = next.map(|next| {
+        look.tr_with(
             "automation-next-at",
-            &[("when", &moment_words(at, now, look))],
-        ),
-        Next::ByHand => look.tr("automation-next-by-hand"),
-        Next::Never => look.tr("automation-next-never"),
+            &[("when", &next_run_words(&next, now, look))],
+        )
     });
     let card = if rows.is_empty() {
         let none = look.tr("automation-empty-flow");

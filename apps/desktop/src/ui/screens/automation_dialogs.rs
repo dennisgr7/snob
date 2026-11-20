@@ -15,13 +15,20 @@ use gpui_kit::{
     deferred, div, px,
 };
 use snob_core::automation::{Only, Step, VideoQuality, WebhookFormat, can_join};
+use snob_core::watch::schedule::Nth;
 
-use super::words::{problem_words, step_detail, step_name};
+use super::words::{
+    MONDAY_FIRST, and_list, month_short_words, month_words, problem_words, step_detail, step_name,
+    weekday_short_words, weekday_words, wrong_words,
+};
+use crate::state::schedule::{
+    By, DayMode, EVERY_MONTHS, Field, Frequency, Refused, ScheduleForm, Unit, toggle,
+};
 use crate::state::steps::problems_of;
 use crate::theme::tokens::{frame, shape};
 use crate::ui::assets;
 use crate::ui::automations::Item;
-use crate::ui::automations_editor::{Dialog, Fields};
+use crate::ui::automations_editor::{Dialog, Fields, ScheduleFields};
 use crate::ui::look::{Look, color, color_at, sp};
 use crate::ui::parts::{self, Kind, icon};
 use crate::ui::shell::Shell;
@@ -494,12 +501,9 @@ fn configuration(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<Any
     let in_use = shell.active().map(|account| account.named.pk);
     let now = snob_core::clock::now();
     let typed = dialog.step(&node.step, in_use, now, cx);
+    let refused = dialog.schedule_form(cx).and_then(|form| form.problem(now));
     let mut problems: Vec<String> = match (&dialog.fields, &typed) {
-        (Fields::Schedule { .. }, _) => dialog
-            .schedule_form(cx)
-            .and_then(|form| form.problem())
-            .into_iter()
-            .collect(),
+        (Fields::Schedule(_), _) => Vec::new(),
         (_, Some(step)) => problems_of(automation, node.id, step.clone())
             .iter()
             .map(|problem| problem_words(problem, look))
@@ -507,11 +511,15 @@ fn configuration(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<Any
         (_, None) => Vec::new(),
     };
     problems.dedup();
-    let valid = problems.is_empty() && typed.is_some();
+    let why_not = refused
+        .as_ref()
+        .map(|refused| wrong_words(&refused.wrong, look))
+        .or_else(|| problems.first().cloned());
+    let valid = why_not.is_none() && typed.is_some();
     let (title, body) = match &dialog.fields {
-        Fields::Schedule { .. } => (
+        Fields::Schedule(_) => (
             look.tr("dialog-schedule-title"),
-            schedule_body(dialog, look),
+            schedule_body(dialog, refused.as_ref(), look, cx),
         ),
         Fields::Action { .. } => (
             look.tr_with(
@@ -557,6 +565,9 @@ fn configuration(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<Any
             valid,
             look,
         )
+        .when_some(why_not, |save, why| {
+            save.aria_description(why.clone()).tooltip(parts::tip(why))
+        })
         .on_click(cx.listener(|shell, _, window, cx| {
             shell.apply_the_configuration(window, cx);
         }))
@@ -573,30 +584,542 @@ fn configuration(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<Any
     )]
 }
 
-fn schedule_body(dialog: &Dialog, look: &Look) -> Vec<AnyElement> {
-    let Fields::Schedule {
-        every,
-        on,
-        at,
-        cron,
-        jitter,
-        ..
-    } = &dialog.fields
-    else {
+/// A label above what it names.
+fn label_text(text: String, look: &Look) -> gpui_kit::Div {
+    div()
+        .text_size(sp(13.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(color(look.palette.text))
+        .child(text)
+}
+
+/// What is wrong with the schedule, under `field` when it is about it.
+fn wrong_under(field: Field, refused: Option<&Refused>, body: &mut Vec<AnyElement>, look: &Look) {
+    if let Some(refused) = refused.filter(|refused| refused.field == field) {
+        body.extend(wrong(
+            "dialog-problems",
+            vec![wrong_words(&refused.wrong, look)],
+            look,
+        ));
+    }
+}
+
+/// The first letter of `words` as a capital.
+fn capitalized(words: &str) -> String {
+    let mut letters = words.chars();
+    match letters.next() {
+        Some(first) => first.to_uppercase().chain(letters).collect(),
+        None => String::new(),
+    }
+}
+
+fn frequency_id(frequency: Frequency) -> &'static str {
+    match frequency {
+        Frequency::Year => "schedule-frequency-year",
+        Frequency::Month => "schedule-frequency-month",
+        Frequency::Week => "schedule-frequency-week",
+        Frequency::Day => "schedule-frequency-day",
+        Frequency::Advanced => "schedule-frequency-advanced",
+    }
+}
+
+/// Which one of a month's weekdays, said alone: "First".
+fn nth_id(nth: Nth) -> &'static str {
+    match nth {
+        Nth::First => "schedule-nth-first",
+        Nth::Second => "schedule-nth-second",
+        Nth::Third => "schedule-nth-third",
+        Nth::Fourth => "schedule-nth-fourth",
+        Nth::Last => "schedule-nth-last",
+    }
+}
+
+fn unit_id(unit: Unit) -> &'static str {
+    match unit {
+        Unit::Minutes => "schedule-unit-minutes",
+        Unit::Hours => "schedule-unit-hours",
+        Unit::Days => "schedule-unit-days",
+        Unit::Weeks => "schedule-unit-weeks",
+    }
+}
+
+/// The count of a schedule, its label above it, and a button on each side.
+fn counted(
+    label: String,
+    input: &Entity<InputState>,
+    look: &Look,
+    cx: &mut Context<Shell>,
+) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .child(label_text(label.clone(), look))
+        .child(parts::stepper(
+            "schedule-count",
+            label,
+            input,
+            look,
+            |shell: &mut Shell, by, window, cx| shell.step_the_count(by, window, cx),
+            cx,
+        ))
+        .into_any_element()
+}
+
+/// The times of day a schedule runs at: one field each, a button that
+/// takes one away, and one that adds one.
+fn times_list(fields: &ScheduleFields, look: &Look, cx: &mut Context<Shell>) -> AnyElement {
+    let rows = fields.times.iter().enumerate().map(|(at, row)| {
+        let number = (at + 1).to_string();
+        div()
+            .id(("schedule-time-row", at))
+            .flex()
+            .items_center()
+            .gap(sp(8.))
+            .child(
+                div().w(sp(112.)).child(
+                    Input::new(&row.input)
+                        .id(("schedule-time", at))
+                        .aria_label(look.tr_with("schedule-time", &[("number", &number)])),
+                ),
+            )
+            .child(
+                parts::icon_button(
+                    ("schedule-time-remove", at),
+                    look.tr_with("schedule-time-remove", &[("number", &number)]),
+                    assets::CLOSE,
+                    true,
+                    look,
+                )
+                .on_click(cx.listener(move |shell, _, _, cx| shell.remove_a_time(at, cx))),
+            )
+    });
+    div()
+        .flex()
+        .flex_col()
+        .gap(sp(6.))
+        .child(label_text(look.tr("schedule-times"), look))
+        .children(rows)
+        .child(
+            div().child(
+                parts::small_icon_button(
+                    "schedule-time-add",
+                    look.tr("schedule-time-add"),
+                    assets::ADD,
+                    look,
+                )
+                .on_click(cx.listener(|shell, _, window, cx| shell.add_a_time(window, cx))),
+            ),
+        )
+        .into_any_element()
+}
+
+/// Which days of a month: by date, as chips, or one weekday of it.
+fn month_days(
+    form: &ScheduleForm,
+    refused: Option<&Refused>,
+    body: &mut Vec<AnyElement>,
+    look: &Look,
+    cx: &mut Context<Shell>,
+) {
+    let choices = &form.choices;
+    let by = choices.by;
+    body.push(
+        parts::segmented("schedule-by", look.tr("schedule-by"), look)
+            .flex_wrap()
+            .child(
+                parts::segment(
+                    "schedule-by-date",
+                    look.tr("schedule-by-date"),
+                    by == By::Date,
+                    look,
+                )
+                .on_click(cx.listener(|shell, _, _, cx| {
+                    shell.change_the_schedule(|choices| choices.by = By::Date, cx);
+                })),
+            )
+            .child(
+                parts::segment(
+                    "schedule-by-weekday",
+                    look.tr("schedule-by-weekday"),
+                    by == By::Weekday,
+                    look,
+                )
+                .on_click(cx.listener(|shell, _, _, cx| {
+                    shell.change_the_schedule(|choices| choices.by = By::Weekday, cx);
+                })),
+            )
+            .into_any_element(),
+    );
+    match by {
+        By::Date => {
+            body.push(
+                parts::chips("schedule-dates", look.tr("schedule-dates"), look)
+                    .children((1..=31u32).map(|date| {
+                        let day = date.to_string();
+                        parts::chip(
+                            ("schedule-date", date as usize),
+                            look.tr_with("schedule-date", &[("day", &day)]),
+                            day,
+                            choices.dates.contains(&date),
+                            look,
+                        )
+                        .on_click(cx.listener(move |shell, _, _, cx| {
+                            shell.change_the_schedule(
+                                |choices| toggle(&mut choices.dates, date),
+                                cx,
+                            );
+                        }))
+                    }))
+                    .into_any_element(),
+            );
+            if form.some_months_lack_a_date() {
+                body.push(small(
+                    "schedule-short-months",
+                    look.tr("schedule-short-months"),
+                    look,
+                ));
+            }
+        }
+        By::Weekday => {
+            body.push(
+                parts::segmented("schedule-nth", look.tr("schedule-nth"), look)
+                    .flex_wrap()
+                    .children(Nth::ALL.into_iter().enumerate().map(|(at, nth)| {
+                        parts::segment(
+                            ("schedule-nth", at),
+                            look.tr(nth_id(nth)),
+                            nth == choices.nth,
+                            look,
+                        )
+                        .on_click(cx.listener(move |shell, _, _, cx| {
+                            shell.change_the_schedule(|choices| choices.nth = nth, cx);
+                        }))
+                    }))
+                    .into_any_element(),
+            );
+            body.push(
+                parts::segmented(
+                    "schedule-nth-weekday",
+                    look.tr("schedule-nth-weekday"),
+                    look,
+                )
+                .flex_wrap()
+                .children(MONDAY_FIRST.into_iter().enumerate().map(|(at, weekday)| {
+                    parts::segment(
+                        ("schedule-nth-weekday", at),
+                        capitalized(&weekday_short_words(weekday, look)),
+                        weekday == choices.nth_weekday,
+                        look,
+                    )
+                    .on_click(cx.listener(move |shell, _, _, cx| {
+                        shell.change_the_schedule(|choices| choices.nth_weekday = weekday, cx);
+                    }))
+                }))
+                .into_any_element(),
+            );
+        }
+    }
+    wrong_under(Field::Dates, refused, body, look);
+}
+
+/// A schedule's dialog: how often it repeats, then what that asks; or
+/// `watch.toml`'s fields in Advanced. What is wrong is said under the
+/// field it is about.
+fn schedule_body(
+    dialog: &Dialog,
+    refused: Option<&Refused>,
+    look: &Look,
+    cx: &mut Context<Shell>,
+) -> Vec<AnyElement> {
+    let Fields::Schedule(fields) = &dialog.fields else {
         return Vec::new();
     };
-    vec![
-        small(
-            "dialog-schedule-note",
-            look.tr("dialog-schedule-note"),
-            look,
-        ),
-        labeled("schedule-every", look.tr("schedule-every"), every, look),
-        labeled("schedule-on", look.tr("schedule-on"), on, look),
-        labeled("schedule-at", look.tr("schedule-at"), at, look),
-        labeled("schedule-cron", look.tr("schedule-cron"), cron, look),
-        labeled("schedule-jitter", look.tr("schedule-jitter"), jitter, look),
-    ]
+    let Some(form) = dialog.schedule_form(cx) else {
+        return Vec::new();
+    };
+    let choices = &form.choices;
+    let frequency = choices.frequency;
+    let mut body: Vec<AnyElement> = vec![
+        parts::segmented("schedule-frequency", look.tr("schedule-frequency"), look)
+            .flex_wrap()
+            .children(Frequency::ALL.into_iter().map(|one| {
+                let id = frequency_id(one);
+                parts::segment(id, look.tr(id), one == frequency, look).on_click(cx.listener(
+                    move |shell, _, window, cx| shell.choose_the_frequency(one, window, cx),
+                ))
+            }))
+            .into_any_element(),
+    ];
+    let floor = |body: &mut Vec<AnyElement>| {
+        if form.counts_from_the_last_run() {
+            body.push(small("schedule-floor", look.tr("schedule-floor"), look));
+        }
+    };
+    match frequency {
+        Frequency::Day => {
+            let mode = choices.day_mode;
+            body.push(
+                parts::segmented("schedule-day-mode", look.tr("schedule-day-mode"), look)
+                    .flex_wrap()
+                    .child(
+                        parts::segment(
+                            "schedule-day-at",
+                            look.tr("schedule-day-at"),
+                            mode == DayMode::AtTimes,
+                            look,
+                        )
+                        .on_click(cx.listener(|shell, _, _, cx| {
+                            shell.change_the_schedule(|c| c.day_mode = DayMode::AtTimes, cx);
+                        })),
+                    )
+                    .child(
+                        parts::segment(
+                            "schedule-day-repeat",
+                            look.tr("schedule-day-repeat"),
+                            mode == DayMode::Repeating,
+                            look,
+                        )
+                        .on_click(cx.listener(|shell, _, _, cx| {
+                            shell.change_the_schedule(|c| c.day_mode = DayMode::Repeating, cx);
+                        })),
+                    )
+                    .into_any_element(),
+            );
+            match mode {
+                DayMode::AtTimes => {
+                    body.push(counted(
+                        look.tr("schedule-count-days"),
+                        &fields.count,
+                        look,
+                        cx,
+                    ));
+                    wrong_under(Field::Count, refused, &mut body, look);
+                    floor(&mut body);
+                    body.push(times_list(fields, look, cx));
+                    wrong_under(Field::Times, refused, &mut body, look);
+                }
+                DayMode::Repeating => {
+                    body.push(counted(
+                        look.tr("schedule-count-repeat"),
+                        &fields.count,
+                        look,
+                        cx,
+                    ));
+                    body.push(
+                        parts::segmented("schedule-unit", look.tr("schedule-unit"), look)
+                            .flex_wrap()
+                            .children(Unit::ALL.into_iter().map(|unit| {
+                                let id = unit_id(unit);
+                                parts::segment(id, look.tr(id), unit == choices.unit, look)
+                                    .on_click(cx.listener(move |shell, _, _, cx| {
+                                        shell.change_the_schedule(|c| c.unit = unit, cx);
+                                    }))
+                            }))
+                            .into_any_element(),
+                    );
+                    wrong_under(Field::Count, refused, &mut body, look);
+                    floor(&mut body);
+                }
+            }
+        }
+        Frequency::Week => {
+            body.push(counted(
+                look.tr("schedule-count-weeks"),
+                &fields.count,
+                look,
+                cx,
+            ));
+            wrong_under(Field::Count, refused, &mut body, look);
+            floor(&mut body);
+            body.push(
+                parts::chips("schedule-weekdays", look.tr("schedule-weekdays"), look)
+                    .children(MONDAY_FIRST.into_iter().enumerate().map(|(at, weekday)| {
+                        parts::chip(
+                            ("schedule-weekday", at),
+                            capitalized(&weekday_words(weekday, look)),
+                            capitalized(&weekday_short_words(weekday, look)),
+                            choices.weekdays.contains(&weekday),
+                            look,
+                        )
+                        .on_click(cx.listener(move |shell, _, _, cx| {
+                            shell.change_the_schedule(|c| toggle(&mut c.weekdays, weekday), cx);
+                        }))
+                    }))
+                    .into_any_element(),
+            );
+            wrong_under(Field::Weekdays, refused, &mut body, look);
+            body.push(times_list(fields, look, cx));
+            wrong_under(Field::Times, refused, &mut body, look);
+        }
+        Frequency::Month => {
+            let every = choices.every_months;
+            body.push(
+                parts::segmented(
+                    "schedule-every-months",
+                    look.tr("schedule-every-months"),
+                    look,
+                )
+                .flex_wrap()
+                .children(EVERY_MONTHS.into_iter().map(|count| {
+                    let label = if count == 1 {
+                        look.tr("schedule-every-month")
+                    } else {
+                        look.tr_with("schedule-every-n-months", &[("count", &count.to_string())])
+                    };
+                    parts::segment(
+                        ("schedule-every-months", count as usize),
+                        label,
+                        count == every,
+                        look,
+                    )
+                    .on_click(cx.listener(move |shell, _, _, cx| {
+                        shell.change_the_schedule(|c| c.every_months = count, cx);
+                    }))
+                }))
+                .into_any_element(),
+            );
+            if every > 1 {
+                let options: Vec<String> = (1..=12)
+                    .map(|month| capitalized(&month_words(month, look)))
+                    .collect();
+                let chosen = choices.first_month.clamp(1, 12) as usize - 1;
+                body.push(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(label_text(look.tr("schedule-first-month"), look))
+                        .child(parts::select(
+                            "schedule-first-month",
+                            look.tr("schedule-first-month"),
+                            &options,
+                            chosen,
+                            &fields.first_month,
+                            look,
+                            |shell: &mut Shell, window, cx| {
+                                shell.toggle_the_first_months(window, cx)
+                            },
+                            |shell: &mut Shell, at, window, cx| {
+                                shell.choose_the_first_month(at, window, cx);
+                            },
+                            |shell: &mut Shell, window, cx| {
+                                shell.close_the_first_months(window, cx);
+                            },
+                            cx,
+                        ))
+                        .into_any_element(),
+                );
+                let months: Vec<String> = form
+                    .lands_on()
+                    .into_iter()
+                    .map(|month| month_words(month, look))
+                    .collect();
+                body.push(small(
+                    "schedule-lands-on",
+                    look.tr_with("schedule-lands-on", &[("months", &and_list(&months, look))]),
+                    look,
+                ));
+            }
+            month_days(&form, refused, &mut body, look, cx);
+            body.push(times_list(fields, look, cx));
+            wrong_under(Field::Times, refused, &mut body, look);
+        }
+        Frequency::Year => {
+            body.push(
+                parts::chips("schedule-months", look.tr("schedule-months"), look)
+                    .children((1..=12u32).map(|month| {
+                        parts::chip(
+                            ("schedule-month", month as usize),
+                            capitalized(&month_words(month, look)),
+                            capitalized(&month_short_words(month, look)),
+                            choices.months.contains(&month),
+                            look,
+                        )
+                        .on_click(cx.listener(move |shell, _, _, cx| {
+                            shell.change_the_schedule(|c| toggle(&mut c.months, month), cx);
+                        }))
+                    }))
+                    .into_any_element(),
+            );
+            wrong_under(Field::Months, refused, &mut body, look);
+            month_days(&form, refused, &mut body, look, cx);
+            body.push(times_list(fields, look, cx));
+            wrong_under(Field::Times, refused, &mut body, look);
+        }
+        Frequency::Advanced => {
+            let advanced = &fields.advanced;
+            if form.kept {
+                let kept = look.tr("schedule-advanced-kept");
+                body.push(
+                    div()
+                        .id("schedule-advanced-kept")
+                        .test_support()
+                        .role(Role::Note)
+                        .aria_label(kept.clone())
+                        .text_size(sp(13.))
+                        .line_height(sp(19.))
+                        .text_color(color(look.palette.text))
+                        .child(kept)
+                        .into_any_element(),
+                );
+            }
+            body.push(small(
+                "dialog-schedule-note",
+                look.tr("dialog-schedule-note"),
+                look,
+            ));
+            for (id, label, input, field) in [
+                (
+                    "schedule-every",
+                    look.tr("schedule-every"),
+                    &advanced.every,
+                    Field::Every,
+                ),
+                (
+                    "schedule-on",
+                    look.tr("schedule-on"),
+                    &advanced.on,
+                    Field::On,
+                ),
+                (
+                    "schedule-days-field",
+                    look.tr("schedule-days-field"),
+                    &advanced.days,
+                    Field::DaysTyped,
+                ),
+                (
+                    "schedule-months-field",
+                    look.tr("schedule-months-field"),
+                    &advanced.months,
+                    Field::MonthsTyped,
+                ),
+                (
+                    "schedule-at",
+                    look.tr("schedule-at"),
+                    &advanced.at,
+                    Field::At,
+                ),
+                (
+                    "schedule-cron",
+                    look.tr("schedule-cron"),
+                    &advanced.cron,
+                    Field::Cron,
+                ),
+                (
+                    "schedule-jitter",
+                    look.tr("schedule-jitter"),
+                    &advanced.jitter,
+                    Field::Jitter,
+                ),
+            ] {
+                body.push(labeled(id, label, input, look));
+                wrong_under(field, refused, &mut body, look);
+            }
+        }
+    }
+    wrong_under(Field::Whole, refused, &mut body, look);
+    body
 }
 
 fn filter_body(dialog: &Dialog, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> {
@@ -826,4 +1349,31 @@ fn webhook_body(dialog: &Dialog, look: &Look, cx: &mut Context<Shell>) -> Vec<An
             .into_any_element(),
     );
     body
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::system::Settings;
+
+    #[test]
+    fn every_choice_of_the_schedule_dialog_is_named_in_both_languages() {
+        for locale in ["en", "es"] {
+            let look = Look::of(
+                Settings {
+                    locale: locale.to_string(),
+                    ..Settings::default()
+                },
+                false,
+            );
+            let ids = Frequency::ALL
+                .into_iter()
+                .map(frequency_id)
+                .chain(Unit::ALL.into_iter().map(unit_id))
+                .chain(Nth::ALL.into_iter().map(nth_id));
+            for id in ids {
+                assert_ne!(look.tr(id), id, "{locale}");
+            }
+        }
+    }
 }
