@@ -7,14 +7,17 @@
 
 mod common;
 
+use std::time::{Duration, Instant};
+
 use common::{App, disabled, focused, open};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{Role, TestAppContext, px};
 use snob_core::Pk;
 use snob_desktop::backend::scripted::{Asked, Scripted, account};
 use snob_desktop::state::flow::Screen;
-use snob_desktop::state::profile::{Side, Tab};
+use snob_desktop::state::profile::{self, Side, Tab};
 use snob_desktop::system::{Event, Settings};
+use snob_desktop::theme::tokens::frame;
 
 /// The app at home, signed in as `me` (42).
 async fn at_home(cx: &mut TestAppContext, backend: Scripted) -> App {
@@ -325,6 +328,9 @@ async fn another_account_s_list_is_asked_about_first_and_a_no_reads_nothing(
 async fn the_picture_opens_large_is_copied_and_closes_on_escape(cx: &mut TestAppContext) {
     let app = own_profile(cx, me()).await;
     app.click(cx, "profile-picture");
+    // Its buttons are there once the picture has arrived.
+    app.until(cx, |window, _| window.try_find("viewer-close").is_some())
+        .await;
     app.in_window(cx, |window, _| {
         let viewer = window.find("photo-viewer");
         assert_eq!(viewer.role(), Some(Role::Dialog));
@@ -348,6 +354,147 @@ async fn the_picture_opens_large_is_copied_and_closes_on_escape(cx: &mut TestApp
     app.until(cx, move |_, _| system.copied_image().is_some())
         .await;
 
+    app.press(cx, "escape");
+    assert!(!shown(&app, cx, "photo-viewer"));
+    assert!(focused(&app, cx, "profile-picture"), "focus is back");
+}
+
+/// Where the picture fits in its viewer in `window`, as left, top, width
+/// and height.
+fn fit_in(window: &gpui_kit::Window) -> (f32, f32, f32, f32) {
+    let size = window.viewport_size();
+    let place = profile::viewer_place(f32::from(size.width), f32::from(size.height), frame::BAND);
+    (place.x, place.y, place.w, place.h)
+}
+
+fn edges(bounds: gpui_kit::Bounds<gpui_kit::Pixels>) -> (f32, f32, f32, f32) {
+    (
+        f32::from(bounds.origin.x),
+        f32::from(bounds.origin.y),
+        f32::from(bounds.size.width),
+        f32::from(bounds.size.height),
+    )
+}
+
+#[gpui_kit::test]
+async fn the_picture_grows_from_the_page_into_its_viewer_and_goes_back_with_focus_where_it_was(
+    cx: &mut TestAppContext,
+) {
+    let app = own_profile(cx, me()).await;
+    let me = Pk::new(42);
+    let page = app.in_window(cx, |window, _| {
+        edges(window.find("profile-picture").bounds())
+    });
+    let clicked = Instant::now();
+    app.click(cx, "profile-picture");
+    let (first, fit, buttons, away) = app.in_window(cx, |window, cx| {
+        (
+            edges(window.find("viewer-picture").bounds()),
+            fit_in(window),
+            window.try_find("viewer-close").is_some(),
+            app.shell.read(cx).picture_is_away(me),
+        )
+    });
+    // On its way: every edge between the page's and the viewer's, and the
+    // page's own picture left out meanwhile.
+    let ends = [
+        (first.0, page.0, fit.0),
+        (first.1, page.1, fit.1),
+        (first.2, page.2 - 12.0, fit.2),
+        (first.3, page.3 - 12.0, fit.3),
+    ];
+    for (now, from, to) in ends {
+        assert!(
+            from.min(to) - 1.0 <= now && now <= from.max(to) + 1.0,
+            "{first:?} between {page:?} and {fit:?}"
+        );
+    }
+    assert!(away, "the page's own picture is not drawn twice");
+    // Not there yet, and nothing to press, unless this machine took most
+    // of the move to draw one frame.
+    if clicked.elapsed() < Duration::from_millis(150) {
+        assert!(first.2 < fit.2 - 1.0, "{first:?} has not arrived");
+        assert!(!buttons, "no button before it has arrived");
+    }
+    assert!(
+        !focused(&app, cx, "profile-picture"),
+        "focus is in the viewer"
+    );
+
+    // It arrives where it fits, exactly, and its buttons come.
+    app.until(cx, |window, _| {
+        let now = edges(window.find("viewer-picture").bounds());
+        let fit = fit_in(window);
+        [now.0 - fit.0, now.1 - fit.1, now.2 - fit.2, now.3 - fit.3]
+            .iter()
+            .all(|off| off.abs() < 0.5)
+    })
+    .await;
+    app.until(cx, |window, _| window.try_find("viewer-close").is_some())
+        .await;
+
+    // Closed, the viewer is gone at once and focus is back; the picture
+    // alone goes back to the page, and then nothing is left over it.
+    let pressed = Instant::now();
+    app.press(cx, "escape");
+    let (viewer, leaving, away) = app.in_window(cx, |window, cx| {
+        (
+            window
+                .try_find("photo-viewer")
+                .is_some_and(|found| found.visible()),
+            window
+                .try_find("viewer-leaving")
+                .is_some_and(|found| found.visible()),
+            app.shell.read(cx).picture_is_away(me),
+        )
+    });
+    assert!(!viewer, "the viewer is gone at once");
+    assert!(leaving, "on its way back");
+    if pressed.elapsed() < Duration::from_millis(150) {
+        assert!(away, "the page's own picture is not drawn twice");
+    }
+    assert!(focused(&app, cx, "profile-picture"), "focus is back");
+    app.until(cx, |window, _| {
+        window
+            .try_find("viewer-leaving")
+            .is_none_or(|found| !found.visible())
+    })
+    .await;
+    assert!(
+        !app.shell
+            .read_with(cx, |shell, _| shell.picture_is_away(me)),
+        "the page draws its own picture again"
+    );
+    assert!(focused(&app, cx, "profile-picture"));
+}
+
+#[gpui_kit::test]
+async fn under_less_motion_the_picture_does_not_move_and_fades_in_where_it_fits(
+    cx: &mut TestAppContext,
+) {
+    let settings = Settings {
+        reduce_motion: true,
+        ..Settings::default()
+    };
+    let app = common::open_with(cx, me(), settings);
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    app.click(cx, "account");
+    app.click(cx, "menu-profile");
+    app.until(cx, |window, _| {
+        window.try_find(("profile-tile", 0usize)).is_some()
+    })
+    .await;
+    app.click(cx, "profile-picture");
+    app.in_window(cx, |window, _| {
+        let now = edges(window.find("viewer-picture").bounds());
+        let fit = fit_in(window);
+        assert!(
+            [now.0 - fit.0, now.1 - fit.1, now.2 - fit.2, now.3 - fit.3]
+                .iter()
+                .all(|off| off.abs() < 0.5),
+            "{now:?} where it fits, {fit:?}, from the first frame"
+        );
+    });
     app.press(cx, "escape");
     assert!(!shown(&app, cx, "photo-viewer"));
     assert!(focused(&app, cx, "profile-picture"), "focus is back");

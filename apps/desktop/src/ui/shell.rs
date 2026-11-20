@@ -42,7 +42,7 @@ use crate::theme::motion;
 
 mod pages;
 
-pub(crate) use pages::{Pages, PopupKind, TabRead, eased};
+pub(crate) use pages::{Pages, PictureDrawn, PopupKind, TabRead, eased, viewer_fit};
 pub use pages::{PeopleList, moving};
 
 /// How long the window rests before where it is gets remembered: a drag

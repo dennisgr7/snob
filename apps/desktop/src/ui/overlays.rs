@@ -1,23 +1,29 @@
 //! What opens over a profile, the frame included: the press anywhere that
 //! closes a small menu, the question a list of another account asks first,
-//! "About this account", and the picture large over a dark backdrop. **Each
-//! keeps focus inside it while it is open, closes on Escape or a press
-//! outside, and hands focus back to what opened it** (`Shell::dismiss`).
+//! "About this account", and the picture large over a dark backdrop, which
+//! grows from where the page draws it and goes back there once closed.
+//! **Each keeps focus inside it while it is open, closes on Escape or a
+//! press outside, and hands focus back to what opened it**
+//! (`Shell::dismiss`).
+
+use std::path::PathBuf;
+use std::time::Instant;
 
 use gpui_kit::base::{Button, FocusTrapElement as _, TestSupportExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, CursorStyle, FontWeight, MouseButton, ObjectFit, Role, ScrollDelta,
-    Window, div, img, px,
+    AnyElement, Context, CursorStyle, Div, FontWeight, ImgResourceLoader, MouseButton, ObjectFit,
+    Resource, Role, ScrollDelta, Window, div, img, px,
 };
 
 use super::assets;
+use super::frames;
 use super::look::{Look, color, color_at, sp};
 use super::parts::{self, Kind, icon};
 use super::screens::handle;
 use super::screens::profile::{as_account, grouped};
 use super::screens::words;
-use super::shell::{Shell, eased};
+use super::shell::{PictureDrawn, Shell, eased, viewer_fit};
 use crate::state::profile::{About, AboutRow, Side};
 use crate::theme::motion;
 use crate::theme::tokens::{Rgb, frame, shape};
@@ -26,11 +32,8 @@ use crate::theme::tokens::{Rgb, frame, shape};
 /// looked at.
 const BACKDROP: Rgb = Rgb::hex(0x0b0b0f);
 
-/// How much of the window's shorter side the picture takes when it fits.
-const FITS: f32 = 0.72;
-
-/// The largest the picture is drawn when it fits, in logical pixels.
-const FITS_AT_MOST: f32 = 720.0;
+/// How dark the backdrop is once the picture has come in.
+const BACKDROP_AT_MOST: f32 = 0.86;
 
 /// Everything of the pages that is open over the screen, in the order it is
 /// drawn.
@@ -60,6 +63,7 @@ pub fn render(
     over.extend(question(shell, look, cx));
     over.extend(about(shell, look, cx));
     over.extend(viewer(shell, look, window, cx));
+    over.extend(leaving(shell, look, window));
     over.extend(super::screens::automation_dialogs(shell, look, cx));
     over
 }
@@ -386,20 +390,40 @@ fn viewer(
     cx: &mut Context<Shell>,
 ) -> Option<AnyElement> {
     let palette = look.palette;
+    // The large picture comes in over the small one once it is decoded, and
+    // not before the picture has arrived: no blank frame and no pop.
+    if let Some(viewer) = shell.pages.viewer.as_mut()
+        && viewer.large_since.is_none()
+        && let Some(large) = viewer.large.clone()
+        && matches!(
+            window.use_asset::<ImgResourceLoader>(&Resource::from(large), cx),
+            Some(Ok(_))
+        )
+    {
+        viewer.large_since = Some(Instant::now().max(viewer.arrives(look)));
+    }
     let viewer = shell.pages.viewer.as_ref()?;
     let viewport = window.viewport_size();
     let (width, height) = (f32::from(viewport.width), f32::from(viewport.height));
-    let fit = (width.min(height - frame::BAND) * FITS).clamp(80.0, FITS_AT_MOST);
+    let fit = viewer_fit(window);
 
-    // It comes in from a little smaller, the backdrop darkening with it.
-    let moved = look.moved(motion::ENTER, 0.0, 0.94);
-    let came = eased(viewer.since, moved.lasts, window);
-    let grown = moved.scales + (1.0 - moved.scales) * came;
-    let zoom = viewer.zoom;
-    let drawn = fit * zoom.scale * grown;
-    let left = (width - drawn) / 2.0 + zoom.x;
-    let top = (height - drawn) / 2.0 + zoom.y;
-    let fit_top = (height - fit) / 2.0;
+    // It grows from where the page draws it, or fades in under "reduce
+    // motion", the backdrop darkening with it; zoom and the buttons are
+    // the viewer's once it has arrived.
+    let (at, arrived) = viewer.along(look);
+    if !arrived {
+        frames::ask(window);
+    }
+    let drawn = viewer.drawn(at, fit);
+    let large_shown = viewer
+        .large_since
+        .map_or(0.0, |since| eased(since, motion::FADE, window));
+    let buttons_shown = if arrived {
+        eased(viewer.arrives(look), motion::FADE, window)
+    } else {
+        0.0
+    };
+    let fit_top = fit.y;
 
     let named = viewer.who.clone();
     let username = named
@@ -407,69 +431,48 @@ fn viewer(
         .clone()
         .unwrap_or_else(|| named.pk.to_string());
     let account = as_account(&named, None, viewer.small.clone());
-    let shown = viewer.large.clone().or_else(|| viewer.small.clone());
-    let fallback = {
-        let account = account.clone();
-        let look = look.clone();
-        move || {
-            div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(parts::avatar(&account, drawn * 0.8, &look, 1.0))
-                .into_any_element()
-        }
-    };
     let held = viewer.dragging.is_some();
-    let zoomed = zoom.zoomed();
+    let zoomed = viewer.zoom.zoomed();
 
-    let picture = div()
-        .id("viewer-picture")
-        .test_support()
-        .role(Role::Image)
-        .aria_label(look.tr_with("account-photo", &[("username", &username)]))
-        .occlude()
-        .absolute()
-        .left(px(left))
-        .top(px(top))
-        .size(px(drawn))
-        .rounded(px(if zoomed { 0.0 } else { 10.0 }))
-        .overflow_hidden()
-        .when(zoomed, |picture| {
-            picture.cursor(if held {
-                CursorStyle::ClosedHand
+    let picture = placed_picture(
+        &account,
+        viewer.small.clone(),
+        viewer.large.clone(),
+        large_shown,
+        drawn,
+        look,
+    )
+    .id("viewer-picture")
+    .test_support()
+    .role(Role::Image)
+    .aria_label(look.tr_with("account-photo", &[("username", &username)]))
+    .occlude()
+    .when(zoomed, |picture| {
+        picture.cursor(if held {
+            CursorStyle::ClosedHand
+        } else {
+            CursorStyle::OpenHand
+        })
+    })
+    .on_mouse_down(
+        MouseButton::Left,
+        cx.listener(|shell, event: &gpui_kit::MouseDownEvent, _, cx| {
+            // A second press back to where it fits; one holds it.
+            if event.click_count >= 2 {
+                shell.fit_the_picture(cx);
             } else {
-                CursorStyle::OpenHand
-            })
-        })
-        .child(match shown {
-            Some(path) => img(path)
-                .size_full()
-                .object_fit(ObjectFit::Contain)
-                .with_fallback(fallback)
-                .into_any_element(),
-            None => fallback(),
-        })
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|shell, event: &gpui_kit::MouseDownEvent, _, cx| {
-                // A second press back to where it fits; one holds it.
-                if event.click_count >= 2 {
-                    shell.fit_the_picture(cx);
-                } else {
-                    shell.hold_the_picture(Some(event.position), cx);
-                }
-                cx.stop_propagation();
-            }),
-        )
-        .on_mouse_down(
-            MouseButton::Right,
-            cx.listener(|shell, event: &gpui_kit::MouseDownEvent, window, cx| {
-                shell.picture_menu(Some(event.position), window, cx);
-                cx.stop_propagation();
-            }),
-        );
+                shell.hold_the_picture(Some(event.position), cx);
+            }
+            cx.stop_propagation();
+        }),
+    )
+    .on_mouse_down(
+        MouseButton::Right,
+        cx.listener(|shell, event: &gpui_kit::MouseDownEvent, window, cx| {
+            shell.picture_menu(Some(event.position), window, cx);
+            cx.stop_propagation();
+        }),
+    );
 
     let buttons = div()
         .absolute()
@@ -478,36 +481,39 @@ fn viewer(
         .top(px((fit_top - 60.0).max(frame::BAND + 8.0)))
         .flex()
         .justify_center()
-        .opacity(came)
-        .child(
-            div()
-                .occlude()
-                .flex()
-                .gap(sp(10.))
-                .child(
-                    over_button(
-                        "viewer-download",
-                        look.tr("viewer-download"),
-                        assets::DOWNLOAD,
-                        look,
+        .opacity(buttons_shown)
+        // Nothing to press or reach with Tab before the picture has arrived.
+        .when(arrived, |buttons| {
+            buttons.child(
+                div()
+                    .occlude()
+                    .flex()
+                    .gap(sp(10.))
+                    .child(
+                        over_button(
+                            "viewer-download",
+                            look.tr("viewer-download"),
+                            assets::DOWNLOAD,
+                            look,
+                        )
+                        .on_click(cx.listener(|shell, _, window, cx| {
+                            shell.save_the_picture(false, window, cx);
+                        })),
                     )
-                    .on_click(cx.listener(|shell, _, window, cx| {
-                        shell.save_the_picture(false, window, cx);
-                    })),
-                )
-                .child(
-                    over_button("viewer-copy", look.tr("viewer-copy"), assets::COPY, look)
-                        .on_click(cx.listener(|shell, _, window, cx| {
-                            shell.copy_the_picture(window, cx);
-                        })),
-                )
-                .child(
-                    over_button("viewer-close", look.tr("viewer-close"), assets::CLOSE, look)
-                        .on_click(cx.listener(|shell, _, window, cx| {
-                            shell.close_the_picture(window, cx);
-                        })),
-                ),
-        );
+                    .child(
+                        over_button("viewer-copy", look.tr("viewer-copy"), assets::COPY, look)
+                            .on_click(cx.listener(|shell, _, window, cx| {
+                                shell.copy_the_picture(window, cx);
+                            })),
+                    )
+                    .child(
+                        over_button("viewer-close", look.tr("viewer-close"), assets::CLOSE, look)
+                            .on_click(cx.listener(|shell, _, window, cx| {
+                                shell.close_the_picture(window, cx);
+                            })),
+                    ),
+            )
+        });
 
     let said = viewer.said.clone().map(|said| {
         div()
@@ -586,7 +592,7 @@ fn viewer(
             )
     });
 
-    let size = (fit, fit);
+    let size = (fit.w, fit.h);
     Some(
         div()
             .id("photo-viewer")
@@ -596,7 +602,7 @@ fn viewer(
             .absolute()
             .inset_0()
             .occlude()
-            .bg(color_at(BACKDROP, 0.86 * came))
+            .bg(color_at(BACKDROP, BACKDROP_AT_MOST * drawn.backdrop))
             // A press on the backdrop closes it; one on the picture, the
             // buttons or the menu is theirs.
             .on_mouse_down(
@@ -614,6 +620,9 @@ fn viewer(
             )
             .on_scroll(
                 cx.listener(move |shell, event: &gpui_kit::ScrollEvent, _, cx| {
+                    if !arrived {
+                        return;
+                    }
                     let notches = match event.delta {
                         ScrollDelta::Lines(lines) => lines.y,
                         ScrollDelta::Pixels(pixels) => f32::from(pixels.y) / 50.0,
@@ -631,4 +640,105 @@ fn viewer(
             .children(menu)
             .into_any_element(),
     )
+}
+
+/// The picture on its way back to the page once its viewer closed: toward
+/// where the page draws it now, or fading where it was, the backdrop
+/// lightening with it. **Nothing to act on and nothing a screen reader is
+/// told**: the viewer is already gone and focus back on the page.
+fn leaving(shell: &mut Shell, look: &Look, window: &mut Window) -> Option<AnyElement> {
+    let leaving = shell.pages.leaving.as_mut()?;
+    if leaving.done {
+        shell.pages.leaving = None;
+        return None;
+    }
+    let (at, arrived) = leaving.along(look);
+    // Drawn at its end once more, where the page's own comes back on the
+    // next frame: never a frame with neither.
+    frames::ask(window);
+    leaving.done = arrived;
+    let drawn = leaving.drawn(at);
+    let account = as_account(&leaving.who, None, leaving.small.clone());
+    let picture = placed_picture(
+        &account,
+        leaving.small.clone(),
+        leaving.large.clone(),
+        leaving.large_shown,
+        drawn,
+        look,
+    );
+    Some(
+        div()
+            .id("viewer-leaving")
+            .test_support()
+            .absolute()
+            .inset_0()
+            .bg(color_at(BACKDROP, BACKDROP_AT_MOST * drawn.backdrop))
+            .child(picture)
+            .into_any_element(),
+    )
+}
+
+/// The picture where it is drawn on its way, `drawn`: the small one, and
+/// the large one coming in over it, `large_shown`, which hides it once
+/// all in; the account's initial while neither is there.
+fn placed_picture(
+    account: &crate::backend::Account,
+    small: Option<PathBuf>,
+    large: Option<PathBuf>,
+    large_shown: f32,
+    drawn: PictureDrawn,
+    look: &Look,
+) -> Div {
+    let PictureDrawn {
+        rect,
+        corner,
+        shown,
+        ..
+    } = drawn;
+    let fallback = {
+        let account = account.clone();
+        let look = look.clone();
+        move || {
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(parts::avatar(&account, rect.w * 0.8, &look, 1.0))
+                .into_any_element()
+        }
+    };
+    let large = large.filter(|_| large_shown > 0.0);
+    let under = (large_shown < 1.0).then(|| match small {
+        Some(path) => img(path)
+            .absolute()
+            .size_full()
+            .rounded(px(corner))
+            .object_fit(ObjectFit::Contain)
+            .with_fallback(fallback.clone())
+            .into_any_element(),
+        None => fallback(),
+    });
+    let over = large.map(|path| {
+        img(path)
+            .absolute()
+            .size_full()
+            .rounded(px(corner))
+            .object_fit(ObjectFit::Contain)
+            .opacity(large_shown)
+            .with_fallback(fallback.clone())
+            .into_any_element()
+    });
+    div()
+        .absolute()
+        .left(px(rect.x))
+        .top(px(rect.y))
+        .w(px(rect.w))
+        .h(px(rect.h))
+        .rounded(px(corner))
+        .overflow_hidden()
+        .opacity(shown)
+        .children(under)
+        .children(over)
 }

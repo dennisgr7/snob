@@ -15,8 +15,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::base::{
-    Align, Button, FocusTrapElement as _, POPUP_PRIORITY, Placement, Positioner, Scrollbar,
-    TestSupportExt as _,
+    Align, Button, ElementExt as _, FocusTrapElement as _, POPUP_PRIORITY, Placement, Positioner,
+    Scrollbar, TestSupportExt as _,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -40,6 +40,15 @@ use crate::ui::shell::{Phase, PopupKind, Shell, TabRead, eased};
 /// left, in logical pixels.
 const PICTURE: f32 = 132.0;
 const PICTURE_SPLIT: f32 = 112.0;
+
+/// The ring a story up draws around the picture, and the gap of the
+/// panel's color between them, as Instagram draws them.
+const RING: f32 = 3.0;
+const RING_GAP: f32 = 3.0;
+
+/// How far inside its button the picture is drawn: where its viewer grows
+/// from and goes back to.
+pub(crate) const AROUND_THE_PICTURE: f32 = RING + RING_GAP;
 
 /// How wide the card at the left is, at the default text size.
 const CARD_WIDTH: f32 = 320.0;
@@ -151,6 +160,7 @@ struct Shown {
     options_button: gpui_kit::FocusHandle,
     picture_drawn: Rc<Cell<Bounds<Pixels>>>,
     options_drawn: Rc<Cell<Bounds<Pixels>>>,
+    picture_clip: Rc<Cell<Bounds<Pixels>>>,
 }
 
 /// The profile shown.
@@ -181,6 +191,7 @@ pub fn render(
         options_button: page.options_button.clone(),
         picture_drawn: page.picture_drawn.clone(),
         options_drawn: page.options_drawn.clone(),
+        picture_clip: page.picture_clip.clone(),
     };
     let layout = shell.pages.layout;
     let showing = shell.pages.showing;
@@ -582,8 +593,23 @@ fn card(
     let picture = parts::drawn_at(
         &shown.picture_drawn,
         popup == Some(PopupKind::Picture),
-        picture(shown, &named, split, popup, came, look, cx),
+        picture(
+            shown,
+            &named,
+            split,
+            popup,
+            came,
+            shell.picture_is_away(named.pk),
+            look,
+            cx,
+        ),
     )
+    .on_prepaint({
+        // What the page's scrolling leaves in sight there: the picture
+        // moves to its viewer only from a place all in sight.
+        let clip = shown.picture_clip.clone();
+        move |_, window, _| clip.set(window.content_mask().bounds)
+    })
     .children(popup_menu(
         shell,
         PopupKind::Picture,
@@ -667,12 +693,17 @@ fn card(
 /// The picture: a button that opens it large, or, with a story up, asks
 /// which. **The ring says a story is up and that is all**: nothing of the
 /// story is read.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the picture's state, whether it is away in its viewer, and the view"
+)]
 fn picture(
     shown: &Shown,
     named: &Named,
     split: bool,
     popup: Option<PopupKind>,
     came: f32,
+    away: bool,
     look: &Look,
     cx: &mut Context<Shell>,
 ) -> Button {
@@ -699,10 +730,8 @@ fn picture(
     } else {
         look.tr_with("profile-picture-open", &[("username", &name)])
     };
-    // The ring is drawn outside the picture with a gap of the panel's color,
-    // as Instagram draws it; it fades in once the read says a story is up.
-    let ring = 3.0;
-    let gap = 3.0;
+    // The ring fades in once the read says a story is up.
+    let (ring, gap) = (RING, RING_GAP);
     Button::new("profile-picture")
         .accessibility_label(label.clone())
         .tooltip(parts::tip(label))
@@ -727,7 +756,9 @@ fn picture(
         .focus_visible(parts::focus_ring(&palette))
         .cursor_pointer()
         .hover(|style| style.opacity(0.9))
-        .child(parts::avatar(&account, size, look, 1.0))
+        // Left out while the picture itself is on its way to its viewer or
+        // back, so it is never drawn twice.
+        .child(parts::avatar(&account, size, look, 1.0).opacity(if away { 0.0 } else { 1.0 }))
         .on_click(cx.listener(|shell, _, window, cx| shell.click_the_picture(window, cx)))
 }
 

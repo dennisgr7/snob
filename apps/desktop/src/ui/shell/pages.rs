@@ -25,9 +25,10 @@ use tokio::sync::watch;
 use super::Shell;
 use crate::backend::{Listed, Profile, Tiles, Unread, Walked};
 use crate::state::flow::{Event, Named, Screen};
-use crate::state::profile::{self, Layout, PictureClick, Showing, Side, Tab, Zoom};
+use crate::state::profile::{self, Layout, PictureClick, Rect, Run, Showing, Side, Tab, Way, Zoom};
 use crate::state::status::Status;
 use crate::theme::motion;
+use crate::theme::tokens::frame;
 use crate::ui::look::Look;
 
 /// How a tab's first page stands.
@@ -69,6 +70,9 @@ pub(crate) struct ProfilePage {
     /// Where each was last drawn: what its menu opens under.
     pub picture_drawn: Rc<Cell<Bounds<Pixels>>>,
     pub options_drawn: Rc<Cell<Bounds<Pixels>>>,
+    /// What the page's scrolling left in sight where the picture was last
+    /// drawn.
+    pub picture_clip: Rc<Cell<Bounds<Pixels>>>,
 }
 
 /// One of an account's lists, as far as it is read. **Read on until nothing
@@ -115,11 +119,21 @@ impl Drop for PeopleList {
 /// The picture of an account, large over the screen.
 pub(crate) struct PictureViewer {
     pub who: Named,
-    /// The small picture, shown until the large one is on disk.
+    /// The small picture, shown until the large one is drawn.
     pub small: Option<PathBuf>,
     pub large: Option<PathBuf>,
+    /// When the large picture starts coming in over the small one: once it
+    /// is decoded, and not before the picture has arrived.
+    pub large_since: Option<Instant>,
     pub zoom: Zoom,
+    /// How it comes from the page, and since when.
+    pub way: Way,
+    pub run: Run,
     pub since: Instant,
+    /// Where the page draws the picture, as it is drawn now, and what of
+    /// that its scrolling leaves in sight.
+    pub on_the_page: Rc<Cell<Bounds<Pixels>>>,
+    pub clip: Rc<Cell<Bounds<Pixels>>>,
     pub focus: FocusHandle,
     /// Where a drag that moves the picture started, while one does.
     pub dragging: Option<Point<Pixels>>,
@@ -130,6 +144,33 @@ pub(crate) struct PictureViewer {
     pub said: Option<SharedString>,
     /// What had focus when it opened, where it goes back.
     pub back_to: Option<FocusHandle>,
+}
+
+/// The picture on its way back to the page once its viewer closed: drawn
+/// alone, with nothing to act on and nothing a screen reader is told, while
+/// focus is already back on the page.
+pub(crate) struct LeavingPicture {
+    pub who: Named,
+    pub small: Option<PathBuf>,
+    pub large: Option<PathBuf>,
+    /// How far the large picture had come in over the small one.
+    pub large_shown: f32,
+    /// How far it was zoomed and moved: what it turns back to if opened
+    /// again on its way.
+    pub zoom: Zoom,
+    pub way: Way,
+    pub run: Run,
+    pub since: Instant,
+    /// The viewer's end of its way: where it was drawn there as it closed,
+    /// zoomed or not, and how round.
+    pub end: Rect,
+    pub end_corner: f32,
+    /// How much of it was shown as it closed: what a picture that fades
+    /// fades from.
+    pub shown: f32,
+    pub on_the_page: Rc<Cell<Bounds<Pixels>>>,
+    /// Drawn at its end once: the next frame draws the page's own.
+    pub done: bool,
 }
 
 /// Which small menu is open over a profile.
@@ -176,6 +217,7 @@ pub(crate) struct Pages {
     pub profiles: HashMap<Pk, ProfilePage>,
     pub lists: HashMap<(Pk, Side), Entity<PeopleList>>,
     pub viewer: Option<PictureViewer>,
+    pub leaving: Option<LeavingPicture>,
     pub popup: Option<Popup>,
     pub asking: Option<ListQuestion>,
     pub about: Option<AboutAccount>,
@@ -257,6 +299,7 @@ impl Shell {
         });
         self.pages.popup = None;
         self.pages.viewer = None;
+        self.pages.leaving = None;
         self.pages.about = None;
         match self.shown.clone() {
             Screen::Profile(who) if !self.pages.profiles.contains_key(&who.pk) => {
@@ -320,6 +363,7 @@ impl Shell {
                 options_button: cx.focus_handle(),
                 picture_drawn: Rc::default(),
                 options_drawn: Rc::default(),
+                picture_clip: Rc::default(),
             },
         );
         let pk = who.pk;
@@ -671,7 +715,9 @@ impl Shell {
         }
     }
 
-    /// The picture of the profile shown, large over the screen.
+    /// The picture of the profile shown, large over the screen: it grows
+    /// from where the page draws it, or, on its way back there, turns
+    /// around from where it is.
     pub(crate) fn open_the_picture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(page) = self.profile_page() else {
             return;
@@ -681,16 +727,48 @@ impl Shell {
         };
         tracing::info!(action = "open_profile_picture", "action");
         let back_to = Some(page.picture_button.clone());
+        let on_the_page = page.picture_drawn.clone();
+        let clip = page.picture_clip.clone();
         self.pages.popup = None;
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let who = profile.named.clone();
+        let look = Look::now(cx).clone();
+        let mut way = way_now(&on_the_page, &clip, window, &look);
+        let (mut run, mut zoom, mut large, mut large_since) = (Run::OPENING, Zoom::FIT, None, None);
+        if let Some(leaving) = self
+            .pages
+            .leaving
+            .take()
+            .filter(|leaving| leaving.who.pk == who.pk && !leaving.done)
+        {
+            let at = leaving.run.at(
+                leaving.since.elapsed(),
+                whole_way(false, &look),
+                motion::STANDARD,
+            );
+            run = leaving.run.turned(at);
+            if leaving.way == Way::Fades {
+                way = Way::Fades;
+            }
+            zoom = leaving.zoom;
+            large = leaving.large;
+            if leaving.large_shown >= 1.0 {
+                let now = Instant::now();
+                large_since = Some(now.checked_sub(motion::FADE).unwrap_or(now));
+            }
+        }
         self.pages.viewer = Some(PictureViewer {
             who: who.clone(),
             small: profile.picture.clone(),
-            large: None,
-            zoom: Zoom::FIT,
+            large,
+            large_since,
+            zoom,
+            way,
+            run,
             since: Instant::now(),
+            on_the_page,
+            clip,
             focus,
             dragging: None,
             menu: None,
@@ -709,8 +787,19 @@ impl Shell {
                 };
                 if let Some(viewer) = &mut this.pages.viewer
                     && viewer.who.pk == who.pk
+                    && large.is_some()
+                    && viewer.large != large
                 {
-                    viewer.large = large;
+                    // A large picture already all in stays under the new
+                    // one until it is decoded, never the small one again.
+                    let all_in = viewer
+                        .large_since
+                        .is_some_and(|since| since.elapsed() >= motion::FADE);
+                    let before = std::mem::replace(&mut viewer.large, large);
+                    if all_in {
+                        viewer.small = before;
+                    }
+                    viewer.large_since = None;
                     cx.notify();
                 }
             })
@@ -720,14 +809,66 @@ impl Shell {
         cx.notify();
     }
 
-    /// Closes the picture, focus back where it was.
+    /// Closes the picture, focus back where it was: **the viewer is gone at
+    /// once**, and the picture goes back to where the page draws it now,
+    /// from where it is, or fades where it is when that place is out of
+    /// sight.
     pub(crate) fn close_the_picture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(viewer) = self.pages.viewer.take() {
-            if let Some(back) = viewer.back_to {
-                window.focus(&back, cx);
-            }
-            cx.notify();
+        let Some(viewer) = self.pages.viewer.take() else {
+            return;
+        };
+        if let Some(back) = &viewer.back_to {
+            window.focus(back, cx);
         }
+        let look = Look::now(cx).clone();
+        let at = viewer.run.at(
+            viewer.since.elapsed(),
+            whole_way(true, &look),
+            motion::STANDARD,
+        );
+        let fit = viewer_fit(window);
+        let drawn = viewer.drawn(at, fit);
+        let way = match viewer.way {
+            Way::Moves => way_now(&viewer.on_the_page, &viewer.clip, window, &look),
+            Way::Fades => Way::Fades,
+        };
+        let (end, end_corner) = match way {
+            Way::Moves => (viewer.end(fit), viewer.end_corner()),
+            Way::Fades => (drawn.rect, drawn.corner),
+        };
+        let large_shown = viewer.large_since.map_or(0.0, |since| {
+            motion::STANDARD.at(motion::progress(since.elapsed(), motion::FADE))
+        });
+        self.pages.leaving = Some(LeavingPicture {
+            who: viewer.who,
+            small: viewer.small,
+            large: viewer.large,
+            large_shown,
+            zoom: viewer.zoom,
+            way,
+            run: viewer.run.turned(at),
+            since: Instant::now(),
+            end,
+            end_corner,
+            shown: drawn.shown,
+            on_the_page: viewer.on_the_page,
+            done: false,
+        });
+        cx.notify();
+    }
+
+    /// Whether the page leaves out its own picture of `pk`: while it is on
+    /// its way to the viewer or back, **so it is never seen twice**.
+    pub fn picture_is_away(&self, pk: Pk) -> bool {
+        let viewer = self
+            .pages
+            .viewer
+            .as_ref()
+            .is_some_and(|viewer| viewer.who.pk == pk && viewer.way == Way::Moves);
+        let leaving = self.pages.leaving.as_ref().is_some_and(|leaving| {
+            leaving.who.pk == pk && leaving.way == Way::Moves && !leaving.done
+        });
+        viewer || leaving
     }
 
     /// The wheel over the picture: zoomed about the pointer.
@@ -1082,6 +1223,155 @@ impl Shell {
             || self.pages.asking.is_some()
             || self.pages.popup.is_some()
             || self.pages.about.is_some()
+    }
+}
+
+/// The picture over the page at one instant: where it is drawn, how round,
+/// how much of it is shown, and how much of the backdrop is under it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PictureDrawn {
+    pub rect: Rect,
+    pub corner: f32,
+    pub shown: f32,
+    pub backdrop: f32,
+}
+
+impl PictureViewer {
+    /// Where it is along its way now, from the page (0) to its place (1),
+    /// and whether it has arrived.
+    pub(crate) fn along(&self, look: &Look) -> (f32, bool) {
+        let (elapsed, whole) = (self.since.elapsed(), whole_way(true, look));
+        (
+            self.run.at(elapsed, whole, motion::STANDARD),
+            self.run.arrived(elapsed, whole),
+        )
+    }
+
+    /// When it arrives, or arrived.
+    pub(crate) fn arrives(&self, look: &Look) -> Instant {
+        self.since + self.run.lasts(whole_way(true, look))
+    }
+
+    /// Its end of the way, the picture fitting in `fit`: zoomed and moved
+    /// as the person did once it arrived.
+    pub(crate) fn end(&self, fit: Rect) -> Rect {
+        let side = fit.w * self.zoom.scale;
+        Rect {
+            x: fit.x + (fit.w - side) / 2.0 + self.zoom.x,
+            y: fit.y + (fit.h - side) / 2.0 + self.zoom.y,
+            w: side,
+            h: side,
+        }
+    }
+
+    /// Its corners there: none once zoomed in.
+    pub(crate) fn end_corner(&self) -> f32 {
+        if self.zoom.zoomed() {
+            0.0
+        } else {
+            profile::VIEWER_CORNER
+        }
+    }
+
+    /// The picture `at` of its way, fitting in `fit` at its end.
+    pub(crate) fn drawn(&self, at: f32, fit: Rect) -> PictureDrawn {
+        let (end, end_corner) = (self.end(fit), self.end_corner());
+        let (rect, corner, shown) = match self.way {
+            Way::Moves => {
+                let page = place_on_the_page(&self.on_the_page);
+                let (rect, corner) = profile::moved_picture(page, end, end_corner, at);
+                (rect, corner, 1.0)
+            }
+            Way::Fades => (end, end_corner, at),
+        };
+        PictureDrawn {
+            rect,
+            corner,
+            shown,
+            backdrop: at,
+        }
+    }
+}
+
+impl LeavingPicture {
+    /// Where it is along its way back now, and whether it is there.
+    pub(crate) fn along(&self, look: &Look) -> (f32, bool) {
+        let (elapsed, whole) = (self.since.elapsed(), whole_way(false, look));
+        (
+            self.run.at(elapsed, whole, motion::STANDARD),
+            self.run.arrived(elapsed, whole),
+        )
+    }
+
+    /// The picture `at` of its way back: toward where the page draws it
+    /// now, or fading where it was.
+    pub(crate) fn drawn(&self, at: f32) -> PictureDrawn {
+        let (rect, corner, shown) = match self.way {
+            Way::Moves => {
+                let page = place_on_the_page(&self.on_the_page);
+                let (rect, corner) = profile::moved_picture(page, self.end, self.end_corner, at);
+                (rect, corner, 1.0)
+            }
+            Way::Fades => (self.end, self.end_corner, self.shown * self.run.left(at)),
+        };
+        PictureDrawn {
+            rect,
+            corner,
+            shown,
+            backdrop: at,
+        }
+    }
+}
+
+/// How long the picture's whole way takes, into its viewer or out of it:
+/// a fade's time under "reduce motion".
+pub(crate) fn whole_way(opening: bool, look: &Look) -> std::time::Duration {
+    let lasts = if opening { motion::ENTER } else { motion::EXIT };
+    look.moved(lasts, 0.0, 1.0).lasts
+}
+
+/// Where the picture fits in its viewer in `window`.
+pub(crate) fn viewer_fit(window: &Window) -> Rect {
+    let size = window.viewport_size();
+    profile::viewer_place(f32::from(size.width), f32::from(size.height), frame::BAND)
+}
+
+/// How the picture goes between the page and its viewer now, the page
+/// drawing it at `on_the_page` inside `clip`: what of `window` shows the
+/// page is everything under the band.
+fn way_now(
+    on_the_page: &Rc<Cell<Bounds<Pixels>>>,
+    clip: &Rc<Cell<Bounds<Pixels>>>,
+    window: &Window,
+    look: &Look,
+) -> Way {
+    let size = window.viewport_size();
+    let seen = Rect {
+        x: 0.0,
+        y: frame::BAND,
+        w: f32::from(size.width),
+        h: f32::from(size.height) - frame::BAND,
+    };
+    profile::way(
+        place_on_the_page(on_the_page),
+        seen,
+        rect_of(clip.get()),
+        look.settings.reduce_motion,
+    )
+}
+
+/// The picture itself where the page last drew its button, `drawn`: inside
+/// the ring and its gap.
+fn place_on_the_page(drawn: &Rc<Cell<Bounds<Pixels>>>) -> Rect {
+    rect_of(drawn.get()).inset(super::super::screens::profile::AROUND_THE_PICTURE)
+}
+
+fn rect_of(bounds: Bounds<Pixels>) -> Rect {
+    Rect {
+        x: f32::from(bounds.origin.x),
+        y: f32::from(bounds.origin.y),
+        w: f32::from(bounds.size.width),
+        h: f32::from(bounds.size.height),
     }
 }
 
