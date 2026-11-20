@@ -7,7 +7,7 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use rusqlite_migration::{M, Migrations};
 
 use snob_core::budget::PushBack;
@@ -18,9 +18,10 @@ use crate::paths::AppPaths;
 
 /// Every migration of `shared.db`, in the order they are applied. The rules at
 /// the top of [`super::migrations`] hold here too.
-const CHAIN: [&str; 2] = [
+const CHAIN: [&str; 3] = [
     include_str!("sql/shared/001_pushbacks.sql"),
     include_str!("sql/shared/002_automation_runs.sql"),
+    include_str!("sql/shared/003_automation_found.sql"),
 ];
 
 static MIGRATIONS: LazyLock<Migrations<'static>> =
@@ -66,6 +67,15 @@ pub struct Shared {
 /// How many runs of one automation are kept.
 const RUNS_KEPT: i64 = 100;
 
+/// How often a run going writes down that it still is
+/// ([`Shared::beat_automation_run`]).
+pub const RUN_BEAT: Duration = Duration::from_secs(20);
+
+/// How long a run with no end may go without a sign of life and still be
+/// going: three beats missed and some, so a busy database or a slow beat is
+/// not taken for a killed run.
+const RUN_QUIET_AFTER: i64 = 75;
+
 /// One run of an automation, as its history lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutomationRun {
@@ -79,6 +89,12 @@ pub struct AutomationRun {
     pub requests: u32,
     /// Plain sentences, one a line.
     pub summary: String,
+    /// Whether it is still going: no end, and a sign of life within
+    /// `RUN_QUIET_AFTER` of the moment it was read at. A run killed is not.
+    pub running: bool,
+    /// What it found as data (`snob_engine::automations::said`), JSON;
+    /// `None` before it ended, and in a run kept before this was.
+    pub found: Option<String>,
 }
 
 impl Shared {
@@ -196,7 +212,7 @@ impl Shared {
     /// runs. Answers with the row [`Self::finish_automation_run`] fills in.
     pub fn record_automation_run(&self, automation: &str, at: Epoch) -> Result<i64, StoreError> {
         self.conn.execute(
-            "INSERT INTO automation_runs (automation, started_at) VALUES (?1, ?2)",
+            "INSERT INTO automation_runs (automation, started_at, alive_at) VALUES (?1, ?2, ?2)",
             params![automation, at.get()],
         )?;
         let id = self.conn.last_insert_rowid();
@@ -209,7 +225,18 @@ impl Shared {
         Ok(id)
     }
 
-    /// What the run `id` came to.
+    /// Writes down that the run `id` is still going at `at`. Nothing once it
+    /// has ended: a beat late is not a run brought back.
+    pub fn beat_automation_run(&self, id: i64, at: Epoch) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE automation_runs SET alive_at = ?2 WHERE id = ?1 AND ended_at IS NULL",
+            params![id, at.get()],
+        )?;
+        Ok(())
+    }
+
+    /// What the run `id` came to: its sentences in `summary`, and what it
+    /// found as data in `found`.
     pub fn finish_automation_run(
         &self,
         id: i64,
@@ -217,47 +244,64 @@ impl Shared {
         outcome: &str,
         requests: u32,
         summary: &str,
+        found: Option<&str>,
     ) -> Result<(), StoreError> {
         self.conn.execute(
-            "UPDATE automation_runs SET ended_at = ?2, outcome = ?3, requests = ?4, summary = ?5
+            "UPDATE automation_runs
+             SET ended_at = ?2, outcome = ?3, requests = ?4, summary = ?5, found = ?6
              WHERE id = ?1",
-            params![id, at.get(), outcome, i64::from(requests), summary],
+            params![id, at.get(), outcome, i64::from(requests), summary, found],
         )?;
         Ok(())
     }
 
-    /// The newest `limit` runs of `automation`, the newest first.
+    /// The newest `limit` runs of `automation`, the newest first, as they
+    /// stand at `now`.
     pub fn automation_runs(
         &self,
         automation: &str,
         limit: usize,
+        now: Epoch,
     ) -> Result<Vec<AutomationRun>, StoreError> {
         let mut statement = self.conn.prepare(
-            "SELECT id, automation, started_at, ended_at, outcome, requests, summary
+            "SELECT id, automation, started_at, ended_at, outcome, requests, summary,
+                    ended_at IS NULL AND alive_at IS NOT NULL AND alive_at >= ?3 - ?4,
+                    found
              FROM automation_runs WHERE automation = ?1
              ORDER BY started_at DESC, id DESC LIMIT ?2",
         )?;
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows = statement.query_map(params![automation, limit], |row| {
-            Ok(AutomationRun {
-                id: row.get(0)?,
-                automation: row.get(1)?,
-                started_at: Epoch::new(row.get(2)?),
-                ended_at: row.get::<_, Option<i64>>(3)?.map(Epoch::new),
-                outcome: row.get(4)?,
-                requests: u32::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
-                summary: row.get(6)?,
-            })
-        })?;
+        let rows = statement.query_map(
+            params![automation, limit, now.get(), RUN_QUIET_AFTER],
+            |row| {
+                Ok(AutomationRun {
+                    id: row.get(0)?,
+                    automation: row.get(1)?,
+                    started_at: Epoch::new(row.get(2)?),
+                    ended_at: row.get::<_, Option<i64>>(3)?.map(Epoch::new),
+                    outcome: row.get(4)?,
+                    requests: u32::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+                    summary: row.get(6)?,
+                    running: row.get(7)?,
+                    found: row.get(8)?,
+                })
+            },
+        )?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// When a run of `automation` last started, if one ever did.
     pub fn automation_last_started(&self, automation: &str) -> Result<Option<Epoch>, StoreError> {
-        Ok(self
-            .automation_runs(automation, 1)?
-            .first()
-            .map(|run| run.started_at))
+        let started = self
+            .conn
+            .query_row(
+                "SELECT started_at FROM automation_runs WHERE automation = ?1
+                 ORDER BY started_at DESC, id DESC LIMIT 1",
+                params![automation],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        Ok(started.map(Epoch::new))
     }
 
     /// Forgets the runs of an automation that is no more.
@@ -467,6 +511,83 @@ mod tests {
             shared.monitor_last_started().unwrap(),
             Some(Epoch::new(3_000))
         );
+    }
+
+    #[test]
+    fn a_run_is_running_while_it_beats_and_not_once_it_goes_quiet() {
+        let (_tmp, shared) = shared();
+        let id = shared
+            .record_automation_run("abcd1234", Epoch::new(1_000))
+            .unwrap();
+        let running_at = |now: i64| {
+            shared
+                .automation_runs("abcd1234", 1, Epoch::new(now))
+                .unwrap()[0]
+                .running
+        };
+        assert!(running_at(1_000), "a run is going from its start");
+        assert!(running_at(1_000 + RUN_QUIET_AFTER));
+        assert!(
+            !running_at(1_001 + RUN_QUIET_AFTER),
+            "no sign of life for longer than that is a run killed"
+        );
+        shared.beat_automation_run(id, Epoch::new(1_060)).unwrap();
+        assert!(running_at(1_060 + RUN_QUIET_AFTER), "a beat keeps it going");
+        assert_eq!(
+            shared.automation_last_started("abcd1234").unwrap(),
+            Some(Epoch::new(1_000))
+        );
+    }
+
+    #[test]
+    fn a_finished_run_keeps_what_it_found_beside_its_sentences() {
+        let (_tmp, shared) = shared();
+        let id = shared
+            .record_automation_run("abcd1234", Epoch::new(1_000))
+            .unwrap();
+        let found = r#"[{"kind":"cannot_run"}]"#;
+        shared
+            .finish_automation_run(
+                id,
+                Epoch::new(1_010),
+                "error",
+                3,
+                "It cannot run.",
+                Some(found),
+            )
+            .unwrap();
+        let run = &shared
+            .automation_runs("abcd1234", 1, Epoch::new(1_010))
+            .unwrap()[0];
+        assert_eq!(run.summary, "It cannot run.");
+        assert_eq!(run.found.as_deref(), Some(found));
+        assert_eq!(run.outcome.as_deref(), Some("error"));
+        assert!(!run.running, "a run that ended is not going");
+    }
+
+    #[test]
+    fn a_beat_after_the_end_changes_nothing() {
+        let (_tmp, shared) = shared();
+        let id = shared
+            .record_automation_run("abcd1234", Epoch::new(1_000))
+            .unwrap();
+        shared
+            .finish_automation_run(id, Epoch::new(1_010), "ok", 0, "", None)
+            .unwrap();
+        shared.beat_automation_run(id, Epoch::new(1_020)).unwrap();
+        let alive_at: i64 = shared
+            .conn
+            .query_row(
+                "SELECT alive_at FROM automation_runs WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(alive_at, 1_000);
+        let run = &shared
+            .automation_runs("abcd1234", 1, Epoch::new(1_020))
+            .unwrap()[0];
+        assert!(!run.running && run.found.is_none());
     }
 
     /// STRICT, like every table in the accounts' databases.

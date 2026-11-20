@@ -247,7 +247,8 @@ dbus-run-session -- bash -c '
   script, an agent or a webhook reads: an account, a post, its comments,
   replies and likers, a grid, stories, a profile, `status`, the webhook's
   payload, an MCP list page and the error object. Not pinned yet: `snapshots`,
-  `changes`, `account list`, `watch status`, `highlights`, `update`, the
+  `changes`, `account list`, `watch status`, `watch automations` (its runs'
+  `found`, `automations::said`), `highlights`, `update`, the
   monitor's printed report (`PRINTED_SCHEMA`) and `status`'s `update` key. A changed `.snap` is a
   contract change ("Output contract"): regenerate with `INSTA_UPDATE=always`
   only on purpose, and read its diff. CI fails on a mismatch.
@@ -537,7 +538,10 @@ compile; the session is an explicit header on the one client meant to carry it.
 - **Automations** (`snob_store::automations`): one JSON file each in the
   configuration directory's `automations/`, written whole under a lock and
   named by its id; their runs in `shared.db` (`automation_runs`, the newest
-  100 each), what each action found last in the reading account's database
+  100 each, each with what it found in sentences and as data,
+  `automations::said`, and a sign of life every 20 s while it goes, which
+  tells a run going from one killed: `AutomationRun::running`), what each
+  action found last in the reading account's database
   (`automation_marks`). Removing one forgets its runs.
 - **An app's log** (`logs/`, `snob_engine::log`): one JSON object a line,
   five files of 1 MiB, nothing older than fourteen days; a command still
@@ -696,7 +700,7 @@ prints a client's snippet and never writes it.
 | `snob_logout` | `logout --only=<name>` | yes, naming the account | always |
 | `snob_accounts` | `account list --json` | no | with `--any-account` |
 | `snob_account_use`, `snob_logout_all`, `snob_purge` | `account use <name>`, `logout --all`, `purge --yes` (one account's as its `--account`); none takes `as_account` | yes (`About::Accounts`) | with `--any-account` |
-| `snob_automations` | `watch automations --json`: each automation, its schedules as `watch.toml` writes them, its problems, its next run and newest runs; nothing sent | no | always |
+| `snob_automations` | `watch automations --json`: each automation, its schedules as `watch.toml` writes them, its problems, its next run and newest runs (whether each is still running, what it found as data); nothing sent | no | always |
 | `snob_automation_run` | `watch start <id> --json`: a run started now, apart from the call, which reads what the automation's steps lead to | yes (`About::Automation`) | always |
 
 `snob_list` and `snob_scan` take `same_day` (`--same-day`), always on a yes.

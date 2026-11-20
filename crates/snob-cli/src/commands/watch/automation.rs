@@ -2,7 +2,12 @@
 //! and the due ones a scheduled run or a timer finds): its lists and posts
 //! through the monitor's run ([`super::run::run_viewers`]), its other actions
 //! through `snob_engine::automations::read`, its report to its own webhook,
-//! and a row in its history, as `watch.toml`'s runs leave one ([`Recorded`]).
+//! and a row in its history, as `watch.toml`'s runs leave one ([`Recorded`]),
+//! with a sign of life while it goes and what it found as data once it ends.
+
+use std::sync::mpsc;
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use anyhow::Result;
 use snob_core::automation::{Automation, Planned, Read, Started, Step, WATCH_TOML};
@@ -10,11 +15,12 @@ use snob_core::model::printable;
 use snob_core::{Epoch, Pk};
 use snob_engine::app::App;
 use snob_engine::automations;
+use snob_engine::automations::said::{self, Said};
 use snob_engine::exit::{ExitCode, ExitError};
 use snob_engine::watch::RunTiming;
 use snob_store::paths::AppPaths;
 use snob_store::secrets::SecretStore;
-use snob_store::store::shared::Shared;
+use snob_store::store::shared::{RUN_BEAT, Shared};
 
 use crate::ui;
 
@@ -24,22 +30,36 @@ use super::say::found_lines;
 use super::wire::{found_event, found_payload, json_line};
 
 /// A run being written into an automation's history: started before its
-/// work, so it counts from its start, and finished with what it came to.
+/// work, so it counts from its start, beating while it goes, so a front tells
+/// it from one that was killed, and finished with what it came to.
 pub(super) struct Recorded {
     shared: Shared,
     row: i64,
+    /// What stops the beat: the sender dropped, the thread joined.
+    beat: Option<(mpsc::Sender<()>, JoinHandle<()>)>,
 }
 
 impl Recorded {
     /// Writes down that a run of `id` starts at `at`; `None`, said in the
     /// log, when `shared.db` cannot be written, which is no reason not to run.
     pub(super) fn start(paths: &AppPaths, id: &str, at: Epoch) -> Option<Self> {
+        Self::beating_every(paths, id, at, RUN_BEAT)
+    }
+
+    fn beating_every(paths: &AppPaths, id: &str, at: Epoch, every: Duration) -> Option<Self> {
         let started = Shared::open(paths).and_then(|shared| {
             let row = shared.record_automation_run(id, at)?;
-            Ok(Self { shared, row })
+            Ok(Self {
+                shared,
+                row,
+                beat: None,
+            })
         });
         match started {
-            Ok(recorded) => Some(recorded),
+            Ok(mut recorded) => {
+                recorded.beat = beat(paths, recorded.row, every);
+                Some(recorded)
+            }
             Err(e) => {
                 tracing::debug!(error = %e, "could not write down that the run started");
                 None
@@ -47,8 +67,14 @@ impl Recorded {
         }
     }
 
-    /// What the run came to.
-    pub(super) fn finish(self, summary: &RunSummary) {
+    /// What the run came to. The beat stops first, so none lands after.
+    pub(super) fn finish(mut self, summary: &RunSummary) {
+        if let Some((stop, beating)) = self.beat.take() {
+            drop(stop);
+            if beating.join().is_err() {
+                tracing::debug!("the run's beat stopped on a panic");
+            }
+        }
         let outcome = match &summary.failed {
             Some(e) if summary.code == ExitCode::Ok => {
                 snob_engine::exit::from_chain(e).unwrap_or(ExitCode::Error)
@@ -56,14 +82,52 @@ impl Recorded {
             _ => summary.code,
         };
         let said = summary.said.join("\n");
+        let found = match serde_json::to_string(&summary.found) {
+            Ok(found) => Some(found),
+            Err(e) => {
+                tracing::debug!(error = %e, "could not write down what the run found");
+                None
+            }
+        };
         if let Err(e) = self.shared.finish_automation_run(
             self.row,
             snob_core::clock::now(),
             outcome.as_str(),
             summary.spent,
             &said,
+            found.as_deref(),
         ) {
             tracing::debug!(error = %e, "could not write down what the run came to");
+        }
+    }
+}
+
+/// A thread writing down every `every` that the run `row` still goes, on a
+/// `shared.db` connection of its own, until its sender is dropped.
+fn beat(paths: &AppPaths, row: i64, every: Duration) -> Option<(mpsc::Sender<()>, JoinHandle<()>)> {
+    let paths = paths.clone();
+    let (stop, stopped) = mpsc::channel::<()>();
+    let beating = std::thread::Builder::new()
+        .name("run-beat".into())
+        .spawn(move || {
+            let shared = match Shared::open(&paths) {
+                Ok(shared) => shared,
+                Err(e) => {
+                    tracing::debug!(error = %e, "the run's beat could not open shared.db");
+                    return;
+                }
+            };
+            while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(every) {
+                if let Err(e) = shared.beat_automation_run(row, snob_core::clock::now()) {
+                    tracing::debug!(error = %e, "could not write down that the run still goes");
+                }
+            }
+        });
+    match beating {
+        Ok(beating) => Some((stop, beating)),
+        Err(e) => {
+            tracing::debug!(error = %e, "the run's beat could not start");
+            None
         }
     }
 }
@@ -117,16 +181,10 @@ async fn run_program(
     timing: RunTiming,
     in_use: Option<Pk>,
 ) -> RunSummary {
-    let refused = |e: anyhow::Error| RunSummary {
-        spent: 0,
-        code: snob_engine::exit::exit_code_for(&e),
-        said: vec![format!("{e:#}")],
-        failed: Some(e),
-    };
     let problems = automations::problems(paths, automation);
     if !problems.is_empty() {
         let said: Vec<String> = problems.iter().map(ToString::to_string).collect();
-        return refused(
+        return cannot_run(
             ExitError::new(
                 ExitCode::Error,
                 format!(
@@ -140,7 +198,7 @@ async fn run_program(
     }
     let delivery = match delivery_of(automation.webhook()) {
         Ok(delivery) => delivery,
-        Err(e) => return refused(e),
+        Err(e) => return failed(e),
     };
     let reads = automation.reads_when(started);
     let monitor = |delivered: bool| -> Vec<Planned> {
@@ -156,6 +214,7 @@ async fn run_program(
         code: ExitCode::Ok,
         failed: None,
         said: Vec::new(),
+        found: Vec::new(),
     };
     for (delivered, to) in [(true, delivery.as_ref()), (false, None)] {
         let watched = automations::watched(&monitor(delivered), in_use);
@@ -163,7 +222,7 @@ async fn run_program(
             continue;
         }
         if let Err(e) = super::posts::refuse_what_cannot_be_saved(&watched) {
-            fold(&mut summary, refused(e));
+            fold(&mut summary, failed(e));
             continue;
         }
         let ran = run_viewers(
@@ -216,6 +275,7 @@ fn fold(into: &mut RunSummary, part: RunSummary) {
     }
     into.failed = part.failed;
     into.said.extend(part.said);
+    into.found.extend(part.found);
 }
 
 /// The actions the monitor does not read, each as the viewer it names.
@@ -235,6 +295,7 @@ async fn read_others(
         code: ExitCode::Ok,
         failed: None,
         said: Vec::new(),
+        found: Vec::new(),
     };
     let mut viewers: Vec<Option<Pk>> = Vec::new();
     for read in reads {
@@ -306,10 +367,21 @@ async fn read_others(
 }
 
 fn failed(e: anyhow::Error) -> RunSummary {
+    let found = said::failed(&e);
+    refusal(e, found)
+}
+
+/// A run its steps keep from running.
+fn cannot_run(e: anyhow::Error) -> RunSummary {
+    refusal(e, Said::CannotRun)
+}
+
+fn refusal(e: anyhow::Error, found: Said) -> RunSummary {
     RunSummary {
         spent: 0,
         code: snob_engine::exit::exit_code_for(&e),
         said: vec![format!("{e:#}")],
+        found: vec![found],
         failed: Some(e),
     }
 }
@@ -354,6 +426,7 @@ async fn read_one(
         code: ExitCode::Ok,
         failed: None,
         said: lines,
+        found: vec![said::of_found(&found)],
     }
 }
 
@@ -427,4 +500,65 @@ pub(super) fn named(paths: &AppPaths, id: &str) -> Result<Automation> {
         )
         .into()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn alive_at(paths: &AppPaths, row: i64) -> i64 {
+        Shared::open(paths)
+            .unwrap()
+            .conn()
+            .query_row(
+                "SELECT alive_at FROM automation_runs WHERE id = ?1",
+                [row],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn the_heartbeat_stops_when_the_run_is_written_down() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::rooted_at(tmp.path());
+        let recorded = Recorded::beating_every(
+            &paths,
+            "abcd1234",
+            Epoch::new(1_000),
+            Duration::from_millis(10),
+        )
+        .unwrap();
+        let row = recorded.row;
+        let started = std::time::Instant::now();
+        while alive_at(&paths, row) == 1_000 {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the run never beat"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        recorded.finish(&RunSummary {
+            spent: 2,
+            code: ExitCode::Ok,
+            failed: None,
+            said: vec!["Your fans: 1 account.".into()],
+            found: vec![Said::CannotRun],
+        });
+        let now = snob_core::clock::now();
+        let runs = automations::runs(&paths, "abcd1234", 1, now).unwrap();
+        assert!(!runs[0].running && runs[0].ended_at.is_some());
+        assert_eq!(
+            runs[0].found.as_deref().and_then(said::read),
+            Some(vec![Said::CannotRun])
+        );
+        let last = alive_at(&paths, row);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            alive_at(&paths, row),
+            last,
+            "no beat once it is written down"
+        );
+    }
 }

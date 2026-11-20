@@ -1305,7 +1305,8 @@ impl Backend for Engine {
     fn automation_runs(&self, id: String) -> Answer<Vec<Run>> {
         let paths = self.paths.clone();
         self.runtime.run(move || async move {
-            snob_engine::automations::runs(&paths, &id, 50).unwrap_or_default()
+            snob_engine::automations::runs(&paths, &id, 50, snob_core::clock::now())
+                .unwrap_or_default()
         })
     }
 

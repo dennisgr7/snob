@@ -1880,7 +1880,7 @@ pub enum WatchCommand {
     Unit(WatchUnitArgs),
 
     /// Every automation: when it runs, what keeps it from running, when it
-    /// runs next, and how its newest runs went
+    /// runs next, how its newest runs went, and whether one is still going
     #[command(
         after_help = "watch.toml's, named \"watch\", and each one made in the app. Reads what is \
                       kept on this computer and sends nothing to Instagram."

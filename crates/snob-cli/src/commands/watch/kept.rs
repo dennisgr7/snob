@@ -1,6 +1,7 @@
 //! `snob watch automations` and `snob watch start`: every automation, its
 //! schedules, what keeps it from running, when it runs next and how its
-//! newest runs went; and a run of one started now, apart from the command
+//! newest runs went, whether one is still going and what each found as data
+//! (`automations::said`); and a run of one started now, apart from the command
 //! (`snob_engine::automations::run_now`). **Neither sends anything to
 //! Instagram**: the run started does, under every rule a run by hand keeps.
 
@@ -9,7 +10,7 @@ use serde_json::{Value, json};
 use snob_core::Epoch;
 use snob_core::model::printable;
 use snob_core::watch::schedule::Spec;
-use snob_engine::automations::{self, Next, automation::Automation};
+use snob_engine::automations::{self, Next, automation::Automation, said};
 use snob_engine::exit::{ExitCode, ExitError};
 use snob_store::paths::{AccountPaths, AppPaths};
 
@@ -115,7 +116,7 @@ impl Listed {
             schedules: automation.schedules().into_iter().map(shown).collect(),
             problems,
             next,
-            runs: automations::runs(paths, &automation.id, NEWEST_RUNS)?,
+            runs: automations::runs(paths, &automation.id, NEWEST_RUNS, now)?,
         })
     }
 
@@ -138,6 +139,8 @@ impl Listed {
                 "outcome": run.outcome.as_deref().map(printable),
                 "requests": run.requests,
                 "summary": printable(&run.summary),
+                "running": run.running,
+                "found": run.found.as_deref().and_then(said::read),
             })).collect::<Vec<_>>(),
         })
     }
@@ -171,12 +174,14 @@ impl Listed {
                 .map(|problem| format!("  Cannot run: {problem}.")),
         );
         if let Some(run) = self.runs.first() {
+            let how = match (run.running, run.outcome.as_deref()) {
+                (true, _) => "still running".to_string(),
+                (false, Some(outcome)) => printable(outcome),
+                (false, None) => "did not finish".to_string(),
+            };
             lines.push(format!(
-                "  Last run: {}, {}.",
+                "  Last run: {}, {how}.",
                 snob_engine::sentences::stored_on(run.started_at),
-                run.outcome
-                    .as_deref()
-                    .map_or("still running", |outcome| outcome)
             ));
         }
         lines
@@ -209,6 +214,54 @@ mod tests {
             next: Next::ByHand,
             runs: Vec::new(),
         }
+    }
+
+    fn run(running: bool, outcome: Option<&str>) -> snob_store::store::shared::AutomationRun {
+        snob_store::store::shared::AutomationRun {
+            id: 1,
+            automation: "watch".into(),
+            started_at: Epoch::new(1_000),
+            ended_at: outcome.map(|_| Epoch::new(1_060)),
+            outcome: outcome.map(str::to_string),
+            requests: 3,
+            summary: String::new(),
+            running,
+            found: None,
+        }
+    }
+
+    #[test]
+    fn a_run_that_went_quiet_is_listed_as_unfinished_not_running() {
+        let last_run = |run| {
+            let mut listed = listed(Vec::new());
+            listed.runs = vec![run];
+            listed.lines().pop().unwrap()
+        };
+        assert!(last_run(run(true, None)).ends_with(", still running."));
+        assert!(last_run(run(false, None)).ends_with(", did not finish."));
+        assert!(last_run(run(false, Some("rate_limited"))).ends_with(", rate_limited."));
+
+        let mut listed = listed(Vec::new());
+        listed.runs = vec![run(false, None)];
+        let json = listed.json();
+        assert_eq!(json["runs"][0]["running"], false);
+        assert!(json["runs"][0]["found"].is_null());
+    }
+
+    #[test]
+    fn what_a_run_found_is_listed_as_data_and_a_kind_unknown_as_null() {
+        let found = |found: &str| {
+            let mut listed = listed(Vec::new());
+            let mut run = run(false, Some("ok"));
+            run.found = Some(found.to_string());
+            listed.runs = vec![run];
+            listed.json()["runs"][0]["found"].clone()
+        };
+        let known = found(r#"[{"kind":"cannot_run"},{"kind":"failed","code":"error"}]"#);
+        assert_eq!(known[0]["kind"], "cannot_run");
+        assert_eq!(known[1]["kind"], "failed");
+        assert_eq!(known[1]["code"], "error");
+        assert!(found(r#"[{"kind":"from_a_newer_snob"}]"#).is_null());
     }
 
     #[test]

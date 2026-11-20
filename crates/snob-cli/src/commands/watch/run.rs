@@ -10,6 +10,7 @@ use anyhow::Result;
 use snob_core::model::printable;
 use snob_core::{Epoch, Pk};
 use snob_engine::app::{App, Viewer};
+use snob_engine::automations::said::{self, Said};
 use snob_engine::exit::{ExitCode, ExitError};
 use snob_engine::watch::{RunTiming, TickReport, Watched, group_by_viewer};
 use snob_ig::pace::CancelToken;
@@ -360,6 +361,8 @@ pub(super) struct RunSummary {
     /// What each account's tick found and each failure, as a person reads
     /// them: an automation's history keeps them.
     pub(super) said: Vec<String>,
+    /// The same as data, which the history keeps beside them.
+    pub(super) found: Vec<Said>,
 }
 
 impl RunSummary {
@@ -380,6 +383,7 @@ struct Tally {
     /// name: several are opened in one run, so the one acting last is not it.
     failures: Vec<(Option<Viewer>, anyhow::Error)>,
     said: Vec<String>,
+    found: Vec<Said>,
 }
 
 impl Default for Tally {
@@ -389,6 +393,7 @@ impl Default for Tally {
             code: ExitCode::Ok,
             failures: Vec::new(),
             said: Vec::new(),
+            found: Vec::new(),
         }
     }
 }
@@ -399,6 +404,8 @@ impl Tally {
     fn summary(mut self, printing: Printing) -> RunSummary {
         self.said
             .extend(self.failures.iter().map(|(_, e)| format!("{e:#}")));
+        self.found
+            .extend(self.failures.iter().map(|(_, e)| said::failed(e)));
         let (print_here, failed) = to_print_and_to_return(self.failures);
         for (viewer, earlier) in print_here {
             report::print_error_as(&earlier, printing.wording(), viewer.as_ref());
@@ -412,6 +419,7 @@ impl Tally {
             code: self.code,
             failed,
             said: self.said,
+            found: self.found,
         }
     }
 }
@@ -455,6 +463,7 @@ async fn run_accounts(
             Ok(tick) => {
                 tally.code = first_reason(tally.code, tick.outcome());
                 tally.said.extend(describe_tick(&tick));
+                tally.found.push(said::of_tick(&tick));
             }
             Err(e) => {
                 // A tick that failed is still a tick that happened, and the run

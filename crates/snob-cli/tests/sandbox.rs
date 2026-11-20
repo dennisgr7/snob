@@ -11786,7 +11786,8 @@ async fn an_automation_run_by_hand_is_never_due_and_runs_when_asked() {
         &["watch", "once", "--automation", "abcd5678", "--when-due"],
     );
     assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
-    let runs = snob_engine::automations::runs(&paths, "abcd5678", 10).unwrap();
+    let runs =
+        snob_engine::automations::runs(&paths, "abcd5678", 10, snob_core::clock::now()).unwrap();
     assert!(runs.is_empty(), "a timer never runs it");
 
     let out = snob(
@@ -11800,7 +11801,8 @@ async fn an_automation_run_by_hand_is_never_due_and_runs_when_asked() {
         "{}",
         stdout(&out)
     );
-    let runs = snob_engine::automations::runs(&paths, "abcd5678", 10).unwrap();
+    let runs =
+        snob_engine::automations::runs(&paths, "abcd5678", 10, snob_core::clock::now()).unwrap();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].outcome.as_deref(), Some("ok"));
 }
@@ -11867,10 +11869,37 @@ async fn an_automation_made_in_the_app_runs_reports_and_is_remembered() {
     assert_eq!(event, Some("automation.found"));
     assert!(String::from_utf8_lossy(&sent[0].body).contains("@user2"));
 
-    let runs = snob_engine::automations::runs(&paths, "abcd1234", 10).unwrap();
+    let runs =
+        snob_engine::automations::runs(&paths, "abcd1234", 10, snob_core::clock::now()).unwrap();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].outcome.as_deref(), Some("ok"));
+    assert!(!runs[0].running, "a run that ended is not going");
     assert!(runs[0].summary.contains("Your fans"), "{}", runs[0].summary);
+    let found = runs[0]
+        .found
+        .as_deref()
+        .and_then(snob_engine::automations::said::read)
+        .expect("what it found is kept as data");
+    assert!(
+        matches!(
+            found.as_slice(),
+            [snob_engine::automations::said::Said::Found { what, count: 1, .. }] if what == "fans"
+        ),
+        "{found:?}"
+    );
+
+    let out = snob(tmp.path(), None, &["watch", "automations", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let said = json(&out);
+    let listed = said["automations"]
+        .as_array()
+        .and_then(|listed| listed.iter().find(|one| one["id"] == "abcd1234"))
+        .unwrap_or_else(|| panic!("{said}"));
+    let run = &listed["runs"][0];
+    assert_eq!(run["running"], false, "{said}");
+    assert_eq!(run["found"][0]["kind"], "found", "{said}");
+    assert_eq!(run["found"][0]["what"], "fans", "{said}");
+    assert_eq!(run["found"][0]["count"], 1, "{said}");
 
     let out = snob(
         tmp.path(),

@@ -1150,7 +1150,7 @@ Nothing changed.",
             .record_automation_run("00000a01", Epoch::new(at))
             .map_err(|e| anyhow!("a run was not written down: {e}"))?;
         shared
-            .finish_automation_run(id, Epoch::new(at + 95), outcome, requests, summary)
+            .finish_automation_run(id, Epoch::new(at + 95), outcome, requests, summary, None)
             .map_err(|e| anyhow!("a run was not finished: {e}"))?;
     }
     Ok(())

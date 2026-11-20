@@ -341,9 +341,11 @@ pub fn specs(offer: Offer<'_>) -> Vec<Spec> {
                           days, cron, jitter), what keeps it from running (problems; empty \
                           when it can run), when \
                           it runs next (next.when: now, at the epoch seconds in next.at, \
-                          by_hand, or never), and its newest runs with their outcome, the \
-                          requests they spent and what they found. Sends nothing. Setting one \
-                          up or changing it is the person's, in the app or in watch.toml.",
+                          by_hand, or never), and its newest runs: whether each is still \
+                          running (running), their outcome (none while running or when \
+                          killed), the requests they spent, and what they found, in sentences \
+                          (summary) and as data (found). Sends nothing. Setting one up or \
+                          changing it is the person's, in the app or in watch.toml.",
             input: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
             read_only: true,
             destructive: false,

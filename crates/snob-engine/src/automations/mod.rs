@@ -13,9 +13,11 @@
 //!   ([`run_now`], which starts `snob watch once --automation <id>`), the
 //!   only way one with a manual trigger alone runs ([`Next::ByHand`]). A run
 //!   counts from its start, written down before its work
-//!   (`Shared::record_automation_run`).
+//!   (`Shared::record_automation_run`), and keeps what it found as data
+//!   beside its sentences ([`said`]).
 
 pub mod read;
+pub mod said;
 
 use std::ffi::OsString;
 
@@ -141,10 +143,12 @@ pub fn new_id(paths: &AppPaths) -> String {
     }
 }
 
-/// The newest `limit` runs of the automation `id`, the newest first.
-pub fn runs(paths: &AppPaths, id: &str, limit: usize) -> Result<Vec<AutomationRun>> {
+/// The newest `limit` runs of the automation `id`, the newest first, as they
+/// stand at `now`: whether each is still going is told from its last sign of
+/// life ([`AutomationRun::running`]).
+pub fn runs(paths: &AppPaths, id: &str, limit: usize, now: Epoch) -> Result<Vec<AutomationRun>> {
     match Shared::read_existing(paths)? {
-        Some(shared) => Ok(shared.automation_runs(id, limit)?),
+        Some(shared) => Ok(shared.automation_runs(id, limit, now)?),
         None => Ok(Vec::new()),
     }
 }

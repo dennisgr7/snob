@@ -216,8 +216,8 @@ is VP9, which QuickTime does not play; `--quality compat` saves the app's
   profile and a page of its grid, at most once an hour.
 - `snob watch automations` lists every automation, `watch.toml`'s as `watch`
   and each one made in the app: when it runs, what keeps it from running, its
-  next run and how its newest runs went. `snob watch start <id>` starts a run
-  of one now, in the background.
+  next run and how its newest runs went, and whether one is still going.
+  `snob watch start <id>` starts a run of one now, in the background.
 - `snob watch --days 1,15 --at 09:00`, or `--days "first mon"`, runs on days
   of the month, and `--months jan,jul` only in those months (`days` and
   `months` in `watch.toml`).

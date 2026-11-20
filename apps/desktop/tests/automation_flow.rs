@@ -68,6 +68,8 @@ fn run_of(automation: &str, at: i64, outcome: Option<&str>) -> Run {
         outcome: outcome.map(str::to_string),
         requests: 12,
         summary: "Read 120 followers.\nNobody left.".to_string(),
+        running: false,
+        found: None,
     }
 }
 
