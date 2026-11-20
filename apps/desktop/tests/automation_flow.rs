@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use common::{App, disabled, open_with};
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{Role, TestAppContext};
+use gpui_kit::{Role, TestAppContext, px};
 use snob_core::Epoch;
 use snob_core::automation::{Account, Automation, Read, Step};
 use snob_core::watch::schedule::Spec;
@@ -20,6 +20,7 @@ use snob_desktop::backend::scripted::{Asked, Scripted, account};
 use snob_desktop::backend::{Next, Run};
 use snob_desktop::state::flow::Screen;
 use snob_desktop::system::Settings;
+use snob_desktop::theme::tokens::shape::FOCUS_ROOM;
 
 fn still() -> Settings {
     Settings {
@@ -298,6 +299,39 @@ async fn the_schedule_dialog_says_the_engines_reason_as_it_is_typed_and_saves_wh
         Step::Schedule { when: every("6h") }
     );
     assert!(!shown(&app, cx, "step-dialog"));
+}
+
+#[gpui_kit::test]
+async fn a_dialogs_focused_field_has_room_for_its_ring_on_every_side_and_stays_in_its_place(
+    cx: &mut TestAppContext,
+) {
+    let backend = scripted(vec![daily()]);
+    let app = in_editor(cx, backend).await;
+    app.in_window(cx, |window, cx| window.right_click(("node", 1usize), cx));
+    app.click(cx, "node-menu-configure");
+    settle(&app, cx);
+    app.in_window(cx, |window, _| {
+        let field = window.find("schedule-every");
+        assert_eq!(field.focused(), Some(true));
+        let field = field.bounds();
+        let card = window.find("step-dialog").bounds();
+        let clip = window.find(("step-dialog", 2usize)).bounds();
+        let room = px(FOCUS_ROOM);
+
+        // Where it was before the room: inside the card's outline and its
+        // padding of 24 at the default text size.
+        assert_eq!(field.left() - card.left(), px(1. + 24.));
+        assert_eq!(card.right() - field.right(), px(1. + 24.));
+
+        // What clips the dialog's body leaves the ring its reach.
+        assert_eq!(field.left() - clip.left(), room);
+        assert_eq!(clip.right() - field.right(), room);
+        assert!(field.top() - clip.top() >= room, "{field:?} in {clip:?}");
+        assert!(
+            clip.bottom() - field.bottom() >= room,
+            "{field:?} in {clip:?}"
+        );
+    });
 }
 
 #[gpui_kit::test]

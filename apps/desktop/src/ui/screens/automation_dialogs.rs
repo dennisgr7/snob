@@ -241,9 +241,10 @@ fn modal(
                 .text_color(color(palette.text))
                 .child(title.clone()),
         )
-        .child(
+        .child(parts::room_for_focus(
             div()
                 .id((id, 2usize))
+                .test_support()
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
@@ -251,7 +252,7 @@ fn modal(
                 .flex_col()
                 .gap(sp(12.))
                 .children(body),
-        )
+        ))
         .child(
             div()
                 .flex_none()

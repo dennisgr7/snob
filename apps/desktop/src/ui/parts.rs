@@ -66,6 +66,24 @@ pub fn focus_ring(palette: &Palette) -> impl Fn(StyleRefinement) -> StyleRefinem
     }
 }
 
+/// Room for a focus ring inside a box that clips what it holds: padding of
+/// [`shape::FOCUS_ROOM`] on every side, given back as a negative margin, so
+/// nothing in it moves and only the edge it clips at goes out, which leaves
+/// the ring of a control at that edge whole. **For a box sized by its
+/// parent's flex or by what it holds, with no padding of its own**: a
+/// fixed or full size would lose the padding inside it.
+pub fn room_for_focus<E: Styled>(e: E) -> E {
+    room_above_and_below_for_focus(e)
+        .px(px(shape::FOCUS_ROOM))
+        .mx(px(-shape::FOCUS_ROOM))
+}
+
+/// [`room_for_focus`] above and below only, for a box already padded at its
+/// sides by at least as much.
+pub fn room_above_and_below_for_focus<E: Styled>(e: E) -> E {
+    e.py(px(shape::FOCUS_ROOM)).my(px(-shape::FOCUS_ROOM))
+}
+
 /// What a control that shows no words says when the pointer rests on it:
 /// its own name. **One per control**: GPUI refuses a second, so a control
 /// built here with its tip is never given another.

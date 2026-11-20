@@ -206,6 +206,10 @@ pub mod shape {
     /// The focus ring: the pink contour, and the contour inside it.
     pub const FOCUS_RING: f32 = 3.0;
     pub const FOCUS_INNER: f32 = 1.0;
+    /// At least as far as a focus ring reaches outside its control (ours by
+    /// 4 px, the toolkit's field's band by 3), which whatever clips a
+    /// control leaves it.
+    pub const FOCUS_ROOM: f32 = FOCUS_INNER + FOCUS_RING;
     /// The least a target measures on either side (WCAG 2.5.8).
     pub const MIN_TARGET: f32 = 24.0;
     /// What a main button measures at least.

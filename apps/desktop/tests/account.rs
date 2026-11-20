@@ -8,7 +8,7 @@ mod common;
 
 use std::time::{Duration, UNIX_EPOCH};
 
-use common::{App, disabled, focused, open};
+use common::{App, disabled, focused, open, open_with};
 use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{
     AppContext as _, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
@@ -24,6 +24,7 @@ use snob_desktop::state::status::Status;
 use snob_desktop::system::{Event, Notice, Settings};
 use snob_desktop::theme::motion::PICTURE_ARRIVES;
 use snob_desktop::theme::tokens::Scheme;
+use snob_desktop::theme::tokens::shape::FOCUS_ROOM;
 use snob_desktop::ui::look::Look;
 use snob_engine::storage::Kind;
 
@@ -1016,6 +1017,40 @@ async fn the_palette_lists_what_the_screen_can_do_and_finds_it_by_typing(cx: &mu
     assert!(shown(&app, cx, "palette-empty"));
     app.press(cx, "enter");
     assert!(shown(&app, cx, "palette"), "there is nothing to do");
+}
+
+#[gpui_kit::test]
+async fn the_palette_shows_six_rows_and_a_half_at_any_text_size_with_room_for_a_rows_ring(
+    cx: &mut TestAppContext,
+) {
+    for text_scale in [1.0, 2.0] {
+        let settings = Settings {
+            text_scale,
+            ..Settings::default()
+        };
+        let app = open_with(cx, two_accounts(), settings);
+        app.until_screen(cx, |screen| *screen == Screen::Home).await;
+        app.press(cx, "ctrl-k");
+        app.in_window(cx, |window, _| {
+            let list = window.find("palette-commands").bounds();
+            let first = window.find(("palette-command", 0usize)).bounds();
+            let room = px(FOCUS_ROOM);
+            assert_eq!(
+                list.size.height - room * 2.,
+                px(44. * 6.5 * text_scale),
+                "at {text_scale}"
+            );
+            // Rows are measured in the window's text size, the list in pixels.
+            assert_eq!(
+                first.size.height * 6.5,
+                list.size.height - room * 2.,
+                "at {text_scale}"
+            );
+            assert_eq!(first.left() - list.left(), room, "at {text_scale}");
+            assert_eq!(list.right() - first.right(), room, "at {text_scale}");
+            assert_eq!(first.top() - list.top(), room, "at {text_scale}");
+        });
+    }
 }
 
 #[gpui_kit::test]

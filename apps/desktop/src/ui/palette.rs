@@ -132,7 +132,7 @@ pub fn render(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<An
                 .aria_label(look.tr("palette-placeholder"))
                 .large(),
         )
-        .child(
+        .child(parts::room_for_focus(
             div()
                 .id("palette-commands")
                 .test_support()
@@ -140,10 +140,14 @@ pub fn render(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<An
                 .aria_label(title)
                 .flex()
                 .flex_col()
-                .max_h(sp(ROW * 6.5))
+                // Six rows and a half, and the room each side keeps for
+                // a row's focus ring.
+                .max_h(px(
+                    ROW * 6.5 * look.settings.text_scale() + 2.0 * shape::FOCUS_ROOM
+                ))
                 .overflow_y_scroll()
                 .children(rows),
-        )
+        ))
         .when(listed.is_empty(), |inside| {
             // Said to a screen reader too: the list just went empty.
             inside.child(

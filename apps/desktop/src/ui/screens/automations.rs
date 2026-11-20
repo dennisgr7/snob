@@ -350,7 +350,7 @@ fn list(shell: &mut Shell, phase: Phase, look: &Look, cx: &mut Context<Shell>) -
             }))
             .into_any_element()
     } else {
-        div()
+        let list = div()
             .id("automations-list")
             .test_support()
             .role(Role::List)
@@ -390,8 +390,8 @@ fn list(shell: &mut Shell, phase: Phase, look: &Look, cx: &mut Context<Shell>) -
                                 shell.open_an_automation(id.clone(), window, cx);
                             }))
                     }),
-            )
-            .into_any_element()
+            );
+        parts::room_above_and_below_for_focus(list).into_any_element()
     };
 
     div()
