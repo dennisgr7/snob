@@ -1,11 +1,9 @@
 //! `snob scan`: the whole-account summary.
 
-use std::collections::HashSet;
-
 use anyhow::Result;
+use snob_core::Epoch;
 use snob_core::filters::Filter;
 use snob_core::model::{ListKind, User, printable};
-use snob_core::{Epoch, Pk};
 use snob_engine::app::{App, Viewer};
 use snob_engine::engine::{self, ListOutcome, people};
 use snob_engine::exit::ExitCode;
@@ -166,20 +164,19 @@ async fn scan(app: &mut App, query: engine::ListQuery) -> Result<Scanned> {
     // in, and so an incomplete list is found out before the second walk is
     // spent.
     let subject = engine::target::label(app, typed.as_deref());
-    let (followers, followers_outcome) =
-        common::walk_named(app, &query, ListKind::Followers, &subject, |outcome| {
-            common::require_complete(ListKind::Followers, outcome, NOT_THERE)
-        })
-        .await?;
-
-    let second = common::walk_named(app, &query, ListKind::Following, &subject, |outcome| {
-        common::require_complete(ListKind::Following, outcome, NOT_THERE)
+    let scanned = engine::cross::scan(app, &query, async |app, query, kind| {
+        common::walk_named(app, query, kind, &subject, |_| Ok(())).await
     })
     .await;
     app.progress().finish();
-    let (following, following_outcome) = second?;
-    engine::cooldown::check_same_moment_dated(&followers_outcome, &following_outcome, || {
-        app.held().ok().flatten().map(|held| held.until_ms)
+    let engine::cross::Scanned {
+        followers,
+        following,
+        followers_outcome,
+        following_outcome,
+    } = scanned.map_err(|e| match e.downcast::<engine::cross::Incomplete>() {
+        Ok(short) => common::require_complete(short.kind, &short.outcome, NOT_THERE).unwrap_err(),
+        Err(other) => other,
     })?;
     let name = common::walked_name(app, typed.as_deref(), followers_outcome.account_pk)?;
     Ok(Scanned {
@@ -290,25 +287,16 @@ const NOT_THERE: &str = "they were not there at all";
 /// first, then filter — so each derived count is exactly what the matching
 /// command prints with the same flags.
 fn summarize(followers: &[User], following: &[User], filter: &Filter) -> ScanCounts {
-    let in_following: HashSet<Pk> = following.iter().map(|u| u.pk).collect();
-    let in_followers: HashSet<Pk> = followers.iter().map(|u| u.pk).collect();
-
-    let friends = followers
-        .iter()
-        .filter(|u| in_following.contains(&u.pk) && filter.allows(u))
-        .count();
-    let fans = followers
-        .iter()
-        .filter(|u| !in_following.contains(&u.pk) && filter.allows(u))
-        .count();
-    let unfollowers = following
-        .iter()
-        .filter(|u| !in_followers.contains(&u.pk) && filter.allows(u))
-        .count();
-
+    let engine::cross::Counts {
+        followers,
+        following,
+        friends,
+        fans,
+        unfollowers,
+    } = engine::cross::counts(followers, following, |u| filter.allows(u));
     ScanCounts {
-        followers: fans + friends,
-        following: unfollowers + friends,
+        followers,
+        following,
         friends,
         fans,
         unfollowers,
@@ -553,6 +541,7 @@ fn source_token(outcome: &ListOutcome) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snob_core::Pk;
     use snob_core::filters::Attribute;
     use snob_core::model::StopReason;
     // `summarize` counts instead of collecting; a test checks it against the

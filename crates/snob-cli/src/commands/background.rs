@@ -95,6 +95,9 @@ fn job_command(command: &str, args: &ListArgs) -> Vec<String> {
     if let Some(pages) = args.walk.max_pages {
         line.push(format!("--max-pages={pages}"));
     }
+    if args.walk.same_day {
+        line.push("--same-day".into());
+    }
     line
 }
 
@@ -121,11 +124,19 @@ mod tests {
             "--refresh",
             "--limit",
             "5",
+            "--same-day",
         ]);
         let line = job_command("followers", &args);
         assert_eq!(
             line,
-            ["followers", "someone", "-y", "--refresh", "--limit=5"]
+            [
+                "followers",
+                "someone",
+                "-y",
+                "--refresh",
+                "--limit=5",
+                "--same-day"
+            ]
         );
         assert!(crate::jobs::argv::check(&line).is_ok());
     }

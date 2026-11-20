@@ -3,7 +3,7 @@
 use anyhow::Result;
 use snob_core::filters::Filter;
 use snob_core::model::{ListKind, User};
-use snob_core::sets;
+use snob_core::sets::Crossing;
 use snob_engine::app::{App, Viewer};
 use snob_engine::engine::{self, ListOutcome};
 use snob_engine::exit::ExitCode;
@@ -54,20 +54,23 @@ impl SetOp {
         }
     }
 
+    /// The crossing it reads (`snob_engine::engine::cross`).
+    fn crossing(self) -> Crossing {
+        match self {
+            Self::Unfollowers => Crossing::Unfollowers,
+            Self::Fans => Crossing::Fans,
+            Self::Friends => Crossing::Friends,
+        }
+    }
+
     /// The list the results come out of.
     fn base(self) -> ListKind {
-        match self {
-            Self::Unfollowers => ListKind::Following,
-            Self::Fans | Self::Friends => ListKind::Followers,
-        }
+        self.crossing().base()
     }
 
     /// The list it is crossed against.
     fn against(self) -> ListKind {
-        match self {
-            Self::Unfollowers => ListKind::Followers,
-            Self::Fans | Self::Friends => ListKind::Following,
-        }
+        self.crossing().against()
     }
 
     /// What an account missing from the crossed-against list would be made to
@@ -162,34 +165,29 @@ async fn cross(
     filter: &Filter,
     limit: Option<usize>,
 ) -> Result<Crossed> {
-    // The list being crossed against comes first.
     let subject = engine::target::label(app, query.target.as_deref());
     let typed = query.target.clone();
-    // This is where the two lists differ in a way that matters. If the list
-    // being crossed against is incomplete, every account missing from it
-    // **shows up in the result without deserving to**: in `unfollowers`,
-    // someone who does follow you but was never read out of your followers
-    // would be presented as not following you.
-    let (against, against_outcome) =
-        common::walk_named(app, &query, op.against(), &subject, |outcome| {
-            op.require_against_complete(outcome)
-        })
-        .await?;
-
-    // The second walk renames the bar: a crossing is two lists, and without
-    // this the slower half looked exactly like the first.
-    let second = common::walk_named(app, &query, op.base(), &subject, |_| Ok(())).await;
+    // The list crossed against comes first, and only a whole one is crossed
+    // (`engine::cross`). The second walk renames the bar: a crossing is two
+    // lists, and without this the slower half looked exactly like the first.
+    let crossed = engine::cross::cross(app, &query, op.crossing(), async |app, query, kind| {
+        common::walk_named(app, query, kind, &subject, |_| Ok(())).await
+    })
+    .await;
     app.progress().finish();
-    let (base, base_outcome) = second?;
-
-    engine::cooldown::check_same_moment_dated(&against_outcome, &base_outcome, || {
-        app.held().ok().flatten().map(|held| held.until_ms)
+    let engine::cross::Crossed {
+        result,
+        base_len,
+        against_len,
+        base_outcome,
+        against_outcome,
+    } = crossed.map_err(|e| match e.downcast::<engine::cross::Incomplete>() {
+        Ok(incomplete) => op
+            .require_against_complete(&incomplete.outcome)
+            .unwrap_err(),
+        Err(other) => other,
     })?;
 
-    let result = match op {
-        SetOp::Unfollowers | SetOp::Fans => sets::difference(&base, &against),
-        SetOp::Friends => sets::intersection(&base, &against),
-    };
     let common::Narrowed {
         shown: result,
         kept,
@@ -200,8 +198,8 @@ async fn cross(
         result,
         kept,
         total,
-        base_len: base.len(),
-        against_len: against.len(),
+        base_len,
+        against_len,
         base_outcome,
         against_outcome,
         subject,

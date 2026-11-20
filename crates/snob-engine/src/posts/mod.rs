@@ -47,7 +47,7 @@ pub use grid::{
     Fetched, Grid, GridRead, UNTIL_PAGES, fetch_grid, first_page, more, reached, read_grid,
     read_pages, read_tab,
 };
-pub use likers::{LIKERS_AT_MOST, likers};
+pub use likers::{LIKERS_AT_MOST, likers, refuse_short_day};
 pub use save::{Kept, Opened, Videos, fetched_item, files_of, keep_item, keep_post, save_telling};
 
 /// Ceiling on one downloaded file of a post: 128 MiB.

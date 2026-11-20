@@ -214,6 +214,10 @@ is VP9, which QuickTime does not play; `--quality compat` saves the app's
   there (`lists = false` leaves its followers alone, which asks no consent).
   The first run on an account's posts reports none; each run after costs its
   profile and a page of its grid, at most once an hour.
+- `snob watch automations` lists every automation, `watch.toml`'s as `watch`
+  and each one made in the app: what keeps it from running, its next run and
+  how its newest runs went. `snob watch start <id>` starts a run of one now,
+  in the background.
 - `snob watch unit` prints what to give the system's scheduler (a systemd
   timer, a crontab line, a launch agent or a Windows scheduled task, as
   PowerShell commands; installs nothing). Each runs `snob watch once
@@ -364,6 +368,9 @@ It prints what to add to that client's configuration.
 | `snob_stories_download`, `snob_highlights_download` | save the stories an account has up, or what one highlight holds, with `--downloads-dir` | no |
 | `snob_logout` | sign one account out of snob | yes, naming the account |
 | `snob_accounts` | the accounts signed in here, with `--any-account` | no |
+| `snob_account_use`, `snob_logout_all`, `snob_purge` | change the active account, sign every account out, or delete what snob keeps (one account's or everything), with `--any-account` | yes |
+| `snob_automations` | the automations: what keeps each from running, its next run and its newest runs | no |
+| `snob_automation_run` | start a run of one automation now | yes |
 
 - Posts, stories and highlights come back without their picture and video
   addresses; an agent that asks is handed a small picture of each to look at, a
@@ -373,13 +380,16 @@ It prints what to add to that client's configuration.
   one bounded answer that says what it left out.
 
 > [!IMPORTANT]
-> An agent never signs in: that stays yours. It never purges, never runs the
-> monitor, and never writes a file anywhere but in `--downloads-dir`.
+> An agent never signs in: that stays yours. It never updates snob, never sets
+> up or changes an automation, and never writes a file anywhere but in
+> `--downloads-dir`.
 
 ### Writes and your yes
 
-A follow or an unfollow, signing out, walking another account's lists and
-reading who liked a post run only after a yes for that one call:
+A follow or an unfollow, signing out, changing the accounts signed in here,
+walking another account's lists, reading past the day's budget of accounts,
+reading who liked a post and starting an automation's run happen only after a
+yes for that one call:
 
 - asked in the client, when it can show a form, or
 - put to you by the agent in the chat. `--confirm-in-chat none|lists|all` says
@@ -425,8 +435,12 @@ written over.
 
 The server acts as the active account, or the one `--account` names.
 `--any-account` lets the agent see the accounts signed in here and say, call by
-call, which one it acts as. It can sign one account out of snob after a yes
-that names it, and never signs in.
+call, which one it acts as; after a yes for that one call, it can also change
+the active account, sign every account out, or delete what snob keeps. It can
+sign one account out of snob after a yes that names it, and never signs in.
+
+`snob_list` and `snob_scan` take `same_day`, `--same-day`'s reading past the
+day's budget of accounts, and always ask you first.
 
 ### What agents did
 

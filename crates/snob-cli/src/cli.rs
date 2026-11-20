@@ -371,12 +371,14 @@ macro_rules! mcp_after_help {
                       asked in the client when it can show a form, or else put to you by the \
                       agent in the chat (--confirm-in-chat narrows what that may cover). \
                       snob cannot tell who gave the yes, so keep the writes on \"ask\" in the \
-                      client's permissions. Never login, purge or the monitor, and never \
-                      a file anywhere but in --downloads-dir. It acts as the active \
-                      account, or the one --account names; --any-account lets the agent see \
-                      the accounts signed in here and say which one a call acts as. It can \
-                      sign an account out of snob, after a yes that names it; signing in \
-                      stays yours.\n\n\
+                      client's permissions. Never login, an update or an import, and never \
+                      a file anywhere but in --downloads-dir. It lists the automations and, \
+                      after a yes, starts a run of one; setting one up stays yours. It acts \
+                      as the active account, or the one --account names; --any-account lets \
+                      the agent see the accounts signed in here, say which one a call acts \
+                      as, and, after a yes, change the active one, sign them all out or \
+                      delete what snob keeps. It can sign an account out of snob, after a \
+                      yes that names it; signing in stays yours.\n\n\
                       A call waits at most --max-wait for the request budget (five minutes \
                       when it is not given) and is refused past it; a list stopped that way \
                       continues next time. Calls that may reach Instagram run one at a time; \
@@ -998,8 +1000,16 @@ pub struct FetchArgs {
     pub url: String,
 
     /// Destination file; "-" for standard output
-    #[arg(short = 'o', long, value_name = "FILE")]
+    #[arg(short = 'o', long, value_name = "FILE", conflicts_with = "into")]
     pub output: Option<PathBuf>,
+
+    /// Save into this directory under the address's own name, never over a file there
+    #[arg(long, value_name = "DIR")]
+    pub into: Option<PathBuf>,
+
+    /// Say the file saved as JSON on standard output (with --into)
+    #[arg(long, requires = "into")]
+    pub json: bool,
 
     /// The User-Agent to send, instead of the account's or the browser's
     #[arg(long, value_name = "STRING")]
@@ -1214,7 +1224,7 @@ pub struct ListArgs {
         long,
         conflicts_with_all = [
             "dry_run", "format", "path", "interactive", "hide", "only", "no_verified",
-            "exclude_list", "max_age", "no_resume", "same_day", "confirmed_via",
+            "exclude_list", "max_age", "no_resume", "confirmed_via",
         ]
     )]
     pub background: bool,
@@ -1834,6 +1844,55 @@ pub enum WatchCommand {
                       one that survives an upgrade where the installer keeps one."
     )]
     Unit(WatchUnitArgs),
+
+    /// Every automation: what keeps it from running, when it runs next, and
+    /// how its newest runs went
+    #[command(
+        after_help = "watch.toml's, named \"watch\", and each one made in the app. Reads what is \
+                      kept on this computer and sends nothing to Instagram."
+    )]
+    Automations(WatchAutomationsArgs),
+
+    /// Start a run of one automation now, apart from this command
+    #[command(
+        after_help = "The run is \"snob watch once --automation <ID>\", started in the \
+                      background as the account this command acts as, and it keeps every rule \
+                      a run by hand keeps: it reads only what the automation's steps lead to, \
+                      and nothing in a cooldown. What it found and how it went are in \"snob \
+                      watch automations\" once it ends, its errors in the automations' log.\n\n\
+                      An automation that cannot run is refused here, with nothing started."
+    )]
+    Start(WatchStartArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct WatchAutomationsArgs {
+    #[command(flatten)]
+    pub output: StatusOutputArgs,
+}
+
+#[derive(Args, Debug)]
+pub struct WatchStartArgs {
+    /// The automation's id, as "snob watch automations" lists it ("watch" is
+    /// watch.toml)
+    #[arg(value_parser = automation_id)]
+    pub id: String,
+
+    #[command(flatten)]
+    pub output: StatusOutputArgs,
+}
+
+/// An automation's id, refused by clap (exit 2) when no automation could have
+/// it (`snob_store::automations::possible_id`, or watch.toml's).
+pub(crate) fn automation_id(value: &str) -> Result<String, String> {
+    if value == snob_core::automation::WATCH_TOML || snob_store::automations::possible_id(value) {
+        Ok(value.to_string())
+    } else {
+        Err(format!(
+            "\"{}\" cannot be an automation's id: lowercase letters, digits and '-', at most 40",
+            snob_core::model::printable(value)
+        ))
+    }
 }
 
 #[derive(Args, Debug, Default)]

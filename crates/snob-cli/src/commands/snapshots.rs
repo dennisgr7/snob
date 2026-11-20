@@ -1,59 +1,26 @@
 //! `snob snapshots`: the captures of an account's lists stored here.
 //!
-//! **Sends nothing and writes nothing**, for the reasons `snob status` gives:
-//! it reads the account's database with `Store::read_existing`, which neither
-//! creates nor migrates it.
+//! **Sends nothing and writes nothing** (`snob_engine::history`).
 
 use anyhow::Result;
-use snob_core::Pk;
-use snob_core::model::{ListKind, printable};
-use snob_engine::exit::{ExitCode, ExitError};
+use snob_core::model::ListKind;
+use snob_engine::exit::ExitCode;
+use snob_engine::history::{self, Listed};
 use snob_store::paths::AccountPaths;
-use snob_store::store::{Store, accounts, snapshots};
 
 use crate::cli::SnapshotsArgs;
 use crate::output::grid::{Grid, Value};
 use crate::output::{self, Presentation};
 
-/// The account's database, read without writing, and the account a command is
-/// about in it: the viewer's own, or the one `target` names, found by the name
-/// the store has for it.
-pub(crate) fn stored_account(
-    account: &AccountPaths,
-    target: Option<&str>,
-) -> Result<(Store, Pk, String)> {
-    let Some(store) = Store::read_existing(account)? else {
-        return Err(nothing_here(target));
-    };
-    let Some(name) = target else {
-        let own = snob_engine::sentences::acting_as()
-            .map_or_else(|| "your account".into(), |v| v.label());
-        return Ok((store, account.pk(), own));
-    };
-    let name = snob_engine::engine::target::clean(name);
-    match accounts::find_pk_by_username(store.conn(), name)? {
-        Some(pk) => Ok((store, pk, format!("@{}", printable(name)))),
-        None => Err(nothing_here(Some(name))),
-    }
-}
-
-/// Nothing stored to answer from: no list of this account was ever walked
-/// here, or of the account named.
-fn nothing_here(target: Option<&str>) -> anyhow::Error {
-    let (whose, walk) = match target {
-        Some(name) => {
-            let name = printable(snob_engine::engine::target::clean(name));
-            (format!("@{name}"), format!("snob followers {name}"))
+/// How the account a stored report is about is named: the viewer's label,
+/// or the name it was asked by.
+pub(crate) fn whose(stored: &history::Stored) -> String {
+    match &stored.named {
+        Some(name) => format!("@{}", snob_core::model::printable(name)),
+        None => {
+            snob_engine::sentences::acting_as().map_or_else(|| "your account".into(), |v| v.label())
         }
-        None => ("your account".to_string(), "snob scan".to_string()),
-    };
-    ExitError::new(
-        ExitCode::Error,
-        format!("nothing of {whose} is stored on this computer"),
-    )
-    .with_reason("nothing_stored")
-    .with_hint(format!("a walk stores it: \"{walk}\""))
-    .into()
+    }
 }
 
 pub fn run(args: SnapshotsArgs, account: &AccountPaths) -> Result<ExitCode> {
@@ -61,9 +28,9 @@ pub fn run(args: SnapshotsArgs, account: &AccountPaths) -> Result<ExitCode> {
     let format = output::effective_format(args.output.format, destination);
     output::check_destination(format, destination)?;
 
-    let (store, pk, whose) = stored_account(account, args.target.as_deref())?;
-    let kind = args.list.map(ListKind::from);
-    let listed = snapshots::listed(store.conn(), pk, kind)?;
+    let stored = history::open_or_refuse(account, args.target.as_deref())?;
+    let whose = whose(&stored);
+    let listed = stored.captures(args.list.map(ListKind::from))?;
 
     let grid = grid(&listed);
     let rendered = grid.render(format, Presentation::detect(destination))?;
@@ -77,7 +44,7 @@ pub fn run(args: SnapshotsArgs, account: &AccountPaths) -> Result<ExitCode> {
 }
 
 /// One row per capture, newest first.
-fn grid(listed: &[snapshots::Listed]) -> Grid {
+fn grid(listed: &[Listed]) -> Grid {
     Grid {
         columns: vec![
             ("id", "Id"),

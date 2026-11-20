@@ -12,7 +12,7 @@ use anyhow::Result;
 use snob_core::model::post::Likers;
 use snob_engine::app::App;
 use snob_engine::exit::{ExitCode, ExitError};
-use snob_engine::posts::{self, LIKERS_AT_MOST};
+use snob_engine::posts::{self, refuse_short_day};
 use snob_ig::shortcode::Shortcode;
 use snob_store::paths::AccountPaths;
 use snob_store::secrets::SecretStore;
@@ -81,23 +81,6 @@ pub async fn run(args: LikersArgs, store: SecretStore, paths: &AccountPaths) -> 
         _ => destination.write(&accounts)?,
     }
     Ok(ExitCode::Ok)
-}
-
-/// The refusal of a read the day's accounts cannot pay for, with `left` of
-/// them: one home, for the run and for the check `snob mcp` makes first.
-fn refuse_short_day(left: u64) -> Result<()> {
-    if left >= u64::from(LIKERS_AT_MOST) {
-        return Ok(());
-    }
-    Err(ExitError::new(
-        ExitCode::Error,
-        format!(
-            "the accounts this account may read today are nearly spent ({left} left), \
-             and a post's likers can be {LIKERS_AT_MOST}; nothing was sent"
-        ),
-    )
-    .with_hint("they free up over 24 hours; \"snob status\" says how many are left")
-    .into())
 }
 
 /// What `snob mcp` asks before it puts the question to the person

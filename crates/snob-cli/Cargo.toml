@@ -22,10 +22,11 @@ default = ["xlsx", "mcp", "mcp-http", "preview"]
 # released binary carries it; what the feature buys is that somebody building
 # from source can leave it out -- `rust_xlsxwriter` and `zopfli` are the
 # largest single feature cost in the tree, ~498 KiB for one of five formats,
-# and six crates that nothing else here pulls in. `commands::import` opens the
-# export zip through the same feature, being the only other reader of `zip`;
-# without it the import still reads the folder the zip was extracted into.
-xlsx = ["dep:rust_xlsxwriter", "dep:zip"]
+# and six crates that nothing else here pulls in. The engine's import
+# (`snob_engine::import`) opens the export zip through the same feature, being
+# the only other reader of `zip`; without it the import still reads the folder
+# the zip was extracted into.
+xlsx = ["dep:rust_xlsxwriter", "snob-engine/dyi-zip"]
 # `snob mcp`, the stdio server an agent's client starts (`snob_mcp`). On by
 # default, so the released binary has it;
 # `--no-default-features` leaves out the server, `rmcp` and what it brings.
@@ -83,7 +84,6 @@ supports-hyperlinks.workspace = true
 comfy-table = { workspace = true, features = ["custom_styling"] }
 csv.workspace = true
 rust_xlsxwriter = { workspace = true, optional = true }
-zip = { workspace = true, optional = true }
 zune-jpeg = { workspace = true, optional = true }
 chrono.workspace = true
 tracing.workspace = true

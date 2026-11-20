@@ -158,13 +158,15 @@ fn wording_for(cli: &Cli) -> snob_cli::report::Wording {
             Some(WatchCommand::Unit(_)) => false,
             Some(WatchCommand::Diff(diff)) => diff.output.json,
             Some(WatchCommand::Setup(_)) => false,
+            Some(WatchCommand::Automations(listed)) => listed.output.json,
+            Some(WatchCommand::Start(start)) => start.output.json,
         },
         Command::Account(AccountCommand::Use(_))
         | Command::Login(_)
         | Command::Purge(_)
         | Command::Pfp(_)
-        | Command::Fetch(_)
         | Command::BrowserOwner => false,
+        Command::Fetch(args) => args.json,
         // Read by a program only as `snob mcp` runs it (`--only`), which
         // tells its refusal apart by the reason.
         Command::Logout(args) => args.only.is_some(),
@@ -502,6 +504,21 @@ async fn dispatch(
         return boxed(|| commands::background::run(&cli, command, args, &store, &account)).await;
     }
 
+    // So does a run of an automation started now (`jobs::argv::settings`). It
+    // acts as the account resolved, when any, as `watch once` does.
+    if let Command::Watch(snob_cli::cli::WatchArgs {
+        command: Some(snob_cli::cli::WatchCommand::Start(args)),
+        ..
+    }) = &cli.command
+    {
+        let account = if named {
+            resolved()?
+        } else {
+            resolved().ok().flatten()
+        };
+        return commands::watch::start(&cli, args, paths, account.as_ref());
+    }
+
     match cli.command {
         Command::Login(args) => {
             // An account being added is none of those signed in here, and
@@ -636,11 +653,16 @@ async fn dispatch(
         }
         Command::Watch(args) => {
             use snob_cli::cli::WatchCommand;
-            // `status`, `deliver` and `unit` act as no account: they read every
-            // account's database, or none.
+            // `status`, `deliver`, `unit` and `automations` act as no account:
+            // they read every account's database, or none.
             let needs_none = matches!(
                 args.command,
-                Some(WatchCommand::Status(_) | WatchCommand::Deliver(_) | WatchCommand::Unit(_))
+                Some(
+                    WatchCommand::Status(_)
+                        | WatchCommand::Deliver(_)
+                        | WatchCommand::Unit(_)
+                        | WatchCommand::Automations(_)
+                )
             );
             let account = if needs_none && !named {
                 resolved().ok().flatten()

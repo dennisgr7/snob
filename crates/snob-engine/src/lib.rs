@@ -17,9 +17,12 @@
 //!   [`app`], [`engine`], [`sentences`];
 //! - an account on this computer: [`account`], [`login`] (from another
 //!   machine, [`relay`]), [`logout`], [`viewer`], [`cache`], [`storage`];
+//! - what is stored of the lists, read without sending: [`history`]; what
+//!   Instagram's own export says of them: [`import`];
 //! - what is read besides a list: [`profile`], [`posts`], [`stories`],
 //!   [`highlights`], what a story is and how one is kept ([`media`]), and
-//!   the files they are kept in ([`files`], [`ffmpeg`]);
+//!   the files they are kept in ([`files`], [`ffmpeg`]), and one file from
+//!   the CDN by its address ([`fetch`]);
 //! - the two writes, follow and unfollow: [`follow`];
 //! - what runs by itself: the monitor ([`watch`]), [`automations`], [`jobs`];
 //! - the program itself: [`log`], [`update`].
@@ -36,11 +39,14 @@ pub mod cache;
 pub mod engine;
 pub mod exit;
 pub mod facts;
+pub mod fetch;
 pub mod ffmpeg;
 pub mod files;
 pub mod follow;
 pub mod highlights;
+pub mod history;
 pub mod host;
+pub mod import;
 pub mod jobs;
 pub mod log;
 pub mod login;

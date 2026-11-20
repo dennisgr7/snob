@@ -11879,3 +11879,42 @@ async fn an_automation_made_in_the_app_runs_reports_and_is_remembered() {
     );
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
 }
+
+/// `watch automations` lists watch.toml's as `watch`, ready to run, with
+/// nothing sent; `watch start` refuses an id no automation has, and one no
+/// automation could have before anything is read.
+#[tokio::test]
+async fn the_automations_are_listed_for_nothing_and_a_missing_one_is_not_started() {
+    let tmp = tempfile::tempdir().unwrap();
+    let instagram = fake_instagram(3, 2).await;
+    log_in(tmp.path(), &instagram);
+    configure(
+        tmp.path(),
+        "schema = 2\nevery = \"6h\"\n\n[[account]]\ntarget = \"self\"\n",
+    );
+    let before = instagram.received_requests().await.unwrap().len();
+
+    let out = snob(tmp.path(), None, &["watch", "automations", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let said = json(&out);
+    let listed = said["automations"].as_array().expect("a list");
+    assert_eq!(listed.len(), 1, "{said}");
+    assert_eq!(listed[0]["id"], "watch", "{said}");
+    assert_eq!(listed[0]["problems"], serde_json::json!([]), "{said}");
+    assert!(
+        matches!(listed[0]["next"]["when"].as_str(), Some("now" | "at")),
+        "{said}"
+    );
+    assert_eq!(listed[0]["runs"], serde_json::json!([]), "{said}");
+
+    let missing = snob(tmp.path(), None, &["watch", "start", "nothere"]);
+    assert_eq!(missing.status.code(), Some(1), "{}", stderr(&missing));
+    let impossible = snob(tmp.path(), None, &["watch", "start", "Not-One"]);
+    assert_eq!(impossible.status.code(), Some(2), "{}", stderr(&impossible));
+
+    assert_eq!(
+        instagram.received_requests().await.unwrap().len(),
+        before,
+        "nothing reaches Instagram"
+    );
+}

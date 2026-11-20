@@ -46,6 +46,7 @@ const ALLOWED: &[&str] = &[
     "--confirmed-via",
     "--confirmed-for",
     "--no-progress",
+    "--same-day",
 ];
 
 /// Of [`ALLOWED`], the flags that take a value.
@@ -215,6 +216,14 @@ pub(crate) fn overlap(one: &Checked, other: &Checked) -> bool {
 /// at once, nor `--max-wait` or `--spend-alone`, which the caller adds once.
 pub(crate) fn globals(cli: &Cli, account: Pk) -> std::io::Result<Vec<OsString>> {
     let mut args: Vec<OsString> = vec!["--account".into(), account.to_string().into()];
+    args.extend(settings(cli)?);
+    Ok(args)
+}
+
+/// [`globals`] but the account: where files are, what TLS trusts and, in a
+/// test build, where Instagram is.
+pub(crate) fn settings(cli: &Cli) -> std::io::Result<Vec<OsString>> {
+    let mut args: Vec<OsString> = Vec::new();
     if cli.no_keyring {
         args.push("--no-keyring".into());
     }
@@ -303,6 +312,7 @@ mod tests {
             "unfollowers --refresh --limit 5 --max-pages 3",
             "fans --hide=verified,no-pfp --only private",
             "followers --max-age 6h",
+            "followers someone -y --same-day",
             "scan",
             "scan someone -y --format json --max-pages 2 --max-age=2d --refresh",
             "fans @someone --offline",
@@ -330,7 +340,6 @@ mod tests {
             "followers --output=out.json",
             "followers --format csv",
             "followers --format=xlsx",
-            "followers --same-day",
             "followers --exclude-list names.txt",
             "followers --max-wait 5s",
             "followers --account other",

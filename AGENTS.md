@@ -31,12 +31,40 @@ The command line walks followers and following and crosses them
 posts and reels and downloads their media; reads Instagram's data export
 (`import dyi`) and its own stored lists (`snapshots`, `changes`) without sending
 anything; monitors accounts (`watch`, with webhooks); serves agents (`snob
-mcp`); and updates itself (`snob update`). The app and the command line both
-sit on `snob-engine`.
+mcp`); and updates itself (`snob update`). The command line, the MCP server and
+the app all sit on `snob-engine`, the one engine (see "One engine, every front").
 
 It signs in as the user, speaks Instagram's **web** API (`www.instagram.com`,
 never the mobile API), and by default sends every request from a headless
 Chromium-based browser installed on the machine, on a profile of its own.
+
+## One engine, every front
+
+- **One engine.** `snob-engine` holds every action and every rule. The command
+  line (`snob-cli`), the MCP server (`snob-mcp`) and the desktop app
+  (`apps/desktop`) are fronts on it. A front carries no action, check or limit
+  of its own, and never reaches Instagram or a database another way.
+- **Every action reaches every front.** A new command, action or capability is
+  built in the engine first, then offered on each front: a CLI command, an MCP
+  tool (`crates/snob-mcp/src/tools.rs`), and a control in the app. Adding or
+  changing an action means reviewing all three fronts before it lands.
+- **Exceptions are written here, with a reason.** A front leaves an action out
+  only when this file says so. Current exceptions:
+  - The app offers no write (follow, unfollow): the write regime below.
+  - MCP never offers `login`: signing in is the person's, in snob's own
+    browser window or with a session they paste.
+  - MCP never offers `import dyi`: its argument is a path, and an agent never
+    names a file.
+  - MCP never offers `update`: it replaces the binary the server runs, which
+    then refuses every call (`upgraded`); `snob_status` says whether one is
+    waiting.
+  - MCP never takes a path or file name as an argument, nor sets up or
+    changes an automation (`watch setup`, the app's editor): it lists them and
+    starts a run.
+
+  A new exception goes in this list in the same change. An unlisted gap is a bug.
+- Parity is a review rule, not yet a test: nothing fails when a front falls
+  behind.
 
 ## Hard lines
 
@@ -67,7 +95,7 @@ Rust 2024, resolver 3. Dependencies point one way:
 | `snob-core` | The domain: `Pk`, the models (the JSON contract), set arithmetic, an automation (`automation.rs`), the monitor's diff and schedule, webhook signing and the one constant-time comparison (`watch::sign::same`), `Secret`, `Session`, the `RateBudget` trait and cooldown policy, `clock`. | Do I/O: no file, database, network or directory (`clock` excepted). |
 | `snob-ig` | The Instagram web client: `client/`, `web.rs`, `allowlist.rs`, `pager.rs`, `pace.rs`, `graphql.rs`, `error.rs` (classifying answers), `http.rs` (the only place `reqwest` is configured). | Touch SQLite or the keyring, or drive a browser (it only defines the page's request shapes). |
 | `snob-store` | SQLite (`store/`, migrations in `store/sql/`), paths, the secret store, `accounts.toml`, `watch.toml`, the automations' files (`automations.rs`), the layout's migration, the views' cache (`cache.rs`) and what files weigh (`disk.rs`). | Hold domain logic. |
-| `snob-engine` | What a desktop app links in process: `app.rs` (`App`), the lists (`engine/`: consent, cooldown, freshness, walks, estimates, retention), the monitor (`watch/`: a run (`tick.rs`), the comparison of what is stored (`stored.rs`), its posts, its check, its webhook), the browser (`browser/`: the one installed, `cdp/`, `headless/`, `owner/`), what is asked of the operating system (`system/`: `pipe.rs`, `detach.rs`, `interrupt.rs`, `parent.rs`, `local_socket.rs`, `power/`, `exe.rs`, `seat.rs`, `env.rs`, `random.rs`), jobs' state and supervisor (`jobs/`), signing in (`login.rs`, which hands back a `Stored` and tells a failure apart with `failure_of`) and out (`logout.rs`), the account's card (`viewer.rs`), what a view shows at once (`cache.rs`) and what is kept on disk (`storage.rs`), `relay/`, `update/`, the automations every front reads, keeps and runs (`automations/`), an account's page and its picture as every front reads them (`profile.rs`), the stories it has up and the highlights it kept (`stories.rs`, `highlights.rs`), the two writes (`follow.rs`), reading posts and saving them and stories (`posts/`: a post, `grid.rs`, `comments.rs`, `likers.rs`, `save.rs`, `document.rs`; `media/` (a story, `save.rs`), `files.rs`), `ffmpeg.rs`, `exit.rs`, `log.rs` (the filter every program logs through, and an app's log in files), `sentences.rs` (the plain sentences of its refusals), and `facts.rs` (what a run knows of itself and of a list, as data the words can name: `Viewer`, `Held`, `ConsentInAdvance`, `Provenance`, handed out by `app` and `engine`). `host.rs` is what it is handed: a `Progress` and an `Ask` per run (`host::Front`, given to `App::open`), and a sink for notices. | Depend on `clap`, `console`, `indicatif`, `ratatui`, `crossterm`, `dialoguer`, or on `snob-mcp`/`snob-cli`; ask anybody anything itself; decide how anything looks. |
+| `snob-engine` | What a desktop app links in process: `app.rs` (`App`), the lists (`engine/`: consent, cooldown, freshness, walks, estimates, retention, and their crossings and the scan, `cross.rs`), what is stored of them, read without sending (`history.rs`), Instagram's data export (`import.rs`, the archive under the feature `dyi-zip`), one file from the CDN (`fetch.rs`), the monitor (`watch/`: a run (`tick.rs`), the comparison of what is stored (`stored.rs`), its posts, its check, its webhook), the browser (`browser/`: the one installed, `cdp/`, `headless/`, `owner/`), what is asked of the operating system (`system/`: `pipe.rs`, `detach.rs`, `interrupt.rs`, `parent.rs`, `local_socket.rs`, `power/`, `exe.rs`, `seat.rs`, `env.rs`, `random.rs`), jobs' state and supervisor (`jobs/`), signing in (`login.rs`, which hands back a `Stored` and tells a failure apart with `failure_of`) and out (`logout.rs`), the account's card (`viewer.rs`), what a view shows at once (`cache.rs`) and what is kept on disk (`storage.rs`), `relay/`, `update/`, the automations every front reads, keeps and runs (`automations/`), an account's page and its picture as every front reads them (`profile.rs`), the stories it has up and the highlights it kept (`stories.rs`, `highlights.rs`), the two writes (`follow.rs`), reading posts and saving them and stories (`posts/`: a post, `grid.rs`, `comments.rs`, `likers.rs`, `save.rs`, `document.rs`; `media/` (a story, `save.rs`), `files.rs`), `ffmpeg.rs`, `exit.rs`, `log.rs` (the filter every program logs through, and an app's log in files), `sentences.rs` (the plain sentences of its refusals), and `facts.rs` (what a run knows of itself and of a list, as data the words can name: `Viewer`, `Held`, `ConsentInAdvance`, `Provenance`, handed out by `app` and `engine`). `host.rs` is what it is handed: a `Progress` and an `Ask` per run (`host::Front`, given to `App::open`), and a sink for notices. | Depend on `clap`, `console`, `indicatif`, `ratatui`, `crossterm`, `dialoguer`, or on `snob-mcp`/`snob-cli`; ask anybody anything itself; decide how anything looks. |
 | `snob-mcp` | `snob mcp`: the server over stdio and, with its `http` feature, over HTTP (`http.rs`); its key (`key.rs`), `snob mcp config` (`config.rs`), its arguments (`args.rs`). | Build an Instagram client or open a database; depend on `snob-cli`, its tests included (the lines it builds are parsed in `crates/snob-cli/tests/mcp_lines.rs`). |
 | `snob-cli` | The `snob` binary and its library: `cli.rs`, `main.rs`, `commands/`, `output/`, `report.rs`, `progress.rs` (the bars), `front.rs` (what it hands the engine), `ui/`, and the clap-tied half of jobs (`jobs/argv.rs`, `jobs/start.rs`). It names what it uses of the engine and of the server by their own crates (`snob_engine::`, `snob_mcp::`). | |
 | `snob-fake-ig` | The fake Instagram the tests talk to (`world.rs`) and a tab on it with no browser (`tab.rs`). Never published. | Depend on anything above `snob-ig`; be named outside `[dev-dependencies]` by a crate that ships (`layers.rs`). |
@@ -323,7 +351,8 @@ The persistent budget under the pace (GCRA, `store/rate_budget.rs`):
 | Writes, on top of both | 3 in a row, then one per 15 min; 99 in 24 h | `WRITE_EMISSION_MS`, `WRITES_IN_A_DAY` |
 | Accounts read off lists | 2,000 in any 24 h; 1,000 for a week after a push-back | `budget::accounts_per_day` |
 
-`--same-day` reads past the day's accounts on purpose; agents never get it.
+`--same-day` reads past the day's accounts on purpose; an agent gets it only
+on a yes, asked even for the account's own lists (`tools::same_day`).
 
 ### Push-back and retries
 
@@ -660,14 +689,20 @@ prints a client's snippet and never writes it.
 | `snob_pfp` | `pfp --json --embed`, and `--output=<downloads dir>` with `save` | no | always (`save` with `--downloads-dir`) |
 | `snob_snapshots`, `snob_changes` | stored captures; nothing sent | no | always |
 | `snob_post_download` | `post --download` into `--downloads-dir` | no (the client's prompt) | with `--downloads-dir` |
+| `snob_fetch` | `fetch <url> --into=<downloads dir> --json`: one file from the CDN, never over one there | no | with `--downloads-dir` |
 | `snob_stories_download`, `snob_highlights_download` | `stories -d`, `highlights <n> -d`, with `--json`, into `--downloads-dir` | no | with `--downloads-dir` |
 | `snob_follow`, `snob_unfollow` | `follow`, `unfollow` | yes | with `--allow-writes` |
 | `snob_logout` | `logout --only=<name>` | yes, naming the account | always |
 | `snob_accounts` | `account list --json` | no | with `--any-account` |
+| `snob_account_use`, `snob_logout_all`, `snob_purge` | `account use <name>`, `logout --all`, `purge --yes` (one account's as its `--account`); none takes `as_account` | yes (`About::Accounts`) | with `--any-account` |
+| `snob_automations` | `watch automations --json`: each automation, its problems, its next run and newest runs; nothing sent | no | always |
+| `snob_automation_run` | `watch start <id> --json`: a run started now, apart from the call, which reads what the automation's steps lead to | yes (`About::Automation`) | always |
 
-**Never offered**: `login`, `logout --all`, `account use`, `purge`, the
-monitor, `--same-day`, and **a path or file name as an argument**. The list
-depends on the server's flags alone.
+`snob_list` and `snob_scan` take `same_day` (`--same-day`), always on a yes.
+
+**Never offered**: `login`, `import dyi`, `update`, setting up or changing an
+automation, and **a path or file name as an argument** ("One engine, every
+front" says why). The list depends on the server's flags alone.
 
 ### The yes
 
@@ -676,8 +711,8 @@ depends on the server's flags alone.
   the agent hands back on a yes. A no, dismissal or timeout in a form is never a
   reason to ask in the chat.
 - `--confirm-in-chat none|lists|all` (`all` on stdio, `lists` with `--listen`)
-  limits **the chat route only**; signing out goes through the chat only under
-  `all`.
+  limits **the chat route only**; signing out, changing the accounts here and
+  starting an automation's run go through the chat only under `all`.
 - **The yes comes from the client, not provably from the person**, so the gate
   on a write is the client's own prompt: keep the writes on "ask". **The
   question is snob's words and the validated username only** (`tools::Question`),
@@ -1386,8 +1421,6 @@ start from `permissions: contents: read`. `claude.yml` and
   period ("Bind the tunnel's near end to loopback by name"). The body, wrapped
   at about 72 columns, says why: the failure, the change, what was measured.
   Dependency bumps name the advisories they answer.
-- No `Co-Authored-By`, "Generated with" or other trailers; never push unless
-  asked.
 - Never commit what snob produces (exports at the root, `tools/capture/out/`,
   anything under `/docs/`). A new root-level `.md` is ignored unless
   `.gitignore` lists it.

@@ -23,6 +23,23 @@ use super::Post;
 /// until then; 150 leaves a fifth over the largest seen.
 pub const LIKERS_AT_MOST: u32 = 150;
 
+/// The refusal of a likers' read the day's accounts cannot pay for, with
+/// `left` of them: **refused before anybody is asked, nothing sent**.
+pub fn refuse_short_day(left: u64) -> Result<()> {
+    if left >= u64::from(LIKERS_AT_MOST) {
+        return Ok(());
+    }
+    Err(crate::exit::ExitError::new(
+        crate::exit::ExitCode::Error,
+        format!(
+            "the accounts this account may read today are nearly spent ({left} left), and a \
+             post's likers can be {LIKERS_AT_MOST}; nothing was sent"
+        ),
+    )
+    .with_hint("they free up over 24 hours; \"snob status\" says how many are left")
+    .into())
+}
+
 /// The accounts that liked `post`, as far as Instagram shows them: one read,
 /// from the post's page.
 pub async fn likers(client: &IgClient, post: &Post) -> Result<Likers> {

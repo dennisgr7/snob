@@ -3106,7 +3106,6 @@ dependencies = [
  "webpki-root-certs",
  "wiremock",
  "zeroize",
- "zip",
  "zune-jpeg",
 ]
 
@@ -3151,6 +3150,7 @@ dependencies = [
  "wiremock",
  "zbus",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

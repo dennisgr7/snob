@@ -394,7 +394,9 @@ const DOWNLOADS_SAID: &str = " snob_post_download saves a post's photos and vide
                               directory itself says which posts you have. \
                               snob_stories_download and snob_highlights_download do the same \
                               for stories, which go after a day, and for a highlight's \
-                              items, each file named after its item's id.";
+                              items, each file named after its item's id. snob_fetch saves \
+                              one file from Instagram's CDN by an address the person gave \
+                              you.";
 
 /// What the server's instructions say of the writes, and only when it was
 /// started with `--allow-writes`: a server that offers no write has no cap
@@ -679,7 +681,7 @@ impl ServerHandler for Server {
         if plan
             .ask
             .as_ref()
-            .is_some_and(|ask| ask.about == tools::About::SignOut)
+            .is_some_and(|ask| matches!(ask.about, tools::About::SignOut | tools::About::Accounts))
         {
             self.pages.clear();
         }
@@ -1198,6 +1200,8 @@ fn cannot_confirm(about: About) -> String {
         About::Walk => ("reading another account's lists", "lists"),
         About::Write => ("a follow or an unfollow", "all"),
         About::SignOut => ("signing an account out", "all"),
+        About::Accounts => ("changing the accounts signed in here", "all"),
+        About::Automation => ("starting an automation's run", "all"),
     };
     format!(
         "this client cannot ask, and this server takes no yes from the chat for {what}, so \

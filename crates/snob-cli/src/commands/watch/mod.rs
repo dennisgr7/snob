@@ -19,6 +19,7 @@ mod automation;
 mod check;
 mod deliver;
 mod diff;
+mod kept;
 mod once;
 mod run;
 mod scheduled;
@@ -36,6 +37,7 @@ mod fixtures;
 use check::check;
 use deliver::deliver;
 use diff::diff;
+pub use kept::start;
 use once::once;
 use scheduled::scheduled;
 use unit::unit;
@@ -58,6 +60,9 @@ pub async fn run(
         Some(WatchCommand::Status(args)) => status::status(args, paths, account),
         Some(WatchCommand::Deliver(args)) => deliver(args, secrets, paths).await,
         Some(WatchCommand::Unit(args)) => unit(args, paths),
+        Some(WatchCommand::Automations(args)) => kept::automations(args, paths),
+        // Started from `main`, which hands it the whole command line.
+        Some(WatchCommand::Start(_)) => unreachable!("started before the command is taken apart"),
         // With nobody signed in there is nobody to read any entry as, and a
         // service started then would read the entries that name no viewer as
         // nobody for as long as it ran.

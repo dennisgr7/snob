@@ -12,6 +12,10 @@ repository.workspace = true
 # (`headless`, `update`), for the command line's `testing` feature, which is
 # what turns it on. Off by default: a release build has none of it.
 testing = ["snob-ig/testing"]
+# Opening Instagram's export as the zip it is sent in (`import`); without it
+# the export is read from the folder it was extracted into. The command line's
+# `xlsx` turns it on, since `rust_xlsxwriter` already brings `zip` along.
+dyi-zip = ["dep:zip"]
 
 [dependencies]
 snob-core.workspace = true
@@ -50,6 +54,8 @@ fastrand.workspace = true
 # not parse as an address. The tests also point the client at a mock server
 # with it.
 url.workspace = true
+# Only to read Instagram's export as it is sent (`import`, feature `dyi-zip`).
+zip = { workspace = true, optional = true }
 # Already in the tree through snob-core, where it signs the monitor's
 # webhook. Here it checks a downloaded release against its `SHA256SUMS`
 # (`update::github`), as the install scripts do.
