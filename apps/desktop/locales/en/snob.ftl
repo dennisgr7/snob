@@ -562,6 +562,11 @@ stepper-more = More: { $what }
 
 ## Profile: a profile's page, its options and what it tells of the account.
 
+profile-showing-grid = Grid view
+profile-showing-list = List view
+profile-username-copy = Copy @{ $username }
+profile-friend = Friend
+
 ## People: the lists of followers and following, and choosing in them.
 
 ## Automations: the list, an automation's page and its runs, and the editor.

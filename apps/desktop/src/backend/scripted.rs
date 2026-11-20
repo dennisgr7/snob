@@ -132,6 +132,8 @@ struct State {
     kept_lists: HashMap<(Pk, Side), Listed>,
     /// The pictures a row's is downloaded as, by its pk.
     pictures: HashMap<Pk, PathBuf>,
+    /// The picture every highlight read has as its cover, when a test says.
+    highlight_cover: Option<PathBuf>,
     /// The automations kept, in the order they were kept.
     automations: Vec<Automation>,
     runs: Vec<Run>,
@@ -204,6 +206,7 @@ impl Scripted {
             known: Vec::new(),
             kept_lists: HashMap::new(),
             pictures: HashMap::new(),
+            highlight_cover: None,
             automations: Vec::new(),
             runs: Vec::new(),
             next_run: Next::Never,
@@ -529,6 +532,12 @@ impl Script<'_> {
         self.0.pictures.insert(pk.into(), picture);
         self
     }
+
+    /// Every highlight read has `cover` as its cover.
+    pub fn highlight_cover(&mut self, cover: PathBuf) -> &mut Self {
+        self.0.highlight_cover = Some(cover);
+        self
+    }
 }
 
 /// When every scripted list is said to have been read.
@@ -851,7 +860,10 @@ impl Backend for Scripted {
 
     fn profile(&self, who: Named) -> Answer<Result<Profile, Unread>> {
         self.answer(Asked::Profile(who.pk), move |state| {
-            let profile = profile_of(&who, &state.accounts, state.private);
+            let mut profile = profile_of(&who, &state.accounts, state.private);
+            for highlight in &mut profile.highlights {
+                highlight.cover.clone_from(&state.highlight_cover);
+            }
             state.kept_trays.insert(who.pk, profile.highlights.clone());
             Ok(profile)
         })

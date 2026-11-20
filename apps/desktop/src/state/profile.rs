@@ -1,6 +1,7 @@
 //! A profile page and the lists it opens, apart from how they are drawn: how
-//! the page is laid out and what it shows of the posts, what a click on the
-//! picture does, how far the picture is zoomed and moved in its viewer, and
+//! the page is laid out and what it shows of the posts, what marks the
+//! account, what a click on the picture does, how far the picture is zoomed
+//! and moved in its viewer, and
 //! **when a list may be read without asking**: only the account's own
 //! (AGENTS.md, "Consent").
 //!
@@ -169,6 +170,51 @@ impl Zoom {
     }
 }
 
+/// What marks an account beside its names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    Verified,
+    Private,
+    /// Each follows the other.
+    Friend,
+    /// It follows the viewer, who is not known to follow it.
+    FollowsYou,
+}
+
+/// The marks of an account, in the order they are shown, from what its
+/// profile says: **a friend is one both follow**, and is marked as that
+/// alone. What is not known marks nothing.
+pub fn marks(
+    verified: bool,
+    private: bool,
+    you_follow: Option<bool>,
+    follows_you: Option<bool>,
+) -> Vec<Mark> {
+    let follows_you = follows_you == Some(true);
+    let friend = follows_you && you_follow == Some(true);
+    [
+        verified.then_some(Mark::Verified),
+        private.then_some(Mark::Private),
+        friend.then_some(Mark::Friend),
+        (follows_you && !friend).then_some(Mark::FollowsYou),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// How far each of the words naming two views is shown, `t` of the way from
+/// the one left to the one chosen: the first leaves over the first half and
+/// the second comes over the second, so they are never read over each other.
+pub fn crossing(t: f32) -> (f32, f32) {
+    let t = if t.is_finite() {
+        t.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    ((1.0 - 2.0 * t).max(0.0), (2.0 * t - 1.0).max(0.0))
+}
+
 /// Where a list's reading stands, as a share from 0 to 1 of what the
 /// account says it holds: none while that is not known.
 pub fn share_read(read: usize, expected: Option<u64>) -> Option<f32> {
@@ -251,6 +297,38 @@ mod tests {
         assert_eq!(share_read(25, Some(100)), Some(0.25));
         // Instagram's count can be under what a walk reads.
         assert_eq!(share_read(130, Some(100)), Some(1.0));
+    }
+
+    #[test]
+    fn friends_are_marked_friend_and_not_follows_you() {
+        assert_eq!(marks(false, false, Some(true), Some(true)), [Mark::Friend]);
+        assert_eq!(
+            marks(false, false, Some(false), Some(true)),
+            [Mark::FollowsYou]
+        );
+        assert_eq!(marks(false, false, None, Some(true)), [Mark::FollowsYou]);
+        assert_eq!(marks(false, false, Some(true), Some(false)), []);
+        assert_eq!(marks(false, false, None, None), []);
+        assert_eq!(
+            marks(true, true, Some(true), Some(true)),
+            [Mark::Verified, Mark::Private, Mark::Friend]
+        );
+    }
+
+    #[test]
+    fn the_name_of_one_view_leaves_before_the_other_comes() {
+        assert_eq!(crossing(0.0), (1.0, 0.0));
+        assert_eq!(crossing(0.5), (0.0, 0.0));
+        assert_eq!(crossing(1.0), (0.0, 1.0));
+        for step in 0..=20 {
+            let (leaving, coming) = crossing(step as f32 / 20.0);
+            assert!(
+                leaving == 0.0 || coming == 0.0,
+                "both shown at {step}: {leaving}, {coming}"
+            );
+        }
+        assert_eq!(crossing(f32::NAN), (0.0, 1.0));
+        assert_eq!(crossing(7.0), (0.0, 1.0));
     }
 
     #[test]

@@ -53,8 +53,8 @@ pub(crate) struct ProfilePage {
     /// The first page of each tab the cache kept, shown until the tab is
     /// read.
     pub kept_tabs: HashMap<Tab, Tiles>,
-    /// How the posts were last shown, and since when: they come in again
-    /// when that changes.
+    /// Since when the posts shown are the tab's they are: they come in
+    /// again, one after the other, when that changes.
     pub shown_since: Instant,
     /// Since when the highlights are the ones shown: they come in when a
     /// read changes them, not when it says them again.
@@ -170,6 +170,9 @@ pub(crate) struct Pages {
     /// one this run.
     pub layout: Layout,
     pub showing: Showing,
+    /// The way posts were shown before, and since when they are shown as
+    /// they are: the words naming it cross, and the posts come in again.
+    pub showing_from: Option<(Showing, Instant)>,
     /// Since when the layout is what it is: the page comes in again.
     pub laid_out_at: Option<Instant>,
     /// The lists moved out to windows of their own: **one walk per list**,
@@ -489,12 +492,8 @@ impl Shell {
             return;
         }
         tracing::info!(action = "show_posts_as", ?showing, "action");
+        self.pages.showing_from = Some((self.pages.showing, Instant::now()));
         self.pages.showing = showing;
-        if let Screen::Profile(who) = &self.shown
-            && let Some(page) = self.pages.profiles.get_mut(&who.pk)
-        {
-            page.shown_since = Instant::now();
-        }
         cx.notify();
     }
 

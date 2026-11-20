@@ -561,6 +561,11 @@ stepper-more = Más: { $what }
 
 ## Perfil (profile): la página de un perfil, sus opciones y lo que cuenta de la cuenta.
 
+profile-showing-grid = Vista en cuadrícula
+profile-showing-list = Vista en lista
+profile-username-copy = Copiar @{ $username }
+profile-friend = Amigo
+
 ## Listas (people): las de seguidores y seguidos, y elegir en ellas.
 
 ## Automatizaciones (automations): la lista, la página de una y sus ejecuciones, y el editor.

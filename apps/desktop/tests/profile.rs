@@ -431,3 +431,221 @@ async fn the_options_copy_what_is_known_of_the_account(cx: &mut TestAppContext) 
     assert!(!shown(&app, cx, "profile-menu"));
     assert!(focused(&app, cx, "profile-options"), "focus is back");
 }
+
+/// The bounds of `id`, drawn.
+fn bounds_of(
+    app: &App,
+    cx: &mut TestAppContext,
+    id: impl Into<gpui_kit::ElementId>,
+) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    let id = id.into();
+    app.in_window(cx, move |window, _| window.find(id).bounds())
+}
+
+#[gpui_kit::test]
+async fn the_bar_is_one_row_of_the_view_in_words_its_buttons_and_the_options_beside_the_names(
+    cx: &mut TestAppContext,
+) {
+    let app = own_profile(cx, me()).await;
+    for layout in ["stacked", "split"] {
+        // One frame: the page may still be coming in.
+        let (row, picture, bar, title) = app.in_window(cx, |window, _| {
+            (
+                [
+                    "profile-showing-words",
+                    "profile-grid",
+                    "profile-list",
+                    "profile-layout",
+                    "profile-options",
+                ]
+                .map(|id| (id, window.find(id).bounds())),
+                window.find("profile-picture").bounds(),
+                window.find("profile-bar").bounds(),
+                window.find("title").bounds(),
+            )
+        });
+        let middle =
+            |bounds: &gpui_kit::Bounds<gpui_kit::Pixels>| (bounds.top() + bounds.bottom()) / 2.0;
+        let (first, first_bounds) = row[0];
+        for pair in row.windows(2) {
+            let ((left, left_bounds), (right, right_bounds)) = (pair[0], pair[1]);
+            assert!(
+                left_bounds.right() <= right_bounds.left(),
+                "{layout}: {left} {left_bounds:?} before {right} {right_bounds:?}"
+            );
+            assert!(
+                (middle(&right_bounds) - middle(&first_bounds)).abs() <= px(2.),
+                "{layout}: {right} {right_bounds:?} on the line of {first} {first_bounds:?}"
+            );
+        }
+        match layout {
+            "stacked" => assert!(
+                bar.top() <= title.bottom()
+                    && bar.bottom() >= title.top()
+                    && bar.left() >= title.right(),
+                "the bar is on the line of the names, after them: {bar:?} beside {title:?}"
+            ),
+            _ => assert!(bar.bottom() <= picture.top(), "{bar:?} over {picture:?}"),
+        }
+        app.click(cx, "profile-layout");
+    }
+}
+
+#[gpui_kit::test]
+async fn the_words_beside_the_buttons_say_how_the_posts_are_shown(cx: &mut TestAppContext) {
+    for (locale, grid, list) in [
+        ("en", "Grid view", "List view"),
+        ("es", "Vista en cuadrícula", "Vista en lista"), // i18n-allow
+    ] {
+        let app = common::open_with(
+            cx,
+            me(),
+            snob_desktop::system::Settings {
+                locale: locale.to_string(),
+                ..Default::default()
+            },
+        );
+        app.until_screen(cx, |screen| *screen == Screen::Home).await;
+        app.click(cx, "account");
+        app.click(cx, "menu-profile");
+        app.until(cx, |window, _| {
+            window.try_find(("profile-tile", 0usize)).is_some()
+        })
+        .await;
+        let wide = bounds_of(&app, cx, "profile-showing-words").size;
+        assert_eq!(app.label_of(cx, "profile-showing-words"), grid);
+        app.click(cx, "profile-list");
+        assert_eq!(app.label_of(cx, "profile-showing-words"), list);
+        assert_eq!(
+            bounds_of(&app, cx, "profile-showing-words").size,
+            wide,
+            "{locale}: the words hold their room as they cross"
+        );
+        app.click(cx, "profile-grid");
+        assert_eq!(app.label_of(cx, "profile-showing-words"), grid);
+    }
+}
+
+#[gpui_kit::test]
+async fn a_click_on_the_username_copies_it_and_says_so(cx: &mut TestAppContext) {
+    let app = own_profile(cx, me()).await;
+    app.in_window(cx, |window, _| {
+        let username = window.find("profile-username");
+        assert_eq!(username.role(), Some(Role::Button));
+        assert_eq!(username.label(), Some("Copy @me"));
+    });
+    let before = app.backend.asked().len();
+    app.click(cx, "profile-username");
+    assert_eq!(app.system.clipboard().as_deref(), Some("me"));
+    assert!(
+        app.label_of(cx, "announcements")
+            .contains("Username copied")
+    );
+    assert_eq!(app.backend.asked().len(), before, "nothing was asked");
+}
+
+#[gpui_kit::test]
+async fn an_account_both_follow_is_marked_friend_and_not_follows_you(cx: &mut TestAppContext) {
+    let app = own_profile(cx, me()).await;
+    assert!(!shown(&app, cx, "profile-friend"), "the own profile");
+    assert!(!shown(&app, cx, "profile-follows-you"), "the own profile");
+
+    // user0 follows the account in use and is followed by it.
+    app.click(cx, "profile-following");
+    app.until(cx, |window, _| {
+        window.try_find(("person", 0usize)).is_some()
+    })
+    .await;
+    app.in_window(cx, |window, cx| window.click(("person", 0usize), cx));
+    app.until(cx, |window, _| window.try_find("profile-friend").is_some())
+        .await;
+    app.in_window(cx, |window, _| {
+        let friend = window.find("profile-friend");
+        assert_eq!(friend.role(), Some(Role::Label));
+        assert_eq!(friend.label(), Some("Friend"));
+        assert!(window.try_find("profile-follows-you").is_none());
+    });
+}
+
+#[gpui_kit::test]
+async fn a_highlight_s_cover_is_an_upright_rectangle_its_picture_fills_at_every_text_size(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("cover.png");
+    // Far taller than the cover: what stretched a cover before.
+    image::RgbaImage::from_pixel(10, 40, image::Rgba([200, 40, 120, 255]))
+        .save(&file)
+        .unwrap();
+    for text_scale in [1.0, 2.0] {
+        let backend = me();
+        backend.script(|script| {
+            script.highlight_cover(file.clone());
+        });
+        let app = common::open_with(
+            cx,
+            backend,
+            snob_desktop::system::Settings {
+                text_scale,
+                ..Default::default()
+            },
+        );
+        app.until_screen(cx, |screen| *screen == Screen::Home).await;
+        app.click(cx, "account");
+        app.click(cx, "menu-profile");
+        app.until(cx, |window, _| {
+            window
+                .try_find(("profile-highlight-picture", 0usize))
+                .is_some()
+        })
+        .await;
+        cx.run_until_parked();
+        let (cover, picture) = app.in_window(cx, |window, _| {
+            (
+                window.find(("profile-highlight-cover", 0usize)).bounds(),
+                window.find(("profile-highlight-picture", 0usize)).bounds(),
+            )
+        });
+        assert_eq!(
+            (cover.size.width, cover.size.height),
+            (px(72. * text_scale), px(100. * text_scale)),
+            "at {text_scale}"
+        );
+        assert_eq!(
+            picture, cover,
+            "at {text_scale}: the picture fills its cover"
+        );
+    }
+}
+
+#[gpui_kit::test]
+async fn every_control_of_the_page_that_shows_no_words_is_named_and_at_least_24_square(
+    cx: &mut TestAppContext,
+) {
+    let app = own_profile(cx, me()).await;
+    for layout in ["stacked", "split"] {
+        app.in_window(cx, |window, _| {
+            for id in [
+                "profile-picture",
+                "profile-grid",
+                "profile-list",
+                "profile-layout",
+                "profile-options",
+                "profile-username",
+            ] {
+                let control = window.find(id);
+                assert!(control.role().is_some(), "{layout}: {id} has no role");
+                assert!(
+                    !control.label().unwrap_or_default().is_empty(),
+                    "{layout}: {id} has no name"
+                );
+                let size = control.bounds().size;
+                assert!(
+                    size.width >= px(24.) && size.height >= px(24.),
+                    "{layout}: {id} is {size:?}"
+                );
+            }
+        });
+        app.click(cx, "profile-layout");
+    }
+}

@@ -27,13 +27,13 @@ use gpui_kit::{
 use super::handle;
 use crate::backend::{Account, Profile, Tile, TileKind, Tiles, Unread};
 use crate::state::flow::Named;
-use crate::state::profile::{self, Layout, Showing, Side, Tab};
+use crate::state::profile::{self, Layout, Mark, Showing, Side, Tab};
 use crate::theme::motion;
 use crate::theme::tokens::{frame, shape};
 use crate::ui::assets;
 use crate::ui::frame::clock;
 use crate::ui::look::{Look, color, color_at, sp};
-use crate::ui::parts::{self, icon};
+use crate::ui::parts::{self, Tone, icon};
 use crate::ui::shell::{Phase, PopupKind, Shell, TabRead, eased};
 
 /// The picture's size in the card above the posts, and in the card at the
@@ -59,6 +59,16 @@ const TILE_STAGGER_MOST: Duration = Duration::from_millis(340);
 
 /// How far a hidden or unread profile's part is from the page's top.
 const STATUS_PAD: f32 = 48.0;
+
+/// A highlight's cover: a rounded upright rectangle a little taller than
+/// three by four.
+const HIGHLIGHT_WIDTH: f32 = 72.0;
+const HIGHLIGHT_HEIGHT: f32 = 100.0;
+const HIGHLIGHT_RADIUS: f32 = 12.0;
+
+/// How wide the page must be, at the default text size, for the bar to say
+/// in words how the posts are shown: under it, the buttons alone.
+const NAMED_VIEW_FROM: f32 = 560.0;
 
 /// Why something of a profile was not read, said as what happened and what
 /// to do.
@@ -174,6 +184,7 @@ pub fn render(
     };
     let layout = shell.pages.layout;
     let showing = shell.pages.showing;
+    let showing_from = shell.pages.showing_from;
     let popup = shell.pages.popup.as_ref().map(|popup| popup.kind);
 
     // A layout changed comes in again, from a little under its place.
@@ -187,25 +198,32 @@ pub fn render(
         phase.rise + moved.travels * (1.0 - settled),
     );
 
-    // How wide the posts have to be laid in.
+    // How wide the page is, and the posts have to be laid in.
     let scale = look.settings.text_scale();
-    let room = f32::from(window.viewport_size().width)
-        - frame::RAIL
-        - frame::SIDE
-        - 64.0 * scale
-        - if layout == Layout::Split {
-            CARD_WIDTH * scale
-        } else {
-            0.0
-        };
+    let page_room =
+        f32::from(window.viewport_size().width) - frame::RAIL - frame::SIDE - 64.0 * scale;
+    let page_room = match layout {
+        Layout::Stacked => page_room.min(STACKED_WIDTH * scale),
+        Layout::Split => page_room,
+    };
     let room = match layout {
-        Layout::Stacked => room.min(STACKED_WIDTH * scale),
-        Layout::Split => room,
+        Layout::Stacked => page_room,
+        Layout::Split => page_room - CARD_WIDTH * scale,
     };
     let columns = profile::columns(room, WIDEST_TILE);
 
-    let top = top_bar(layout, showing, &look, cx);
-    let posts = posts(&shown, showing, columns, &look, window, cx);
+    let options = options(shell, &shown, popup, &look, window, cx);
+    let tools = bar(
+        layout,
+        showing,
+        showing_from,
+        options,
+        page_room >= NAMED_VIEW_FROM * scale,
+        &look,
+        window,
+        cx,
+    );
+    let posts = posts(&shown, showing, showing_from, columns, &look, window, cx);
 
     let page = match layout {
         Layout::Stacked => div()
@@ -224,8 +242,16 @@ pub fn render(
                     .flex()
                     .flex_col()
                     .gap(sp(22.))
-                    .child(top)
-                    .child(card(shell, &shown, layout, popup, &look, window, cx))
+                    .child(card(
+                        shell,
+                        &shown,
+                        layout,
+                        popup,
+                        Some(tools),
+                        &look,
+                        window,
+                        cx,
+                    ))
                     .child(posts),
             ),
         Layout::Split => {
@@ -251,7 +277,7 @@ pub fn render(
                         .px(sp(32.))
                         .pt(sp(18.))
                         .pb(sp(12.))
-                        .child(top),
+                        .child(tools),
                 )
                 .child(
                     div()
@@ -259,18 +285,33 @@ pub fn render(
                         .min_h_0()
                         .flex()
                         .child(
+                            // The border is the column's, so the card's own
+                            // box can reach past it for a focus ring.
                             div()
-                                .id("profile-card")
                                 .flex_none()
                                 .w(sp(CARD_WIDTH))
                                 .h_full()
-                                .overflow_y_scroll()
-                                .pl(sp(32.))
-                                .pr(sp(20.))
-                                .pb(sp(32.))
+                                .flex()
+                                .flex_col()
                                 .border_r_1()
                                 .border_color(color(look.palette.line))
-                                .child(card(shell, &shown, layout, popup, &look, window, cx)),
+                                .child(
+                                    // Room above for a focus ring; the
+                                    // padding below is room enough.
+                                    div()
+                                        .id("profile-card")
+                                        .flex_1()
+                                        .min_h_0()
+                                        .overflow_y_scroll()
+                                        .pt(px(shape::FOCUS_ROOM))
+                                        .mt(px(-shape::FOCUS_ROOM))
+                                        .pl(sp(32.))
+                                        .pr(sp(20.))
+                                        .pb(sp(32.))
+                                        .child(card(
+                                            shell, &shown, layout, popup, None, &look, window, cx,
+                                        )),
+                                ),
                         )
                         .child(
                             div()
@@ -278,13 +319,18 @@ pub fn render(
                                 .min_w_0()
                                 .h_full()
                                 .relative()
+                                .flex()
+                                .flex_col()
                                 .child(
                                     div()
                                         .id("profile-posts")
                                         .test_support()
-                                        .size_full()
+                                        .flex_1()
+                                        .min_h_0()
                                         .overflow_y_scroll()
                                         .track_scroll(&shown.scroll)
+                                        .pt(px(shape::FOCUS_ROOM))
+                                        .mt(px(-shape::FOCUS_ROOM))
                                         .px(sp(24.))
                                         .pb(sp(40.))
                                         .child(posts),
@@ -309,73 +355,215 @@ pub fn render(
         .into_any_element()
 }
 
-/// How the page is laid out and its posts shown; the way back is the
-/// band's.
-fn top_bar(layout: Layout, showing: Showing, look: &Look, cx: &mut Context<Shell>) -> Div {
+/// The bar, on one line: how the posts are shown, said in words when
+/// `named` and chosen beside them, the layout, and the options. The way
+/// back is the band's.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the bar's state, the options built with their menu, and the view"
+)]
+fn bar(
+    layout: Layout,
+    showing: Showing,
+    showing_from: Option<(Showing, Instant)>,
+    options: Div,
+    named: bool,
+    look: &Look,
+    window: &mut Window,
+    cx: &mut Context<Shell>,
+) -> AnyElement {
     let grid = showing == Showing::Grid;
     let to_split = layout == Layout::Stacked;
     div()
+        .id("profile-bar")
+        .test_support()
         .flex()
-        .flex_wrap()
+        .flex_none()
         .items_center()
+        .justify_end()
         .gap(sp(10.))
-        .child(div().flex_1())
+        .when(named, |bar| {
+            bar.child(view_words(showing, showing_from, look, window))
+        })
         .child(
             parts::segmented("profile-showing", look.tr("profile-showing"), look)
                 .child(
-                    parts::icon_segment(
-                        "profile-grid",
-                        look.tr("profile-grid"),
-                        assets::GRID,
-                        grid,
-                        look,
-                    )
-                    .on_click(cx.listener(|shell, _, _, cx| {
-                        shell.show_posts_as(Showing::Grid, cx);
-                    })),
+                    showing_segment(Showing::Grid, grid, look).on_click(cx.listener(
+                        |shell, _, _, cx| {
+                            shell.show_posts_as(Showing::Grid, cx);
+                        },
+                    )),
                 )
                 .child(
-                    parts::icon_segment(
-                        "profile-list",
-                        look.tr("profile-list"),
-                        assets::LIST,
-                        !grid,
-                        look,
-                    )
-                    .on_click(cx.listener(|shell, _, _, cx| {
-                        shell.show_posts_as(Showing::List, cx);
-                    })),
+                    showing_segment(Showing::List, !grid, look).on_click(cx.listener(
+                        |shell, _, _, cx| {
+                            shell.show_posts_as(Showing::List, cx);
+                        },
+                    )),
                 ),
         )
         .child(
-            parts::icon_button(
-                "profile-layout",
-                look.tr(if to_split {
-                    "profile-layout-split"
-                } else {
-                    "profile-layout-stacked"
-                }),
-                if to_split {
-                    assets::LAYOUT_SPLIT
-                } else {
-                    assets::LAYOUT_STACKED
-                },
-                true,
-                look,
-            )
-            .w(sp(36.))
-            .h(sp(36.))
-            .on_click(cx.listener(|shell, _, _, cx| shell.change_the_layout(cx))),
+            layout_button(to_split, look)
+                .on_click(cx.listener(|shell, _, _, cx| shell.change_the_layout(cx))),
         )
+        .child(options)
+        .into_any_element()
+}
+
+/// One of the two ways posts are shown, as a drawing with its tip.
+fn showing_segment(showing: Showing, on: bool, look: &Look) -> Button {
+    let (id, drawing) = match showing {
+        Showing::Grid => ("profile-grid", assets::GRID),
+        Showing::List => ("profile-list", assets::LIST),
+    };
+    parts::icon_segment(id, look.tr(id), drawing, on, look)
+}
+
+/// What puts the card beside the posts, or above them.
+fn layout_button(to_split: bool, look: &Look) -> Button {
+    parts::icon_button(
+        "profile-layout",
+        look.tr(if to_split {
+            "profile-layout-split"
+        } else {
+            "profile-layout-stacked"
+        }),
+        if to_split {
+            assets::LAYOUT_SPLIT
+        } else {
+            assets::LAYOUT_STACKED
+        },
+        true,
+        look,
+    )
+    .w(sp(36.))
+    .h(sp(36.))
+}
+
+/// What opens the options, enabled once the profile is known.
+fn options_button(enabled: bool, look: &Look) -> Button {
+    parts::icon_button(
+        "profile-options",
+        look.tr("profile-options"),
+        assets::MORE,
+        enabled,
+        look,
+    )
+    .w(sp(34.))
+    .h(sp(34.))
+}
+
+/// The options' button, kept where it was drawn, with its menu when open.
+fn options(
+    shell: &Shell,
+    shown: &Shown,
+    popup: Option<PopupKind>,
+    look: &Look,
+    window: &mut Window,
+    cx: &mut Context<Shell>,
+) -> Div {
+    let button = options_button(shown.profile.is_some(), look)
+        .track_focus(&shown.options_button)
+        .aria_expanded(popup == Some(PopupKind::Options))
+        .on_click(cx.listener(|shell, _, window, cx| {
+            shell.open_a_popup(PopupKind::Options, window, cx);
+        }));
+    parts::drawn_at(
+        &shown.options_drawn,
+        popup == Some(PopupKind::Options),
+        button,
+    )
+    .children(popup_menu(
+        shell,
+        PopupKind::Options,
+        shown.options_drawn.get(),
+        look,
+        window,
+        cx,
+    ))
+}
+
+/// What a way of showing posts is called in words.
+fn showing_words(showing: Showing, look: &Look) -> String {
+    look.tr(match showing {
+        Showing::Grid => "profile-showing-grid",
+        Showing::List => "profile-showing-list",
+    })
+}
+
+/// How the posts are shown, in words, crossing from the words of how they
+/// were: the old ones leave upward and the new ones come from under them.
+/// **As wide as the wider of the two at all times**, so nothing beside them
+/// moves. Not a control: the buttons beside it carry the choice.
+fn view_words(
+    showing: Showing,
+    from: Option<(Showing, Instant)>,
+    look: &Look,
+    window: &mut Window,
+) -> AnyElement {
+    let palette = look.palette;
+    let moved = look.moved(motion::ENTER, 6.0, 1.0);
+    let crossed = from.map_or(1.0, |(_, since)| eased(since, moved.lasts, window));
+    let (leaving, coming) = profile::crossing(crossed);
+    let words = |showing: Showing, shown: f32, rise: f32| {
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .top(px(rise))
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_end()
+            .whitespace_nowrap()
+            .opacity(shown)
+            .child(showing_words(showing, look))
+    };
+    let other = match showing {
+        Showing::Grid => Showing::List,
+        Showing::List => Showing::Grid,
+    };
+    div()
+        .id("profile-showing-words")
+        .test_support()
+        .aria_label(showing_words(showing, look))
+        .relative()
+        .flex_none()
+        .h(sp(28.))
+        .text_size(sp(13.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(color(palette.secondary))
+        // Both, in no height: what holds the widest of them.
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .h(px(0.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .child(showing_words(Showing::Grid, look))
+                .child(showing_words(Showing::List, look)),
+        )
+        .when(leaving > 0.0, |held| {
+            held.child(words(other, leaving, -moved.travels * (1.0 - leaving)))
+        })
+        .child(words(showing, coming, moved.travels * (1.0 - coming)))
+        .into_any_element()
 }
 
 /// The card: the picture, the names, the bio, the counters and the
-/// highlights; across the page or down its left.
+/// highlights; across the page, with the bar beside the names, or down its
+/// left.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the card's state, the bar it may hold, and the view"
+)]
 fn card(
     shell: &Shell,
     shown: &Shown,
     layout: Layout,
     popup: Option<PopupKind>,
+    bar: Option<AnyElement>,
     look: &Look,
     window: &mut Window,
     cx: &mut Context<Shell>,
@@ -405,33 +593,6 @@ fn card(
         cx,
     ));
     let names = names(shell, shown, &named, look, cx);
-    let options = parts::icon_button(
-        "profile-options",
-        look.tr("profile-options"),
-        assets::MORE,
-        shown.profile.is_some(),
-        look,
-    )
-    .w(sp(34.))
-    .h(sp(34.))
-    .track_focus(&shown.options_button)
-    .aria_expanded(popup == Some(PopupKind::Options))
-    .on_click(cx.listener(|shell, _, window, cx| {
-        shell.open_a_popup(PopupKind::Options, window, cx);
-    }));
-    let options = parts::drawn_at(
-        &shown.options_drawn,
-        popup == Some(PopupKind::Options),
-        options,
-    )
-    .children(popup_menu(
-        shell,
-        PopupKind::Options,
-        shown.options_drawn.get(),
-        look,
-        window,
-        cx,
-    ));
     let about = about(shown, look);
     let counters = counters(shown, came, look, cx);
     // The highlights come in when a read changes them, not when it says
@@ -462,14 +623,7 @@ fn card(
             .flex_col()
             .gap(sp(16.))
             .pt(sp(8.))
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .justify_between()
-                    .child(picture)
-                    .child(options),
-            )
+            .child(div().flex().child(picture))
             .child(names)
             .children(failed)
             .child(about)
@@ -499,7 +653,7 @@ fn card(
                                     .items_start()
                                     .gap(sp(10.))
                                     .child(div().flex_1().min_w_0().child(names))
-                                    .child(options),
+                                    .children(bar),
                             )
                             .children(failed)
                             .child(about)
@@ -550,7 +704,8 @@ fn picture(
     let ring = 3.0;
     let gap = 3.0;
     Button::new("profile-picture")
-        .accessibility_label(label)
+        .accessibility_label(label.clone())
+        .tooltip(parts::tip(label))
         .disabled(shown.profile.is_none())
         .track_focus(&shown.picture_button)
         .when(story, |button| {
@@ -684,14 +839,14 @@ fn popup_menu(
 }
 
 /// The names: the real name large and the username beside it, underlined in
-/// pink as the welcome has it. **The page's title**, where focus goes as it
-/// comes in.
+/// pink as the welcome has it, which a click copies; and the marks under
+/// them. **The page's title**, where focus goes as it comes in.
 fn names(
     shell: &Shell,
     shown: &Shown,
     named: &Named,
     look: &Look,
-    _cx: &mut Context<Shell>,
+    cx: &mut Context<Shell>,
 ) -> AnyElement {
     let palette = look.palette;
     let at = handle(named);
@@ -712,33 +867,29 @@ fn names(
         Some(full) => look.tr_with("profile-title", &[("name", full), ("account", &at)]),
         None => at.clone(),
     };
-    let username = parts::username(look)
-        .font_weight(FontWeight::MEDIUM)
-        .text_size(sp(if full.is_some() { 17. } else { 24. }))
-        .child(at);
-    let marks = [
-        verified.then(|| look.tr("profile-verified")),
-        private.then(|| look.tr("profile-private-mark")),
-        shown
-            .profile
-            .as_ref()
-            .and_then(|profile| profile.follows_you)
-            .filter(|follows| *follows)
-            .map(|_| look.tr("profile-follows-you")),
-    ];
-    let marks: Vec<Div> = marks
+    let username = username_button(
+        named,
+        shown.profile.is_some(),
+        if full.is_some() { 17. } else { 24. },
+        look,
+    )
+    .on_click(cx.listener(|shell, _, window, cx| {
+        shell.copy_of_the_profile("username", window, cx);
+    }));
+    let marks: Vec<Div> = shown
+        .profile
+        .as_ref()
+        .map(|profile| profile::marks(verified, private, profile.you_follow, profile.follows_you))
+        .unwrap_or_default()
         .into_iter()
-        .flatten()
         .map(|mark| {
-            div()
-                .px(sp(8.))
-                .py(sp(2.))
-                .rounded_full()
-                .border_1()
-                .border_color(color(palette.line))
-                .text_size(sp(12.))
-                .text_color(color(palette.secondary))
-                .child(mark)
+            let (id, tone) = match mark {
+                Mark::Verified => ("profile-verified", Tone::Verified),
+                Mark::Private => ("profile-private-mark", Tone::Plain),
+                Mark::Friend => ("profile-friend", Tone::Friend),
+                Mark::FollowsYou => ("profile-follows-you", Tone::Plain),
+            };
+            parts::badge(id, look.tr(id), tone, look)
         })
         .collect();
     div()
@@ -772,6 +923,31 @@ fn names(
             names.child(div().flex().flex_wrap().gap(sp(6.)).children(marks))
         })
         .into_any_element()
+}
+
+/// The @username, drawn `size` large, as what copies it once the profile is
+/// known.
+fn username_button(named: &Named, known: bool, size: f32, look: &Look) -> Button {
+    let palette = look.palette;
+    let copy = look.tr_with("profile-username-copy", &[("username", &username(named))]);
+    Button::new("profile-username")
+        .accessibility_label(copy.clone())
+        .tooltip(parts::tip(copy))
+        .disabled(!known || named.username.is_none())
+        .min_h(px(shape::MIN_TARGET))
+        .min_w(px(shape::MIN_TARGET))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(shape::CONTROL_RADIUS))
+        .focus_visible(parts::focus_ring(&palette))
+        .cursor_pointer()
+        .child(
+            parts::username(look)
+                .font_weight(FontWeight::MEDIUM)
+                .text_size(sp(size))
+                .child(handle(named)),
+        )
 }
 
 /// The bio, the category and the link the profile names: words to read,
@@ -875,8 +1051,9 @@ fn counters(shown: &Shown, came: f32, look: &Look, cx: &mut Context<Shell>) -> D
         .child(counter(Side::Following))
 }
 
-/// The highlights in a row that scrolls sideways: their covers and titles,
-/// none opened. The wheel turned over them moves them while they can move.
+/// The highlights in a row that scrolls sideways: their covers, rounded
+/// upright rectangles, and their titles under them, none opened. The wheel
+/// turned over them moves them while they can move.
 fn highlights(shown: &Shown, came: f32, look: &Look, window: &mut Window) -> Option<AnyElement> {
     let palette = look.palette;
     let profile = shown.profile.as_ref()?;
@@ -907,25 +1084,34 @@ fn highlights(shown: &Shown, came: f32, look: &Look, window: &mut Window) -> Opt
                 .find(|c| c.is_alphanumeric())
                 .map(|c| c.to_uppercase().collect())
                 .unwrap_or_default();
+            // **Given its proportions**: an image given none takes its own,
+            // which win over its size, and a tall cover overflows its box.
+            let (width, height) = (sp(HIGHLIGHT_WIDTH), sp(HIGHLIGHT_HEIGHT));
             let cover = div()
-                .size(sp(66.))
-                .rounded_full()
-                .border_1()
-                .border_color(color(palette.control_line))
-                .p(px(3.))
+                .id(("profile-highlight-cover", at))
+                .test_support()
+                .flex_none()
+                .w(width)
+                .h(height)
+                .rounded(px(HIGHLIGHT_RADIUS))
+                .overflow_hidden()
                 .child(match &highlight.cover {
                     Some(cover) => {
                         let letter = letter.clone();
                         img(cover.clone())
-                            .size_full()
-                            .rounded_full()
+                            .w(width)
+                            .h(height)
+                            .aspect_ratio(HIGHLIGHT_WIDTH / HIGHLIGHT_HEIGHT)
+                            .rounded(px(HIGHLIGHT_RADIUS))
                             .object_fit(ObjectFit::Cover)
                             .with_fallback(move || {
-                                initial_circle(&letter, palette).into_any_element()
+                                initial_tile(&letter, palette).into_any_element()
                             })
+                            .id(("profile-highlight-picture", at))
+                            .test_support()
                             .into_any_element()
                     }
-                    None => initial_circle(&letter, palette).into_any_element(),
+                    None => initial_tile(&letter, palette).into_any_element(),
                 });
             div()
                 .id(("profile-highlight", at))
@@ -933,7 +1119,7 @@ fn highlights(shown: &Shown, came: f32, look: &Look, window: &mut Window) -> Opt
                 .role(Role::Image)
                 .aria_label(look.tr_with("profile-highlight", &[("title", &highlight.title)]))
                 .flex_none()
-                .w(sp(78.))
+                .w(sp(HIGHLIGHT_WIDTH))
                 .flex()
                 .flex_col()
                 .items_center()
@@ -960,7 +1146,7 @@ fn highlights(shown: &Shown, came: f32, look: &Look, window: &mut Window) -> Opt
             .aria_label(look.tr("profile-highlights"))
             .w_full()
             .flex()
-            .gap(sp(14.))
+            .gap(sp(12.))
             .py(sp(4.))
             .overflow_x_scroll()
             .track_scroll(&shown.highlights)
@@ -987,11 +1173,11 @@ fn highlights(shown: &Shown, came: f32, look: &Look, window: &mut Window) -> Opt
     )
 }
 
-/// The first letter of something with no picture, on a quiet tint.
-fn initial_circle(letter: &str, palette: crate::theme::tokens::Palette) -> Div {
+/// The first letter of a highlight with no cover, on a quiet tint.
+fn initial_tile(letter: &str, palette: crate::theme::tokens::Palette) -> Div {
     div()
         .size_full()
-        .rounded_full()
+        .rounded(px(HIGHLIGHT_RADIUS))
         .bg(color_at(palette.text, 0.07))
         .flex()
         .items_center()
@@ -1028,10 +1214,12 @@ fn tab_icon(tab: Tab) -> &'static str {
 }
 
 /// The tabs, with their underline sliding to the one chosen, and the posts
-/// of that one.
+/// of that one, which come in whole from a little under where they are when
+/// they are shown another way.
 fn posts(
     shown: &Shown,
     showing: Showing,
+    showing_from: Option<(Showing, Instant)>,
     columns: usize,
     look: &Look,
     window: &mut Window,
@@ -1103,13 +1291,22 @@ fn posts(
                 .bg(color(palette.underline)),
         );
 
+    let moved = look.moved(motion::ENTER, 8.0, 1.0);
+    let switched = showing_from.map_or(1.0, |(_, since)| eased(since, moved.lasts, window));
     div()
         .w_full()
         .flex()
         .flex_col()
         .gap(sp(14.))
         .child(tabs)
-        .child(tab_content(shown, showing, columns, look, window))
+        .child(
+            div()
+                .w_full()
+                .relative()
+                .top(px(moved.travels * (1.0 - switched)))
+                .opacity(switched)
+                .child(tab_content(shown, showing, columns, look, window)),
+        )
 }
 
 /// What the chosen tab holds, or why it holds nothing yet.
@@ -1510,6 +1707,35 @@ mod tests {
             let said = unread_words(&why, &look);
             assert!(said.ends_with('.'), "{why:?}: {said}");
             assert!(!said.starts_with("profile-"), "{why:?} has no words");
+        }
+    }
+
+    /// GPUI refuses a second tip on one control in a debug build (the
+    /// assertion in gpui's `div.rs`): a button of the page that refuses one
+    /// has its own. Each refusal prints its panic message.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn every_button_of_the_page_that_shows_no_words_has_its_tip() {
+        let look = Look::of(Settings::default(), false);
+        let has_a_tip = |button: Button| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                drop(button.tooltip(parts::tip("another")));
+            }))
+            .is_err()
+        };
+        let me = Named {
+            pk: 42.into(),
+            username: Some("me".into()),
+        };
+        for (what, button) in [
+            ("grid", showing_segment(Showing::Grid, true, &look)),
+            ("list", showing_segment(Showing::List, false, &look)),
+            ("layout", layout_button(true, &look)),
+            ("the other layout", layout_button(false, &look)),
+            ("options", options_button(true, &look)),
+            ("username", username_button(&me, true, 17., &look)),
+        ] {
+            assert!(has_a_tip(button), "{what} has no tip");
         }
     }
 
