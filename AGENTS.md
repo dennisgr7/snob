@@ -284,8 +284,9 @@ documented reason in the same place.
   `transport.rs`).
 - One browser per account, run by the owner process (`owner/`, hidden
   `__browser-owner`), closed `headless::IDLE` (5 min) after its last request;
-  `SNOB_NO_OWNER=1` makes a command run its own. Nothing that spends no network
-  starts a browser.
+  a browser that shows no tab within `launch::TAB_WAIT` (5 s) is started once
+  more, and the owner's log says why a start failed. `SNOB_NO_OWNER=1` makes
+  a command run its own. Nothing that spends no network starts a browser.
 - REST reads take one path on both transports, `IgClient::rest_read`
   (`client/ask.rs`).
 - The API client follows no redirect; the transport follows them itself, pays

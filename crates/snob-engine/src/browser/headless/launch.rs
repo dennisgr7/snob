@@ -7,6 +7,7 @@
 //! and focus, so a login says of itself what the requests after it will.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
@@ -113,7 +114,18 @@ pub(super) async fn for_requests(
             target: tab_target,
         },
         _,
-    ) = dressed(&cdp, &browser, hints.as_ref(), true).await?;
+    ) = match dressed(&cdp, &browser, hints.as_ref(), true).await {
+        Ok(dressed) => dressed,
+        Err(e) => {
+            // Closed and waited for, not only killed as a drop does, so the
+            // start after this one (`start_when_free`) finds the profile
+            // let go of.
+            if e.is::<NoTab>() {
+                cdp.close().await;
+            }
+            return Err(e);
+        }
+    };
 
     // So that a tab that crashes says so, and the request waiting on it
     // fails at once rather than at its timeout: `Inspector.targetCrashed`
@@ -365,21 +377,111 @@ pub async fn for_a_remote_login(
     })
 }
 
-/// Attaches to the tab the browser opened with, in flat mode so its commands
-/// travel on the same pipe.
-pub(super) async fn attach_to_a_tab(cdp: &Cdp) -> Result<Tab> {
-    let targets = cdp.browser_call("Target.getTargets", json!({})).await?;
-    let page = targets
+/// How long a browser that answers is given to show the tab it opens with.
+/// **Assumed, not measured**: nothing orders a windowless browser's answer
+/// on its pipe before its tab becomes a target, so the first look may find
+/// none. Five seconds is a guess well past that and short beside a start's
+/// thirty (`cdp::STARTUP_TIMEOUT`); the owner's log, which names what the
+/// browser showed instead ([`NoTab`]), is what will settle it.
+pub(super) const TAB_WAIT: Duration = Duration::from_secs(5);
+
+/// How often the browser is asked for its targets during [`TAB_WAIT`], the
+/// pace at which `Cdp::connect` asks whether it answers.
+const TAB_ASKED_EVERY: Duration = Duration::from_millis(100);
+
+/// A browser that answered but showed no tab within [`TAB_WAIT`], and the
+/// kinds of target it showed instead, so a log says what it opened.
+#[derive(Debug)]
+pub(super) struct NoTab {
+    seen: Vec<String>,
+    waited: Duration,
+}
+
+impl std::fmt::Display for NoTab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let seen = if self.seen.is_empty() {
+            "none".to_string()
+        } else {
+            self.seen.join(", ")
+        };
+        write!(
+            f,
+            "the browser opened no tab in {} s (its targets: {seen})",
+            self.waited.as_secs()
+        )
+    }
+}
+
+impl std::error::Error for NoTab {}
+
+/// The id of the first tab among the browser's `targets` (its answer to
+/// `Target.getTargets`), or else every kind of target it named, once each.
+fn first_page(targets: &Value) -> Result<String, Vec<String>> {
+    let all = targets
         .get("targetInfos")
         .and_then(Value::as_array)
-        .and_then(|all| {
-            all.iter()
-                .find(|t| t.get("type").and_then(Value::as_str) == Some("page"))
-        })
-        .and_then(|t| t.get("targetId"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("the browser opened no tab"))?
-        .to_string();
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let page = all
+        .iter()
+        .filter(|t| t.get("type").and_then(Value::as_str) == Some("page"))
+        .find_map(|t| t.get("targetId").and_then(Value::as_str));
+    if let Some(page) = page {
+        return Ok(page.to_string());
+    }
+    let mut seen: Vec<String> = Vec::new();
+    for kind in all
+        .iter()
+        .filter_map(|t| t.get("type").and_then(Value::as_str))
+    {
+        if !seen.iter().any(|s| s == kind) {
+            seen.push(kind.to_string());
+        }
+    }
+    Err(seen)
+}
+
+/// The first tab `ask` names, asked again every `every` until `wait` is
+/// over, then [`NoTab`]. A call that fails is the answer, not asked again.
+async fn wait_for_a_page<F, Fut>(mut ask: F, wait: Duration, every: Duration) -> Result<String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<Value>>,
+{
+    let started = tokio::time::Instant::now();
+    let mut said: Option<Vec<String>> = None;
+    loop {
+        let seen = match first_page(&ask().await?) {
+            Ok(page) => return Ok(page),
+            Err(seen) => seen,
+        };
+        let waited = started.elapsed();
+        if waited >= wait {
+            return Err(NoTab { seen, waited }.into());
+        }
+        if said.as_ref() != Some(&seen) {
+            tracing::debug!(?seen, "no tab yet");
+            said = Some(seen);
+        }
+        tokio::time::sleep(every).await;
+    }
+}
+
+/// Whether a start that failed with `error` is made once more: one whose
+/// browser showed no tab is, once (`relaunched` says it already was).
+pub(super) fn start_again(error: &anyhow::Error, relaunched: bool) -> bool {
+    !relaunched && error.is::<NoTab>()
+}
+
+/// Attaches to the tab the browser opened with, in flat mode so its commands
+/// travel on the same pipe, once it shows one ([`TAB_WAIT`]).
+pub(super) async fn attach_to_a_tab(cdp: &Cdp) -> Result<Tab> {
+    let page = wait_for_a_page(
+        || cdp.browser_call("Target.getTargets", json!({})),
+        TAB_WAIT,
+        TAB_ASKED_EVERY,
+    )
+    .await?;
     let attached = cdp
         .browser_call(
             "Target.attachToTarget",
@@ -403,4 +505,130 @@ pub(super) struct Tab {
     pub(super) session: String,
     /// The target it is, whose address the browser reports as it changes.
     pub(super) target: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn targets(kinds: &[(&str, &str)]) -> Value {
+        let infos: Vec<Value> = kinds
+            .iter()
+            .map(|(kind, id)| json!({ "type": kind, "targetId": id }))
+            .collect();
+        json!({ "targetInfos": infos })
+    }
+
+    #[test]
+    fn the_first_tab_is_picked_and_without_one_every_target_type_is_named() {
+        let found = first_page(&targets(&[
+            ("service_worker", "w"),
+            ("page", "first"),
+            ("page", "second"),
+        ]));
+        assert_eq!(found, Ok("first".to_string()));
+
+        let none = first_page(&targets(&[
+            ("service_worker", "w1"),
+            ("browser", "b"),
+            ("service_worker", "w2"),
+        ]));
+        assert_eq!(
+            none,
+            Err(vec!["service_worker".to_string(), "browser".to_string()])
+        );
+
+        assert_eq!(first_page(&json!({})), Err(Vec::new()));
+        assert_eq!(
+            first_page(&json!({ "targetInfos": "not a list" })),
+            Err(Vec::new())
+        );
+        // A page without an id is no tab to attach to.
+        assert_eq!(
+            first_page(&json!({ "targetInfos": [{ "type": "page" }] })),
+            Err(vec!["page".to_string()])
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_tab_that_comes_late_is_waited_for() {
+        let started = tokio::time::Instant::now();
+        let mut asked = 0;
+        let page = wait_for_a_page(
+            || {
+                asked += 1;
+                let shown = if asked < 4 {
+                    targets(&[("service_worker", "w")])
+                } else {
+                    targets(&[("page", "late")])
+                };
+                async move { Ok(shown) }
+            },
+            TAB_WAIT,
+            TAB_ASKED_EVERY,
+        )
+        .await
+        .unwrap();
+        assert_eq!(page, "late");
+        assert_eq!(asked, 4);
+        assert_eq!(started.elapsed(), TAB_ASKED_EVERY * 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_browser_that_never_opens_a_tab_is_given_up_on_naming_what_it_opened() {
+        let started = tokio::time::Instant::now();
+        let mut asked = 0u32;
+        let error = wait_for_a_page(
+            || {
+                asked += 1;
+                async { Ok(targets(&[("service_worker", "w"), ("browser", "b")])) }
+            },
+            TAB_WAIT,
+            TAB_ASKED_EVERY,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.is::<NoTab>(), "{error:#}");
+        assert_eq!(
+            error.to_string(),
+            "the browser opened no tab in 5 s (its targets: service_worker, browser)"
+        );
+        assert_eq!(started.elapsed(), TAB_WAIT);
+        // Asked at once, then every tenth of a second up to the wait's end.
+        assert_eq!(asked, 51);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_call_for_the_targets_is_not_asked_again() {
+        let started = tokio::time::Instant::now();
+        let mut asked = 0;
+        let error = wait_for_a_page(
+            || {
+                asked += 1;
+                async { Err(anyhow!("the browser stopped answering (Target.getTargets)")) }
+            },
+            TAB_WAIT,
+            TAB_ASKED_EVERY,
+        )
+        .await
+        .unwrap_err();
+        assert!(!error.is::<NoTab>(), "{error:#}");
+        assert_eq!(asked, 1);
+        assert_eq!(started.elapsed(), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_browser_that_shows_no_tab_is_started_once_more_and_no_more() {
+        let no_tab = || {
+            anyhow::Error::from(NoTab {
+                seen: vec!["service_worker".to_string()],
+                waited: TAB_WAIT,
+            })
+            .context("could not dress the tab")
+        };
+        assert!(start_again(&no_tab(), false));
+        assert!(!start_again(&no_tab(), true));
+        let other = anyhow!("could not start Chrome without a window");
+        assert!(!start_again(&other, false));
+    }
 }

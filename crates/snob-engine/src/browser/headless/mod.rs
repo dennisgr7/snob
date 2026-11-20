@@ -674,7 +674,7 @@ impl Headless {
 
     /// Starts the browser, in a process with no owner once no other snob's
     /// holds the profile: looked at again every [`PROFILE_RETRY`], until
-    /// Ctrl+C.
+    /// Ctrl+C. One that shows no tab ([`launch::NoTab`]) is started once more.
     ///
     /// **Asks whether the session was signed out of before every start**
     /// (`owner::signed_out`), and starts nothing once it was: the wait may last
@@ -688,6 +688,7 @@ impl Headless {
     ) -> Result<Live, PageError> {
         let mut told = false;
         let mut waited = Duration::ZERO;
+        let mut relaunched = false;
         loop {
             if crate::browser::owner::signed_out(&self.paths, session) {
                 return Err(PageError::SignedOutHere);
@@ -697,12 +698,17 @@ impl Headless {
                 Err(e) => e,
                 Ok(started) => return Ok(started),
             };
+            if launch::start_again(&error, relaunched) {
+                self.say_why_not_started(session, &format!("{error:#}"), true);
+                relaunched = true;
+                continue;
+            }
             let Some(in_use) = error.downcast_ref::<crate::browser::cdp::ProfileInUse>() else {
-                return Err(broken(error));
+                return Err(self.not_started(session, error));
             };
             if !self.waits.load(Ordering::SeqCst) {
                 let Some(pause) = letting_go(in_use.handed_over(), waited) else {
-                    return Err(broken(error));
+                    return Err(self.not_started(session, error));
                 };
                 tracing::debug!(
                     waited_ms = waited.as_millis(),
@@ -723,8 +729,38 @@ impl Headless {
                 .sleep_or_cancel(PROFILE_RETRY)
                 .await
             {
+                // Stopped by the person, not a start that failed.
                 return Err(broken(error));
             }
+        }
+    }
+
+    /// A start given up on, as [`broken`] reports it, and said in the log
+    /// first ([`Headless::say_why_not_started`]).
+    fn not_started(&self, session: &Session, error: anyhow::Error) -> PageError {
+        let said = format!("{error:#}");
+        self.say_why_not_started(session, &said, false);
+        PageError::Browser(said)
+    }
+
+    /// Says in the log why a start failed, and whether it is made `again`.
+    /// **A warning in the owner**, whose start is answered to its client
+    /// only, so its log is where why it failed is read afterward; a note
+    /// where the process reports the failure itself ([`alone`]), which a
+    /// terminal would otherwise print twice. A start's errors name the
+    /// browser, its profile and its pipe, never the session, which the tab
+    /// is handed only once started (`sync_cookies`).
+    fn say_why_not_started(&self, session: &Session, said: &str, again: bool) {
+        let account = &session.ds_user_id;
+        let next = if again {
+            "starting it once more"
+        } else {
+            "giving up"
+        };
+        if self.waits.load(Ordering::SeqCst) {
+            tracing::info!(%account, error = %said, next, "the browser could not be started");
+        } else {
+            tracing::warn!(%account, error = %said, next, "the browser could not be started");
         }
     }
 }

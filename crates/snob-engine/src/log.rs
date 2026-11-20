@@ -810,7 +810,8 @@ mod tests {
         assert!(!quiet.would_enable("snob_ig::client", &Level::INFO));
         assert!(!quiet.would_enable("snob_engine::browser::owner::server", &Level::INFO));
 
-        // The owner says when it starts, and otherwise no more than a command.
+        // The owner says when it starts, listens and leaves, and otherwise no
+        // more than a command.
         let (owner, _) = filter(false, None, true);
         assert!(owner.would_enable("snob_engine::browser::owner::server", &Level::INFO));
         assert!(!owner.would_enable("snob_engine::browser::owner::server", &Level::DEBUG));

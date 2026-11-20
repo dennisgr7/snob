@@ -138,10 +138,10 @@ pub(super) async fn run_on(
 ) -> anyhow::Result<()> {
     snob_store::paths::create_private_dir(paths.data_dir())?;
     let Some(listener) = socket::bind(paths)? else {
-        tracing::debug!("another owner of the browsers is running");
+        tracing::info!("another owner of the browsers is running");
         return Ok(());
     };
-    tracing::debug!(
+    tracing::info!(
         pid = std::process::id(),
         "the owner of the browsers is listening"
     );
@@ -204,7 +204,7 @@ pub(super) async fn run_on(
     // The window holding the end of the session may let it go now.
     #[cfg(windows)]
     super::end_of_session::closed();
-    tracing::debug!("the owner of the browsers is leaving");
+    tracing::info!("the owner of the browsers is leaving");
     Ok(())
 }
 
