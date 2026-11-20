@@ -179,11 +179,12 @@ fn question(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Option<A
 }
 
 /// A round button over the dark backdrop, its drawing light whatever the
-/// theme.
+/// theme, its name as its tip.
 fn over_button(id: &'static str, label: String, drawing: &'static str, look: &Look) -> Button {
     let palette = look.palette;
     Button::new(id)
-        .accessibility_label(label)
+        .accessibility_label(label.clone())
+        .tooltip(parts::tip(label))
         .size(sp(40.))
         .rounded_full()
         .flex()

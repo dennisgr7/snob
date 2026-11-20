@@ -485,3 +485,85 @@ viewer-saved = Saved as { $file }
 viewer-not-saved = The picture could not be saved.
 viewer-copied = Picture copied
 viewer-not-copied = The picture could not be copied.
+
+## Shared: what several screens say the same way. A count of one has a
+## message of its own, its id and `-one` (`Look::tr_count`): every value is
+## put in as a string, which never selects a Fluent variant.
+
+count-accounts = { $count } accounts
+count-accounts-one = { $count } account
+list-and = { $first } and { $last }
+month-jan = January
+month-feb = February
+month-mar = March
+month-apr = April
+month-may = May
+month-jun = June
+month-jul = July
+month-aug = August
+month-sep = September
+month-oct = October
+month-nov = November
+month-dec = December
+month-short-jan = Jan
+month-short-feb = Feb
+month-short-mar = Mar
+month-short-apr = Apr
+month-short-may = May
+month-short-jun = Jun
+month-short-jul = Jul
+month-short-aug = Aug
+month-short-sep = Sep
+month-short-oct = Oct
+month-short-nov = Nov
+month-short-dec = Dec
+weekday-mon = Monday
+weekday-tue = Tuesday
+weekday-wed = Wednesday
+weekday-thu = Thursday
+weekday-fri = Friday
+weekday-sat = Saturday
+weekday-sun = Sunday
+weekday-short-mon = Mon
+weekday-short-tue = Tue
+weekday-short-wed = Wed
+weekday-short-thu = Thu
+weekday-short-fri = Fri
+weekday-short-sat = Sat
+weekday-short-sun = Sun
+nth-first = first
+nth-second = second
+nth-third = third
+nth-fourth = fourth
+nth-last = last
+# How this language tells the time of day: 12 or 24 hours.
+clock-hours = 12
+clock-24 = { $hour }:{ $minute }
+clock-am = { $hour }:{ $minute } AM
+clock-pm = { $hour }:{ $minute } PM
+day-today = today
+day-yesterday = yesterday
+date-this-year = { $month } { $day }
+date-other-year = { $month } { $day }, { $year }
+# A moment is said with its hour: `-one` is for the hour 1, which some
+# languages say in the singular.
+moment-today = Today at { $time }
+moment-today-one = Today at { $time }
+moment-yesterday = Yesterday at { $time }
+moment-yesterday-one = Yesterday at { $time }
+moment-this-week = { $weekday } at { $time }
+moment-this-week-one = { $weekday } at { $time }
+moment-this-year = { $date } at { $time }
+moment-this-year-one = { $date } at { $time }
+moment-other-year = { $date } at { $time }
+moment-other-year-one = { $date } at { $time }
+stepper-less = Fewer: { $what }
+stepper-more = More: { $what }
+
+## Profile: a profile's page, its options and what it tells of the account.
+
+## People: the lists of followers and following, and choosing in them.
+
+## Automations: the list, an automation's page and its runs, and the editor.
+
+## Schedule: when an automation runs, chosen in its dialog and said in words.

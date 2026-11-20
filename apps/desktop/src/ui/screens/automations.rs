@@ -15,7 +15,6 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::base::{Button, TestSupportExt as _};
 use gpui_kit::component::input::Input;
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, Bounds, ContentMask, Context, Corners, Div, FontWeight, Role, Window, canvas, div,
@@ -436,7 +435,7 @@ pub(super) fn tool_button(
                 .hover(move |style| style.bg(color_at(palette.text, 0.07)))
                 .active(move |style| style.bg(color_at(palette.text, 0.12)))
         })
-        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .tooltip(parts::tip(tip))
         .child(icon(drawing, 16.).text_color(color(if enabled {
             palette.text
         } else {

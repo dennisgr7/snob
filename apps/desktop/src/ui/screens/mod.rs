@@ -27,7 +27,7 @@ mod splash;
 mod start;
 mod waiting;
 mod welcome;
-mod words;
+pub mod words;
 
 /// An account as a sentence names it: its username with the at sign, or
 /// its number while no name is known.

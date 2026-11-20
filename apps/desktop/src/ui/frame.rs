@@ -19,7 +19,6 @@
 //! anything.
 
 use gpui_kit::base::{Button, ObservedElement, TestSupportExt as _};
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, Context, CursorStyle, Decorations, Div, FontWeight, MouseButton,
@@ -390,7 +389,7 @@ fn back(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Option<AnyElemen
                     .hover(move |style| style.bg(color_at(palette.text, 0.07)))
                     .active(move |style| style.bg(color_at(palette.text, 0.12)))
             })
-            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .tooltip(parts::tip(tip))
             .child(icon(assets::BACK, 16.).text_color(color(if can {
                 palette.text
             } else {

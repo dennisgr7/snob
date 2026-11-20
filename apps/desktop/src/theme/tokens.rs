@@ -53,6 +53,9 @@ pub const PANEL_FROM_FRAME: f64 = 1.15;
 /// The brand's pink, the same in both themes.
 pub const PINK: Rgb = Rgb::hex(0xf472b6);
 
+/// Instagram's blue, which marks a verified account in both themes.
+pub const VERIFIED: Rgb = Rgb::hex(0x0095f6);
+
 /// Which of the system's two themes is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Scheme {
@@ -93,6 +96,9 @@ pub struct Palette {
     pub disabled_text: Rgb,
     /// The mark and text of an error. Never the only sign of one.
     pub error: Rgb,
+    /// The outline of a verified account's badge, Instagram's own blue.
+    /// **Never the only sign**: the badge says it in words.
+    pub verified: Rgb,
 }
 
 impl Palette {
@@ -113,6 +119,7 @@ impl Palette {
                 disabled_fill: Rgb::hex(0xe4e4e7),
                 disabled_text: Rgb::hex(0x52525b),
                 error: Rgb::hex(0xb42318),
+                verified: VERIFIED,
             },
             (Scheme::Dark, false) => Self {
                 panel: Rgb::hex(0x000000),
@@ -129,6 +136,7 @@ impl Palette {
                 disabled_fill: Rgb::hex(0x23272f),
                 disabled_text: Rgb::hex(0x9aa1ab),
                 error: Rgb::hex(0xff8a80),
+                verified: VERIFIED,
             },
             // The system asked for more contrast: the frame and the lines
             // stay, drawn in the text's color, and the pink moves to a shade
@@ -148,6 +156,7 @@ impl Palette {
                 disabled_fill: Rgb::hex(0xffffff),
                 disabled_text: Rgb::hex(0x52525b),
                 error: Rgb::hex(0x8f1409),
+                verified: Rgb::hex(0x00569c),
             },
             (Scheme::Dark, true) => Self {
                 panel: Rgb::hex(0x000000),
@@ -164,6 +173,7 @@ impl Palette {
                 disabled_fill: Rgb::hex(0x000000),
                 disabled_text: Rgb::hex(0x9aa1ab),
                 error: Rgb::hex(0xffb4ab),
+                verified: Rgb::hex(0x7cc4ff),
             },
         }
     }
@@ -272,6 +282,11 @@ mod tests {
                 (
                     "a primary button on the panel",
                     best_of(p.accent, p.on_accent, p.panel),
+                    p.panel,
+                ),
+                (
+                    "a verified badge's outline on the panel",
+                    p.verified,
                     p.panel,
                 ),
             ] {

@@ -484,3 +484,85 @@ viewer-saved = Guardada como { $file }
 viewer-not-saved = No se ha podido guardar la foto.
 viewer-copied = Foto copiada
 viewer-not-copied = No se ha podido copiar la foto.
+
+## Compartido (shared): lo que varias pantallas dicen igual. Cuando el
+## número es 1, el mensaje es otro, su id y `-one` (`Look::tr_count`): cada
+## valor entra como texto, que nunca elige una variante de Fluent.
+
+count-accounts = { $count } cuentas
+count-accounts-one = { $count } cuenta
+list-and = { $first } y { $last }
+month-jan = enero
+month-feb = febrero
+month-mar = marzo
+month-apr = abril
+month-may = mayo
+month-jun = junio
+month-jul = julio
+month-aug = agosto
+month-sep = septiembre
+month-oct = octubre
+month-nov = noviembre
+month-dec = diciembre
+month-short-jan = ene
+month-short-feb = feb
+month-short-mar = mar
+month-short-apr = abr
+month-short-may = may
+month-short-jun = jun
+month-short-jul = jul
+month-short-aug = ago
+month-short-sep = sept
+month-short-oct = oct
+month-short-nov = nov
+month-short-dec = dic
+weekday-mon = lunes
+weekday-tue = martes
+weekday-wed = miércoles
+weekday-thu = jueves
+weekday-fri = viernes
+weekday-sat = sábado
+weekday-sun = domingo
+weekday-short-mon = lun
+weekday-short-tue = mar
+weekday-short-wed = mié
+weekday-short-thu = jue
+weekday-short-fri = vie
+weekday-short-sat = sáb
+weekday-short-sun = dom
+nth-first = primer
+nth-second = segundo
+nth-third = tercer
+nth-fourth = cuarto
+nth-last = último
+# Cómo dice la hora este idioma: 12 o 24 horas.
+clock-hours = 24
+clock-24 = { $hour }:{ $minute }
+clock-am = { $hour }:{ $minute } a. m.
+clock-pm = { $hour }:{ $minute } p. m.
+day-today = hoy
+day-yesterday = ayer
+date-this-year = { $day } de { $month }
+date-other-year = { $day } de { $month } de { $year }
+# Un momento se dice con su hora: `-one` es para la 1, que en español va en
+# singular («a la 1:05»).
+moment-today = Hoy a las { $time }
+moment-today-one = Hoy a la { $time }
+moment-yesterday = Ayer a las { $time }
+moment-yesterday-one = Ayer a la { $time }
+moment-this-week = El { $weekday } a las { $time }
+moment-this-week-one = El { $weekday } a la { $time }
+moment-this-year = El { $date } a las { $time }
+moment-this-year-one = El { $date } a la { $time }
+moment-other-year = El { $date } a las { $time }
+moment-other-year-one = El { $date } a la { $time }
+stepper-less = Menos: { $what }
+stepper-more = Más: { $what }
+
+## Perfil (profile): la página de un perfil, sus opciones y lo que cuenta de la cuenta.
+
+## Listas (people): las de seguidores y seguidos, y elegir en ellas.
+
+## Automatizaciones (automations): la lista, la página de una y sus ejecuciones, y el editor.
+
+## Programación (schedule): cuándo se ejecuta una automatización, elegido en su diálogo y dicho en palabras.

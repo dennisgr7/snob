@@ -7,12 +7,12 @@
 //! kept before, and "Save" is there only while the engine's own rules find
 //! nothing wrong with what was typed.
 
-use gpui_kit::base::{Button, FocusTrapElement as _, TestSupportExt as _};
+use gpui_kit::base::{Button, FocusTrapElement as _, POPUP_PRIORITY, TestSupportExt as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Anchor, AnyElement, Context, Entity, FocusHandle, FontWeight, MouseButton, Role, Toggled,
-    anchored, deferred, div, px,
+    Anchor, AnyElement, Context, Entity, FocusHandle, FontWeight, MouseButton, Role, anchored,
+    deferred, div, px,
 };
 use snob_core::automation::{Only, Step, VideoQuality, WebhookFormat, can_join};
 
@@ -204,7 +204,7 @@ fn menu(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> 
             .snap_to_window_with_margin(px(8.))
             .child(shown),
     )
-    .with_priority(1)
+    .with_priority(POPUP_PRIORITY)
     .into_any_element();
     vec![backdrop, placed]
 }
@@ -406,45 +406,6 @@ fn small(id: &'static str, text: String, look: &Look) -> AnyElement {
         .text_color(color(look.palette.secondary))
         .child(parts::said(id, text))
         .into_any_element()
-}
-
-/// A box that is ticked or not, and its words: a press anywhere on them
-/// changes it.
-fn checkbox(id: &'static str, label: String, on: bool, look: &Look) -> Button {
-    let palette = look.palette;
-    Button::new(id)
-        .role(Role::CheckBox)
-        .accessibility_label(label.clone())
-        .aria_toggled(if on { Toggled::True } else { Toggled::False })
-        .w_full()
-        .min_h(sp(28.))
-        .flex()
-        .items_start()
-        .justify_start()
-        .gap(sp(10.))
-        .rounded(px(shape::CONTROL_RADIUS))
-        .focus_visible(parts::focus_ring(&palette))
-        .cursor_pointer()
-        .text_size(sp(14.))
-        .line_height(sp(21.))
-        .text_color(color(palette.text))
-        .child(
-            div()
-                .flex_none()
-                .mt(px(2.))
-                .size(sp(18.))
-                .rounded(px(4.))
-                .border_1()
-                .border_color(color(palette.control_line))
-                .bg(color(if on { palette.accent } else { palette.panel }))
-                .flex()
-                .items_center()
-                .justify_center()
-                .children(
-                    on.then(|| icon(assets::CHECK, 14.).text_color(color(palette.on_accent))),
-                ),
-        )
-        .child(div().text_left().child(label))
 }
 
 /// What is wrong, in words, under the fields; nothing when nothing is.
@@ -661,7 +622,7 @@ fn action_body(dialog: &Dialog, look: &Look, cx: &mut Context<Shell>) -> Vec<Any
     if form.needs_consent() {
         let name = form.username.trim().trim_start_matches('@').to_string();
         body.push(
-            checkbox(
+            parts::checkbox(
                 "action-consent",
                 look.tr_with("action-consent", &[("name", &name)]),
                 form.consent,
@@ -753,7 +714,7 @@ fn webhook_body(dialog: &Dialog, look: &Look, cx: &mut Context<Shell>) -> Vec<An
                 .on_click(cx.listener(move |shell, _, _, cx| shell.choose_the_format(one, cx)))
             }))
             .into_any_element(),
-        checkbox(
+        parts::checkbox(
             "webhook-heartbeat",
             look.tr("webhook-heartbeat"),
             beating,

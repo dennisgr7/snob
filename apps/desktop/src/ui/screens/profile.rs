@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::base::{
-    Align, Button, ElementExt as _, FocusTrapElement as _, Placement, Positioner, Scrollbar,
+    Align, Button, FocusTrapElement as _, POPUP_PRIORITY, Placement, Positioner, Scrollbar,
     TestSupportExt as _,
 };
 use gpui_kit::prelude::*;
@@ -391,7 +391,7 @@ fn card(
         eased(since, look.moved(motion::ENTER, 0.0, 1.0).lasts, window)
     });
 
-    let picture = drawn_at(
+    let picture = parts::drawn_at(
         &shown.picture_drawn,
         popup == Some(PopupKind::Picture),
         picture(shown, &named, split, popup, came, look, cx),
@@ -419,7 +419,7 @@ fn card(
     .on_click(cx.listener(|shell, _, window, cx| {
         shell.open_a_popup(PopupKind::Options, window, cx);
     }));
-    let options = drawn_at(
+    let options = parts::drawn_at(
         &shown.options_drawn,
         popup == Some(PopupKind::Options),
         options,
@@ -576,20 +576,6 @@ fn picture(
         .on_click(cx.listener(|shell, _, window, cx| shell.click_the_picture(window, cx)))
 }
 
-/// What opens a menu, kept where it was last drawn so the menu opens under
-/// it; while that menu is open, the menu follows it on the next frame.
-fn drawn_at(drawn: &Rc<Cell<Bounds<Pixels>>>, open: bool, opener: impl IntoElement) -> Div {
-    let drawn = drawn.clone();
-    div()
-        .flex_none()
-        .on_prepaint(move |bounds, window, _| {
-            if drawn.replace(bounds) != bounds && open {
-                crate::ui::frames::ask(window);
-            }
-        })
-        .child(opener)
-}
-
 /// A small menu under what opened it, over everything else: the story or
 /// the picture, or what can be copied of the account. **Copying is all the
 /// options do**: no follow, no write. The picture's starts at its left edge
@@ -611,22 +597,7 @@ fn popup_menu(
     let moved = look.moved(motion::INTERACTION, 6.0, 1.0);
     let came = eased(popup.since, moved.lasts, window);
     let item = |id: &'static str, label: String, drawing: &'static str| {
-        Button::new(id)
-            .role(Role::MenuItem)
-            .accessibility_label(label.clone())
-            .w_full()
-            .h(sp(40.))
-            .px(sp(10.))
-            .gap(sp(10.))
-            .justify_start()
-            .rounded(px(shape::CONTROL_RADIUS))
-            .text_size(sp(14.))
-            .text_color(color(palette.text))
-            .hover(move |style| style.bg(color(palette.frame)))
-            .focus_visible(parts::focus_ring(&palette))
-            .cursor_pointer()
-            .child(icon(drawing, 16.).text_color(color(palette.text)))
-            .child(label)
+        parts::menu_item(id, label, drawing, look)
     };
     let items: Vec<Button> = match kind {
         PopupKind::Picture => vec![
@@ -707,7 +678,7 @@ fn popup_menu(
                 .margin(px(8.))
                 .child(menu),
         )
-        .with_priority(1)
+        .with_priority(POPUP_PRIORITY)
         .into_any_element(),
     )
 }

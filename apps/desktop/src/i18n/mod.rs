@@ -103,6 +103,22 @@ impl Texts {
             .unwrap_or_else(|| id.to_string())
     }
 
+    /// The message for `count` of something: `{id}-one` when it is one,
+    /// `id` otherwise, with `$count` put in beside `values`. **Two
+    /// messages, not a Fluent selector**: every value is put in as a
+    /// string ([`Self::tr_with`]), and a string never selects `[one]`.
+    pub fn tr_count(&self, id: &str, count: u64, values: &[(&str, &str)]) -> String {
+        let count_text = count.to_string();
+        let mut all = Vec::with_capacity(values.len() + 1);
+        all.push(("count", count_text.as_str()));
+        all.extend_from_slice(values);
+        if count == 1 {
+            self.tr_with(&format!("{id}-one"), &all)
+        } else {
+            self.tr_with(id, &all)
+        }
+    }
+
     /// The message `id` around one value a view draws in its own style:
     /// what comes before it, and what comes after.
     pub fn around(&self, id: &str, name: &str, value: &str) -> (String, String) {
@@ -194,15 +210,26 @@ mod tests {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();
-            for call in [".tr(\"", ".tr_with(\"", ".around(\"", "Msg(\""] {
+            for call in [
+                ".tr(\"",
+                ".tr_with(\"",
+                ".tr_count(\"",
+                ".around(\"",
+                "Msg(\"",
+            ] {
                 let mut rest = text.as_str();
                 while let Some(at) = rest.find(call) {
                     rest = &rest[at + call.len()..];
                     let id: String = rest.chars().take_while(|c| *c != '"').collect();
                     // This file's own examples are not messages.
-                    if !id.starts_with("no-such") {
-                        named.insert(id);
+                    if id.starts_with("no-such") {
+                        continue;
                     }
+                    // A count of one is said by a message of its own.
+                    if call == ".tr_count(\"" {
+                        named.insert(format!("{id}-one"));
+                    }
+                    named.insert(id);
                 }
             }
         }
@@ -255,5 +282,22 @@ mod tests {
             (before.to_string(), ".".to_string())
         );
         assert_eq!(Texts::of("en").tr("no-such-message"), "no-such-message");
+    }
+
+    #[test]
+    fn a_count_of_one_is_said_by_its_own_message_in_every_language() {
+        for (tag, one, many) in [
+            ("en", "1 account", "3 accounts"),
+            ("es", "1 cuenta", "3 cuentas"), // i18n-allow
+        ] {
+            let texts = Texts::of(tag);
+            assert_eq!(texts.tr_count("count-accounts", 1, &[]), one, "{tag}");
+            assert_eq!(texts.tr_count("count-accounts", 3, &[]), many, "{tag}");
+            assert_eq!(
+                texts.tr_count("count-accounts", 0, &[]),
+                texts.tr_with("count-accounts", &[("count", "0")]),
+                "{tag}"
+            );
+        }
     }
 }

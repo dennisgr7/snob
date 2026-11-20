@@ -7,7 +7,6 @@
 //! in logical pixels: twice the text does not widen it.
 
 use gpui_kit::base::{Button, TestSupportExt as _};
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Role, div, px};
 
@@ -103,7 +102,7 @@ pub(crate) fn render(now: &FrameNow, look: &Look, cx: &mut Context<Shell>) -> Op
             })
             .focus_visible(parts::focus_ring(&palette))
             .cursor_pointer()
-            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .tooltip(parts::tip(tip))
             .on_click(cx.listener(move |shell, _, window, cx| shell.go(place, window, cx)))
             .child(
                 gpui_kit::svg()

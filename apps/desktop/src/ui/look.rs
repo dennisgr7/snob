@@ -75,6 +75,12 @@ impl Look {
         self.texts.tr_with(id, values)
     }
 
+    /// The message for `count` of something: `{id}-one` at one, `id`
+    /// otherwise, `$count` put in (`Texts::tr_count`).
+    pub fn tr_count(&self, id: &'static str, count: u64, values: &[(&str, &str)]) -> String {
+        self.texts.tr_count(id, count, values)
+    }
+
     /// A move, or the short fade that replaces it under "reduce motion".
     pub fn moved(&self, lasts: std::time::Duration, travels: f32, scales: f32) -> Move {
         motion::moved(self.settings.reduce_motion, lasts, travels, scales)

@@ -282,7 +282,7 @@ pub fn render(
     });
 
     let shortcut = super::SETTINGS_SHORTCUT;
-    let separator = || div().h(px(1.)).my(sp(6.)).bg(color(palette.line));
+    let separator = || parts::menu_separator(look);
 
     let menu = div()
         .id("account-menu")

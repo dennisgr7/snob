@@ -1,20 +1,30 @@
 //! What the screens are built from: the title a screen is known by, text
-//! that is read, the two buttons, the loading ring, an account's picture.
-//! **Each has its name, its role and its state for a screen reader built
-//! in**, so a screen cannot draw a control that is only a shape.
+//! that is read, the buttons and their tips, boxes to tick, chips and
+//! badges, menus, a select and a list of suggestions, the loading ring, an
+//! account's picture. **Each has its name, its role and its state for a
+//! screen reader built in**, so a screen cannot draw a control that is only
+//! a shape.
 
+use std::cell::Cell;
 use std::f32::consts::TAU;
+use std::rc::Rc;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use gpui_kit::base::{Button, ObservedElement, TestSupportExt as _};
+use gpui_kit::base::{
+    Align, Button, ElementExt as _, ObservedElement, POPUP_PRIORITY, Placement, Positioner,
+    TestSupportExt as _,
+};
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Bounds, BoxShadow, Div, ElementId, FocusHandle, FontWeight, PathBuilder, Pixels,
-    Point, Role, SharedString, Stateful, StyleRefinement, Text, Window, canvas, div, img, point,
-    px, svg,
+    AnyElement, AnyView, App, Bounds, BoxShadow, Context, Div, ElementId, Entity, FocusHandle,
+    FontWeight, MouseDownEvent, PathBuilder, Pixels, Point, Role, SharedString, Stateful,
+    StyleRefinement, Text, Toggled, Window, canvas, deferred, div, img, point, px, svg,
 };
 
+use super::assets;
 use super::look::{Look, color, color_at, sp};
 use crate::backend::Account;
 use crate::theme::fonts::SANS;
@@ -54,6 +64,14 @@ pub fn focus_ring(palette: &Palette) -> impl Fn(StyleRefinement) -> StyleRefinem
             contour(inner, shape::FOCUS_INNER),
         ])
     }
+}
+
+/// What a control that shows no words says when the pointer rests on it:
+/// its own name. **One per control**: GPUI refuses a second, so a control
+/// built here with its tip is never given another.
+pub fn tip(label: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let label = label.into();
+    move |window, cx| Tooltip::new(label.clone()).build(window, cx)
 }
 
 /// The title a screen is known by: its one heading of the first level, and
@@ -117,7 +135,7 @@ pub fn button(
 }
 
 /// A button that shows a drawing and no words: named all the same, for
-/// whoever does not see the drawing.
+/// whoever does not see the drawing, and its name is its [`tip`].
 pub fn icon_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -130,10 +148,12 @@ pub fn icon_button(
     } else {
         look.palette.disabled_text
     };
-    plain_button(id, label, Kind::Secondary, enabled, look)
+    let label = label.into();
+    plain_button(id, label.clone(), Kind::Secondary, enabled, look)
         .w(sp(FIELD_HEIGHT))
         .h(sp(FIELD_HEIGHT))
         .px(px(0.))
+        .tooltip(tip(label))
         .child(icon(drawing, 18.).text_color(color(ink)))
 }
 
@@ -238,7 +258,8 @@ pub fn segment(
 }
 
 /// One option of a [`segmented`] choice drawn as `drawing` alone: named
-/// all the same, for whoever does not see the drawing.
+/// all the same, for whoever does not see the drawing, and its name is its
+/// [`tip`].
 pub fn icon_segment(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -254,7 +275,8 @@ pub fn icon_segment(
     let label = label.into();
     Button::new(id)
         .role(Role::RadioButton)
-        .accessibility_label(label)
+        .accessibility_label(label.clone())
+        .tooltip(tip(label))
         .aria_toggled(if on {
             gpui_kit::Toggled::True
         } else {
@@ -332,6 +354,464 @@ pub fn plain_button(
 /// the default text size.
 pub fn icon(path: &'static str, size: f32) -> gpui_kit::Svg {
     svg().path(path).size(sp(size)).flex_none()
+}
+
+/// The box of a [`checkbox`] or of a row that is chosen: filled with the
+/// accent and ticked when on, an outline when not.
+pub fn tick_box(on: bool, look: &Look) -> Div {
+    let palette = look.palette;
+    div()
+        .flex_none()
+        .size(sp(18.))
+        .rounded(px(4.))
+        .border_1()
+        .border_color(color(palette.control_line))
+        .bg(color(if on { palette.accent } else { palette.panel }))
+        .flex()
+        .items_center()
+        .justify_center()
+        .children(on.then(|| icon(assets::CHECK, 14.).text_color(color(palette.on_accent))))
+}
+
+fn toggled(on: bool) -> Toggled {
+    if on { Toggled::True } else { Toggled::False }
+}
+
+/// A box that is ticked or not, and its words: a press anywhere on them
+/// changes it.
+pub fn checkbox(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    on: bool,
+    look: &Look,
+) -> Button {
+    let palette = look.palette;
+    let label = label.into();
+    Button::new(id)
+        .role(Role::CheckBox)
+        .accessibility_label(label.clone())
+        .aria_toggled(toggled(on))
+        .w_full()
+        .min_h(sp(28.))
+        .flex()
+        .items_start()
+        .justify_start()
+        .gap(sp(10.))
+        .rounded(px(shape::CONTROL_RADIUS))
+        .focus_visible(focus_ring(&palette))
+        .cursor_pointer()
+        .text_size(sp(14.))
+        .line_height(sp(21.))
+        .text_color(color(palette.text))
+        .child(tick_box(on, look).mt(px(2.)))
+        .child(div().text_left().child(label))
+}
+
+/// A group of [`chip`]s, named for a screen reader, that wraps onto as many
+/// lines as it needs.
+pub fn chips(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    look: &Look,
+) -> ObservedElement<Stateful<Div>> {
+    div()
+        .id(id)
+        .test_support()
+        .role(Role::Group)
+        .aria_label(label.into())
+        .flex()
+        .flex_wrap()
+        .gap(sp(4.))
+        .text_color(color(look.palette.text))
+}
+
+/// One of several things that are each on or off, as a day of the week of
+/// a schedule: `label` is its whole name, `shown` the few letters drawn.
+/// **The one on is told apart by more than its color**: a wash, an outline
+/// in the text's color and heavier words.
+pub fn chip(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    shown: impl Into<SharedString>,
+    on: bool,
+    look: &Look,
+) -> Button {
+    let palette = look.palette;
+    Button::new(id)
+        .role(Role::CheckBox)
+        .accessibility_label(label)
+        .aria_toggled(toggled(on))
+        .h(sp(28.))
+        .min_w(sp(36.))
+        .px(sp(10.))
+        .rounded_full()
+        .border_1()
+        .text_size(sp(13.))
+        .focus_visible(focus_ring(&palette))
+        .cursor_pointer()
+        .map(|chip| {
+            if on {
+                chip.bg(color_at(palette.accent, 0.16))
+                    .border_color(color(palette.text))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(color(palette.text))
+            } else {
+                chip.bg(color(palette.panel))
+                    .border_color(color(palette.control_line))
+                    .text_color(color(palette.secondary))
+                    .hover(move |style| style.bg(color_at(palette.text, 0.06)))
+            }
+        })
+        .child(shown.into())
+}
+
+/// What a [`badge`] marks, which its outline repeats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Plain,
+    Verified,
+    Friend,
+}
+
+/// A word that marks an account: verified, private, a friend. **Its word
+/// says it**; the outline's color only repeats it. Read as a label, `id`
+/// telling it apart from a badge of the same word beside it, as on each row
+/// of a list.
+pub fn badge(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    tone: Tone,
+    look: &Look,
+) -> Div {
+    let palette = look.palette;
+    let label = label.into();
+    let outline = match tone {
+        Tone::Plain => palette.line,
+        Tone::Verified => palette.verified,
+        Tone::Friend => palette.underline,
+    };
+    div()
+        .flex_none()
+        .px(sp(8.))
+        .py(sp(2.))
+        .rounded_full()
+        .border_1()
+        .border_color(color(outline))
+        .text_size(sp(12.))
+        .text_color(color(palette.secondary))
+        .child(
+            div()
+                .id(id)
+                .test_support()
+                .role(Role::Label)
+                .aria_label(label.clone())
+                .child(label),
+        )
+}
+
+/// What opens a menu, kept where it was last drawn so the menu opens under
+/// it; while that menu is open, the menu follows it on the next frame.
+pub fn drawn_at(drawn: &Rc<Cell<Bounds<Pixels>>>, open: bool, opener: impl IntoElement) -> Div {
+    let drawn = drawn.clone();
+    div()
+        .flex_none()
+        .on_prepaint(move |bounds, window, _| {
+            if drawn.replace(bounds) != bounds && open {
+                crate::ui::frames::ask(window);
+            }
+        })
+        .child(opener)
+}
+
+/// An item of a small menu: a button across it, a drawing before its words.
+pub fn menu_item(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    drawing: &'static str,
+    look: &Look,
+) -> Button {
+    let palette = look.palette;
+    let label = label.into();
+    Button::new(id)
+        .role(Role::MenuItem)
+        .accessibility_label(label.clone())
+        .w_full()
+        .h(sp(40.))
+        .px(sp(10.))
+        .gap(sp(10.))
+        .justify_start()
+        .rounded(px(shape::CONTROL_RADIUS))
+        .text_size(sp(14.))
+        .text_color(color(palette.text))
+        .hover(move |style| style.bg(color(palette.frame)))
+        .focus_visible(focus_ring(&palette))
+        .cursor_pointer()
+        .child(icon(drawing, 16.).text_color(color(palette.text)))
+        .child(label)
+}
+
+/// The line between two groups of a menu's items.
+pub fn menu_separator(look: &Look) -> Div {
+    div().h(px(1.)).my(sp(6.)).bg(color(look.palette.line))
+}
+
+/// What a [`select`] keeps between frames: whether its options are open,
+/// where its field was last drawn, and the focus of the field and of each
+/// option.
+pub struct Select {
+    pub open: bool,
+    pub bounds: Rc<Cell<Bounds<Pixels>>>,
+    pub field: FocusHandle,
+    pub options: Vec<FocusHandle>,
+}
+
+impl Select {
+    /// A closed select of `options` options.
+    pub fn new(options: usize, cx: &mut App) -> Self {
+        Self {
+            open: false,
+            bounds: Rc::default(),
+            field: cx.focus_handle(),
+            options: (0..options).map(|_| cx.focus_handle()).collect(),
+        }
+    }
+}
+
+/// A list over everything else, under what opened it (`opener`, where that
+/// was last drawn), as wide as it: what a [`select`] and [`suggestions`]
+/// open. A press outside both closes it.
+fn popup_list<V: 'static>(
+    id: SharedString,
+    label: SharedString,
+    opener: &Rc<Cell<Bounds<Pixels>>>,
+    rows: Vec<AnyElement>,
+    look: &Look,
+    close: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let palette = look.palette;
+    let under = opener.get();
+    let opener = opener.clone();
+    let outside = cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+        // A press on what opened it acts by itself.
+        if !opener.get().contains(&event.position) {
+            close(view, window, cx);
+        }
+    });
+    deferred(
+        Positioner::side(under)
+            .placement(Placement::Bottom)
+            .align(Align::Start)
+            .offset(px(6.))
+            .margin(px(8.))
+            .occlude()
+            .child(
+                div()
+                    .id(id)
+                    .test_support()
+                    .role(Role::ListBox)
+                    .aria_label(label)
+                    .occlude()
+                    .w(under.size.width)
+                    .p(sp(4.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .rounded(px(shape::CONTROL_RADIUS + 2.))
+                    .border_1()
+                    .border_color(color(palette.control_line))
+                    .bg(color(palette.panel))
+                    .shadow_lg()
+                    .on_mouse_down_out(outside)
+                    .children(rows),
+            ),
+    )
+    .with_priority(POPUP_PRIORITY)
+    .into_any_element()
+}
+
+/// One choice of a [`select`] or of [`suggestions`], named `label`; what it
+/// shows is the caller's.
+pub fn suggestion(id: impl Into<ElementId>, label: impl Into<SharedString>, look: &Look) -> Button {
+    let palette = look.palette;
+    option_row(id, label, look).hover(move |style| style.bg(color_at(palette.text, 0.08)))
+}
+
+/// A [`suggestion`] with no wash under the pointer, which the chosen option
+/// of a [`select`] does without.
+fn option_row(id: impl Into<ElementId>, label: impl Into<SharedString>, look: &Look) -> Button {
+    let palette = look.palette;
+    Button::new(id)
+        .role(Role::ListBoxOption)
+        .accessibility_label(label)
+        .w_full()
+        .min_h(sp(36.))
+        .px(sp(10.))
+        .gap(sp(8.))
+        .justify_start()
+        .rounded(px(shape::CONTROL_RADIUS))
+        .text_size(sp(13.5))
+        .text_color(color(palette.text))
+        .focus_visible(focus_ring(&palette))
+        .cursor_pointer()
+}
+
+/// The choices that match what is being typed in a field, drawn under it
+/// (`field`, where it was last drawn, as [`drawn_at`] keeps it): rows of
+/// [`suggestion`]s.
+pub fn suggestions<V: 'static>(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    field: &Rc<Cell<Bounds<Pixels>>>,
+    rows: Vec<AnyElement>,
+    look: &Look,
+    close: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    popup_list(id.into(), label.into(), field, rows, look, close, cx)
+}
+
+/// A field that opens a list of `options`, one of them `chosen`, for a
+/// choice of more than a [`segmented`] row holds. `toggle` opens and closes
+/// it, `choose` is told which option was pressed, `close` that a press fell
+/// outside. The one chosen stands out by a wash, a bar and heavier words.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a field, its options, and what each press does"
+)]
+pub fn select<V: 'static>(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    options: &[String],
+    chosen: usize,
+    state: &Select,
+    look: &Look,
+    toggle: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+    choose: impl Fn(&mut V, usize, &mut Window, &mut Context<V>) + Clone + 'static,
+    close: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+    cx: &mut Context<V>,
+) -> Div {
+    let palette = look.palette;
+    let label = label.into();
+    let open = state.open;
+    let bounds = state.bounds.clone();
+    let name = options.get(chosen).cloned().unwrap_or_default();
+    let list = open.then(|| {
+        let rows = options
+            .iter()
+            .enumerate()
+            .map(|(at, option)| {
+                let on = at == chosen;
+                let choose = choose.clone();
+                option_row(
+                    (SharedString::from(format!("{id}-option")), at),
+                    option.clone(),
+                    look,
+                )
+                .when_some(state.options.get(at), |row, focus| row.track_focus(focus))
+                .aria_selected(on)
+                .when(!on, |row| {
+                    row.hover(move |style| style.bg(color_at(palette.text, 0.08)))
+                })
+                .when(on, |row| {
+                    row.relative()
+                        .bg(color_at(palette.text, 0.06))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top(sp(8.))
+                                .bottom(sp(8.))
+                                .w(px(3.))
+                                .rounded_r(px(2.))
+                                .bg(color(palette.text)),
+                        )
+                })
+                .child(option.clone())
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    choose(view, at, window, cx);
+                }))
+                .into_any_element()
+            })
+            .collect();
+        popup_list(
+            SharedString::from(format!("{id}-options")),
+            label.clone(),
+            &bounds,
+            rows,
+            look,
+            close,
+            cx,
+        )
+    });
+    div()
+        .flex_none()
+        .on_prepaint(move |drawn, window, _| {
+            if bounds.replace(drawn) != drawn && open {
+                // The list follows the field on the next frame.
+                crate::ui::frames::ask(window);
+            }
+        })
+        .child(
+            suggestion(id, format!("{label}: {name}"), look)
+                .track_focus(&state.field)
+                .role(Role::ComboBox)
+                .aria_expanded(open)
+                .min_h(sp(32.))
+                .border_1()
+                .border_color(color(palette.control_line))
+                .bg(color(palette.panel))
+                .child(name)
+                .child(div().flex_1())
+                .child(icon(assets::CHEVRON, 14.).text_color(color(palette.secondary)))
+                .on_click(cx.listener(move |view, _, window, cx| toggle(view, window, cx))),
+        )
+        .children(list)
+}
+
+/// A whole number typed in a field, with a button on each side that takes
+/// one off or adds one: `step` is told -1 or 1. Each button is named for
+/// what it changes, so two steppers on one screen are told apart.
+pub fn stepper<V: 'static>(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    input: &Entity<InputState>,
+    look: &Look,
+    step: impl Fn(&mut V, i32, &mut Window, &mut Context<V>) + Clone + 'static,
+    cx: &mut Context<V>,
+) -> Div {
+    let label = label.into();
+    let less = step.clone();
+    div()
+        .flex()
+        .items_center()
+        .gap(sp(6.))
+        .child(
+            icon_button(
+                SharedString::from(format!("{id}-less")),
+                look.tr_with("stepper-less", &[("what", &label)]),
+                assets::MINUS,
+                true,
+                look,
+            )
+            .on_click(cx.listener(move |view, _, window, cx| less(view, -1, window, cx))),
+        )
+        .child(
+            div()
+                .w(sp(72.))
+                .child(Input::new(input).id(id).aria_label(label.clone())),
+        )
+        .child(
+            icon_button(
+                SharedString::from(format!("{id}-more")),
+                look.tr_with("stepper-more", &[("what", &label)]),
+                assets::ADD,
+                true,
+                look,
+            )
+            .on_click(cx.listener(move |view, _, window, cx| step(view, 1, window, cx))),
+        )
 }
 
 /// The loading ring: a thin arc in the accent that turns for as long as it
@@ -546,6 +1026,39 @@ mod tests {
                 assert!(from <= 10.25 + 1e-3, "{from} from the middle at {turned}");
             }
         }
+    }
+
+    /// GPUI refuses a second tip on one control in a debug build: a control
+    /// that refuses one already has its own.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_control_that_shows_only_a_drawing_has_exactly_one_tip() {
+        use crate::system::Settings;
+        let look = Look::of(Settings::default(), false);
+        let takes_a_tip = |button: Button| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                drop(button.tooltip(tip("another")));
+            }))
+            .is_ok()
+        };
+        assert!(!takes_a_tip(icon_button(
+            "hide",
+            "Hide",
+            crate::ui::assets::HIDE,
+            true,
+            &look
+        )));
+        assert!(!takes_a_tip(icon_segment(
+            "grid",
+            "Grid",
+            crate::ui::assets::FIT,
+            true,
+            &look
+        )));
+        assert!(
+            takes_a_tip(button("save", "Save", Kind::Primary, true, &look)),
+            "a button that says its name in words has no tip of its own"
+        );
     }
 
     #[test]
