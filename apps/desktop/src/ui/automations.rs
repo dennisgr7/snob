@@ -18,7 +18,9 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{Bounds, Context, Entity, FocusHandle, Pixels, Point, Subscription, Task, Window};
+use gpui_kit::{
+    Bounds, Context, Entity, FocusHandle, Focusable as _, Pixels, Point, Subscription, Task, Window,
+};
 use snob_core::Pk;
 use snob_core::automation::{Account, Only, Read, Stage as Kind, Step};
 
@@ -26,7 +28,9 @@ use super::assets;
 use super::look::Look;
 use super::shell::Shell;
 use crate::backend::{Automation, Next, Run};
-use crate::state::automations::{Canvas, Drift, Glide, Live, Stage, reads_again};
+use crate::state::automations::{
+    Canvas, Drift, Glide, Live, Stage, inputs_for, reads_again, snapped,
+};
 use crate::state::editing::Editing;
 use crate::state::flow::Screen;
 use crate::state::shelf::Shelf;
@@ -323,8 +327,10 @@ pub(crate) struct Editor {
     /// The panel of steps: what it shows, and since when it shows it.
     pub shelf: Shelf,
     pub shelf_since: Option<Instant>,
-    /// The search in the steps of one kind, while it is open.
+    /// The search in the steps of one kind, while it is open, over the
+    /// panel's title; and when it last closed, which gives the title back.
     pub search: Option<Search>,
+    pub search_closed: Option<Instant>,
     /// Each kind's way in, the way back to them and the magnifier: where
     /// focus goes as the panel moves.
     pub kinds: [FocusHandle; 4],
@@ -361,6 +367,7 @@ impl Editor {
             shelf: Shelf::new(has_a_trigger),
             shelf_since: None,
             search: None,
+            search_closed: None,
             kinds: std::array::from_fn(|_| cx.focus_handle()),
             shelf_back: cx.focus_handle(),
             shelf_search: cx.focus_handle(),
@@ -751,6 +758,11 @@ impl Shell {
             Glide::still(to)
         };
         editor.glide_since = now;
+        // The canvas moved under a still pointer: an arrow being drawn
+        // sticks again only once the pointer moves.
+        if let Some(wire) = page.edit.as_mut().and_then(|edit| edit.wire.as_mut()) {
+            wire.snapped = None;
+        }
         cx.notify();
     }
 
@@ -859,6 +871,7 @@ impl Shell {
             return;
         };
         let world = page.editor.under(at, cx);
+        let zoom = page.editor.canvas_here(cx).zoom();
         let editor = &mut page.editor;
         let changed = editor.ctrl != ctrl;
         editor.ctrl = ctrl;
@@ -878,9 +891,13 @@ impl Shell {
                 moved |= next != grab.at;
                 grab.at = next;
             }
-            if let Some(wire) = &mut edit.wire {
-                wire.to = world;
-                moved = true;
+            if let Some(from) = edit.wire.map(|wire| wire.from) {
+                let inputs = inputs_for(edit.state.automation(), from);
+                if let Some(wire) = &mut edit.wire {
+                    wire.to = world;
+                    wire.snapped = snapped(world, &inputs, wire.snapped, zoom);
+                    moved = true;
+                }
             }
         }
         if moved {
@@ -890,7 +907,8 @@ impl Shell {
 
     /// The button was let go over, or away from, the canvas at `at`: the
     /// canvas stops moving, a step is put where it was dropped, and an
-    /// arrow is drawn to the step it was let go on.
+    /// arrow is drawn to the input it sticks to, else to the step it was
+    /// let go on.
     pub(crate) fn let_go_of_the_canvas(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
         let Some(page) = &mut self.automations else {
             return;
@@ -910,8 +928,9 @@ impl Shell {
             saves |= edit.state.move_to(grab.id, grab.at);
         }
         if let Some(wire) = wire
-            && let Some(to) =
+            && let Some(to) = wire.snapped.or_else(|| {
                 crate::state::automations::step_at(edit.state.automation(), world, Some(wire.from))
+            })
         {
             match edit.state.connect(wire.from, to) {
                 Ok(()) => saves = true,
@@ -1015,13 +1034,54 @@ impl Shell {
     /// Closes the search in the panel, focus back on its magnifier. Whether
     /// there was one open.
     pub(crate) fn close_the_search(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.forget_the_search(cx) {
+            return false;
+        }
+        if let Some(page) = &self.automations {
+            window.focus(&page.editor.shelf_search, cx);
+        }
+        true
+    }
+
+    /// Closes the search in the panel after a press elsewhere, **leaving
+    /// focus to what was pressed**, or on the magnifier when what was
+    /// pressed takes none. Whether there was one open.
+    pub(crate) fn close_the_search_away(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let field = self
+            .automations
+            .as_ref()
+            .and_then(|page| page.editor.search.as_ref())
+            .map(|search| search.input.read(cx).focus_handle(cx));
+        if !self.forget_the_search(cx) {
+            return false;
+        }
+        // Once the press has given focus to what takes it.
+        cx.defer_in(window, move |shell, window, cx| {
+            let lost = window
+                .focused(cx)
+                .is_none_or(|now| field.as_ref() == Some(&now));
+            if lost && let Some(page) = &shell.automations {
+                window.focus(&page.editor.shelf_search, cx);
+            }
+        });
+        true
+    }
+
+    /// The search in the panel closed, and when, which gives the title
+    /// back. Whether there was one open.
+    fn forget_the_search(&mut self, cx: &mut Context<Self>) -> bool {
+        let now = cx.background_executor().now();
         let Some(page) = &mut self.automations else {
             return false;
         };
         if page.editor.search.take().is_none() {
             return false;
         }
-        window.focus(&page.editor.shelf_search, cx);
+        page.editor.search_closed = Some(now);
         cx.notify();
         true
     }

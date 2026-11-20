@@ -21,12 +21,14 @@ use crate::state::flow::Event;
 use crate::state::steps::{ActionForm, ScheduleForm, WebhookForm};
 use snob_core::automation::VideoQuality;
 
-/// An arrow being drawn: from which step, and to where the pointer is, in
-/// the canvas's own units.
+/// An arrow being drawn: from which step, to where the pointer is, in the
+/// canvas's own units, and the input it sticks to
+/// (`state::automations::snapped`), which a release joins.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Wire {
     pub from: NodeId,
     pub to: (f32, f32),
+    pub snapped: Option<NodeId>,
 }
 
 /// The small menu of a step, open where the press was.
@@ -502,6 +504,7 @@ impl Shell {
             edit.wire = Some(Wire {
                 from: id,
                 to: world,
+                snapped: None,
             });
             cx.notify();
         }

@@ -57,8 +57,12 @@ fn item(
         .hover(move |style| style.bg(color(palette.frame)))
         .focus_visible(parts::focus_ring(&palette))
         .cursor_pointer()
-        .child(icon(drawing, 16.).text_color(color(palette.text)))
-        .child(label)
+        .child(
+            icon(drawing, 16.)
+                .flex_none()
+                .text_color(color(palette.text)),
+        )
+        .child(div().flex_1().min_w_0().text_left().truncate().child(label))
 }
 
 /// The menu of a step, where the press was.
@@ -81,6 +85,39 @@ fn menu(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> 
     let named = |other: &snob_core::automation::Node| match step_detail(&other.step, look) {
         Some(detail) => format!("{} ({detail})", step_name(&other.step, look)),
         None => step_name(&other.step, look),
+    };
+    // A step taken an arrow off is named alone, as the canvas names it; its
+    // detail follows only to tell it from another joined step of that name,
+    // and its place among them when the detail is the same too.
+    let joined_to = |other: &snob_core::automation::Node| {
+        automation
+            .edges
+            .iter()
+            .any(|edge| edge.from == node.id && edge.to == other.id)
+    };
+    let told_apart = |other: &snob_core::automation::Node| {
+        let name = step_name(&other.step, look);
+        let alike = automation
+            .nodes
+            .iter()
+            .any(|one| one.id != other.id && joined_to(one) && step_name(&one.step, look) == name);
+        match step_detail(&other.step, look).filter(|_| alike) {
+            Some(detail) => format!("{name} \u{b7} {detail}"),
+            None => name,
+        }
+    };
+    let named_alone = |other: &snob_core::automation::Node| {
+        let label = told_apart(other);
+        let twins: Vec<_> = automation
+            .nodes
+            .iter()
+            .filter(|one| joined_to(one) && told_apart(one) == label)
+            .map(|one| one.id)
+            .collect();
+        match twins.iter().position(|id| *id == other.id) {
+            Some(at) if twins.len() > 1 => format!("{label} \u{b7} {}", at + 1),
+            _ => label,
+        }
     };
     let mut items: Vec<Button> = Vec::new();
     let enabled = node.enabled;
@@ -119,16 +156,12 @@ fn menu(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> 
         );
     }
     for other in &automation.nodes {
-        let joined = automation
-            .edges
-            .iter()
-            .any(|edge| edge.from == node.id && edge.to == other.id);
         let to = other.id;
-        if joined {
+        if joined_to(other) {
             items.push(
                 item(
                     ("node-menu-disconnect", to as usize),
-                    look.tr_with("node-menu-disconnect", &[("step", &named(other))]),
+                    look.tr_with("node-menu-disconnect", &[("step", &named_alone(other))]),
                     assets::CLOSE,
                     look,
                 )

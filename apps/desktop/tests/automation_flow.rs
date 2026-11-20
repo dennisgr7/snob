@@ -240,7 +240,7 @@ async fn the_menu_of_a_step_disables_joins_and_removes(cx: &mut TestAppContext) 
         );
         assert_eq!(
             window.find(("node-menu-disconnect", 2usize)).label(),
-            Some("Disconnect from Followers and following (Your account)")
+            Some("Disconnect from Followers and following")
         );
     });
     app.click(cx, "node-menu-enabled");
@@ -261,6 +261,191 @@ async fn the_menu_of_a_step_disables_joins_and_removes(cx: &mut TestAppContext) 
     app.click(cx, "node-menu-remove");
     settle(&app, cx);
     assert_eq!(backend.automations()[0].nodes.len(), 1);
+}
+
+/// A trigger joined to the lists of the account in use and to those of
+/// somebody else: two steps of one name.
+fn two_lists() -> Automation {
+    let mut automation = daily();
+    let other = automation.insert(
+        Step::Read {
+            account: Some(Account {
+                username: Some("someone".to_string()),
+                ..Account::own(Some(42.into()))
+            }),
+            what: Read::Lists,
+        },
+        (260, 120),
+    );
+    automation.connect(1, other).unwrap();
+    automation
+}
+
+/// The labels of the entries of a step's menu that take an arrow off it.
+fn disconnect_labels(app: &App, cx: &mut TestAppContext, step: usize) -> Vec<String> {
+    app.in_window(cx, |window, cx| window.right_click(("node", step), cx));
+    settle(app, cx);
+    let labels = app.in_window(cx, |window, _| {
+        (1..=4usize)
+            .filter_map(|to| window.try_find(("node-menu-disconnect", to)))
+            .map(|entry| entry.label().unwrap_or_default().to_string())
+            .collect()
+    });
+    app.press(cx, "escape");
+    settle(app, cx);
+    labels
+}
+
+#[gpui_kit::test]
+async fn a_step_to_disconnect_from_is_named_without_its_detail(cx: &mut TestAppContext) {
+    let app = in_editor(cx, scripted(vec![daily()])).await;
+    assert_eq!(
+        disconnect_labels(&app, cx, 1),
+        ["Disconnect from Followers and following"]
+    );
+}
+
+#[gpui_kit::test]
+async fn two_steps_of_one_name_to_disconnect_from_are_told_apart_without_parentheses(
+    cx: &mut TestAppContext,
+) {
+    let app = in_editor(cx, scripted(vec![two_lists()])).await;
+    let labels = disconnect_labels(&app, cx, 1);
+    assert_eq!(labels.len(), 2, "{labels:?}");
+    assert_ne!(labels[0], labels[1]);
+    for label in &labels {
+        assert!(label.starts_with("Disconnect from Followers and following"));
+        assert!(!label.contains('('), "{label}");
+    }
+}
+
+#[gpui_kit::test]
+async fn two_steps_alike_in_name_and_detail_to_disconnect_from_are_told_apart_by_their_place(
+    cx: &mut TestAppContext,
+) {
+    let mut automation = daily();
+    for y in [0, 120] {
+        let hook = automation.insert(
+            Step::Webhook(snob_core::automation::Webhook::default()),
+            (520, y),
+        );
+        automation.connect(2, hook).unwrap();
+    }
+    let app = in_editor(cx, scripted(vec![automation])).await;
+    let labels = disconnect_labels(&app, cx, 2);
+    assert_eq!(labels.len(), 2, "{labels:?}");
+    assert!(labels[0].ends_with(" \u{b7} 1"), "{labels:?}");
+    assert!(labels[1].ends_with(" \u{b7} 2"), "{labels:?}");
+    for label in &labels {
+        assert!(!label.contains('('), "{label}");
+    }
+}
+
+#[gpui_kit::test]
+async fn a_step_to_disconnect_from_is_named_without_its_detail_in_spanish(cx: &mut TestAppContext) {
+    let app = open_with(cx, scripted(vec![daily()]), spanish());
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    app.click(cx, "rail-automations");
+    app.until_screen(cx, |screen| *screen == Screen::Automations)
+        .await;
+    settle(&app, cx);
+    click(&app, cx, ("automation", 0usize));
+    settle(&app, cx);
+    app.click(cx, "automation-edit");
+    settle(&app, cx);
+    assert_eq!(
+        disconnect_labels(&app, cx, 1),
+        ["Desconectar de Seguidores y seguidos"] // i18n-allow
+    );
+}
+
+/// The bounds of the element `id`.
+fn bounds_of(
+    app: &App,
+    cx: &mut TestAppContext,
+    id: impl Into<gpui_kit::ElementId>,
+) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    let id = id.into();
+    app.in_window(cx, |window, _| window.find(id).bounds())
+}
+
+#[gpui_kit::test]
+async fn a_step_takes_arrows_on_its_left_and_gives_them_on_its_right(cx: &mut TestAppContext) {
+    let app = in_editor(cx, scripted(vec![daily()])).await;
+    let (trigger, action) = (
+        bounds_of(&app, cx, ("node", 1usize)),
+        bounds_of(&app, cx, ("node", 2usize)),
+    );
+    let input = bounds_of(&app, cx, ("node-input", 2usize)).center();
+    assert!(
+        (input.x - action.left()).abs() < px(1.),
+        "on the left edge: {input:?} {action:?}"
+    );
+    assert!(
+        (input.y - action.center().y).abs() < px(1.),
+        "half way down"
+    );
+    let output = bounds_of(&app, cx, ("node-output", 1usize)).center();
+    assert!((output.x - trigger.right()).abs() < px(1.), "{output:?}");
+    assert!((output.y - trigger.center().y).abs() < px(1.));
+    app.in_window(cx, |window, _| {
+        assert!(
+            window.try_find(("node-input", 1usize)).is_none(),
+            "a trigger takes no arrow"
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn an_arrow_let_go_near_an_input_joins_the_steps_and_far_from_one_does_not(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::point;
+    let mut open = daily();
+    open.edges.clear();
+    let backend = scripted(vec![open]);
+    let app = in_editor(cx, backend.clone()).await;
+    let handle = bounds_of(&app, cx, ("node-output", 1usize)).center();
+    let input = bounds_of(&app, cx, ("node-input", 2usize)).center();
+    let joined = |backend: &Scripted| backend.automations().first().map_or(0, |a| a.edges.len());
+
+    // Let go well above the input, on no step: nothing is joined.
+    drag(
+        &app,
+        cx,
+        handle,
+        &[
+            handle + point(px(10.), px(0.)),
+            input - point(px(0.), px(100.)),
+        ],
+    );
+    assert_eq!(joined(&backend), 0, "far from any input");
+
+    // Near it, then away past where it lets go: nothing either.
+    drag(
+        &app,
+        cx,
+        handle,
+        &[
+            input - point(px(20.), px(0.)),
+            input - point(px(40.), px(60.)),
+        ],
+    );
+    assert_eq!(joined(&backend), 0, "it let go");
+
+    // Near it, then a little further, where it still holds: joined.
+    drag(
+        &app,
+        cx,
+        handle,
+        &[
+            input - point(px(20.), px(0.)),
+            input - point(px(45.), px(0.)),
+        ],
+    );
+    assert_eq!(joined(&backend), 1, "joined to the step it stuck to");
+    let edge = &backend.automations()[0].edges[0];
+    assert_eq!((edge.from, edge.to), (1, 2));
 }
 
 #[gpui_kit::test]

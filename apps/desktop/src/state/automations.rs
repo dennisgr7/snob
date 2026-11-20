@@ -2,8 +2,9 @@
 //! is still owed its introduction, which automations a search shows, what
 //! their cards say and how many sit side by side, whether a page reads its
 //! runs again, the editor's canvas (how far it is moved and zoomed, where a step is and
-//! what is under a point of it), and the grid that drifts behind the
-//! introduction.
+//! what is under a point of it), the arrows between steps (which input one
+//! being drawn sticks to, the way it takes and where its head points), and
+//! the grid that drifts behind the introduction.
 //!
 //! **The introduction is shown once an account**: "Get started" is
 //! remembered for the account in use (`prefs::Prefs::introduced`), and an
@@ -21,7 +22,7 @@ use std::f64::consts::TAU;
 use std::time::Duration;
 
 use snob_core::Pk;
-use snob_core::automation::{Automation, Node, NodeId, Stage as StepStage, Step};
+use snob_core::automation::{Automation, Node, NodeId, Stage as StepStage, Step, can_join};
 use snob_core::watch::schedule::Spec;
 
 use super::settings::fold;
@@ -467,6 +468,155 @@ pub fn leaves_at(at: (i32, i32)) -> (f32, f32) {
 /// side.
 pub fn comes_in_at(at: (i32, i32)) -> (f32, f32) {
     (at.0 as f32, at.1 as f32 + NODE_H / 2.0)
+}
+
+/// How near an arrow being drawn comes to a step's input before it sticks
+/// to it, in logical pixels on the screen.
+pub const SNAP_IN: f32 = 28.0;
+
+/// How far from that input the pointer goes before the arrow lets go of
+/// it: twice as far as it came, so that it does not flicker at the edge.
+pub const SNAP_OUT: f32 = 56.0;
+
+/// The inputs an arrow from `from` may stick to, at the middle of their
+/// left side: **every step the arrow would be drawn to**
+/// (`Automation::connect`), so none it is already drawn to, none of a
+/// stage it cannot lead to (`can_join`) and none that would close a
+/// circle.
+pub fn inputs_for(automation: &Automation, from: NodeId) -> Vec<(NodeId, (f32, f32))> {
+    let Some(stage) = automation.node(from).map(|node| node.step.stage()) else {
+        return Vec::new();
+    };
+    let mut probe = automation.clone();
+    automation
+        .nodes
+        .iter()
+        .filter(|node| node.id != from && can_join(stage, node.step.stage()))
+        .filter(|node| {
+            let joins = probe.connect(from, node.id).is_ok();
+            if joins {
+                probe.disconnect(from, node.id);
+            }
+            joins
+        })
+        .map(|node| (node.id, comes_in_at(node.at)))
+        .collect()
+}
+
+/// The input an arrow being drawn sticks to with the pointer at `at`, both
+/// in the canvas's own units, drawn `zoom` times its size: the nearest of
+/// `inputs` within [`SNAP_IN`] when it is nearer than the one held, else
+/// **the one held while the pointer stays within [`SNAP_OUT`] of it**,
+/// else none.
+pub fn snapped(
+    at: (f32, f32),
+    inputs: &[(NodeId, (f32, f32))],
+    held: Option<NodeId>,
+    zoom: f32,
+) -> Option<NodeId> {
+    let zoom = if zoom.is_finite() && zoom > 0.0 {
+        zoom
+    } else {
+        1.0
+    };
+    let away = |input: (f32, f32)| (input.0 - at.0).hypot(input.1 - at.1) * zoom;
+    let kept = held
+        .and_then(|held| inputs.iter().find(|(id, _)| *id == held))
+        .map(|(id, input)| (*id, away(*input)))
+        .filter(|(_, away)| *away <= SNAP_OUT);
+    let nearest = inputs
+        .iter()
+        .map(|(id, input)| (*id, away(*input)))
+        .filter(|(_, away)| *away <= SNAP_IN)
+        .min_by(|one, other| one.1.total_cmp(&other.1));
+    match (kept, nearest) {
+        (Some(kept), Some(nearest)) if nearest.1 < kept.1 => Some(nearest.0),
+        (Some(kept), _) => Some(kept.0),
+        (None, nearest) => nearest.map(|(id, _)| id),
+    }
+}
+
+/// The least an arrow reaches out sideways from a step, in the canvas's
+/// own units.
+const REACH_MIN: f32 = 50.0;
+
+/// How far from the steps' edges an arrow that goes round them passes.
+const ROUND_BY: f32 = 24.0;
+
+/// A piece of an arrow, a cubic Bezier: where it starts, its two control
+/// points and where it ends, in the canvas's own units.
+pub type Bend = [(f32, f32); 4];
+
+/// The way an arrow takes from a step's output at `from` to `to`: an input
+/// it comes into from the left, or the pointer when `loose`, which it heads
+/// toward. **An arrow to a step behind its start goes round both steps**,
+/// through the room between them or past the farther edge, rather than
+/// across them.
+pub fn route(from: (f32, f32), to: (f32, f32), loose: bool) -> Vec<Bend> {
+    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+    if loose {
+        let reach = (dx.abs() * 0.5).max(REACH_MIN);
+        let ca = (from.0 + reach, from.1);
+        let cb = ((ca.0 + to.0) / 2.0, (ca.1 + to.1) / 2.0);
+        return vec![[from, ca, cb, to]];
+    }
+    if dx >= 0.0 {
+        let reach = (dx * 0.5).max(REACH_MIN);
+        return vec![[from, (from.0 + reach, from.1), (to.0 - reach, to.1), to]];
+    }
+    // Behind: down (or up) from the output, across, and into the input.
+    let half = NODE_H / 2.0;
+    let gap = dy.abs() - NODE_H;
+    let across = if gap >= ROUND_BY {
+        (from.1 + to.1) / 2.0
+    } else if dy >= 0.0 {
+        from.1.max(to.1) + half + ROUND_BY
+    } else {
+        from.1.min(to.1) - half - ROUND_BY
+    };
+    let reach = REACH_MIN;
+    let (turn, back) = ((from.0, across), (to.0, across));
+    let third = |one: f32, other: f32| (one + (other - one) / 3.0, one + (other - one) * 2.0 / 3.0);
+    let (first, second) = third(turn.0, back.0);
+    vec![
+        [
+            from,
+            (from.0 + reach, from.1),
+            (from.0 + reach, across),
+            turn,
+        ],
+        [turn, (first, across), (second, across), back],
+        [back, (to.0 - reach, across), (to.0 - reach, to.1), to],
+    ]
+}
+
+/// Which way an arrow heads where it ends: the tangent of its last piece
+/// there, of length 1. Rightward when it has no length.
+pub fn heading(route: &[Bend]) -> (f32, f32) {
+    let Some([a, ca, cb, b]) = route.last() else {
+        return (1.0, 0.0);
+    };
+    [cb, ca, a]
+        .into_iter()
+        .map(|before| (b.0 - before.0, b.1 - before.1))
+        .find_map(|(x, y)| {
+            let length = x.hypot(y);
+            (length > 1e-3 && length.is_finite()).then(|| (x / length, y / length))
+        })
+        .unwrap_or((1.0, 0.0))
+}
+
+/// The head of an arrow `size` long whose tip is at `tip`, turned to
+/// `heading`: the tip and the two corners of its base.
+pub fn head(tip: (f32, f32), heading: (f32, f32), size: f32) -> [(f32, f32); 3] {
+    let (x, y) = heading;
+    let base = (tip.0 - x * size * 1.5, tip.1 - y * size * 1.5);
+    let side = (-y * size * 0.8, x * size * 0.8);
+    [
+        tip,
+        (base.0 + side.0, base.1 + side.1),
+        (base.0 - side.0, base.1 - side.1),
+    ]
 }
 
 /// The corners of the box that holds every step: left, top, right and
@@ -1045,6 +1195,221 @@ mod tests {
         assert_eq!(card_columns(100.0, 280.0, 12.0), 1, "one, however narrow");
         assert_eq!(card_columns(0.0, 280.0, 12.0), 1);
         assert_eq!(card_columns(f32::NAN, 280.0, 12.0), 1);
+    }
+
+    #[test]
+    fn an_arrow_sticks_to_an_input_it_comes_near_and_lets_go_only_far_from_it() {
+        let input = (100.0, 0.0);
+        let inputs = [(7, input)];
+        let at = |x: f32| (input.0 - x, input.1);
+        assert_eq!(snapped(at(40.0), &inputs, None, 1.0), None, "too far");
+        assert_eq!(snapped(at(20.0), &inputs, None, 1.0), Some(7), "comes near");
+        assert_eq!(
+            snapped(at(50.0), &inputs, Some(7), 1.0),
+            Some(7),
+            "held between the two distances"
+        );
+        assert_eq!(
+            snapped(at(50.0), &inputs, None, 1.0),
+            None,
+            "but not taken there"
+        );
+        assert_eq!(snapped(at(60.0), &inputs, Some(7), 1.0), None, "let go");
+        // The distances are the screen's: zoomed out, as far on the canvas
+        // is nearer on the screen.
+        assert_eq!(snapped(at(40.0), &inputs, None, 0.5), Some(7));
+        assert_eq!(snapped(at(100.0), &inputs, Some(7), 0.5), Some(7));
+        assert_eq!(snapped(at(120.0), &inputs, Some(7), 0.5), None);
+    }
+
+    #[test]
+    fn an_arrow_sticks_to_the_nearest_of_two_inputs() {
+        let inputs = [(1, (0.0, 0.0)), (2, (30.0, 0.0))];
+        assert_eq!(snapped((20.0, 0.0), &inputs, None, 1.0), Some(2));
+        assert_eq!(snapped((10.0, 0.0), &inputs, None, 1.0), Some(1));
+        assert_eq!(
+            snapped((15.0, 0.0), &inputs, Some(1), 1.0),
+            Some(1),
+            "what it holds, it keeps against one as near"
+        );
+        assert_eq!(
+            snapped((-40.0, 0.0), &inputs, Some(1), 1.0),
+            Some(1),
+            "and while near enough"
+        );
+        assert_eq!(
+            snapped((20.0, 0.0), &inputs, Some(1), 1.0),
+            Some(2),
+            "a nearer input within reach takes it"
+        );
+    }
+
+    #[test]
+    fn zoomed_out_an_arrow_held_by_one_input_moves_to_the_next_one_under_the_pointer() {
+        // Two steps stacked with a gap of 20: their inputs are 46 apart on
+        // the screen at half size, closer than an arrow lets go.
+        let (one, other) = (comes_in_at((260, 0)), comes_in_at((260, 92)));
+        let inputs = [(1, one), (2, other)];
+        assert_eq!(snapped(other, &inputs, Some(1), 0.5), Some(2));
+        assert_eq!(snapped(one, &inputs, Some(2), 0.5), Some(1));
+        let between = (one.0, (one.1 + other.1) / 2.0 - 4.0);
+        assert_eq!(snapped(between, &inputs, Some(1), 0.5), Some(1));
+    }
+
+    #[test]
+    fn an_arrow_sticks_only_to_a_step_it_can_lead_to() {
+        use snob_core::automation::{Only, Webhook};
+        let mut automation = Automation::new("a1", "Daily");
+        let trigger = automation.insert(
+            Step::Schedule {
+                when: Spec::default(),
+            },
+            (0, 0),
+        );
+        let other = automation.insert(Step::Manual {}, (260, 0));
+        let filter = automation.insert(
+            Step::Filter {
+                only: Only::Changes,
+            },
+            (260, 120),
+        );
+        let hook = automation.insert(Step::Webhook(Webhook::default()), (520, 0));
+        let from_filter: Vec<NodeId> = inputs_for(&automation, filter)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(from_filter, [hook], "a filter leads to an output only");
+        assert_eq!(
+            inputs_for(&automation, filter)[0].1,
+            comes_in_at((520, 0)),
+            "at its input"
+        );
+        // A trigger leads to no other trigger, nor to a filter: right on
+        // their inputs, nothing sticks.
+        let from_trigger = inputs_for(&automation, trigger);
+        assert!(from_trigger.is_empty(), "{from_trigger:?}");
+        let on_the_other = comes_in_at((260, 0));
+        assert_eq!(snapped(on_the_other, &from_trigger, None, 1.0), None);
+        assert!(inputs_for(&automation, other).is_empty());
+        assert!(inputs_for(&automation, 99).is_empty(), "no such step");
+    }
+
+    #[test]
+    fn an_arrow_sticks_to_no_step_it_already_leads_to_nor_to_one_that_would_close_a_circle() {
+        use snob_core::automation::Only;
+        let mut automation = Automation::new("a1", "Daily");
+        let filter = |automation: &mut Automation, y| {
+            automation.insert(
+                Step::Filter {
+                    only: Only::Changes,
+                },
+                (260, y),
+            )
+        };
+        let (first, second, third) = (
+            filter(&mut automation, 0),
+            filter(&mut automation, 120),
+            filter(&mut automation, 240),
+        );
+        automation.connect(first, second).unwrap();
+        let ids = |from| -> Vec<NodeId> {
+            inputs_for(&automation, from)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect()
+        };
+        assert_eq!(ids(first), [third], "already led to: the second");
+        assert_eq!(ids(second), [third], "back to the first: a circle");
+        assert_eq!(ids(third), [first, second]);
+        assert_eq!(
+            snapped(
+                comes_in_at((260, 120)),
+                &inputs_for(&automation, first),
+                None,
+                1.0
+            ),
+            None
+        );
+    }
+
+    fn angle(route: &[Bend]) -> f32 {
+        let (x, y) = heading(route);
+        y.atan2(x)
+    }
+
+    #[test]
+    fn the_head_of_an_arrow_points_along_the_end_of_its_curve() {
+        let from = leaves_at((0, 0));
+        // Into an input, to the right, below or behind, the head points
+        // into the step, as the arrow comes in from its left.
+        for to in [(400, 0), (400, 300), (-300, 0), (-300, 300), (-300, -300)] {
+            let route = route(from, comes_in_at(to), false);
+            assert!(angle(&route).abs() < 1e-3, "{to:?}: {}", angle(&route));
+            assert_eq!(route.last().unwrap()[3], comes_in_at(to), "it ends there");
+        }
+        // Loose, it turns toward the pointer: level to the right, down
+        // below, back behind.
+        let right = angle(&route(from, (from.0 + 300.0, from.1), true));
+        assert!(right.abs() < 1e-3, "{right}");
+        let below = angle(&route(from, (from.0 + 100.0, from.1 + 300.0), true));
+        assert!(
+            below > 0.5 && below < std::f32::consts::FRAC_PI_2 + 1e-3,
+            "{below}"
+        );
+        let behind = angle(&route(from, (from.0 - 300.0, from.1), true));
+        assert!(behind.abs() > std::f32::consts::FRAC_PI_2, "{behind}");
+
+        // The head's tip is where it is put, its base behind it along the
+        // way it points.
+        let [tip, one, other] = head((10.0, 10.0), (0.0, 1.0), 4.0);
+        assert_eq!(tip, (10.0, 10.0));
+        assert!(near(one.1, 4.0) && near(other.1, 4.0), "{one:?} {other:?}");
+        assert!(near((one.0 - other.0).abs(), 6.4));
+        assert_eq!(heading(&[]), (1.0, 0.0));
+        let still = [(5.0, 5.0); 4];
+        assert_eq!(heading(&[still]), (1.0, 0.0), "no length: rightward");
+    }
+
+    #[test]
+    fn a_curve_to_a_step_behind_its_start_goes_round_it() {
+        // Every point of the way, sampled.
+        let along = |route: &[Bend]| -> Vec<(f32, f32)> {
+            route
+                .iter()
+                .flat_map(|[a, b, c, d]| {
+                    (0..=40).map(move |at| {
+                        let t = at as f32 / 40.0;
+                        let u = 1.0 - t;
+                        let mix = |p: f32, q: f32, r: f32, s: f32| {
+                            u * u * u * p
+                                + 3.0 * u * u * t * q
+                                + 3.0 * u * t * t * r
+                                + t * t * t * s
+                        };
+                        (mix(a.0, b.0, c.0, d.0), mix(a.1, b.1, c.1, d.1))
+                    })
+                })
+                .collect()
+        };
+        let inside = |at: (f32, f32), step: (i32, i32)| {
+            let (x, y) = (step.0 as f32, step.1 as f32);
+            at.0 > x + 1.0 && at.0 < x + NODE_W - 1.0 && at.1 > y + 1.0 && at.1 < y + NODE_H - 1.0
+        };
+        let source = (0, 0);
+        for target in [(-260, 0), (-230, 20), (-260, 200), (-100, -160), (100, 100)] {
+            let way = route(leaves_at(source), comes_in_at(target), false);
+            for at in along(&way) {
+                assert!(
+                    !inside(at, source) && !inside(at, target),
+                    "{target:?}: through a step at {at:?}"
+                );
+            }
+        }
+        // In front, it is one curve.
+        assert_eq!(
+            route(leaves_at(source), comes_in_at((300, 40)), false).len(),
+            1
+        );
     }
 
     #[test]

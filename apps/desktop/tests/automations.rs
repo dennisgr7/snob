@@ -332,9 +332,30 @@ async fn the_panel_goes_into_a_kind_and_back_once_there_is_a_trigger(cx: &mut Te
     // then goes back to the kinds before it leaves the editor.
     app.click(cx, "editor-actions");
     settle(&app, cx);
+    let title = app.in_window(cx, |window, _| window.find("editor-steps-title").bounds());
     app.click(cx, "editor-shelf-search");
     settle(&app, cx);
     assert!(shown(&app, cx, "editor-shelf-field"));
+    assert!(
+        focused(&app, cx, "editor-shelf-field"),
+        "typed into at once"
+    );
+    app.in_window(cx, |window, _| {
+        // On the title's line, over it: no line of its own.
+        assert!(window.try_find("editor-steps-title").is_none());
+        let field = window.find("editor-shelf-field").bounds();
+        let magnifier = window.find("editor-shelf-search").bounds();
+        assert!(
+            (field.center().y - magnifier.center().y).abs() < px(2.),
+            "{field:?} {magnifier:?}"
+        );
+        assert!(
+            field.left() <= title.left() + px(2.) && field.right() <= magnifier.left(),
+            "{field:?} {title:?}"
+        );
+        let below = window.find(("read-lists", 0usize)).bounds();
+        assert!(below.top() >= field.bottom(), "the steps stay under it");
+    });
     app.in_window(cx, |window, cx| window.input("picture", cx));
     settle(&app, cx);
     app.in_window(cx, |window, _| {
@@ -355,7 +376,13 @@ async fn the_panel_goes_into_a_kind_and_back_once_there_is_a_trigger(cx: &mut Te
             window.try_find(("read-fans", 2usize)).is_some(),
             "all again"
         );
+        assert_eq!(
+            window.find("editor-steps-title").label(),
+            Some("Actions"),
+            "the title back"
+        );
     });
+    assert!(focused(&app, cx, "editor-shelf-search"));
     app.press(cx, "escape");
     settle(&app, cx);
     assert!(shown(&app, cx, "editor-filters"), "back at the kinds");
@@ -364,6 +391,80 @@ async fn the_panel_goes_into_a_kind_and_back_once_there_is_a_trigger(cx: &mut Te
         "focus on the kind left"
     );
     assert_eq!(app.title(cx).0, "Edit automation", "still in the editor");
+}
+
+/// A press of the left button at `at`, and its release.
+fn press_at(app: &App, cx: &mut TestAppContext, at: gpui_kit::Point<gpui_kit::Pixels>) {
+    use gpui_kit::{MouseButton, MouseDownEvent, MouseUpEvent};
+    let modifiers = Modifiers::default();
+    app.in_window(cx, |window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers,
+                click_count: 1,
+            }),
+            cx,
+        );
+    });
+    settle(app, cx);
+}
+
+#[gpui_kit::test]
+async fn a_press_outside_the_panel_closes_its_search_and_gives_the_title_back(
+    cx: &mut TestAppContext,
+) {
+    let backend = Scripted::with(vec![account(42, "me", true)]);
+    backend.script(|script| {
+        script.introduced(42);
+    });
+    let app = in_automations(cx, backend, still()).await;
+    app.click(cx, "automations-create");
+    settle(&app, cx);
+    app.click(cx, "editor-shelf-search");
+    settle(&app, cx);
+    assert!(shown(&app, cx, "editor-shelf-field"));
+
+    // A press in the field itself keeps it open.
+    let field = app.in_window(cx, |window, _| {
+        window.find("editor-shelf-field").bounds().center()
+    });
+    press_at(&app, cx, field);
+    assert!(shown(&app, cx, "editor-shelf-field"), "still open");
+
+    // One on the canvas closes it.
+    let canvas = app.in_window(cx, |window, _| {
+        let bounds = window.find("editor-canvas").bounds();
+        bounds.origin + point(px(40.), bounds.size.height / 2.0)
+    });
+    press_at(&app, cx, canvas);
+    assert!(!shown(&app, cx, "editor-shelf-field"), "closed");
+    app.in_window(cx, |window, _| {
+        assert_eq!(window.find("editor-steps-title").label(), Some("Triggers"));
+    });
+
+    // One on something that takes no focus leaves it on the magnifier.
+    app.click(cx, "editor-shelf-search");
+    settle(&app, cx);
+    assert!(focused(&app, cx, "editor-shelf-field"));
+    let edge = app.in_window(cx, |window, _| {
+        let bounds = window.find("editor-zoom").bounds();
+        bounds.origin + point(px(2.), bounds.size.height / 2.0)
+    });
+    press_at(&app, cx, edge);
+    assert!(!shown(&app, cx, "editor-shelf-field"), "closed");
+    assert!(focused(&app, cx, "editor-shelf-search"), "focus kept");
 }
 
 #[gpui_kit::test]

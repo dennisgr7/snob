@@ -19,11 +19,14 @@ use gpui_kit::{
     PathBuilder, Role, ScrollEvent, Stateful, Transformation, Window, canvas, div, fill, point, px,
     radians, relative, size,
 };
-use snob_core::automation::Node;
+use snob_core::automation::{Node, NodeId, Stage};
 
 use super::automations::{floating, tool_button};
 use super::words::{stage_name, step_detail, step_name};
-use crate::state::automations::{ARROW_PANS, Canvas, NODE_H, NODE_W, comes_in_at, leaves_at};
+use crate::state::automations::{
+    ARROW_PANS, Bend, Canvas, NODE_H, NODE_W, comes_in_at, head, heading, inputs_for, leaves_at,
+    route,
+};
 use crate::state::shelf::{At, has_a_trigger};
 use crate::theme::motion;
 use crate::theme::tokens::shape;
@@ -111,29 +114,46 @@ fn dots(
     .into_any_element()
 }
 
-/// One arrow: from `a` to `b`, in the canvas's own units, and what ink.
+/// The dot an arrow starts from and the one it comes into, across, in
+/// logical pixels; the one an arrow being drawn sticks to grows to
+/// [`PORT_SNAPPED`], and to [`PORT_OFFERED`] when it may take that arrow.
+const PORT: f32 = 12.0;
+const PORT_OFFERED: f32 = 14.0;
+const PORT_SNAPPED: f32 = 16.0;
+
+/// One arrow: the way it takes, in the canvas's own units, how far before
+/// its end its head stops (the input's dot, in logical pixels), and what
+/// ink.
 struct Arrow {
-    from: (f32, f32),
-    to: (f32, f32),
+    route: Vec<Bend>,
+    short_of: f32,
     faint: bool,
     held: bool,
 }
 
 /// Every arrow, drawn as a curve that leaves a step sideways and comes
-/// into the next one, with a head.
+/// into the next one, with a head **turned along the curve's end** and
+/// its tip at the input's dot.
 fn arrows(canvas_now: Canvas, all: Vec<Arrow>, look: &Look) -> AnyElement {
     let palette = look.palette;
     canvas(
         move |_, _, _| {},
         move |bounds, (), window, _| {
             let middle = bounds.center();
-            let screen = |at: (f32, f32)| {
+            let on_screen = |at: (f32, f32)| {
                 let on = canvas_now.on_screen(at);
-                point(middle.x + px(on.0), middle.y + px(on.1))
+                (f32::from(middle.x) + on.0, f32::from(middle.y) + on.1)
+            };
+            let screen = |at: (f32, f32)| {
+                let (x, y) = on_screen(at);
+                point(px(x), px(y))
             };
             let zoom = canvas_now.zoom();
             window.with_content_mask(Some(ContentMask { bounds }), |window| {
                 for arrow in &all {
+                    let Some(end) = arrow.route.last().map(|bend| bend[3]) else {
+                        continue;
+                    };
                     let ink = if arrow.held {
                         color(palette.accent)
                     } else if arrow.faint {
@@ -141,24 +161,28 @@ fn arrows(canvas_now: Canvas, all: Vec<Arrow>, look: &Look) -> AnyElement {
                     } else {
                         color_at(palette.secondary, 0.9)
                     };
-                    let reach = ((arrow.to.0 - arrow.from.0).abs() * 0.5).max(50.0);
-                    let (a, b) = (screen(arrow.from), screen(arrow.to));
-                    let ca = screen((arrow.from.0 + reach, arrow.from.1));
-                    let cb = screen((arrow.to.0 - reach, arrow.to.1));
                     let mut line = PathBuilder::stroke(px((2.0 * zoom).max(1.0)));
-                    line.move_to(a);
-                    line.cubic_bezier_to(b, ca, cb);
+                    line.move_to(screen(arrow.route[0][0]));
+                    for [_, ca, cb, b] in &arrow.route {
+                        line.cubic_bezier_to(screen(*b), screen(*ca), screen(*cb));
+                    }
                     if let Ok(line) = line.build() {
                         window.paint_path(line, ink);
                     }
-                    let head = (9.0 * zoom).max(4.0);
-                    let mut tip = PathBuilder::fill();
-                    tip.move_to(b);
-                    tip.line_to(point(b.x - px(head * 1.5), b.y - px(head * 0.8)));
-                    tip.line_to(point(b.x - px(head * 1.5), b.y + px(head * 0.8)));
-                    tip.close();
-                    if let Ok(tip) = tip.build() {
-                        window.paint_path(tip, ink);
+                    let way = heading(&arrow.route);
+                    let end = on_screen(end);
+                    let tip = (
+                        end.0 - way.0 * arrow.short_of,
+                        end.1 - way.1 * arrow.short_of,
+                    );
+                    let [tip, one, other] = head(tip, way, (9.0 * zoom).max(4.0));
+                    let mut drawn = PathBuilder::fill();
+                    drawn.move_to(point(px(tip.0), px(tip.1)));
+                    drawn.line_to(point(px(one.0), px(one.1)));
+                    drawn.line_to(point(px(other.0), px(other.1)));
+                    drawn.close();
+                    if let Ok(drawn) = drawn.build() {
+                        window.paint_path(drawn, ink);
                     }
                 }
             });
@@ -170,7 +194,8 @@ fn arrows(canvas_now: Canvas, all: Vec<Arrow>, look: &Look) -> AnyElement {
 }
 
 /// What the arrows are, with the step held and the arrow being drawn
-/// counted.
+/// counted: **one that sticks to an input ends there**, else at the
+/// pointer.
 fn arrows_of(edit: &Edit) -> Vec<Arrow> {
     let automation = edit.state.automation();
     let at = |id| {
@@ -184,8 +209,8 @@ fn arrows_of(edit: &Edit) -> Vec<Arrow> {
         .filter_map(|edge| {
             let ((from, on), (to, off)) = (at(edge.from)?, at(edge.to)?);
             Some(Arrow {
-                from: leaves_at(from),
-                to: comes_in_at(to),
+                route: route(leaves_at(from), comes_in_at(to), false),
+                short_of: PORT / 2.0 + 1.0,
                 faint: !(on && off),
                 held: false,
             })
@@ -194,9 +219,14 @@ fn arrows_of(edit: &Edit) -> Vec<Arrow> {
     if let Some(wire) = &edit.wire
         && let Some((from, _)) = at(wire.from)
     {
+        let stuck = wire.snapped.and_then(at).map(|(to, _)| comes_in_at(to));
         all.push(Arrow {
-            from: leaves_at(from),
-            to: wire.to,
+            route: route(leaves_at(from), stuck.unwrap_or(wire.to), stuck.is_none()),
+            short_of: if stuck.is_some() {
+                PORT_SNAPPED / 2.0 + 1.0
+            } else {
+                0.0
+            },
             faint: false,
             held: true,
         });
@@ -204,15 +234,51 @@ fn arrows_of(edit: &Edit) -> Vec<Arrow> {
     all
 }
 
+/// How a step's input looks while an arrow is drawn: offered to it, stuck
+/// to it, or no place for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Port {
+    Offered,
+    Snapped,
+    Off,
+}
+
+/// How the input of `node` looks under the arrow `edit` draws, if any,
+/// which may stick to the steps `offered` (`inputs_for`).
+fn port_of(edit: &Edit, node: &Node, offered: &[NodeId]) -> Option<Port> {
+    let wire = edit.wire.as_ref()?;
+    Some(if wire.snapped == Some(node.id) {
+        Port::Snapped
+    } else if offered.contains(&node.id) {
+        Port::Offered
+    } else {
+        Port::Off
+    })
+}
+
+/// A dot an arrow leaves or comes into, `across` logical pixels, in a box
+/// of 24 a side astride the step's edge.
+fn port_dot(across: f32, look: &Look) -> Div {
+    let palette = look.palette;
+    div()
+        .size(px(across))
+        .rounded_full()
+        .border_2()
+        .border_color(color(palette.panel))
+        .bg(color(palette.accent))
+}
+
 /// One step on the canvas: a button that moves with the pointer, opens its
 /// menu on a right press or Enter, and carries the handle an arrow is drawn
-/// from.
+/// from, on its right, and the dot arrows come into, on its left.
+#[expect(clippy::too_many_arguments, reason = "one step's worth of the canvas")]
 fn node_view(
     node: &Node,
     at: (i32, i32),
     canvas_now: Canvas,
     flagged: bool,
     selected: bool,
+    port: Option<Port>,
     look: &Look,
     cx: &mut Context<Shell>,
 ) -> AnyElement {
@@ -242,7 +308,11 @@ fn node_view(
     } else {
         palette.control_line
     };
-    let leads_on = node.step.stage() != snob_core::automation::Stage::Output;
+    // The dots sit astride the step's outer edge, which its border is
+    // inside of.
+    let border = (if flagged || selected { 2.0 } else { 1.0 }) * zoom.max(0.5);
+    let leads_on = node.step.stage() != Stage::Output;
+    let led_to = node.step.stage() != Stage::Trigger;
     Button::new(("node", id as usize))
         .accessibility_label(said)
         .absolute()
@@ -256,9 +326,7 @@ fn node_view(
         .items_center()
         .justify_start()
         .rounded(px(shape::CARD_RADIUS * zoom))
-        .border(px(
-            (if flagged || selected { 2.0 } else { 1.0 }) * zoom.max(0.5)
-        ))
+        .border(px(border))
         .border_color(color(outline))
         .bg(color(palette.panel))
         .shadow_sm()
@@ -319,10 +387,42 @@ fn node_view(
                         .child(detail)
                 })),
         )
+        .children(led_to.then(|| {
+            let across = match port {
+                Some(Port::Snapped) => PORT_SNAPPED,
+                Some(Port::Offered) => PORT_OFFERED,
+                Some(Port::Off) | None => PORT,
+            };
+            div()
+                .id(("node-input", id as usize))
+                .test_support()
+                .absolute()
+                .left(px(-12. - border))
+                .top(relative(0.5))
+                .mt(px(-12.))
+                .size(px(24.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(port == Some(Port::Off), |input| input.opacity(0.3))
+                .child(
+                    port_dot(across, look).when(port == Some(Port::Snapped), |dot| {
+                        dot.shadow(vec![gpui_kit::BoxShadow {
+                            color: color_at(palette.accent, 0.3),
+                            offset: point(px(0.), px(0.)),
+                            blur_radius: px(0.),
+                            spread_radius: px(3.),
+                            inset: false,
+                        }])
+                    }),
+                )
+        }))
         .children(leads_on.then(|| {
             div()
+                .id(("node-output", id as usize))
+                .test_support()
                 .absolute()
-                .right(px(-12.))
+                .right(px(-12. - border))
                 .top(relative(0.5))
                 .mt(px(-12.))
                 .size(px(24.))
@@ -336,14 +436,7 @@ fn node_view(
                         shell.begin_a_wire(id, event.position, cx);
                     }),
                 )
-                .child(
-                    div()
-                        .size(px(12.))
-                        .rounded_full()
-                        .border_2()
-                        .border_color(color(palette.panel))
-                        .bg(color(palette.accent)),
-                )
+                .child(port_dot(PORT, look))
         }))
         .into_any_element()
 }
@@ -490,6 +583,13 @@ pub fn editor(
     let away = 1.0 - phase.presence;
     let flagged = edit.state.flagged();
     let automation = edit.state.automation();
+    let offered: Vec<NodeId> = edit
+        .wire
+        .map(|wire| inputs_for(automation, wire.from))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
 
     let nodes: Vec<AnyElement> = automation
         .nodes
@@ -501,6 +601,7 @@ pub fn editor(
                 canvas_now,
                 flagged.contains(&node.id),
                 edit.selected == Some(node.id),
+                port_of(edit, node, &offered),
                 look,
                 cx,
             )
@@ -611,6 +712,7 @@ pub fn editor(
     let top = top_bar(shell, edit, phase, away, look, cx);
     let zoom_bar = zoom_bar(canvas_now, phase, away, look, cx);
 
+    let searching = editor.search.is_some();
     let shelf = shelf(editor, now, reduce, look, window, cx);
     let panel = div()
         .absolute()
@@ -633,6 +735,13 @@ pub fn editor(
                 .overflow_y_scroll()
                 .overflow_x_hidden()
                 .p(sp(8.))
+                // A press anywhere else closes the search; one in the panel
+                // acts as usual, as a step put on the canvas closes it.
+                .when(searching, |panel| {
+                    panel.on_mouse_down_out(cx.listener(|shell, _: &MouseDownEvent, window, cx| {
+                        shell.close_the_search_away(window, cx);
+                    }))
+                })
                 .child(shelf),
         );
 
@@ -999,8 +1108,8 @@ fn kinds(
 
 /// The steps of one kind: the way back (none while the panel is held at
 /// the triggers), the kind's name, a magnifier that opens a search in
-/// them, and each step that the search finds, coming in one after the
-/// other.
+/// them **over that name, on its line**, and each step that the search
+/// finds, coming in one after the other.
 #[expect(clippy::too_many_arguments, reason = "one frame's worth of the panel")]
 fn steps_of(
     steps: Steps,
@@ -1016,6 +1125,66 @@ fn steps_of(
     let (id, name) = steps_heading(steps, look);
     let held = editor.shelf.held();
     let search = editor.search.as_ref();
+    let typed = search
+        .map(|search| search.input.read(cx).value().to_string())
+        .unwrap_or_default();
+    // The search opens over the title, on its line: the field grows out of
+    // the magnifier, from the right, as the title fades under it; closed,
+    // the title comes back. Under "reduce motion" both only fade.
+    let moved = look.moved(motion::INTERACTION, 8.0, 1.0);
+    let title_row = match search {
+        Some(search) => {
+            let opened = now.saturating_duration_since(search.since);
+            let grown = coming_in(Some(opened), 0, moved.lasts, reduce, window);
+            let width = if reduce { 1.0 } else { 0.2 + 0.8 * grown };
+            div()
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .justify_end()
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .when(held, |title| title.px(sp(8.)))
+                        .opacity(1.0 - grown)
+                        .font_weight(FontWeight::BOLD)
+                        .text_size(sp(14.))
+                        .text_color(color(palette.text))
+                        .child(div().min_w_0().truncate().child(name.clone())),
+                )
+                .child(
+                    div().w(relative(width)).opacity(grown).child(
+                        Input::new(&search.input)
+                            .id("editor-shelf-field")
+                            .aria_label(look.tr("editor-shelf-search")),
+                    ),
+                )
+                .into_any_element()
+        }
+        None => {
+            let back = coming_in(
+                editor
+                    .search_closed
+                    .map(|closed| now.saturating_duration_since(closed)),
+                0,
+                moved.lasts,
+                reduce,
+                window,
+            );
+            shelf_heading(name.clone(), look)
+                .when(held, |heading| heading.px(sp(8.)))
+                .relative()
+                .left(px(moved.travels * (1.0 - back)))
+                .opacity(back)
+                .test_support()
+                .into_any_element()
+        }
+    };
     let header = div()
         .flex()
         .items_center()
@@ -1034,11 +1203,7 @@ fn steps_of(
                 shell.back_to_the_kinds(window, cx);
             }))
         }))
-        .child(
-            shelf_heading(name.clone(), look)
-                .when(held, |heading| heading.px(sp(8.)))
-                .test_support(),
-        )
+        .child(title_row)
         .child(
             tool_button(
                 "editor-shelf-search",
@@ -1053,25 +1218,6 @@ fn steps_of(
                 shell.toggle_the_search(window, cx);
             })),
         );
-
-    // The field grows out of the magnifier, from the right; under "reduce
-    // motion" it is there at its width and only fades in.
-    let typed = search
-        .map(|search| search.input.read(cx).value().to_string())
-        .unwrap_or_default();
-    let field = search.map(|search| {
-        let opened = now.saturating_duration_since(search.since);
-        let grown = coming_in(Some(opened), 0, motion::ENTER, reduce, window);
-        let width = if reduce { 1.0 } else { 0.2 + 0.8 * grown };
-        div().flex().justify_end().pb(sp(6.)).child(
-            div().w(relative(width)).opacity(grown).child(
-                Input::new(&search.input)
-                    .id("editor-shelf-field")
-                    .aria_label(look.tr("editor-shelf-search"))
-                    .prefix(parts::icon(assets::SEARCH, 15.).text_color(color(palette.secondary))),
-            ),
-        )
-    });
 
     let first = held.then(|| {
         div()
@@ -1130,7 +1276,6 @@ fn steps_of(
     };
 
     let mut shown = vec![header.into_any_element()];
-    shown.extend(field.map(IntoElement::into_any_element));
     shown.extend(first.map(IntoElement::into_any_element));
     shown.push(list);
     shown
