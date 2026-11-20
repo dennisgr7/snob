@@ -2,14 +2,15 @@
 //! the page is laid out and what it shows of the posts, what marks the
 //! account, what a click on the picture does, how the picture goes from the
 //! page into its viewer and back and how far it is zoomed and moved there,
-//! what "About this account" holds, and **when a list may be read without
-//! asking**: only the account's own (AGENTS.md, "Consent").
+//! what "About this account" holds, when a tab's posts read on and what is
+//! said under them, and **when a list may be read without asking**: only
+//! the account's own (AGENTS.md, "Consent").
 //!
 //! No window, no clock and no engine here.
 
 use std::time::Duration;
 
-use snob_core::Pk;
+use snob_core::{Epoch, Pk};
 
 use crate::theme::motion::{self, Curve};
 
@@ -459,6 +460,135 @@ pub fn columns(width: f32, widest: f32) -> usize {
     ((width / widest).ceil() as usize).clamp(3, 6)
 }
 
+/// How many windows from the end of the posts the next page is asked for.
+pub const READ_ON_WITHIN: f32 = 1.0;
+
+/// What a frame of a profile knows of whether its tab's next page may be
+/// asked for. The sizes are in logical pixels, as the frame before measured
+/// what this one draws.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReadOn {
+    /// How far the posts are scrolled, how tall all that scrolls is, and how
+    /// much of it shows at once.
+    pub scrolled: f32,
+    pub content: f32,
+    pub seen: f32,
+    /// The sizes are of what is drawn now: not of another screen, layout,
+    /// window size or number of posts, and the page has finished coming in.
+    pub measured: bool,
+    /// A page of the tab is on its way.
+    pub pending: bool,
+    /// The backend handed out where the tab reads on.
+    pub next: bool,
+    /// Until when the engine said it rests before a page, and now.
+    pub resting_until: Option<Epoch>,
+    pub now: Epoch,
+    /// The last page asked for failed, and nobody asked again.
+    pub failed: bool,
+    /// The window is looked at, and the app does not rest.
+    pub looked_at: bool,
+    pub at_rest: bool,
+    /// The band says Instagram asked for a pause, or that there is no
+    /// network.
+    pub held_back: bool,
+    /// The viewer may see the account's posts.
+    pub visible: bool,
+}
+
+/// Whether a tab's next page is asked for now: **one at a time, never after
+/// a failure nobody asked again, and only near the end** of what is shown,
+/// which a page that does not fill the window is. Nothing is asked while
+/// nobody looks, in a pause, with no network, of a private account not
+/// followed, or past the tab's end. **How fast pages come is the engine's**
+/// (`snob_engine::posts::page_after`): a step after the page before, and
+/// a sitting's rest when one is due.
+pub fn reads_on(at: &ReadOn) -> bool {
+    let sizes = [at.scrolled, at.content, at.seen];
+    if !at.measured || sizes.iter().any(|size| !size.is_finite()) || at.seen <= 0.0 {
+        return false;
+    }
+    let resting = at
+        .resting_until
+        .is_some_and(|until| until.get() > at.now.get());
+    let may = at.next
+        && at.visible
+        && !at.pending
+        && !at.failed
+        && !resting
+        && at.looked_at
+        && !at.at_rest
+        && !at.held_back;
+    let left = at.content - (at.scrolled + at.seen);
+    may && left <= at.seen * READ_ON_WITHIN
+}
+
+/// What is said under a tab's posts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+    Nothing,
+    /// A first page with more past it, which is not read on: kept from
+    /// before, or with nowhere handed out to read on from.
+    FirstPage,
+    /// The next page is on its way.
+    Reading,
+    /// The engine rests until then before reading it, at a person's pace.
+    Resting(Epoch),
+    /// It could not be read; a button asks again.
+    Failed,
+    /// The most pages the engine reads of a tab in one visit were read.
+    MostPages,
+    /// The tab was read on to its end.
+    Everything,
+}
+
+/// How a tab reads on, for what is said under its posts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TabEnd {
+    /// The posts shown are what the cache kept, while the tab is read.
+    pub kept: bool,
+    /// There are posts past those shown.
+    pub more: bool,
+    pub next: bool,
+    /// Pages shown, the first included.
+    pub pages: u32,
+    pub pending: bool,
+    /// Until when the engine said it rests before the page on its way, and
+    /// now: a rest past is said as reading.
+    pub resting_until: Option<Epoch>,
+    pub now: Epoch,
+    pub failed: bool,
+}
+
+/// What is said under a tab's posts. The end is said only of a tab read on
+/// past its first page.
+pub fn ending(tab: &TabEnd) -> Ending {
+    if tab.kept {
+        return if tab.more {
+            Ending::FirstPage
+        } else {
+            Ending::Nothing
+        };
+    }
+    let resting = tab
+        .resting_until
+        .filter(|until| until.get() > tab.now.get());
+    match (tab.failed, tab.pending, resting) {
+        (true, _, _) => Ending::Failed,
+        (false, true, Some(until)) => Ending::Resting(until),
+        (false, true, None) => Ending::Reading,
+        (false, false, _) if !tab.more => {
+            if tab.pages > 1 {
+                Ending::Everything
+            } else {
+                Ending::Nothing
+            }
+        }
+        (false, false, _) if tab.next => Ending::Nothing,
+        (false, false, _) if tab.pages >= snob_engine::posts::MOST_PAGES => Ending::MostPages,
+        (false, false, _) => Ending::FirstPage,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,5 +857,213 @@ mod tests {
         assert_eq!(columns(1100.0, 260.0), 5);
         assert_eq!(columns(5000.0, 260.0), 6);
         assert_eq!(columns(f32::NAN, 260.0), 3);
+    }
+
+    /// A page scrolled to within half a window of its end, everything
+    /// else letting the next page be asked for.
+    fn near_the_end() -> ReadOn {
+        ReadOn {
+            scrolled: 1300.0,
+            content: 2400.0,
+            seen: 700.0,
+            measured: true,
+            pending: false,
+            next: true,
+            resting_until: None,
+            now: Epoch::new(1_000),
+            failed: false,
+            looked_at: true,
+            at_rest: false,
+            held_back: false,
+            visible: true,
+        }
+    }
+
+    #[test]
+    fn the_next_page_is_asked_for_within_a_window_of_the_end_or_while_nothing_scrolls() {
+        assert!(reads_on(&near_the_end()));
+        let far = ReadOn {
+            scrolled: 0.0,
+            ..near_the_end()
+        };
+        assert!(!reads_on(&far), "two windows from the end");
+        let at_one_window = ReadOn {
+            scrolled: 1000.0,
+            ..near_the_end()
+        };
+        assert!(reads_on(&at_one_window));
+        let short = ReadOn {
+            scrolled: 0.0,
+            content: 500.0,
+            ..near_the_end()
+        };
+        assert!(reads_on(&short), "a page that does not fill the window");
+    }
+
+    #[test]
+    fn nothing_is_asked_from_sizes_not_measured_of_what_is_drawn() {
+        let stale = ReadOn {
+            measured: false,
+            ..near_the_end()
+        };
+        assert!(!reads_on(&stale));
+        let unlaid = ReadOn {
+            scrolled: 0.0,
+            content: 0.0,
+            seen: 0.0,
+            ..near_the_end()
+        };
+        assert!(!reads_on(&unlaid), "a window not laid out yet");
+        let broken = ReadOn {
+            content: f32::NAN,
+            ..near_the_end()
+        };
+        assert!(!reads_on(&broken));
+    }
+
+    #[test]
+    fn one_page_is_on_its_way_at_a_time() {
+        let pending = ReadOn {
+            pending: true,
+            ..near_the_end()
+        };
+        assert!(!reads_on(&pending));
+    }
+
+    #[test]
+    fn nothing_is_asked_past_the_tab_s_end() {
+        let ended = ReadOn {
+            next: false,
+            ..near_the_end()
+        };
+        assert!(!reads_on(&ended));
+    }
+
+    #[test]
+    fn nothing_is_asked_while_the_engine_says_it_rests_and_once_it_is_over_it_may_be() {
+        let resting = ReadOn {
+            resting_until: Some(Epoch::new(1_300)),
+            ..near_the_end()
+        };
+        assert!(!reads_on(&resting));
+        let rested = ReadOn {
+            resting_until: Some(Epoch::new(1_000)),
+            ..near_the_end()
+        };
+        assert!(reads_on(&rested));
+    }
+
+    #[test]
+    fn a_failed_page_is_not_asked_again_until_somebody_asks() {
+        let failed = ReadOn {
+            failed: true,
+            ..near_the_end()
+        };
+        assert!(!reads_on(&failed));
+    }
+
+    #[test]
+    fn nothing_is_asked_while_nobody_looks_at_the_window_or_the_app_rests() {
+        let away = ReadOn {
+            looked_at: false,
+            ..near_the_end()
+        };
+        assert!(!reads_on(&away));
+        let resting = ReadOn {
+            at_rest: true,
+            ..near_the_end()
+        };
+        assert!(!reads_on(&resting));
+    }
+
+    #[test]
+    fn nothing_is_asked_in_a_pause_or_with_no_network() {
+        let held = ReadOn {
+            held_back: true,
+            ..near_the_end()
+        };
+        assert!(!reads_on(&held));
+    }
+
+    #[test]
+    fn nothing_is_asked_of_a_private_account_not_followed() {
+        let hidden = ReadOn {
+            visible: false,
+            ..near_the_end()
+        };
+        assert!(!reads_on(&hidden));
+    }
+
+    fn read_on() -> TabEnd {
+        TabEnd {
+            kept: false,
+            more: true,
+            next: true,
+            pages: 2,
+            pending: false,
+            resting_until: None,
+            now: Epoch::new(4_000),
+            failed: false,
+        }
+    }
+
+    #[test]
+    fn under_the_posts_is_said_how_the_tab_reads_on() {
+        assert_eq!(ending(&read_on()), Ending::Nothing, "it reads on");
+        let reading = TabEnd {
+            pending: true,
+            ..read_on()
+        };
+        assert_eq!(ending(&reading), Ending::Reading);
+        let until = Epoch::new(5_000);
+        let resting = TabEnd {
+            resting_until: Some(until),
+            ..reading
+        };
+        assert_eq!(ending(&resting), Ending::Resting(until));
+        let rested = TabEnd {
+            now: until,
+            ..resting
+        };
+        assert_eq!(ending(&rested), Ending::Reading, "a rest past is over");
+        let failed = TabEnd {
+            failed: true,
+            ..read_on()
+        };
+        assert_eq!(ending(&failed), Ending::Failed);
+    }
+
+    #[test]
+    fn the_end_of_a_tab_is_said_once_it_was_read_on_to_it_and_so_are_the_most_pages() {
+        let ended = TabEnd {
+            more: false,
+            next: false,
+            ..read_on()
+        };
+        assert_eq!(ending(&ended), Ending::Everything);
+        let one_page = TabEnd { pages: 1, ..ended };
+        assert_eq!(
+            ending(&one_page),
+            Ending::Nothing,
+            "a short tab says nothing"
+        );
+        let most = TabEnd {
+            next: false,
+            pages: snob_engine::posts::MOST_PAGES,
+            ..read_on()
+        };
+        assert_eq!(ending(&most), Ending::MostPages);
+        let nowhere = TabEnd {
+            next: false,
+            pages: 1,
+            ..read_on()
+        };
+        assert_eq!(ending(&nowhere), Ending::FirstPage);
+        let kept = TabEnd {
+            kept: true,
+            pending: true,
+            ..read_on()
+        };
+        assert_eq!(ending(&kept), Ending::FirstPage, "kept from before");
     }
 }

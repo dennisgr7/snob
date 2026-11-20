@@ -893,7 +893,9 @@ impl Backend for Scripted {
     ) -> Answer<Result<Tiles, Unread>> {
         let page = {
             let mut state = self.state();
-            state.more_stop = Some(stop.clone());
+            // A page stopped while held still comes, its cursor spent, as
+            // the engine's does when stopped while its pictures load.
+            state.more_stop = Some(stop);
             if let Some(until) = state.rests_until {
                 resting.send_replace(Some(until));
             }
@@ -910,9 +912,6 @@ impl Backend for Scripted {
             let Some(page) = page.filter(|_| state.cursors.contains_key(&after.0)) else {
                 return Err(Unread::Failed(String::new()));
             };
-            if stop.is_canceled() {
-                return Err(Unread::Failed(String::new()));
-            }
             if state.more_fails > 0 {
                 state.more_fails -= 1;
                 return Err(Unread::Failed("7K2Q-PAGE".to_string()));

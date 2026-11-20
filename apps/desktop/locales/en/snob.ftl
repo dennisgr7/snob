@@ -576,6 +576,12 @@ profile-about-usernames = Username changes
 profile-about-unread = Not read yet
 profile-about-note = Instagram shows these in its own app. snob does not read them yet, and makes none of them up.
 profile-about-close = Close
+profile-reading-more = Reading more posts…
+profile-resting = snob rests until { $time } before reading more, at a person's pace.
+profile-more-failed = More posts could not be read.
+profile-more-again = Try again
+profile-most-pages = snob reads at most { $count } pages of a tab in one visit.
+profile-all-read = That is everything.
 
 ## People: the lists of followers and following, and choosing in them.
 

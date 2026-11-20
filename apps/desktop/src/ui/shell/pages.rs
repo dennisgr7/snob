@@ -5,25 +5,29 @@
 //! back**: a page keeps what it read for as long as the way back holds it.
 //! What the cache kept of a profile, its highlights and its tabs' first
 //! pages is shown at once, and the band says it is loading until the reads
-//! it makes anyway answer: **the cache never decides whether to read**.
+//! it makes anyway answer: **the cache never decides whether to read**. A
+//! tab's next page is asked for one at a time, from the cursor the backend
+//! handed out, and stopped when the page is left; **the engine sets the
+//! pace**, which the page only shows.
 
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyWindowHandle, Bounds, Context, Entity, FocusHandle, Pixels, Point, ScrollHandle,
     SharedString, UniformListScrollHandle, WeakEntity, Window,
 };
-use snob_core::Pk;
+use snob_core::{Epoch, Pk};
 use snob_ig::pace::CancelToken;
 use tokio::sync::watch;
 
 use super::Shell;
-use crate::backend::{Listed, Profile, Tiles, Unread, Walked};
+use crate::backend::{Cursor, Listed, Profile, Tiles, Unread, Walked};
 use crate::state::flow::{Event, Named, Screen};
 use crate::state::profile::{self, Layout, PictureClick, Rect, Run, Showing, Side, Tab, Way, Zoom};
 use crate::state::status::Status;
@@ -39,6 +43,78 @@ pub(crate) enum TabRead {
     Failed(Unread),
 }
 
+/// What a frame's sizes were measured from: a page asks for no more from
+/// sizes of something else (`profile::ReadOn::measured`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Measured {
+    pub tab: Tab,
+    pub layout: Layout,
+    pub showing: Showing,
+    pub posts: usize,
+    pub window: gpui_kit::Size<Pixels>,
+    pub text_scale: f32,
+}
+
+/// One page past a tab's first asked for: which ask it is, so an answer
+/// finds the page that asked, and what stops it.
+#[derive(Clone)]
+pub(crate) struct Reading {
+    id: u64,
+    stop: CancelToken,
+}
+
+/// Every page past a tab's first asked for this run, for its id.
+static READS: AtomicU64 = AtomicU64::new(0);
+
+/// How a tab reads on past its first page. **The cursor stays in the tab's
+/// [`Tiles::next`]** until a page comes, so a page failed is asked again
+/// from where it was.
+#[derive(Clone, Default)]
+pub(crate) struct Further {
+    /// The page on its way, until it answers: **a page stopped stays on its
+    /// way**, since the engine may have spent its cursor and still answer
+    /// with it, and is shown when it comes.
+    pub reading: Option<Reading>,
+    /// Until when the engine said it rests before reading it.
+    pub resting_until: Option<Epoch>,
+    /// Why the last page asked for was not read, until somebody asks again.
+    pub failed: Option<Unread>,
+    /// When each page past the first came: the posts from that one on.
+    pub came: Vec<(usize, Instant)>,
+    /// What the last frame drawn was.
+    pub measured: Option<Measured>,
+}
+
+impl Further {
+    /// The pages shown, the first included.
+    pub fn pages(&self) -> u32 {
+        u32::try_from(self.came.len()).map_or(u32::MAX, |came| came.saturating_add(1))
+    }
+
+    /// Stops the page on its way, which stays on its way until it answers,
+    /// and forgets what was measured: the next frame measures again.
+    fn stop(&mut self) {
+        if let Some(reading) = &self.reading {
+            reading.stop.cancel();
+        }
+        self.resting_until = None;
+        self.measured = None;
+    }
+
+    /// Stops the page on its way and lets go of it: what it answers is not
+    /// shown.
+    fn let_go(&mut self) {
+        self.stop();
+        self.reading = None;
+    }
+
+    fn is_reading(&self, id: u64) -> bool {
+        self.reading
+            .as_ref()
+            .is_some_and(|reading| reading.id == id)
+    }
+}
+
 /// A profile while the way back holds it: what was kept of it, then what
 /// was read, and each tab shown.
 pub(crate) struct ProfilePage {
@@ -51,6 +127,8 @@ pub(crate) struct ProfilePage {
     /// The tab the underline leaves, and since when.
     pub tab_from: (Tab, Instant),
     pub tabs: HashMap<Tab, TabRead>,
+    /// How each tab read reads on.
+    pub further: HashMap<Tab, Further>,
     /// The first page of each tab the cache kept, shown until the tab is
     /// read.
     pub kept_tabs: HashMap<Tab, Tiles>,
@@ -73,6 +151,21 @@ pub(crate) struct ProfilePage {
     /// What the page's scrolling left in sight where the picture was last
     /// drawn.
     pub picture_clip: Rc<Cell<Bounds<Pixels>>>,
+}
+
+impl ProfilePage {
+    /// Stops every page on its way: what leaving the page does.
+    fn stop_reading_on(&mut self) {
+        for further in self.further.values_mut() {
+            further.stop();
+        }
+    }
+}
+
+impl Drop for ProfilePage {
+    fn drop(&mut self) {
+        self.stop_reading_on();
+    }
 }
 
 /// One of an account's lists, as far as it is read. **Read on until nothing
@@ -288,7 +381,11 @@ impl Shell {
             .chain(std::iter::once(self.flow.screen()))
             .cloned()
             .collect();
-        self.pages.profiles.retain(|pk, _| {
+        self.pages.profiles.retain(|pk, page| {
+            // A page held but not shown reads no further: its cursor stays.
+            if !matches!(&self.shown, Screen::Profile(who) if who.pk == *pk) {
+                page.stop_reading_on();
+            }
             held.iter()
                 .any(|screen| matches!(screen, Screen::Profile(who) if who.pk == *pk))
         });
@@ -354,6 +451,7 @@ impl Shell {
                 tab: Tab::Posts,
                 tab_from: (Tab::Posts, now),
                 tabs: HashMap::new(),
+                further: HashMap::new(),
                 kept_tabs: HashMap::new(),
                 shown_since: now,
                 highlights_since: None,
@@ -518,6 +616,256 @@ impl Shell {
         }
     }
 
+    /// On a frame of the profile shown, from what the frame before
+    /// measured: asks for the tab's next page when `state::profile::reads_on`
+    /// says it is due, right after this frame. Sizes of something other
+    /// than what is drawn now ask for one more frame instead.
+    pub(crate) fn read_on_when_due(
+        &mut self,
+        sizes: (f32, f32, f32),
+        measured: Measured,
+        settled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let held_back = self.reads_held_back();
+        let at_rest = self.is_resting();
+        let Screen::Profile(who) = &self.shown else {
+            return;
+        };
+        let Some(page) = self.pages.profiles.get_mut(&who.pk) else {
+            return;
+        };
+        let (pk, tab) = (who.pk, page.tab);
+        let visible = page
+            .profile
+            .as_ref()
+            .is_some_and(|profile| profile.visible == Some(true));
+        let Some(TabRead::Read(tiles)) = page.tabs.get(&tab) else {
+            return;
+        };
+        let next = tiles.next;
+        let further = page.further.entry(tab).or_default();
+        let fresh = further.measured == Some(measured);
+        if !fresh {
+            further.measured = Some(measured);
+            crate::ui::frames::ask(window);
+        }
+        let (scrolled, content, seen) = sizes;
+        let due = profile::reads_on(&profile::ReadOn {
+            scrolled,
+            content,
+            seen,
+            measured: fresh && settled,
+            pending: further.reading.is_some(),
+            next: next.is_some(),
+            resting_until: further.resting_until,
+            now: snob_core::clock::now(),
+            failed: further.failed.is_some(),
+            looked_at: window.is_window_active(),
+            at_rest,
+            held_back,
+            visible,
+        });
+        if let (true, Some(after)) = (due, next) {
+            // Marked as on its way at once, so no other frame asks too.
+            let reading = Reading {
+                id: READS.fetch_add(1, Ordering::Relaxed),
+                stop: CancelToken::default(),
+            };
+            further.reading = Some(reading.clone());
+            cx.defer_in(window, move |this, window, cx| {
+                this.read_more(pk, tab, after, reading, window, cx);
+            });
+        }
+    }
+
+    /// The band says Instagram asked for a pause, or that there is no
+    /// network: no page past a tab's first is asked for.
+    pub(crate) fn reads_held_back(&self) -> bool {
+        self.band.holds(&Status::Offline)
+            || self.band.holds(&Status::Paused {
+                until: Epoch::new(0),
+            })
+    }
+
+    /// Reads the page of `tab` of the profile `pk` that `after` points at,
+    /// until `stop`. **The engine sets the pace**: the page says that it
+    /// reads, and until when it rests when the engine says so.
+    fn read_more(
+        &mut self,
+        pk: Pk,
+        tab: Tab,
+        after: Cursor,
+        asked: Reading,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (id, listening) = (asked.id, asked.stop.clone());
+        if listening.is_canceled() {
+            // Stopped before it was asked: nothing is on its way.
+            if let Some(further) = self.further_of(pk, tab)
+                && further.is_reading(id)
+            {
+                further.reading = None;
+            }
+            return;
+        }
+        let Some(page) = self.pages.profiles.get(&pk) else {
+            return;
+        };
+        let who = page
+            .profile
+            .as_ref()
+            .map_or_else(|| page.who.clone(), |profile| profile.named.clone());
+        tracing::debug!(?tab, "a profile's tab reads on");
+        let (resting, mut heard) = watch::channel(None);
+        let reading = self
+            .backend
+            .more_tiles(who, tab, after, resting, asked.stop.clone());
+        self.engine_asked(cx);
+        cx.spawn_in(window, async move |this, cx| {
+            while heard.changed().await.is_ok() {
+                let until = *heard.borrow_and_update();
+                let told = this.update(cx, |this, cx| {
+                    if listening.is_canceled() {
+                        return;
+                    }
+                    let Some(further) = this.further_of(pk, tab).filter(|f| f.is_reading(id))
+                    else {
+                        return;
+                    };
+                    further.resting_until = until;
+                    cx.notify();
+                    // The words change when the rest ends, the app resting
+                    // or not.
+                    let left = until.map_or(0, |until| {
+                        until.get().saturating_sub(snob_core::clock::now().get())
+                    });
+                    if let Ok(left @ 1..) = u64::try_from(left) {
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor()
+                                .timer(Duration::from_secs(left))
+                                .await;
+                            this.update(cx, |_, cx| cx.notify()).ok();
+                        })
+                        .detach();
+                    }
+                });
+                if told.is_err() || listening.is_canceled() {
+                    return;
+                }
+            }
+        })
+        .detach();
+        cx.spawn_in(window, async move |this, cx| {
+            let read = reading.await;
+            this.update_in(cx, |this, window, cx| {
+                this.engine_answered(cx);
+                this.more_read(pk, tab, &asked, read.ok(), window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn further_of(&mut self, pk: Pk, tab: Tab) -> Option<&mut Further> {
+        self.pages.profiles.get_mut(&pk)?.further.get_mut(&tab)
+    }
+
+    /// A page past a tab's first came, or did not: its posts go after the
+    /// others, or the page says it was not read and waits for a button.
+    /// **A page that came is shown though it was stopped**, as the engine
+    /// spent its cursor for it; one let go of (`Further::let_go`, a page
+    /// made again) is not. A page stopped that did not come says nothing:
+    /// its cursor was put back, and it is asked again when due.
+    fn more_read(
+        &mut self,
+        pk: Pk,
+        tab: Tab,
+        asked: &Reading,
+        read: Option<Result<Tiles, Unread>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(page) = self.pages.profiles.get_mut(&pk) else {
+            return;
+        };
+        let Some(further) = page
+            .further
+            .get_mut(&tab)
+            .filter(|f| f.is_reading(asked.id))
+        else {
+            return;
+        };
+        let stopped = asked.stop.is_canceled();
+        further.reading = None;
+        further.resting_until = None;
+        match read {
+            Some(Ok(more)) => {
+                if let Some(TabRead::Read(tiles)) = page.tabs.get_mut(&tab) {
+                    further.came.push((tiles.tiles.len(), Instant::now()));
+                    tiles.tiles.extend(more.tiles);
+                    tiles.more = more.more;
+                    tiles.next = more.next;
+                }
+            }
+            Some(Err(_)) | None if stopped => {}
+            Some(Err(why)) => {
+                let paused = matches!(why, Unread::Paused(_));
+                let look = Look::now(cx).clone();
+                let said = match &why {
+                    Unread::Failed(_) => look.tr("profile-more-failed"),
+                    other => super::super::screens::profile::unread_words(other, &look),
+                };
+                further.failed = Some(why);
+                self.announce(said, cx);
+                // The band says the pause the engine keeps, nothing sent.
+                if paused {
+                    self.read_the_pause(window, cx);
+                }
+            }
+            None => further.failed = Some(Unread::Failed(String::new())),
+        }
+        cx.notify();
+    }
+
+    /// The button under a page that could not be read: the same page is
+    /// asked for again, from where it was, once it is due.
+    pub(crate) fn read_more_again(&mut self, cx: &mut Context<Self>) {
+        let Screen::Profile(who) = &self.shown else {
+            return;
+        };
+        let (pk, Some(tab)) = (who.pk, self.profile_page().map(|page| page.tab)) else {
+            return;
+        };
+        tracing::info!(action = "read_more_posts_again", "action");
+        // In a pause or with no network the failure stays, and its button
+        // waits.
+        if self.reads_held_back() {
+            return;
+        }
+        if let Some(further) = self.further_of(pk, tab) {
+            further.failed = None;
+        }
+        cx.notify();
+    }
+
+    /// Stops every profile's pages on their way and lets go of where they
+    /// read on: **a cursor is the account's that it was handed to**.
+    pub(crate) fn forget_reading_on(&mut self) {
+        for page in self.pages.profiles.values_mut() {
+            for further in page.further.values_mut() {
+                further.let_go();
+            }
+            for read in page.tabs.values_mut() {
+                if let TabRead::Read(tiles) = read {
+                    tiles.next = None;
+                }
+            }
+        }
+    }
+
     /// To tab `tab` of the profile shown.
     pub(crate) fn choose_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
         let Screen::Profile(who) = self.shown.clone() else {
@@ -530,6 +878,9 @@ impl Shell {
             return;
         }
         tracing::info!(action = "choose_profile_tab", "action");
+        if let Some(left) = page.further.get_mut(&page.tab) {
+            left.stop();
+        }
         page.tab_from = (page.tab, Instant::now());
         page.tab = tab;
         page.shown_since = Instant::now();

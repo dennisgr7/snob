@@ -42,7 +42,9 @@ use crate::theme::motion;
 
 mod pages;
 
-pub(crate) use pages::{Pages, PictureDrawn, PopupKind, TabRead, eased, viewer_fit};
+pub(crate) use pages::{
+    Further, Measured, Pages, PictureDrawn, PopupKind, TabRead, eased, viewer_fit,
+};
 pub use pages::{PeopleList, moving};
 
 /// How long the window rests before where it is gets remembered: a drag
@@ -399,7 +401,9 @@ impl Shell {
             if window.is_window_active() {
                 this.look_again(window, cx);
             }
-            if this.automations.is_some() {
+            // What waits on the window being looked at: an automation's
+            // runs read again, and a profile's posts read on.
+            if this.automations.is_some() || this.profile_page().is_some() {
                 cx.notify();
             }
         })
@@ -958,6 +962,7 @@ impl Shell {
     pub(crate) fn switch_to(&mut self, pk: Pk, window: &mut Window, cx: &mut Context<Self>) {
         tracing::info!(action = "switch_account", "action");
         self.close_the_menu(window, cx);
+        self.forget_reading_on();
         let switching = self.backend.switch_to(pk);
         cx.spawn_in(window, async move |this, cx| {
             let Ok(accounts) = switching.await else {

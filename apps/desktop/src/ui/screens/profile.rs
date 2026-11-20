@@ -3,7 +3,8 @@
 //! the two lists' counters, which open them; the highlights; and the posts
 //! of three tabs, seen from afar as a grid or a list. **Nothing here opens
 //! a post, a highlight or a story, and nothing is marked as seen**: the
-//! page draws what the profile and one page of each tab said.
+//! page draws what the profile and the pages of each tab said, a tab read
+//! on a page at a time as its end comes near (`state::profile::reads_on`).
 //!
 //! Two layouts (`state::profile::Layout`): the card above the posts, the
 //! whole page scrolling, or the card standing at the left and the posts at
@@ -27,14 +28,14 @@ use gpui_kit::{
 use super::handle;
 use crate::backend::{Account, Profile, Tile, TileKind, Tiles, Unread};
 use crate::state::flow::Named;
-use crate::state::profile::{self, Layout, Mark, Showing, Side, Tab};
+use crate::state::profile::{self, Ending, Layout, Mark, Showing, Side, Tab};
 use crate::theme::motion;
 use crate::theme::tokens::{frame, shape};
 use crate::ui::assets;
 use crate::ui::frame::clock;
 use crate::ui::look::{Look, color, color_at, sp};
 use crate::ui::parts::{self, Tone, icon};
-use crate::ui::shell::{Phase, PopupKind, Shell, TabRead, eased};
+use crate::ui::shell::{Further, Measured, Phase, PopupKind, Shell, TabRead, eased};
 
 /// The picture's size in the card above the posts, and in the card at the
 /// left, in logical pixels.
@@ -151,6 +152,10 @@ struct Shown {
     read: Option<TabRead>,
     /// The tab's first page the cache kept, shown until it is read.
     kept: Option<Tiles>,
+    /// How the tab reads on past its first page, and whether the band
+    /// holds it back (a pause, no network).
+    further: Further,
+    held_back: bool,
     shown_since: Instant,
     read_at: Option<Instant>,
     highlights_since: Option<Instant>,
@@ -182,6 +187,8 @@ pub fn render(
         tab_from: page.tab_from,
         read: page.tabs.get(&page.tab).cloned(),
         kept: page.kept_tabs.get(&page.tab).cloned(),
+        further: page.further.get(&page.tab).cloned().unwrap_or_default(),
+        held_back: shell.reads_held_back(),
         shown_since: page.shown_since,
         read_at: page.read_at,
         highlights_since: page.highlights_since,
@@ -359,6 +366,31 @@ pub fn render(
                 )
         }
     };
+
+    // What the frame before measured of the posts' scroll: the whole
+    // page's above them, their own beside the card.
+    let scroll = match layout {
+        Layout::Stacked => shell.scroll.clone(),
+        Layout::Split => shown.scroll.clone(),
+    };
+    let seen = f32::from(scroll.bounds().size.height);
+    let sizes = (
+        -f32::from(scroll.offset().y),
+        seen + f32::from(scroll.max_offset().y),
+        seen,
+    );
+    let measured = Measured {
+        tab: shown.tab,
+        layout,
+        showing,
+        posts: match &shown.read {
+            Some(TabRead::Read(tiles)) => tiles.tiles.len(),
+            _ => 0,
+        },
+        window: window.viewport_size(),
+        text_scale: look.settings.text_scale(),
+    };
+    shell.read_on_when_due(sizes, measured, presence >= 1.0, window, cx);
 
     page.relative()
         .top(px(rise))
@@ -1376,7 +1408,7 @@ fn posts(
                 .relative()
                 .top(px(moved.travels * (1.0 - switched)))
                 .opacity(switched)
-                .child(tab_content(shown, showing, columns, look, window)),
+                .child(tab_content(shown, showing, columns, look, window, cx)),
         )
 }
 
@@ -1387,21 +1419,48 @@ fn tab_content(
     columns: usize,
     look: &Look,
     window: &mut Window,
+    cx: &mut Context<Shell>,
 ) -> AnyElement {
     let visible = shown.profile.as_ref().and_then(|profile| profile.visible);
     let kept = shown.kept.as_ref().filter(|kept| !kept.tiles.is_empty());
-    let posts = |tiles: &Tiles, window: &mut Window| match showing {
-        Showing::Grid => grid(tiles, shown.shown_since, columns, look, window),
-        Showing::List => list(tiles, shown.shown_since, look, window),
+    let further = &shown.further;
+    let mut posts = |tiles: &Tiles, kept: bool, window: &mut Window| {
+        let end = profile::ending(&profile::TabEnd {
+            kept,
+            more: tiles.more,
+            next: tiles.next.is_some(),
+            pages: further.pages(),
+            pending: further.reading.is_some(),
+            resting_until: further.resting_until,
+            now: snob_core::clock::now(),
+            failed: further.failed.is_some(),
+        });
+        let since = Since {
+            shown: shown.shown_since,
+            came: if kept { &[] } else { &further.came },
+        };
+        let ending = ending(
+            end,
+            tiles,
+            further.failed.as_ref(),
+            shown.held_back,
+            look,
+            window,
+            cx,
+        );
+        match showing {
+            Showing::Grid => grid(tiles, &since, columns, ending, look, window),
+            Showing::List => list(tiles, &since, ending, look, window),
+        }
     };
     // What could not be read is said above what the cache kept of it.
-    let failed = |said: AnyElement, window: &mut Window| match kept {
+    let mut failed = |said: AnyElement, window: &mut Window| match kept {
         Some(kept) => div()
             .w_full()
             .flex()
             .flex_col()
             .child(said)
-            .child(posts(kept, window))
+            .child(posts(kept, true, window))
             .into_any_element(),
         None => said,
     };
@@ -1415,7 +1474,7 @@ fn tab_content(
         ),
         // What the cache kept, while the tab is read again.
         (None, _, _) | (_, None | Some(TabRead::Reading), _) if let Some(kept) = kept => {
-            posts(kept, window)
+            posts(kept, true, window)
         }
         (None, _, _) | (_, None | Some(TabRead::Reading), _) => div()
             .id("profile-reading")
@@ -1451,7 +1510,7 @@ fn tab_content(
             None,
             look,
         ),
-        (_, Some(TabRead::Read(tiles)), _) => posts(tiles, window),
+        (_, Some(TabRead::Read(tiles)), _) => posts(tiles, false, window),
     }
 }
 
@@ -1491,6 +1550,25 @@ fn status(id: &'static str, said: String, note: Option<String>, look: &Look) -> 
                 .child(note)
         }))
         .into_any_element()
+}
+
+/// Since when the posts of a tab come in: the first page since the posts
+/// were shown, and each page past it since it came.
+struct Since<'a> {
+    shown: Instant,
+    came: &'a [(usize, Instant)],
+}
+
+impl Since<'_> {
+    /// Since when the post at `at` comes in, and how many come before it
+    /// from then: a page that came after the posts were shown comes in from
+    /// its first post, as the first page did.
+    fn of(&self, at: usize) -> (usize, Instant) {
+        match self.came.iter().rev().find(|(from, _)| *from <= at) {
+            Some((from, came)) if *came > self.shown => (at - from, *came),
+            _ => (at, self.shown),
+        }
+    }
 }
 
 /// How far the tile at `at` has come in, `since` the posts were shown: one
@@ -1565,11 +1643,12 @@ fn thumb(tile: &Tile, look: &Look) -> Div {
         })
 }
 
-/// The first page of a tab as a grid of squares.
+/// The posts of a tab as a grid of squares, and what is said under them.
 fn grid(
     tiles: &Tiles,
-    since: Instant,
+    since: &Since<'_>,
     columns: usize,
+    ending: Option<AnyElement>,
     look: &Look,
     window: &mut Window,
 ) -> AnyElement {
@@ -1583,7 +1662,8 @@ fn grid(
         .flex()
         .flex_wrap()
         .children(tiles.tiles.iter().enumerate().map(|(at, tile)| {
-            let here = tile_in(at, since, look, window);
+            let (after, since) = since.of(at);
+            let here = tile_in(after, since, look, window);
             let badge = kind_icon(tile.kind).map(|drawing| {
                 div()
                     .absolute()
@@ -1613,13 +1693,19 @@ fn grid(
                         .children(badge),
                 )
         }))
-        .children(more(tiles, look))
+        .children(ending)
         .into_any_element()
 }
 
-/// The first page of a tab as a list: the small picture, the caption, and
-/// when and how it was liked.
-fn list(tiles: &Tiles, since: Instant, look: &Look, window: &mut Window) -> AnyElement {
+/// The posts of a tab as a list: the small picture, the caption, and when
+/// and how it was liked; and what is said under them.
+fn list(
+    tiles: &Tiles,
+    since: &Since<'_>,
+    ending: Option<AnyElement>,
+    look: &Look,
+    window: &mut Window,
+) -> AnyElement {
     let palette = look.palette;
     let language = look.texts.language();
     let moved = look.moved(motion::ENTER, 8.0, 1.0);
@@ -1630,7 +1716,8 @@ fn list(tiles: &Tiles, since: Instant, look: &Look, window: &mut Window) -> AnyE
         .flex()
         .flex_col()
         .children(tiles.tiles.iter().enumerate().map(|(at, tile)| {
-            let here = tile_in(at, since, look, window);
+            let (after, since) = since.of(at);
+            let here = tile_in(after, since, look, window);
             let mut meta = Vec::new();
             if let Some(owner) = &tile.owner {
                 meta.push(format!("@{owner}"));
@@ -1715,7 +1802,7 @@ fn list(tiles: &Tiles, since: Instant, look: &Look, window: &mut Window) -> AnyE
                         ),
                 )
         }))
-        .children(more(tiles, look))
+        .children(ending)
         .into_any_element()
 }
 
@@ -1730,22 +1817,105 @@ fn day(at: snob_core::Epoch) -> String {
         .unwrap_or_default()
 }
 
-/// Under a first page with more past it: that only the first is shown.
-fn more(tiles: &Tiles, look: &Look) -> Option<Div> {
-    tiles.more.then(|| {
+/// What is said under a tab's posts (`profile::ending`): that only the
+/// first page is shown, that the next is read or until when the engine
+/// rests before it, that it failed with a button to ask again, or the end.
+fn ending(
+    end: Ending,
+    tiles: &Tiles,
+    failed: Option<&Unread>,
+    held_back: bool,
+    look: &Look,
+    window: &mut Window,
+    cx: &mut Context<Shell>,
+) -> Option<AnyElement> {
+    let palette = look.palette;
+    let line = |id: &'static str, said: String| {
         div()
             .w_full()
             .pt(sp(18.))
             .text_center()
             .text_size(sp(13.))
-            .text_color(color(look.palette.secondary))
-            .child(parts::said(
-                "profile-more",
-                look.tr_with(
-                    "profile-first-page",
-                    &[("count", &tiles.tiles.len().to_string())],
-                ),
-            ))
+            .text_color(color(palette.secondary))
+            .child(parts::said(id, said))
+            .into_any_element()
+    };
+    // How the tab reads on is a status, told as it changes.
+    let status = |id: &'static str, said: String| {
+        div()
+            .id(id)
+            .test_support()
+            .role(Role::Status)
+            .aria_label(said.clone())
+            .w_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(sp(10.))
+            .pt(sp(18.))
+            .text_center()
+            .text_size(sp(13.))
+            .text_color(color(palette.secondary))
+            .child(said)
+    };
+    Some(match end {
+        Ending::Nothing => return None,
+        Ending::FirstPage => line(
+            "profile-more",
+            look.tr_with(
+                "profile-first-page",
+                &[("count", &tiles.tiles.len().to_string())],
+            ),
+        ),
+        Ending::Reading => div()
+            .id("profile-reading-more")
+            .test_support()
+            .role(Role::Status)
+            .aria_label(look.tr("profile-reading-more"))
+            .w_full()
+            .flex()
+            .justify_center()
+            .pt(sp(18.))
+            .child(parts::ring(22., look, window))
+            .into_any_element(),
+        // Words that stay still, so the app may rest through a rest.
+        Ending::Resting(until) => status(
+            "profile-resting",
+            look.tr_with(
+                "profile-resting",
+                &[("time", &super::words::clock_words(until, look))],
+            ),
+        )
+        .into_any_element(),
+        Ending::Failed => {
+            let said = match failed {
+                Some(Unread::Failed(_)) | None => look.tr("profile-more-failed"),
+                Some(why) => unread_words(why, look),
+            };
+            status("profile-more-failed", said)
+                .child(
+                    parts::small_button(
+                        "profile-more-again",
+                        look.tr("profile-more-again"),
+                        // It waits out a pause, or the network.
+                        !held_back,
+                        look,
+                    )
+                    .on_click(cx.listener(|shell, _, _, cx| shell.read_more_again(cx))),
+                )
+                .into_any_element()
+        }
+        Ending::MostPages => status(
+            "profile-most-pages",
+            look.tr_with(
+                "profile-most-pages",
+                &[("count", &snob_engine::posts::MOST_PAGES.to_string())],
+            ),
+        )
+        .into_any_element(),
+        Ending::Everything => {
+            status("profile-all-read", look.tr("profile-all-read")).into_any_element()
+        }
     })
 }
 

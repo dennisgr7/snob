@@ -575,6 +575,12 @@ profile-about-usernames = Cambios de nombre de usuario
 profile-about-unread = Aún no se lee
 profile-about-note = Instagram los muestra en su propia app. snob aún no los lee y no se inventa ninguno.
 profile-about-close = Cerrar
+profile-reading-more = Leyendo más publicaciones…
+profile-resting = snob descansa hasta las { $time } antes de leer más, al ritmo de una persona.
+profile-more-failed = No se han podido leer más publicaciones.
+profile-more-again = Reintentar
+profile-most-pages = snob lee como mucho { $count } páginas de una pestaña en cada visita.
+profile-all-read = No hay nada más.
 
 ## Listas (people): las de seguidores y seguidos, y elegir en ellas.
 

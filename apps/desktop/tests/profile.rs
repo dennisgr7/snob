@@ -11,7 +11,10 @@ use std::time::{Duration, Instant};
 
 use common::{App, disabled, focused, open};
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{Role, TestAppContext, px};
+use gpui_kit::{
+    PlatformInput, Role, ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext, point, px,
+    size,
+};
 use snob_core::Pk;
 use snob_desktop::backend::scripted::{Asked, Scripted, account};
 use snob_desktop::state::flow::Screen;
@@ -1002,4 +1005,354 @@ async fn every_control_of_the_page_that_shows_no_words_is_named_and_at_least_24_
         });
         app.click(cx, "profile-layout");
     }
+}
+
+/// The profile of the account in use in a window `width` by `height`.
+async fn reading_on(cx: &mut TestAppContext, backend: Scripted, width: f32, height: f32) -> App {
+    let app = at_home(cx, backend).await;
+    cx.simulate_window_resize(app.window, size(px(width), px(height)));
+    app.click(cx, "account");
+    app.click(cx, "menu-profile");
+    app.until(cx, |window, _| {
+        window.try_find(("profile-tile", 0usize)).is_some()
+    })
+    .await;
+    app
+}
+
+/// The account in use, its posts tab reading on for `pages` pages past its
+/// first.
+fn reading_on_for(pages: u32) -> Scripted {
+    let backend = me();
+    backend.script(|script| {
+        script.more_pages(pages);
+    });
+    backend
+}
+
+/// The pages past the first asked for, in order, by their number.
+fn pages_asked(backend: &Scripted) -> Vec<u32> {
+    backend
+        .asked()
+        .into_iter()
+        .filter_map(|asked| match asked {
+            Asked::MoreTiles(pk, Tab::Posts, page) if pk == Pk::new(42) => Some(page),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Draws `count` frames, letting every answer in between arrive.
+fn frames(app: &App, cx: &mut TestAppContext, count: usize) {
+    for _ in 0..count {
+        cx.run_until_parked();
+        app.in_window(cx, |_, _| ());
+    }
+    cx.run_until_parked();
+}
+
+/// Turns the wheel far down over the window, low enough to be under the
+/// highlights, which turn sideways.
+fn scroll_to_the_end(app: &App, cx: &mut TestAppContext) {
+    app.in_window(cx, |window, cx| {
+        let seen = window.viewport_size();
+        window.dispatch_event(
+            PlatformInput::Scroll(ScrollEvent {
+                position: point(seen.width * 0.5, seen.height * 0.9),
+                delta: ScrollDelta::Pixels(point(px(0.), px(-100_000.))),
+                ..ScrollEvent::default()
+            }),
+            cx,
+        );
+    });
+}
+
+fn found(app: &App, cx: &mut TestAppContext, id: &'static str) -> bool {
+    app.in_window(cx, |window, _| window.try_find(id).is_some())
+}
+
+#[gpui_kit::test]
+async fn posts_that_do_not_fill_the_window_read_on_a_page_at_a_time_to_the_tab_s_end(
+    cx: &mut TestAppContext,
+) {
+    let backend = reading_on_for(3);
+    let app = reading_on(cx, backend.clone(), 1000., 3000.).await;
+    app.until(cx, |window, _| {
+        window.try_find(("profile-tile", 47usize)).is_some()
+    })
+    .await;
+    app.until(cx, |window, _| {
+        window.try_find("profile-all-read").is_some()
+    })
+    .await;
+    frames(&app, cx, 20);
+    assert_eq!(
+        pages_asked(&backend),
+        [2, 3, 4],
+        "in order, and none past the end"
+    );
+    app.in_window(cx, |window, _| {
+        assert_eq!(
+            window.find(("profile-tile", 12usize)).label(),
+            Some("Photo: an invented caption, number 12")
+        );
+    });
+    assert!(!found(&app, cx, "profile-more"));
+}
+
+#[gpui_kit::test]
+async fn a_full_window_waits_and_scrolling_near_the_end_asks_for_one_page_in_a_list_too(
+    cx: &mut TestAppContext,
+) {
+    let backend = reading_on_for(8);
+    let app = reading_on(cx, backend.clone(), 1000., 700.).await;
+    app.click(cx, "profile-list");
+    frames(&app, cx, 30);
+    let read = pages_asked(&backend).len();
+    assert!(read < 8, "a full window reads no further: {read} pages");
+    frames(&app, cx, 30);
+    assert_eq!(pages_asked(&backend).len(), read, "nothing asked meanwhile");
+
+    backend.hold_the_work();
+    scroll_to_the_end(&app, cx);
+    app.until(cx, |window, _| {
+        window.try_find("profile-reading-more").is_some()
+    })
+    .await;
+    for _ in 0..5 {
+        scroll_to_the_end(&app, cx);
+        frames(&app, cx, 5);
+    }
+    let asked = pages_asked(&backend);
+    assert_eq!(
+        asked.len(),
+        read + 1,
+        "one page, not one a frame: {asked:?}"
+    );
+    assert_eq!(
+        app.label_of(cx, "profile-reading-more"),
+        "Reading more posts\u{2026}"
+    );
+
+    backend.release();
+    let last = (read + 2) * 12 - 1;
+    app.until(cx, |window, _| {
+        window.try_find(("profile-tile", last)).is_some()
+            && window.try_find("profile-reading-more").is_none()
+    })
+    .await;
+    assert!(found(&app, cx, "profile-list-posts"));
+}
+
+#[gpui_kit::test]
+async fn a_page_that_failed_waits_for_its_button_which_asks_from_the_same_place(
+    cx: &mut TestAppContext,
+) {
+    let backend = reading_on_for(3);
+    backend.script(|script| {
+        script.more_fails(1);
+    });
+    let app = reading_on(cx, backend.clone(), 1000., 3000.).await;
+    app.until(cx, |window, _| {
+        window.try_find("profile-more-again").is_some()
+    })
+    .await;
+    assert_eq!(
+        app.label_of(cx, "profile-more-failed"),
+        "More posts could not be read."
+    );
+    assert_eq!(app.label_of(cx, "profile-more-again"), "Try again");
+    frames(&app, cx, 30);
+    assert_eq!(
+        pages_asked(&backend),
+        [2],
+        "the app does not try again by itself"
+    );
+
+    app.click(cx, "profile-more-again");
+    app.until(cx, |window, _| {
+        window.try_find("profile-all-read").is_some()
+    })
+    .await;
+    assert_eq!(pages_asked(&backend), [2, 2, 3, 4]);
+    assert!(!found(&app, cx, "profile-more-failed"));
+}
+
+#[gpui_kit::test]
+async fn a_rest_the_engine_owes_is_said_with_its_hour_and_nothing_else_is_asked_meanwhile(
+    cx: &mut TestAppContext,
+) {
+    // 2030-01-02 at 14:35, said in UTC by a test build.
+    let until = snob_core::Epoch::new(1_893_594_900);
+    let backend = reading_on_for(3);
+    backend.script(|script| {
+        script.rests_until(Some(until));
+    });
+    backend.hold_the_work();
+    let app = reading_on(cx, backend.clone(), 1000., 3000.).await;
+    app.until(cx, |window, _| window.try_find("profile-resting").is_some())
+        .await;
+    assert_eq!(
+        app.label_of(cx, "profile-resting"),
+        "snob rests until 2:35 PM before reading more, at a person's pace."
+    );
+    frames(&app, cx, 30);
+    assert_eq!(pages_asked(&backend), [2], "nothing more while it rests");
+    assert!(!found(&app, cx, "profile-reading-more"));
+
+    backend.script(|script| {
+        script.rests_until(None);
+    });
+    backend.release();
+    app.until(cx, |window, _| {
+        window.try_find("profile-all-read").is_some()
+    })
+    .await;
+    assert_eq!(pages_asked(&backend), [2, 3, 4]);
+    assert!(!found(&app, cx, "profile-resting"));
+}
+
+#[gpui_kit::test]
+async fn leaving_the_profile_stops_the_page_on_its_way_and_nothing_more_is_asked(
+    cx: &mut TestAppContext,
+) {
+    let backend = reading_on_for(3);
+    backend.hold_the_work();
+    let app = reading_on(cx, backend.clone(), 1000., 3000.).await;
+    app.until(cx, |window, _| {
+        window.try_find("profile-reading-more").is_some()
+    })
+    .await;
+    assert!(!backend.more_stopped());
+    app.click(cx, "band-back");
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    assert!(backend.more_stopped(), "the page on its way is stopped");
+    backend.release();
+    frames(&app, cx, 20);
+    assert_eq!(pages_asked(&backend), [2]);
+}
+
+#[gpui_kit::test]
+async fn nothing_is_read_on_while_the_window_is_not_looked_at(cx: &mut TestAppContext) {
+    let backend = reading_on_for(3);
+    let app = at_home(cx, backend.clone()).await;
+    cx.simulate_window_resize(app.window, size(px(1000.), px(3000.)));
+    VisualTestContext::from_window(app.window, cx).deactivate_window();
+    app.click(cx, "account");
+    app.click(cx, "menu-profile");
+    app.until(cx, |window, _| {
+        window.try_find(("profile-tile", 0usize)).is_some()
+    })
+    .await;
+    frames(&app, cx, 30);
+    assert_eq!(pages_asked(&backend), Vec::<u32>::new());
+
+    app.in_window(cx, |window, _| window.activate_window());
+    app.until(cx, |window, _| {
+        window.try_find("profile-all-read").is_some()
+    })
+    .await;
+    assert_eq!(pages_asked(&backend), [2, 3, 4]);
+}
+
+#[gpui_kit::test]
+async fn a_page_stopped_by_leaving_its_tab_still_comes_and_the_tab_reads_on_after_it(
+    cx: &mut TestAppContext,
+) {
+    let backend = reading_on_for(3);
+    backend.hold_the_work();
+    let app = reading_on(cx, backend.clone(), 1000., 3000.).await;
+    app.until(cx, |window, _| {
+        window.try_find("profile-reading-more").is_some()
+    })
+    .await;
+    app.in_window(cx, |window, cx| window.click(("profile-tab", 1usize), cx));
+    frames(&app, cx, 5);
+    assert!(backend.more_stopped(), "the page on its way is stopped");
+
+    // It came anyway, its cursor spent, as the engine's does while its
+    // pictures load.
+    backend.release();
+    frames(&app, cx, 5);
+    app.in_window(cx, |window, cx| window.click(("profile-tab", 0usize), cx));
+    app.until(cx, |window, _| {
+        window.try_find("profile-all-read").is_some()
+    })
+    .await;
+    assert_eq!(pages_asked(&backend), [2, 3, 4], "no page asked twice");
+    assert!(!found(&app, cx, "profile-more-failed"));
+}
+
+#[gpui_kit::test]
+async fn a_full_window_asks_for_nothing_on_coming_back_from_a_shorter_tab(cx: &mut TestAppContext) {
+    let backend = reading_on_for(8);
+    let app = reading_on(cx, backend.clone(), 1000., 700.).await;
+    frames(&app, cx, 30);
+    let read = pages_asked(&backend).len();
+    assert!(read < 8, "a full window reads no further: {read} pages");
+
+    for _ in 0..3 {
+        app.in_window(cx, |window, cx| window.click(("profile-tab", 2usize), cx));
+        frames(&app, cx, 10);
+        app.in_window(cx, |window, cx| window.click(("profile-tab", 0usize), cx));
+        frames(&app, cx, 10);
+    }
+    assert_eq!(
+        pages_asked(&backend).len(),
+        read,
+        "the other tab's sizes are not the posts'"
+    );
+}
+
+#[gpui_kit::test]
+async fn switching_account_lets_go_of_the_page_on_its_way_and_of_where_the_tab_read_on(
+    cx: &mut TestAppContext,
+) {
+    let backend = Scripted::with(vec![
+        account(42, "me", true),
+        account(9001, "someone", false),
+    ]);
+    backend.script(|script| {
+        script.more_pages(3);
+    });
+    backend.hold_the_work();
+    let app = reading_on(cx, backend.clone(), 1000., 3000.).await;
+    app.until(cx, |window, _| {
+        window.try_find("profile-reading-more").is_some()
+    })
+    .await;
+
+    app.click(cx, "account");
+    app.click(cx, "menu-switch");
+    app.in_window(cx, |window, cx| window.click(("menu-account", 0usize), cx));
+    let shell = app.shell.clone();
+    app.until(cx, move |_, cx| {
+        shell
+            .read(cx)
+            .active()
+            .is_some_and(|active| active.named.pk == 9001.into())
+    })
+    .await;
+    assert!(backend.more_stopped(), "the page on its way is stopped");
+
+    backend.release();
+    frames(&app, cx, 20);
+    assert_eq!(
+        pages_asked(&backend),
+        [2],
+        "nothing asked from a cursor let go of"
+    );
+    for id in [
+        "profile-reading-more",
+        "profile-more-failed",
+        "profile-all-read",
+    ] {
+        assert!(!found(&app, cx, id), "{id} is not shown");
+    }
+    app.in_window(cx, |window, _| {
+        assert!(
+            window.try_find(("profile-tile", 12usize)).is_none(),
+            "the page let go of is not shown"
+        );
+    });
 }
