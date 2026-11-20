@@ -59,11 +59,6 @@ pub struct Acts {
     pub detach: Option<Act>,
 }
 
-/// Now, for the words: **the one place this screen reads the clock**.
-fn now() -> Epoch {
-    snob_core::clock::now()
-}
-
 /// What a list is called: whose, and which.
 pub fn title(owner: &Named, side: Side, look: &Look) -> String {
     let account = handle(owner);
@@ -74,8 +69,9 @@ pub fn title(owner: &Named, side: Side, look: &Look) -> String {
 }
 
 /// Where the list stands, in words: how many accounts and when they were
-/// last scanned, and the read behind them; or as far as a first read is.
-pub fn progress_words(list: &PeopleList, look: &Look) -> String {
+/// last scanned against `now` (`ui::now`), and the read behind them; or as
+/// far as a first read is.
+pub fn progress_words(list: &PeopleList, now: Epoch, look: &Look) -> String {
     let language = look.texts.language();
     let reading_words = |going: people::Going, of: &'static str, alone: &'static str| {
         let read = grouped(going.read as u64, language);
@@ -104,7 +100,7 @@ pub fn progress_words(list: &PeopleList, look: &Look) -> String {
                     count,
                     &[("count", &grouped(count, language))],
                 ),
-                scan_words(answered.taken_at, now(), look),
+                scan_words(answered.taken_at, now, look),
             ];
             if !answered.whole {
                 said.push(look.tr("people-not-whole"));
@@ -205,7 +201,7 @@ pub fn body(
     let palette = look.palette;
     let read = list.read(cx);
     let named = title(&read.owner, read.side, look);
-    let said = progress_words(read, look);
+    let said = progress_words(read, crate::ui::now::of(cx), look);
     let going = read.reading.as_ref();
     let failed = read.failed.is_some() && going.is_none();
     let share = going.and_then(|walked| profile::share_read(walked.people.len(), walked.expected));
@@ -739,32 +735,32 @@ mod tests {
         for (scanned, english, spanish) in [
             (
                 "2026-09-17 15:05",
-                "Last scan at 3:05 PM.",
+                "Last scan at 15:05.",
                 "Último escaneo a las 15:05.", // i18n-allow
             ),
             (
                 "2026-09-17 01:05",
-                "Last scan at 1:05 AM.",
+                "Last scan at 01:05.",
                 "Último escaneo a la 01:05.", // i18n-allow
             ),
             (
                 "2026-09-16 01:05",
-                "Last scan yesterday at 1:05 AM.",
+                "Last scan yesterday at 01:05.",
                 "Último escaneo ayer a la 01:05.", // i18n-allow
             ),
             (
                 "2026-09-14 09:30",
-                "Last scan on Monday at 9:30 AM.",
+                "Last scan on Monday at 09:30.",
                 "Último escaneo el lunes a las 09:30.", // i18n-allow
             ),
             (
                 "2026-09-10 12:00",
-                "Last scan on September 10 at 12:00 PM.",
+                "Last scan on September 10 at 12:00.",
                 "Último escaneo el 10 de septiembre a las 12:00.", // i18n-allow
             ),
             (
                 "2025-12-31 23:59",
-                "Last scan on December 31, 2025 at 11:59 PM.",
+                "Last scan on December 31, 2025 at 23:59.",
                 "Último escaneo el 31 de diciembre de 2025 a las 23:59.", // i18n-allow
             ),
         ] {

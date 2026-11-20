@@ -19,8 +19,8 @@
 //! `#[cfg(feature = "testing")]` above it **with no blank line in between**,
 //! which is what makes the guard the item's own rather than the previous
 //! item's. Test files are skipped, because a test is already the feature's own
-//! build, and so is this file, which names every one of them in the sentence
-//! you are reading.
+//! build, and so are examples, which no release holds, and this file, which
+//! names every one of them in the sentence you are reading.
 //!
 //! It is a source check and not a runtime one for the same reason
 //! `tests/keyring.rs` is: a test binary cannot see how another crate was
@@ -38,8 +38,11 @@ use common::{relative, repo_root, source_files};
 /// are listed and either one appearing unguarded is the same defect. And
 /// `with_page`, which hands a client a page of the caller's making: a fake
 /// tab in a test, and in a release build a way round the browser. And the
-/// engine's module that does all of it for whichever program runs it.
-const SEAM: [&str; 8] = [
+/// engine's module that does all of it for whichever program runs it. And
+/// the desktop app's start flags, which point it at a fake Instagram, a
+/// simulated system, invented browsers, invented sizes and a moment that
+/// is not now, with the functions they call.
+const SEAM: [&str; 17] = [
     "point_every_client_at",
     "SANDBOX_BASE",
     "sandbox_root",
@@ -48,6 +51,15 @@ const SEAM: [&str; 8] = [
     "with_page",
     "mod sandbox",
     "Sandbox::under",
+    "--test-root",
+    "--instagram",
+    "--simulate-system",
+    "--browsers",
+    "listing_browsers",
+    "--fixed-storage",
+    "fixing_storage",
+    "--fixed-now",
+    "fix_now",
 ];
 
 #[test]
@@ -62,7 +74,17 @@ fn the_sandbox_seam_stays_behind_its_feature() {
 
         // A test is the feature's own build, so a mention there is not a
         // release-build mention. This file names the seam in its own header.
-        if relative.contains("/tests/") || relative.contains("\\tests\\") {
+        // Nor is a crate's example in a release: the app's harness starts a
+        // test build with these flags. A module named so under `src` is.
+        let under = |dir: &str| {
+            relative.contains(&format!("/{dir}/")) || relative.contains(&format!("\\{dir}\\"))
+        };
+        let segments: Vec<&str> = relative.split(['/', '\\']).collect();
+        let an_example = segments
+            .iter()
+            .take_while(|segment| **segment != "src")
+            .any(|segment| *segment == "examples");
+        if under("tests") || an_example {
             continue;
         }
 

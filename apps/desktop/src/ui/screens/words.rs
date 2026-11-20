@@ -20,6 +20,7 @@ use crate::backend::Next;
 use crate::state::schedule::{DayPick, Shape, Time, Unit, Wrong, months_of};
 use crate::ui::automations::Item;
 use crate::ui::look::Look;
+use crate::ui::now::on_the_clock;
 
 /// What an automation is called in lists and titles: **`watch.toml`'s has
 /// the name of the command that runs it**, whatever the file calls it.
@@ -429,19 +430,6 @@ pub enum Day {
         month: u32,
         day: u32,
     },
-}
-
-/// `at` on the clock a person reads: this computer's, **UTC in a test
-/// build**, so a picture of one is the same in every time zone.
-fn on_the_clock(at: Epoch) -> NaiveDateTime {
-    let Some(at) = chrono::DateTime::from_timestamp(at.get(), 0) else {
-        return NaiveDateTime::default();
-    };
-    #[cfg(feature = "testing")]
-    let at = at.with_timezone(&chrono::Utc);
-    #[cfg(not(feature = "testing"))]
-    let at = at.with_timezone(&chrono::Local);
-    at.naive_local()
 }
 
 /// Which day `at` is, said against `now`.

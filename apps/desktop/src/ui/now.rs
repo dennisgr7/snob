@@ -3,8 +3,10 @@
 //! drawn, never kept. **A test build may be told the moment it is**
 //! (`--fixed-now`), so a picture of a screen says the same whatever the
 //! day it is taken; told one, it also holds still what is read again by
-//! itself (`state::automations::reads_again`).
+//! itself (`state::automations::reads_again`). And the zone every moment
+//! is said in (`on_the_clock`).
 
+use chrono::NaiveDateTime;
 use gpui_kit::App;
 #[cfg(feature = "testing")]
 use gpui_kit::Global;
@@ -18,6 +20,19 @@ pub fn of(cx: &App) -> Epoch {
     }
     let _ = cx;
     snob_core::clock::now()
+}
+
+/// `at` on the clock a person reads: this computer's, **UTC in a test
+/// build**, so a picture of one is the same in every time zone.
+pub fn on_the_clock(at: Epoch) -> NaiveDateTime {
+    let Some(at) = chrono::DateTime::from_timestamp(at.get(), 0) else {
+        return NaiveDateTime::default();
+    };
+    #[cfg(feature = "testing")]
+    let at = at.with_timezone(&chrono::Utc);
+    #[cfg(not(feature = "testing"))]
+    let at = at.with_timezone(&chrono::Local);
+    at.naive_local()
 }
 
 /// Whether a test build was told the moment it is: never in a release.

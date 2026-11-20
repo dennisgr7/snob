@@ -15,7 +15,7 @@ use gpui_kit::{
     AppContext as _, PlatformInput, Role, ScrollDelta, ScrollEvent, TestAppContext,
     VisualTestContext, point, px, size,
 };
-use snob_core::Pk;
+use snob_core::{Epoch, Pk};
 use snob_desktop::backend::scripted::{Asked, Scripted, account};
 use snob_desktop::state::flow::Screen;
 use snob_desktop::state::profile::{self, Side, Tab};
@@ -218,6 +218,7 @@ async fn the_own_list_opens_at_once_and_its_rows_come_as_they_are_read(cx: &mut 
         script.list_size(40);
     });
     let app = own_profile(cx, backend.clone()).await;
+    told_it_is(SAME_DAY_AS_THE_SCAN, cx);
     backend.hold_the_work();
     app.click(cx, "profile-followers");
     app.until_screen(cx, |screen| matches!(screen, Screen::People { .. }))
@@ -253,12 +254,14 @@ async fn the_own_list_opens_at_once_and_its_rows_come_as_they_are_read(cx: &mut 
         window.try_find("people-progress").is_some_and(|progress| {
             progress
                 .label()
-                .is_some_and(|said| said.starts_with("40 accounts. Last scan on September 21"))
+                .is_some_and(|said| said.starts_with("40 accounts."))
         })
     })
     .await;
-    let said = app.label_of(cx, "people-progress");
-    assert!(said.ends_with(" at 2:13 PM."), "{said}");
+    assert_eq!(
+        app.label_of(cx, "people-progress"),
+        "40 accounts. Last scan at 14:13."
+    );
 
     // A row opens its account's profile.
     app.in_window(cx, |window, cx| window.click(("person", 3usize), cx));
@@ -573,6 +576,16 @@ async fn each_menu_opens_under_what_opened_it_in_both_layouts(cx: &mut TestAppCo
         app.press(cx, "escape");
         app.click(cx, "profile-layout");
     }
+}
+
+/// 2026-09-21 at 17:00 and 2026-10-01 at 14:13, UTC as a test build says
+/// it: the afternoon of the scripted scan (14:13 that day), and ten days on.
+const SAME_DAY_AS_THE_SCAN: i64 = 1_790_010_000;
+const TEN_DAYS_AFTER_THE_SCAN: i64 = 1_790_864_000;
+
+/// From now on every screen's words are said against `at`.
+fn told_it_is(at: i64, cx: &mut TestAppContext) {
+    cx.update(|cx| snob_desktop::ui::now::fix_now(Epoch::new(at), cx));
 }
 
 /// The options' items, in the order they are shown and walked.
@@ -985,6 +998,71 @@ async fn a_highlight_s_cover_is_an_upright_rectangle_its_picture_fills_at_every_
 }
 
 #[gpui_kit::test]
+async fn a_post_s_thumbnail_fills_its_square_however_tall_its_picture_at_every_text_size(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("reel.png");
+    // As tall as a reel's and taller: what a square must crop, not follow.
+    image::RgbaImage::from_pixel(9, 32, image::Rgba([40, 120, 200, 255]))
+        .save(&file)
+        .unwrap();
+    for text_scale in [1.0, 2.0] {
+        let backend = me();
+        backend.script(|script| {
+            script.thumbnail(file.clone());
+        });
+        let app = common::open_with(
+            cx,
+            backend,
+            snob_desktop::system::Settings {
+                text_scale,
+                ..Default::default()
+            },
+        );
+        app.until_screen(cx, |screen| *screen == Screen::Home).await;
+        app.click(cx, "account");
+        app.click(cx, "menu-profile");
+        app.until(cx, |window, _| {
+            window.try_find(("profile-tile", 0usize)).is_some()
+        })
+        .await;
+        // The list's square is its own size, so the grid's from the frame
+        // before is not the one measured.
+        let listed = px(64. * text_scale);
+        for (layout, sized) in [("profile-grid", None), ("profile-list", Some(listed))] {
+            app.click(cx, layout);
+            app.until(cx, |window, _| {
+                window.try_find(("profile-thumb-picture", 0usize)).is_some()
+                    && sized.is_none_or(|width| {
+                        window
+                            .try_find(("profile-thumb", 0usize))
+                            .is_some_and(|square| {
+                                (square.bounds().size.width - width).abs() <= px(0.5)
+                            })
+                    })
+            })
+            .await;
+            cx.run_until_parked();
+            let (square, picture) = app.in_window(cx, |window, _| {
+                (
+                    window.find(("profile-thumb", 0usize)).bounds(),
+                    window.find(("profile-thumb-picture", 0usize)).bounds(),
+                )
+            });
+            assert!(
+                (square.size.width - square.size.height).abs() <= px(0.5),
+                "in {layout} at {text_scale}: {square:?} is a square"
+            );
+            assert_eq!(
+                picture, square,
+                "in {layout} at {text_scale}: the picture fills its square"
+            );
+        }
+    }
+}
+
+#[gpui_kit::test]
 async fn every_control_of_the_page_that_shows_no_words_is_named_and_at_least_24_square(
     cx: &mut TestAppContext,
 ) {
@@ -1191,8 +1269,11 @@ async fn a_page_that_failed_waits_for_its_button_which_asks_from_the_same_place(
 async fn a_rest_the_engine_owes_is_said_with_its_hour_and_nothing_else_is_asked_meanwhile(
     cx: &mut TestAppContext,
 ) {
-    // 2030-01-02 at 14:35, said in UTC by a test build.
-    let until = snob_core::Epoch::new(1_893_594_900);
+    // Tomorrow at 14:35, said in UTC by a test build: a rest that has not
+    // ended on the engine's clock, whatever the day the test runs.
+    const DAY: i64 = 24 * 60 * 60;
+    let tomorrow = (snob_core::clock::now().get() / DAY + 1) * DAY;
+    let until = snob_core::Epoch::new(tomorrow + 14 * 60 * 60 + 35 * 60);
     let backend = reading_on_for(3);
     backend.script(|script| {
         script.rests_until(Some(until));
@@ -1203,7 +1284,7 @@ async fn a_rest_the_engine_owes_is_said_with_its_hour_and_nothing_else_is_asked_
         .await;
     assert_eq!(
         app.label_of(cx, "profile-resting"),
-        "snob rests until 2:35 PM before reading more, at a person's pace."
+        "snob rests until 14:35 before reading more, at a person's pace."
     );
     frames(&app, cx, 30);
     assert_eq!(pages_asked(&backend), [2], "nothing more while it rests");
@@ -1429,13 +1510,13 @@ async fn a_list_stored_before_shows_at_once_and_is_read_again_behind_it(cx: &mut
         script.kept_list(42, Side::Followers, 30).list_size(40);
     });
     let app = own_profile(cx, backend.clone()).await;
+    told_it_is(TEN_DAYS_AFTER_THE_SCAN, cx);
     backend.hold_the_work();
     app.click(cx, "profile-followers");
     until_said(&app, cx, |said| said.ends_with("Updating… 12 of 40")).await;
-    let said = app.label_of(cx, "people-progress");
-    assert!(
-        said.starts_with("30 accounts. Last scan on September 21"),
-        "{said}"
+    assert_eq!(
+        app.label_of(cx, "people-progress"),
+        "30 accounts. Last scan on September 21 at 14:13. Updating… 12 of 40"
     );
     assert_eq!(lists_read(&backend, 42, Side::Followers), 1);
     // The rows stored stay while the read goes on, past its first page.
@@ -1448,7 +1529,10 @@ async fn a_list_stored_before_shows_at_once_and_is_read_again_behind_it(cx: &mut
 
     backend.release();
     until_said(&app, cx, |said| said.starts_with("40 accounts.")).await;
-    assert!(!app.label_of(cx, "people-progress").contains("Updating"));
+    assert_eq!(
+        app.label_of(cx, "people-progress"),
+        "40 accounts. Last scan on September 21 at 14:13."
+    );
 }
 
 #[gpui_kit::test]
@@ -1457,6 +1541,7 @@ async fn a_list_left_and_opened_again_shows_its_rows_at_once_and_is_read_again(
 ) {
     let backend = me();
     let app = own_followers(cx, backend.clone()).await;
+    told_it_is(TEN_DAYS_AFTER_THE_SCAN, cx);
     until_said(&app, cx, |said| said.starts_with("30 accounts.")).await;
 
     app.click(cx, "band-back");
@@ -1467,9 +1552,10 @@ async fn a_list_left_and_opened_again_shows_its_rows_at_once_and_is_read_again(
     app.until_screen(cx, |screen| matches!(screen, Screen::People { .. }))
         .await;
     // Before the read answers: the rows and their words, from memory.
-    let said = app.label_of(cx, "people-progress");
-    assert!(said.starts_with("30 accounts."), "{said}");
-    assert!(said.contains("Updating"), "{said}");
+    assert_eq!(
+        app.label_of(cx, "people-progress"),
+        "30 accounts. Last scan on September 21 at 14:13. Updating…"
+    );
     app.in_window(cx, |window, _| {
         assert!(window.try_find(("person", 0usize)).is_some());
     });
@@ -1530,18 +1616,16 @@ async fn another_account_s_stored_list_is_read_again_only_after_its_yes(cx: &mut
 async fn the_line_under_the_title_says_how_many_and_when_they_were_scanned_in_both_languages(
     cx: &mut TestAppContext,
 ) {
-    for (locale, one, scanned, at) in [
+    for (locale, one, scanned) in [
         (
             "en",
             "1 account.",
-            "Last scan on September 21",
-            " at 2:13 PM.",
+            "1 account. Last scan on September 21 at 14:13.",
         ),
         (
             "es",
-            "1 cuenta.",                          // i18n-allow
-            "Último escaneo el 21 de septiembre", // i18n-allow
-            " a las 14:13.",                      // i18n-allow
+            "1 cuenta.",                                                 // i18n-allow
+            "1 cuenta. Último escaneo el 21 de septiembre a las 14:13.", // i18n-allow
         ),
     ] {
         let backend = me();
@@ -1556,6 +1640,7 @@ async fn the_line_under_the_title_says_how_many_and_when_they_were_scanned_in_bo
                 ..Default::default()
             },
         );
+        told_it_is(TEN_DAYS_AFTER_THE_SCAN, cx);
         app.until_screen(cx, |screen| *screen == Screen::Home).await;
         app.click(cx, "account");
         app.click(cx, "menu-profile");
@@ -1565,9 +1650,7 @@ async fn the_line_under_the_title_says_how_many_and_when_they_were_scanned_in_bo
         .await;
         app.click(cx, "profile-followers");
         until_said(&app, cx, |said| said.starts_with(one)).await;
-        let said = app.label_of(cx, "people-progress");
-        assert!(said.starts_with(&format!("{one} {scanned}")), "{said}");
-        assert!(said.ends_with(at), "{said}");
+        assert_eq!(app.label_of(cx, "people-progress"), scanned);
     }
 }
 

@@ -1432,6 +1432,8 @@ fn tab_content(
             pages: further.pages(),
             pending: further.reading.is_some(),
             resting_until: further.resting_until,
+            // The engine's clock, not the words' (`ui::now`): its rest
+            // ends on it, as does the wait for the next page.
             now: snob_core::clock::now(),
             failed: further.failed.is_some(),
         });
@@ -1617,7 +1619,7 @@ fn kind_icon(kind: TileKind) -> Option<&'static str> {
 
 /// A post's small picture filling its place, or its kind's drawing while
 /// there is none.
-fn thumb(tile: &Tile, look: &Look) -> Div {
+fn thumb(tile: &Tile, at: usize, look: &Look) -> impl IntoElement {
     let palette = look.palette;
     let drawing = kind_icon(tile.kind).unwrap_or(assets::PHOTO);
     let empty = move || {
@@ -1629,15 +1631,22 @@ fn thumb(tile: &Tile, look: &Look) -> Div {
             .child(icon(drawing, 22.).text_color(color_at(palette.secondary, 0.7)))
     };
     div()
+        .id(("profile-thumb", at))
+        .test_support()
         .size_full()
         .overflow_hidden()
         .rounded(px(4.))
         .bg(color_at(palette.text, 0.06))
         .child(match &tile.thumb {
+            // Square as its place is: an image given no proportions takes
+            // its own, and a reel's would run out of the square.
             Some(path) => img(path.clone())
                 .size_full()
+                .aspect_ratio(1.0)
                 .object_fit(ObjectFit::Cover)
                 .with_fallback(move || empty().into_any_element())
+                .id(("profile-thumb-picture", at))
+                .test_support()
                 .into_any_element(),
             None => empty().into_any_element(),
         })
@@ -1689,7 +1698,7 @@ fn grid(
                         .w_full()
                         .aspect_square()
                         .relative()
-                        .child(thumb(tile, look))
+                        .child(thumb(tile, at, look))
                         .children(badge),
                 )
         }))
@@ -1762,7 +1771,7 @@ fn list(
                 .relative()
                 .left(px(moved.travels * (1.0 - here)))
                 .opacity(here)
-                .child(div().flex_none().size(sp(64.)).child(thumb(tile, look)))
+                .child(div().flex_none().size(sp(64.)).child(thumb(tile, at, look)))
                 .child(
                     div()
                         .flex_1()
@@ -1808,13 +1817,9 @@ fn list(
 
 /// A post's date, in the person's time.
 fn day(at: snob_core::Epoch) -> String {
-    chrono::DateTime::from_timestamp(at.get(), 0)
-        .map(|at| {
-            at.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d")
-                .to_string()
-        })
-        .unwrap_or_default()
+    crate::ui::now::on_the_clock(at)
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 /// What is said under a tab's posts (`profile::ending`): that only the

@@ -2029,7 +2029,8 @@ impl Shell {
                 .update(cx, |list, cx| {
                     list.read_ended(id, ended, cx).then(|| {
                         let look = Look::now(cx).clone();
-                        super::super::screens::people::progress_words(list, &look)
+                        let now = crate::ui::now::of(cx);
+                        super::super::screens::people::progress_words(list, now, &look)
                     })
                 })
                 .ok()

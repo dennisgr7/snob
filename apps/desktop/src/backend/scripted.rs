@@ -136,6 +136,8 @@ struct State {
     pictures: HashMap<Pk, PathBuf>,
     /// The picture every highlight read has as its cover, when a test says.
     highlight_cover: Option<PathBuf>,
+    /// The thumbnail every post of a tab's first page has, when a test says.
+    thumbnail: Option<PathBuf>,
     /// The automations kept, in the order they were kept.
     automations: Vec<Automation>,
     runs: Vec<Run>,
@@ -213,6 +215,7 @@ impl Scripted {
             kept_lists: HashMap::new(),
             pictures: HashMap::new(),
             highlight_cover: None,
+            thumbnail: None,
             automations: Vec::new(),
             runs: Vec::new(),
             started_runs: Vec::new(),
@@ -579,6 +582,12 @@ impl Script<'_> {
         self.0.highlight_cover = Some(cover);
         self
     }
+
+    /// Every post of a tab's first page has `thumbnail` as its picture.
+    pub fn thumbnail(&mut self, thumbnail: PathBuf) -> &mut Self {
+        self.0.thumbnail = Some(thumbnail);
+        self
+    }
 }
 
 /// When every scripted list is said to have been read.
@@ -915,6 +924,9 @@ impl Backend for Scripted {
                 return Err(Unread::Hidden);
             }
             let mut tiles = tiles(tab);
+            for tile in &mut tiles.tiles {
+                tile.thumb.clone_from(&state.thumbnail);
+            }
             state.kept_tiles.insert((who.pk, tab), tiles.clone());
             if tab == Tab::Posts && state.more_pages > 0 {
                 tiles.next = Some(hand_out(state, who.pk, tab, 2));

@@ -50,11 +50,9 @@ pub const BACK_FROM_THE_EDGE: f32 = 8.0;
 /// own decoration.
 const RESIZE_EDGE: f32 = 6.0;
 
-/// The local time of day `at`, as the band says it.
+/// The time of day `at` on the clock a person reads, as the band says it.
 pub fn clock(at: snob_core::Epoch) -> String {
-    chrono::DateTime::from_timestamp(at.get(), 0)
-        .map(|at| at.with_timezone(&chrono::Local).format("%H:%M").to_string())
-        .unwrap_or_default()
+    super::now::on_the_clock(at).format("%H:%M").to_string()
 }
 
 /// The icon and the words of a status.
