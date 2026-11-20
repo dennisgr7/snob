@@ -13,6 +13,9 @@
 //! reads it to decide whether to ask: a view shows it, then shows what the
 //! request answered. There is no rule for when to refresh it, since nothing
 //! refreshes it but those answers.
+//!
+//! Beside it, the accounts the account's database already knows, found by
+//! their first letters ([`known_named`]): read without writing it.
 
 use std::path::PathBuf;
 
@@ -24,8 +27,10 @@ use snob_ig::model::{Counters, WebProfileInfo};
 use snob_store::cache::{self, Shown, Tab};
 pub use snob_store::cache::{Drawing, KeptGrid, KeptHighlight, KeptKind, KeptPost, KeptTray};
 use snob_store::paths::{AccountPaths, AppPaths};
+use snob_store::store::{Store, users};
 use snob_store::viewer::Card;
 
+use crate::engine::target::clean;
 use crate::highlights::Highlight;
 use crate::media::{MAX_LARGE_PICTURE, MAX_SMALL_PICTURE, picture_type};
 use crate::posts::{Grid, Post, PostKind};
@@ -63,6 +68,46 @@ pub fn picture(paths: &AppPaths, viewer: Pk, pk: Pk) -> Option<PathBuf> {
         }
     }
     cache::picture(&account, pk)
+}
+
+/// An account `viewer` has seen, as its database keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Known {
+    pub pk: Pk,
+    pub username: String,
+    pub full_name: Option<String>,
+    /// The small picture kept of it ([`picture`]), when there is one.
+    pub picture: Option<PathBuf>,
+}
+
+/// At most `limit` accounts of `viewer`'s database whose name begins with
+/// `typed`, in any case, with the picture kept of each. **Reads the database
+/// without creating or writing it, and sends nothing**: no database is no
+/// account. A database of an older schema is copied into memory to be read
+/// (`Store::read_existing`), on every call until something opens it to write.
+pub fn known_named(
+    paths: &AppPaths,
+    viewer: Pk,
+    typed: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<Known>> {
+    let Some(store) = Store::read_existing(&paths.account(viewer))? else {
+        return Ok(Vec::new());
+    };
+    let found = users::named_from(store.conn(), clean(typed.trim()), limit)?;
+    Ok(found
+        .into_iter()
+        .map(|user| Known {
+            pk: user.pk,
+            username: printable(&user.username),
+            full_name: user
+                .full_name
+                .as_deref()
+                .map(printable)
+                .filter(|name| !name.trim().is_empty()),
+            picture: picture(paths, viewer, user.pk),
+        })
+        .collect())
 }
 
 /// The drawing named `key` that `viewer` was last shown, when one is kept.
@@ -475,6 +520,60 @@ mod tests {
                 }],
                 more: true,
             })
+        );
+    }
+
+    #[test]
+    fn known_accounts_come_with_the_picture_the_cache_keeps() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, session) = signed_in(root.path());
+        let account = paths.account(Pk::new(42));
+        assert_eq!(known_named(&paths, Pk::new(42), "some", 6).unwrap(), []);
+        assert!(!account.db_file().exists(), "nothing was created");
+
+        let store = Store::open(&account).unwrap();
+        let mut someone = snob_core::model::User::named(Pk::new(7), "someone");
+        someone.full_name = Some("Some\u{200b} One".into());
+        users::upsert(store.conn(), &someone).unwrap();
+        users::upsert(
+            store.conn(),
+            &snob_core::model::User::named(Pk::new(8), "somebody"),
+        )
+        .unwrap();
+        users::upsert(
+            store.conn(),
+            &snob_core::model::User::named(Pk::new(42), "someself"),
+        )
+        .unwrap();
+        let own = account.viewer_picture();
+        std::fs::create_dir_all(own.parent().unwrap()).unwrap();
+        std::fs::write(&own, b"\xff\xd8\xff").unwrap();
+        let kept = account.cached_picture(Pk::new(7));
+        Keeper::new(account, &session).picture(Pk::new(7), b"\xff\xd8\xff");
+        assert!(kept.is_file());
+
+        assert_eq!(
+            known_named(&paths, Pk::new(42), " @SOME", 6).unwrap(),
+            [
+                Known {
+                    pk: Pk::new(8),
+                    username: "somebody".into(),
+                    full_name: None,
+                    picture: None,
+                },
+                Known {
+                    pk: Pk::new(7),
+                    username: "someone".into(),
+                    full_name: Some("Some One".into()),
+                    picture: Some(kept),
+                },
+                Known {
+                    pk: Pk::new(42),
+                    username: "someself".into(),
+                    full_name: None,
+                    picture: Some(own),
+                },
+            ]
         );
     }
 

@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::{StoreError, pk_from_sql, pk_to_sql};
 use snob_core::Pk;
 use snob_core::clock::now;
-use snob_core::model::User;
+use snob_core::model::{USERNAME_MAX, User};
 
 /// Records that an account exists without knowing its name: `accounts.pk`
 /// references `users(pk)`, so the row has to exist first. The empty string
@@ -98,6 +98,42 @@ pub fn pk_named(conn: &Connection, name: &str) -> Result<Option<Pk>, StoreError>
 const PK_NAMED: &str = "SELECT pk FROM users
              WHERE username = ?1 COLLATE NOCASE AND username <> ''
              ORDER BY last_seen DESC, pk LIMIT 1";
+
+/// At most `limit` accounts whose name begins with `prefix` in any case, in
+/// the order of their names, **once per name whatever its case**: the one
+/// [`pk_named`] picks for it, so a name suggested resolves to the account
+/// shown. A prefix no username can begin with names nobody.
+pub fn named_from(conn: &Connection, prefix: &str, limit: usize) -> Result<Vec<User>, StoreError> {
+    let allowed = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '_';
+    if prefix.is_empty() || prefix.len() > USERNAME_MAX || !prefix.chars().all(allowed) {
+        return Ok(Vec::new());
+    }
+    // Every character a username may hold sorts below DEL, so the names that
+    // begin with `prefix` are the range up to it: no pattern is matched.
+    let below = format!("{prefix}\u{7f}");
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let names = conn
+        .prepare(NAMED_FROM)?
+        .query_map(params![prefix, below, limit], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut found = Vec::with_capacity(names.len());
+    for name in names {
+        if let Some(pk) = pk_named(conn, &name)?
+            && let Some(user) = find(conn, pk)?
+        {
+            found.push(user);
+        }
+    }
+    Ok(found)
+}
+
+/// A range in `users_username_nocase`, read in its order.
+const NAMED_FROM: &str = "SELECT username FROM users
+             WHERE username >= ?1 COLLATE NOCASE AND username < ?2 COLLATE NOCASE
+               AND username <> ''
+             GROUP BY username COLLATE NOCASE
+             ORDER BY username COLLATE NOCASE
+             LIMIT ?3";
 
 /// The columns [`row_to_user`] reads, in its order: `is_private` and
 /// `is_verified` are both `Option<bool>`, so a transposed pair compiles.
@@ -309,6 +345,62 @@ mod tests {
             .unwrap();
         assert_eq!(pk_named(db.conn(), "someone").unwrap(), Some(Pk::new(8)));
         assert_eq!(pk_named(db.conn(), "nobody").unwrap(), None);
+    }
+
+    #[test]
+    fn accounts_are_found_by_their_first_letters_in_any_case_once_each() {
+        let db = Store::in_memory().unwrap();
+        for (pk, name) in [
+            (1, "someone"),
+            (2, "Someone"),
+            (3, "somebody"),
+            (4, "some_one"),
+            (5, "other"),
+            (6, "SOMETHING"),
+        ] {
+            upsert(db.conn(), &user(pk, name)).unwrap();
+        }
+        ensure(db.conn(), Pk::new(7)).unwrap();
+        db.conn()
+            .execute("UPDATE users SET last_seen = 100 WHERE pk = 1", [])
+            .unwrap();
+        let pks = |prefix: &str, limit: usize| -> Vec<u64> {
+            named_from(db.conn(), prefix, limit)
+                .unwrap()
+                .iter()
+                .map(|u| u.pk.get())
+                .collect()
+        };
+
+        assert_eq!(pks("SoMe", 10), [4, 3, 2, 6], "the latest holder of a name");
+        assert_eq!(pks("some", 2), [4, 3]);
+        assert_eq!(pks("someone", 10), [2]);
+        assert_eq!(pks("x", 10), Vec::<u64>::new());
+        // A wildcard of a pattern is a letter here: `s_` begins no name.
+        assert_eq!(pks("s_", 10), Vec::<u64>::new());
+        for nobody in ["", "@some", "s%", "some one", "some\u{7f}"] {
+            assert_eq!(pks(nobody, 10), Vec::<u64>::new(), "{nobody:?}");
+        }
+        assert_eq!(pks("some", 0), Vec::<u64>::new());
+
+        // Seen in the same second: the account the name resolves to.
+        upsert(db.conn(), &user(9, "tied")).unwrap();
+        upsert(db.conn(), &user(8, "TIED")).unwrap();
+        db.conn()
+            .execute("UPDATE users SET last_seen = 200 WHERE pk IN (8, 9)", [])
+            .unwrap();
+        assert_eq!(pks("ti", 10), [8]);
+        assert_eq!(pk_named(db.conn(), "tied").unwrap(), Some(Pk::new(8)));
+    }
+
+    /// Typing a letter must not read every account ever seen.
+    #[test]
+    fn the_search_by_first_letters_uses_the_username_index() {
+        let db = Store::in_memory().unwrap();
+        let plan = crate::store::plan(db.conn(), NAMED_FROM);
+        assert!(plan.contains("users_username_nocase"), "{plan}");
+        assert!(!plan.contains("SCAN users"), "{plan}");
+        assert!(!plan.contains("TEMP B-TREE"), "{plan}");
     }
 
     /// The empty name is "never learned", and names nobody.

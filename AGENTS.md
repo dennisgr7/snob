@@ -61,6 +61,9 @@ Chromium-based browser installed on the machine, on a profile of its own.
   - MCP never takes a path or file name as an argument, nor sets up or
     changes an automation (`watch setup`, the app's editor): it lists them and
     starts a run.
+  - The app alone suggests names as one is typed
+    (`snob_engine::cache::known_named`, read from the account's database,
+    nothing sent): the command line and MCP take a name as written.
 
   A new exception goes in this list in the same change. An unlisted gap is a bug.
 - Parity is a review rule, not yet a test: nothing fails when a front falls
