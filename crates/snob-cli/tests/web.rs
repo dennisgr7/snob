@@ -1892,6 +1892,162 @@ async fn a_tab_is_asked_by_pk_from_the_profile() {
     assert!(found.is_empty(), "{found:?}");
 }
 
+/// A tab read on as a view scrolls it is one page a call, from the cursor
+/// the page before handed out: the app's navigation to the tab once, every
+/// page counted in the account's sitting, the rest a full sitting owes paid
+/// before the page and told how long, and nothing past the tab's end.
+#[tokio::test]
+async fn a_tabs_next_page_comes_from_the_cursor_the_page_before_handed_out() {
+    use snob_engine::posts::{first_page, page_after};
+    use snob_ig::client::ProfileTab;
+    use snob_store::store::Store;
+    use snob_store::store::rate_budget;
+
+    let world = World::new();
+    world.person(ig::SOMEONE, |p| p.tab_posts = 16);
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let (paths, budget) = common::budget_at(tmp.path());
+    let app = common::app_web(
+        &server,
+        &world,
+        Store::open(&paths).unwrap(),
+        budget,
+        snob_engine::app::Viewer {
+            pk: common::ME,
+            username: Some("me".into()),
+        },
+    );
+    let sitting = || rate_budget::sitting(Store::open(&paths).unwrap().conn()).unwrap();
+    let someone = Pk::new(ig::SOMEONE);
+    app.profile_named("someone", None).await.unwrap();
+    let first = first_page(&app, "someone", someone, Some(ProfileTab::Reels))
+        .await
+        .unwrap();
+    assert_eq!(first.posts.len(), 12);
+    let mut after = first.after().expect("the tab goes on");
+
+    // The page that filled the sitting was walked a moment ago.
+    let now = snob_core::clock::now_ms().get();
+    Store::open(&paths)
+        .unwrap()
+        .conn()
+        .execute(
+            "UPDATE sitting SET pages = 40, last_page_at = ?1, rest_until = ?2 WHERE id = 1",
+            [now, now + 600_000],
+        )
+        .expect("the sitting can be written");
+    let since = common::requests(&server).await;
+    let mut told = None;
+    let (second, after) = page_after(&app, &mut after, |left| told = Some(left))
+        .await
+        .unwrap();
+    assert!(told.is_some_and(|left| !left.is_zero()), "{told:?}");
+    assert_eq!(second.posts.len(), 3);
+    assert_eq!(
+        sitting().map(|s| (s.pages, s.rest_until)),
+        Some((1, None)),
+        "the rest was paid and the page began the next sitting"
+    );
+    let mut after = after.expect("the tab goes on");
+
+    let mut told = None;
+    let (third, after) = page_after(&app, &mut after, |left| told = Some(left))
+        .await
+        .unwrap();
+    assert_eq!(told, None, "no rest is owed");
+    assert_eq!(third.posts.len(), 1);
+    assert_eq!(after, None, "the tab has ended");
+    assert_eq!(sitting().map(|s| s.pages), Some(2));
+
+    assert_eq!(
+        queries_since(&server, since).await,
+        [
+            "PolarisProfileReelsTabContentQuery_connection",
+            "PolarisProfileReelsTabContentQuery_connection",
+        ]
+    );
+    let navigations = server.received_requests().await.unwrap_or_default()[since..]
+        .iter()
+        .filter(|r| !ig::is_the_apps(r) && r.url.path() == "/ajax/navigation/")
+        .count();
+    assert_eq!(navigations, 1, "the tab is opened once");
+    let found = world.audit(&server, &[]).await;
+    assert!(found.is_empty(), "{found:?}");
+}
+
+/// A tab's page that failed after the app was navigated to the tab is
+/// asked again from the same place without navigating to it again.
+#[tokio::test]
+async fn a_tab_opened_for_a_page_that_failed_is_not_opened_again() {
+    use snob_engine::posts::{first_page, page_after};
+    use snob_ig::client::ProfileTab;
+    use wiremock::matchers::{body_string_contains, method, path};
+
+    let world = World::new();
+    world.person(ig::SOMEONE, |p| p.tab_posts = 16);
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let app = app_on(&server, &world, tmp.path());
+    app.profile_named("someone", None).await.unwrap();
+    let first = first_page(
+        &app,
+        "someone",
+        Pk::new(ig::SOMEONE),
+        Some(ProfileTab::Reels),
+    )
+    .await
+    .unwrap();
+    let mut after = first.after().expect("the tab goes on");
+
+    wiremock::Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .and(body_string_contains("ReelsTabContentQuery_connection"))
+        .respond_with(wiremock::ResponseTemplate::new(500))
+        .with_priority(1)
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    let since = common::requests(&server).await;
+    assert!(page_after(&app, &mut after, |_| {}).await.is_err());
+    let (second, _) = page_after(&app, &mut after, |_| {}).await.unwrap();
+    assert_eq!(second.posts.len(), 3);
+    let navigations = server.received_requests().await.unwrap_or_default()[since..]
+        .iter()
+        .filter(|r| !ig::is_the_apps(r) && r.url.path() == "/ajax/navigation/")
+        .count();
+    assert_eq!(navigations, 1, "the tab is opened once");
+}
+
+/// The grid itself reads on from the cursor its first page handed out, as
+/// its tabs do, and ends where the grid ends.
+#[tokio::test]
+async fn a_grids_next_page_comes_from_the_cursor_its_first_page_handed_out() {
+    use snob_engine::posts::{first_page, page_after};
+
+    let world = World::new();
+    world.person(ig::SOMEONE, |p| p.posts = 15);
+    let server = world.serve_web().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let app = app_on(&server, &world, tmp.path());
+    app.profile_named("someone", None).await.unwrap();
+    let first = first_page(&app, "someone", Pk::new(ig::SOMEONE), None)
+        .await
+        .unwrap();
+    assert_eq!(first.posts.len(), 12);
+    let mut after = first.after().expect("the grid goes on");
+    let since = common::requests(&server).await;
+    let (second, after) = page_after(&app, &mut after, |_| {}).await.unwrap();
+    assert_eq!(second.posts.len(), 3);
+    assert_eq!(after, None, "the grid has ended");
+    assert_eq!(
+        queries_since(&server, since).await,
+        ["PolarisProfilePostsTabContentQuery_connection"]
+    );
+    let found = world.audit(&server, &[]).await;
+    assert!(found.is_empty(), "{found:?}");
+}
+
 /// An account whose header says it has no posts can still have reels,
 /// tagged posts and reposts, and its tabs are asked for; its grid is not.
 /// A tagged post and a repost are their authors', and a repost's note is

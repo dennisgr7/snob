@@ -1,14 +1,19 @@
 //! A profile's grid and its tabs, a page of twelve at a time: the profile,
 //! then each page a step after the one before, as far as the reader asked
-//! or to a post it already has.
+//! or to a post it already has; or, for a view that reads on as it is
+//! scrolled, one page at a time from the cursor the last one handed out
+//! ([`After`], [`page_after`]).
+
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use snob_ig::client::{IgClient, ProfileTab};
+use snob_ig::error::IgError;
 use snob_ig::pace::Pace;
 use snob_ig::shortcode::MediaPk;
 
 use super::{MOST_PAGES, Post};
-use crate::engine::rest_before_a_page;
+use crate::engine::{rest_before_a_page, rest_before_a_page_telling};
 
 /// A profile's grid as far as it was read.
 #[derive(Debug, Clone)]
@@ -27,6 +32,8 @@ pub struct Grid {
     /// Whether the app was navigated to the tab, which it is once, before
     /// the tab's second page.
     pub tab_opened: bool,
+    /// How many pages of it were read.
+    pages: u32,
 }
 
 impl Grid {
@@ -40,6 +47,7 @@ impl Grid {
             tab,
             pk,
             tab_opened: false,
+            pages: 0,
         }
     }
 
@@ -52,6 +60,91 @@ impl Grid {
             Some(ProfileTab::Tagged) => "tagged posts",
             Some(ProfileTab::Reposts) => "reposts",
         }
+    }
+
+    /// Where the page after the last one read starts: `None` when no page
+    /// was read, the grid has ended, its account is not known by pk, or
+    /// [`MOST_PAGES`] were read.
+    pub fn after(&self) -> Option<After> {
+        if self.pages == 0 || self.pages >= MOST_PAGES {
+            return None;
+        }
+        Some(After {
+            username: self.username.clone(),
+            pk: self.pk?,
+            tab: self.tab,
+            cursor: self.next.clone()?,
+            tab_opened: self.tab_opened,
+            asked_at: Instant::now(),
+            pages: self.pages,
+        })
+    }
+}
+
+/// Where a grid or a tab reads on: the cursor its last page handed out, how
+/// many pages were read and whether the app was navigated to the tab. It has
+/// no public field and no constructor: [`Grid::after`] makes it from a grid
+/// read and [`page_after`] moves it on, so a view reading on as it is
+/// scrolled stops at [`MOST_PAGES`] and sends back the cursor a page handed
+/// out (`snob_ig` refuses a tab's cursor of another shape all the same).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct After {
+    username: String,
+    pk: snob_core::Pk,
+    tab: Option<ProfileTab>,
+    cursor: String,
+    /// Whether the app was navigated to the tab, so it is never sent twice.
+    tab_opened: bool,
+    /// When this read last reached the account's browser.
+    asked_at: Instant,
+    /// How many pages were read, the one that handed out `cursor` included.
+    pages: u32,
+}
+
+impl After {
+    /// Whether the tab can still be taken as opened: **a browser idle for
+    /// [`IDLE`](crate::browser::headless::IDLE) may have been closed**, and
+    /// the tab of the one that replaces it was never navigated to.
+    fn tab_still_opened(&self) -> bool {
+        self.tab_opened && self.asked_at.elapsed() < crate::browser::headless::IDLE
+    }
+}
+
+/// The page `after` points at, past any rest the account's sitting owes
+/// (`resting` hears how long before it begins) and a step after the page
+/// before, as [`more`] reads it; and where the page after it starts. A wait
+/// stopped is [`IgError::Canceled`].
+///
+/// **`after` keeps a navigation to the tab once sent**, whether or not its
+/// page came, so reading on from it again does not send another.
+pub async fn page_after(
+    app: &crate::app::App,
+    after: &mut After,
+    resting: impl FnOnce(Duration),
+) -> Result<(Grid, Option<After>)> {
+    let client = app.client();
+    let mut grid = Grid::of(&after.username, after.tab, Some(after.pk));
+    grid.next = Some(after.cursor.clone());
+    grid.pages = after.pages;
+    grid.tab_opened = after.tab_still_opened();
+    let opened_before = grid.tab_opened;
+    let of = format!("the {}", grid.what());
+    let read = match rest_before_a_page_telling(client, &of, resting).await {
+        Ok(true) => Ok(false),
+        Ok(false) => more(client, &mut grid).await,
+        Err(e) => Err(e),
+    };
+    after.tab_opened = grid.tab_opened;
+    if grid.tab_opened && !opened_before {
+        after.asked_at = Instant::now();
+    }
+    match read {
+        Ok(true) => {
+            let next = grid.after();
+            Ok((grid, next))
+        }
+        Ok(false) => Err(IgError::Canceled.into()),
+        Err(e) => Err(e),
     }
 }
 
@@ -273,6 +366,7 @@ impl Grid {
         self.posts
             .extend(page.posts.iter().map(|m| Post::from_media(m, &owner)));
         self.next = page.next;
+        self.pages += 1;
     }
 }
 
@@ -326,5 +420,67 @@ mod tests {
         assert_eq!(reached(&grid, &[pk(9), pk(4)]), Some(pk(4)));
         assert_eq!(reached(&grid, &[pk(4), pk(5)]), Some(pk(5)));
         assert_eq!(reached(&grid, &[]), None);
+    }
+
+    /// A reels tab of the account `pk` read `pages` pages, the last of which
+    /// handed out `next`.
+    fn read(next: Option<&str>, pk: Option<u64>, pages: u32) -> Grid {
+        let mut grid = Grid::of(
+            "someone",
+            Some(ProfileTab::Reels),
+            pk.map(snob_core::Pk::new),
+        );
+        grid.next = next.map(str::to_string);
+        grid.pages = pages;
+        grid
+    }
+
+    #[test]
+    fn a_grid_unread_ended_or_whose_account_is_not_known_by_pk_reads_on_from_nowhere() {
+        assert_eq!(read(Some("reels:12"), Some(7), 0).after(), None);
+        assert_eq!(read(None, Some(7), 1).after(), None);
+        assert_eq!(read(Some("reels:12"), None, 1).after(), None);
+        assert!(read(Some("reels:12"), Some(7), 1).after().is_some());
+    }
+
+    #[test]
+    fn no_page_is_read_on_past_the_most_pages_of_a_run() {
+        assert_eq!(read(Some("reels:12"), Some(7), MOST_PAGES).after(), None);
+        assert_eq!(
+            read(Some("reels:12"), Some(7), MOST_PAGES + 1).after(),
+            None
+        );
+        let last = read(Some("reels:12"), Some(7), MOST_PAGES - 1)
+            .after()
+            .expect("one page left");
+        assert_eq!(last.pages, MOST_PAGES - 1);
+    }
+
+    #[test]
+    fn reading_on_carries_the_cursor_and_whether_the_tab_was_opened() {
+        let mut grid = read(Some("reels:15"), Some(7), 2);
+        let after = grid.after().unwrap();
+        assert_eq!(after.cursor, "reels:15");
+        assert_eq!(after.tab, Some(ProfileTab::Reels));
+        assert_eq!(after.pk, snob_core::Pk::new(7));
+        assert_eq!(after.pages, 2);
+        assert!(!after.tab_opened);
+        grid.tab_opened = true;
+        assert!(
+            grid.after().unwrap().tab_still_opened(),
+            "the tab is opened once"
+        );
+    }
+
+    #[test]
+    fn a_tab_opened_in_a_browser_idle_since_is_opened_again() {
+        let mut grid = read(Some("reels:15"), Some(7), 2);
+        grid.tab_opened = true;
+        let mut after = grid.after().unwrap();
+        let Some(long_ago) = Instant::now().checked_sub(crate::browser::headless::IDLE) else {
+            return; // a clock too young to have been idle that long
+        };
+        after.asked_at = long_ago;
+        assert!(!after.tab_still_opened());
     }
 }

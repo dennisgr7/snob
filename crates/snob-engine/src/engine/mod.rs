@@ -322,8 +322,19 @@ pub(crate) async fn rest_before_a_page(
     client: &snob_ig::client::IgClient,
     of: &str,
 ) -> Result<bool> {
+    rest_before_a_page_telling(client, of, |_| {}).await
+}
+
+/// [`rest_before_a_page`], telling `tell` how long the rest is before it
+/// begins, as a view that shows the wait must know.
+pub(crate) async fn rest_before_a_page_telling(
+    client: &snob_ig::client::IgClient,
+    of: &str,
+    tell: impl FnOnce(std::time::Duration),
+) -> Result<bool> {
     Ok(client
         .rest_before_a_page(&snob_ig::pace::Pace::default(), |left| {
+            tell(left);
             crate::host::info(&format!(
                 "Resting {} between sittings before the next page of {of}.",
                 crate::sentences::rest_left(left)

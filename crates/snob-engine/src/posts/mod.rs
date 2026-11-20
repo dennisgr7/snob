@@ -44,8 +44,8 @@ pub use comments::{
 };
 pub use document::{comment_document, comment_json, post_document, post_json, thread_document};
 pub use grid::{
-    Fetched, Grid, GridRead, UNTIL_PAGES, fetch_grid, first_page, more, reached, read_grid,
-    read_pages, read_tab,
+    After, Fetched, Grid, GridRead, UNTIL_PAGES, fetch_grid, first_page, more, page_after, reached,
+    read_grid, read_pages, read_tab,
 };
 pub use likers::{LIKERS_AT_MOST, likers, refuse_short_day};
 pub use save::{Kept, Opened, Videos, fetched_item, files_of, keep_item, keep_post, save_telling};
