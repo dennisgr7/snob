@@ -400,6 +400,7 @@ impl Shell {
             this.judge_the_rest(window, cx);
             if window.is_window_active() {
                 this.look_again(window, cx);
+                this.look_at_the_runs_again(window, cx);
             }
             // What waits on the window being looked at: an automation's
             // runs read again, and a profile's posts read on.
@@ -516,6 +517,17 @@ impl Shell {
             pill,
             selected,
         }
+    }
+
+    /// How wide the panel is drawn now, in logical pixels: the window less
+    /// the frame at its sides.
+    pub(crate) fn panel_width(&self, window: &Window, cx: &App) -> f32 {
+        let elapsed = cx
+            .background_executor()
+            .now()
+            .saturating_duration_since(self.frame_since);
+        let geometry = shape::geometry(self.frame.openness(elapsed));
+        f32::from(window.viewport_size().width) - geometry.left - geometry.right
     }
 
     /// How far right of the window's middle the panel's middle is now: what
@@ -645,10 +657,16 @@ impl Shell {
         };
         loop {
             match self.rest.judge(seen) {
-                rest::Next::Rest => self.system.rest(true),
+                rest::Next::Rest => {
+                    self.stop_reading_the_runs();
+                    self.system.rest(true);
+                }
                 rest::Next::Wake => {
                     self.system.rest(false);
                     self.look_for_the_lists_pictures(cx);
+                    // Woken by a frame as well as by a look: a run that
+                    // went on at rest is read again either way.
+                    self.keep_reading_while_live(window, cx);
                 }
                 rest::Next::LookIn(after) => {
                     self.look_at_the_rest_in(after, window, cx);

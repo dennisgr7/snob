@@ -1,6 +1,7 @@
 //! The automations section, apart from how it is drawn: whether an account
-//! is still owed its introduction, which automations a search shows, the
-//! editor's canvas (how far it is moved and zoomed, where a step is and
+//! is still owed its introduction, which automations a search shows, what
+//! their cards say and how many sit side by side, whether a page reads its
+//! runs again, the editor's canvas (how far it is moved and zoomed, where a step is and
 //! what is under a point of it), and the grid that drifts behind the
 //! introduction.
 //!
@@ -20,7 +21,8 @@ use std::f64::consts::TAU;
 use std::time::Duration;
 
 use snob_core::Pk;
-use snob_core::automation::{Automation, NodeId};
+use snob_core::automation::{Automation, Node, NodeId, Stage as StepStage, Step};
+use snob_core::watch::schedule::Spec;
 
 use super::settings::fold;
 use crate::theme::motion;
@@ -95,6 +97,95 @@ pub fn shown<'a>(all: &'a [Automation], typed: &str) -> Vec<&'a Automation> {
     all.iter()
         .filter(|automation| super::commands::matches(&fold(&automation.name), &wanted))
         .collect()
+}
+
+/// What a card of the list says an automation does: its enabled steps that
+/// read, keep and send, in the order a run takes them. Its triggers are
+/// said apart ([`card_runs`]).
+pub fn card_steps(automation: &Automation) -> Vec<&Node> {
+    automation
+        .columns()
+        .into_iter()
+        .flatten()
+        .filter_map(|id| automation.node(id))
+        .filter(|node| node.enabled && node.step.stage() != StepStage::Trigger)
+        .collect()
+}
+
+/// When a card says an automation runs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Runs<'a> {
+    /// On each of its enabled schedules.
+    On(Vec<&'a Spec>),
+    /// Only when somebody runs it.
+    ByHand,
+    /// It has no enabled trigger.
+    Never,
+}
+
+/// When an automation runs, from its enabled triggers: its schedules when
+/// it has any, by hand when a manual trigger is all it has.
+pub fn card_runs(automation: &Automation) -> Runs<'_> {
+    let enabled = || automation.nodes.iter().filter(|node| node.enabled);
+    let schedules: Vec<&Spec> = enabled()
+        .filter_map(|node| match &node.step {
+            Step::Schedule { when } => Some(when),
+            _ => None,
+        })
+        .collect();
+    if !schedules.is_empty() {
+        Runs::On(schedules)
+    } else if enabled().any(|node| matches!(node.step, Step::Manual {})) {
+        Runs::ByHand
+    } else {
+        Runs::Never
+    }
+}
+
+/// The step a card is drawn for: its first enabled action, in the order a
+/// run takes them.
+pub fn card_step(automation: &Automation) -> Option<&Step> {
+    card_steps(automation)
+        .into_iter()
+        .map(|node| &node.step)
+        .find(|step| step.stage() == StepStage::Action)
+}
+
+/// The most cards side by side, however wide the window.
+pub const MOST_CARD_COLUMNS: usize = 3;
+
+/// How many cards of at least `card` wide, `gap` apart, fit side by side in
+/// `room`: one at least, [`MOST_CARD_COLUMNS`] at most.
+pub fn card_columns(room: f32, card: f32, gap: f32) -> usize {
+    if !(room > 0.0 && card > 0.0) {
+        return 1;
+    }
+    let fit = ((room + gap) / (card + gap)).floor();
+    (fit as usize).clamp(1, MOST_CARD_COLUMNS)
+}
+
+/// What an automation's page knows when it decides whether to read its runs
+/// again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Live {
+    /// Whether the engine says one of its runs is going.
+    pub running: bool,
+    /// Whether "Run now" was pressed and its run has not shown up yet.
+    pub waiting: bool,
+    /// Whether the page is the one shown, its editor closed.
+    pub shown: bool,
+    /// Whether the app rests (`state::rest`).
+    pub resting: bool,
+    /// Whether a test build was told the moment it is (`ui::now`), which
+    /// holds what is shown still for a picture.
+    pub pinned: bool,
+}
+
+/// Whether the page reads its runs again shortly: **only while a run goes
+/// or is awaited**, never at rest, never while the page is not shown, and
+/// never in a test build told the moment it is.
+pub fn reads_again(live: Live) -> bool {
+    (live.running || live.waiting) && live.shown && !live.resting && !live.pinned
 }
 
 /// The least the canvas is zoomed to: a quarter, where a flow of a dozen
@@ -879,5 +970,111 @@ mod tests {
             assert!(moved > 0.0 && moved < CELL / 4.0, "{moved} after {at} s");
         }
         assert!(drifting_grid((0.0, 0.0), middle, SECS(1)).0.is_empty());
+    }
+
+    fn a_flow() -> Automation {
+        use snob_core::automation::{Account, Only, Read, Webhook};
+        let mut automation = Automation::new("a1", "Daily");
+        let every = Spec {
+            every: Some(SECS(6 * 3600)),
+            ..Spec::default()
+        };
+        let trigger = automation.insert(Step::Schedule { when: every }, (0, 0));
+        let hook = automation.insert(Step::Webhook(Webhook::default()), (600, 0));
+        let filter = automation.insert(
+            Step::Filter {
+                only: Only::Changes,
+            },
+            (400, 0),
+        );
+        let read = automation.insert(
+            Step::Read {
+                account: Some(Account::own(None)),
+                what: Read::Fans,
+            },
+            (200, 0),
+        );
+        for (from, to) in [(trigger, read), (read, filter), (filter, hook)] {
+            automation.connect(from, to).unwrap();
+        }
+        automation
+    }
+
+    #[test]
+    fn a_card_lists_the_enabled_steps_after_the_triggers_in_the_order_a_run_takes_them() {
+        let mut automation = a_flow();
+        let stages = |automation: &Automation| {
+            card_steps(automation)
+                .iter()
+                .map(|node| node.step.stage())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            stages(&automation),
+            [StepStage::Action, StepStage::Filter, StepStage::Output],
+            "in the order of the arrows, not of the canvas"
+        );
+        assert!(matches!(card_step(&automation), Some(Step::Read { .. })));
+        automation.nodes[3].enabled = false;
+        assert_eq!(stages(&automation), [StepStage::Filter, StepStage::Output]);
+        assert_eq!(card_step(&automation), None, "a disabled read is not drawn");
+        assert!(card_steps(&Automation::new("a2", "Empty")).is_empty());
+    }
+
+    #[test]
+    fn a_card_runs_on_its_schedules_else_by_hand_else_never() {
+        let mut automation = a_flow();
+        assert!(matches!(card_runs(&automation), Runs::On(specs) if specs.len() == 1));
+        automation.insert(Step::Manual {}, (0, 100));
+        assert!(
+            matches!(card_runs(&automation), Runs::On(_)),
+            "a schedule is said over a manual trigger"
+        );
+        automation.nodes[0].enabled = false;
+        assert_eq!(card_runs(&automation), Runs::ByHand);
+        automation.nodes.retain(|node| node.step != Step::Manual {});
+        assert_eq!(card_runs(&automation), Runs::Never);
+    }
+
+    #[test]
+    fn as_many_cards_sit_side_by_side_as_fit_from_one_to_three() {
+        assert_eq!(card_columns(900.0, 280.0, 12.0), 3);
+        assert_eq!(card_columns(572.0, 280.0, 12.0), 2, "two exactly");
+        assert_eq!(card_columns(571.0, 280.0, 12.0), 1);
+        assert_eq!(card_columns(5000.0, 280.0, 12.0), MOST_CARD_COLUMNS);
+        assert_eq!(card_columns(100.0, 280.0, 12.0), 1, "one, however narrow");
+        assert_eq!(card_columns(0.0, 280.0, 12.0), 1);
+        assert_eq!(card_columns(f32::NAN, 280.0, 12.0), 1);
+    }
+
+    #[test]
+    fn a_page_reads_its_runs_again_only_while_one_goes_where_it_is_seen_and_awake() {
+        let going = Live {
+            running: true,
+            shown: true,
+            ..Live::default()
+        };
+        assert!(reads_again(going));
+        assert!(reads_again(Live {
+            running: false,
+            waiting: true,
+            ..going
+        }));
+        assert!(!reads_again(Live {
+            running: false,
+            ..going
+        }));
+        assert!(!reads_again(Live {
+            shown: false,
+            ..going
+        }));
+        assert!(!reads_again(Live {
+            resting: true,
+            ..going
+        }));
+        assert!(!reads_again(Live {
+            pinned: true,
+            ..going
+        }));
     }
 }

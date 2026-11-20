@@ -120,7 +120,6 @@ automations-empty-note = Create one to watch accounts and act when something cha
 automations-none = No automation is called “{ $typed }”
 automation-watch-name = snob watch
 automation-new-name = New automation
-automation-steps = Steps: { $count }
 automation-back = Back to the list
 automation-edit = Edit the automation
 automation-run = Run now
@@ -535,7 +534,7 @@ nth-third = third
 nth-fourth = fourth
 nth-last = last
 # How this language tells the time of day: 12 or 24 hours.
-clock-hours = 12
+clock-hours = 24
 clock-24 = { $hour }:{ $minute }
 clock-am = { $hour }:{ $minute } AM
 clock-pm = { $hour }:{ $minute } PM
@@ -606,5 +605,47 @@ people-cancel = Cancel
 people-choose = Select @{ $username }
 
 ## Automations: the list, an automation's page and its runs, and the editor.
+
+automation-card-no-steps = Nothing to do yet. Edit it to add steps.
+automation-card-by-hand = By hand
+automation-not-seen = The run has not shown up in the history: it may have stopped before it began.
+run-running = Running
+run-list-followers = Followers
+run-list-following = Following
+# What a run found, said from what it kept as data. `$whose` is "Your
+# account" or a username with its at sign.
+run-said-account = Account { $pk }
+run-said-found = { $what } · { $whose }: { $count } accounts.
+run-said-found-one = { $what } · { $whose }: { $count } account.
+run-said-baseline = { $what } · { $whose }: { $count } accounts, the starting point the next run compares against.
+run-said-baseline-one = { $what } · { $whose }: { $count } account, the starting point the next run compares against.
+run-said-since = { $what } · { $whose }: { $added } came and { $removed } went since the last report ({ $since }).
+run-said-stored = Worked out from lists read earlier ({ $when }).
+run-said-picture-new = { $what } · { $whose }: new, and saved.
+run-said-picture-same = { $what } · { $whose }: it has not changed.
+run-said-picture-read = { $what } · { $whose }: read.
+run-said-more = and { $count } more
+run-said-more-one = and { $count } more
+run-said-list-baseline = { $list } · { $whose }: first look, { $count } accounts. The next run is the first that can compare.
+run-said-list-baseline-one = { $list } · { $whose }: first look, { $count } account. The next run is the first that can compare.
+run-said-list-same = { $list } · { $whose }: no changes, { $count } accounts.
+run-said-list-same-one = { $list } · { $whose }: no changes, { $count } account.
+run-said-list-changed = { $list } · { $whose }: { $added } came, { $removed } went, { $count } accounts in all.
+run-said-list-changed-one = { $list } · { $whose }: { $added } came, { $removed } went, { $count } account in all.
+run-said-renamed = { $count } now go by another name.
+run-said-renamed-one = { $count } now goes by another name.
+run-said-nothing-stored = { $whose }: nothing has been read yet.
+run-said-refused = { $whose }: nothing could be looked at this time.
+run-said-posts-baseline = Posts · { $whose }: first look. The next run is the first that can tell what is new.
+run-said-posts-none = Posts · { $whose }: nothing new since the last report.
+run-said-posts-new = Posts · { $whose }: { $count } new.
+run-said-posts-new-one = Posts · { $whose }: { $count } new.
+run-said-posts-recent = Posts · { $whose }: read less than an hour ago, not read again.
+run-said-posts-skipped = Posts · { $whose }: they could not be read this time.
+run-said-posts-incomplete = Only the newest posts were read: an older one may have gone unreported.
+run-said-saved = { $count } files saved.
+run-said-saved-one = { $count } file saved.
+run-said-failed = Part of the run: { $outcome }.
+run-said-cannot-run = It could not run: something in its steps keeps it from running. Edit it to see what.
 
 ## Schedule: when an automation runs, chosen in its dialog and said in words.

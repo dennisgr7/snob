@@ -4,14 +4,22 @@
 //! **The history is what the engine kept of the runs**
 //! (`Backend::automation_runs`), the newest first, and nothing here sends
 //! anything: "Run now" starts `snob watch once` as the command line does.
+//! **A run is said to be going only when the engine says so**
+//! (`Run::running`, from its heartbeat), and what a run found is said in
+//! the app's language from what it kept as data (`words::found_lines`),
+//! else in the sentences it kept.
 
 use gpui_kit::base::{ObservedElement, TestSupportExt as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Div, FontWeight, Role, Stateful, div, px};
+use gpui_kit::{AnyElement, Context, Div, FontWeight, Role, SharedString, Stateful, div, px};
+use snob_core::Epoch;
 use snob_core::automation::Automation;
+use snob_engine::automations::said;
 
 use super::automations::tool_button;
-use super::words::{automation_name, moment, outcome_words, stage_name, step_detail, step_name};
+use super::words::{
+    automation_name, found_lines, moment_words, outcome_words, stage_name, step_detail, step_name,
+};
 use crate::backend::{Next, Run};
 use crate::theme::tokens::shape;
 use crate::ui::assets;
@@ -35,16 +43,21 @@ pub fn page(shell: &mut Shell, phase: Phase, look: &Look, cx: &mut Context<Shell
     let runs = open.runs.clone();
     let next = open.next;
     let started = open.started.clone();
+    let unseen = open.unseen;
+    let now = crate::ui::now::of(cx);
 
     let run_now = parts::small_button("automation-run", look.tr("automation-run"), true, look)
         .on_click(cx.listener(|shell, _, window, cx| shell.run_the_automation(window, cx)));
-    let pencil = tool_button(
+    // As tall as "Run now" beside it; its tip comes with it.
+    let pencil = parts::icon_button(
         "automation-edit",
         look.tr("automation-edit"),
         assets::EDIT,
         true,
         look,
     )
+    .w(sp(30.))
+    .h(sp(30.))
     .on_click(cx.listener(|shell, _, window, cx| shell.edit_the_automation(window, cx)));
     let back = tool_button(
         "automation-back",
@@ -75,24 +88,31 @@ pub fn page(shell: &mut Shell, phase: Phase, look: &Look, cx: &mut Context<Shell
         .child(run_now)
         .child(pencil);
 
-    let said = started.map(|started| {
-        let (id, text) = match started {
-            Ok(()) => ("automation-started", look.tr("automation-started")),
-            Err(why) => (
-                "automation-not-started",
-                look.tr_with("automation-not-started", &[("why", &why)]),
-            ),
-        };
+    let said = match started {
+        Some(Ok(())) => Some(("automation-started", look.tr("automation-started"))),
+        Some(Err(why)) => Some((
+            "automation-not-started",
+            look.tr_with("automation-not-started", &[("why", &why)]),
+        )),
+        None if unseen => Some(("automation-not-seen", look.tr("automation-not-seen"))),
+        None => None,
+    };
+    // Said as it changes, by a screen reader too.
+    let said = said.map(|(id, text)| {
         div()
+            .id(id)
+            .test_support()
+            .role(Role::Status)
+            .aria_label(text.clone())
             .px(sp(32.))
             .pb(sp(8.))
             .text_size(sp(13.))
             .text_color(color(palette.secondary))
-            .child(parts::said(id, text))
+            .child(text)
     });
 
-    let history = history(runs, look);
-    let flow = flow(automation, next, look);
+    let history = history(runs, now, look);
+    let flow = flow(automation, next, now, look);
     let body = div()
         .id("automation-body")
         .flex_1()
@@ -162,8 +182,18 @@ fn note(id: &'static str, text: String, look: &Look) -> Div {
         .child(parts::said(id, text))
 }
 
+/// What a run found, in lines: in the app's words when it kept what it
+/// found as data this build reads, else the sentences it kept.
+fn summary_of(run: &Run, now: Epoch, look: &Look) -> Vec<String> {
+    run.found
+        .as_deref()
+        .and_then(said::read)
+        .and_then(|found| found_lines(&found, now, look))
+        .unwrap_or_else(|| run.summary.lines().map(str::to_string).collect())
+}
+
 /// The runs, newest first.
-fn history(runs: Option<Vec<Run>>, look: &Look) -> AnyElement {
+fn history(runs: Option<Vec<Run>>, now: Epoch, look: &Look) -> AnyElement {
     let palette = look.palette;
     let card = card("automation-history", look.tr("automation-history"), look);
     let Some(runs) = runs else {
@@ -188,16 +218,34 @@ fn history(runs: Option<Vec<Run>>, look: &Look) -> AnyElement {
             .flex_col()
             .gap(sp(8.))
             .children(runs.into_iter().enumerate().map(|(at, run)| {
-                let outcome = outcome_words(run.outcome.as_deref(), look);
-                let when = moment(run.started_at);
-                let count = run.requests.to_string();
-                let requests = look.tr_with("run-requests", &[("count", &count)]);
-                let said = format!("{when}. {outcome}. {requests}");
+                let when = moment_words(run.started_at, now, look);
+                let lines = summary_of(&run, now, look);
+                let (outcome, requests) = if run.running {
+                    (look.tr("run-running"), None)
+                } else {
+                    let count = run.requests.to_string();
+                    (
+                        outcome_words(run.outcome.as_deref(), look),
+                        Some(look.tr_with("run-requests", &[("count", &count)])),
+                    )
+                };
+                let said = match &requests {
+                    Some(requests) => format!("{when}. {outcome}. {requests}"),
+                    None => format!("{when}. {outcome}"),
+                };
                 let ink = if run.outcome.as_deref() == Some("ok") {
                     palette.text
                 } else {
                     palette.secondary
                 };
+                // Going, it stands out as every emphasis does: underlined in
+                // pink.
+                let outcome = if run.running {
+                    parts::username(look).font_weight(FontWeight::MEDIUM)
+                } else {
+                    div().text_color(color(ink))
+                }
+                .child(outcome);
                 div()
                     .id(("automation-run-row", at))
                     .test_support()
@@ -222,20 +270,28 @@ fn history(runs: Option<Vec<Run>>, look: &Look) -> AnyElement {
                                     .text_color(color(palette.text))
                                     .child(when),
                             )
-                            .child(div().text_color(color(ink)).child(outcome)),
+                            .child(outcome),
                     )
-                    .child(
+                    .children(requests.map(|requests| {
                         div()
                             .text_size(sp(12.))
                             .text_color(color(palette.secondary))
-                            .child(requests),
-                    )
-                    .children(run.summary.lines().map(|line| {
+                            .child(requests)
+                    }))
+                    .children(lines.into_iter().enumerate().map(|(line_at, line)| {
+                        let id = (
+                            SharedString::from(format!("automation-run-{at}-said")),
+                            line_at,
+                        );
                         div()
+                            .id(id)
+                            .test_support()
+                            .role(Role::Label)
+                            .aria_label(line.clone())
                             .text_size(sp(12.))
                             .line_height(sp(17.))
                             .text_color(color(palette.secondary))
-                            .child(line.to_string())
+                            .child(line)
                     }))
             })),
     )
@@ -309,7 +365,7 @@ fn step_row(at: usize, node: &snob_core::automation::Node, look: &Look) -> AnyEl
 
 /// The flow in words, a column of the run at a time, and when it is next
 /// due.
-fn flow(automation: &Automation, next: Option<Next>, look: &Look) -> AnyElement {
+fn flow(automation: &Automation, next: Option<Next>, now: Epoch, look: &Look) -> AnyElement {
     let palette = look.palette;
     let rows: Vec<AnyElement> = automation
         .columns()
@@ -322,7 +378,10 @@ fn flow(automation: &Automation, next: Option<Next>, look: &Look) -> AnyElement 
     let card = card("automation-flow", look.tr("automation-flow"), look);
     let after = next.map(|next| match next {
         Next::Now => look.tr("automation-next-now"),
-        Next::At(at) => look.tr_with("automation-next-at", &[("when", &moment(at))]),
+        Next::At(at) => look.tr_with(
+            "automation-next-at",
+            &[("when", &moment_words(at, now, look))],
+        ),
         Next::ByHand => look.tr("automation-next-by-hand"),
         Next::Never => look.tr("automation-next-never"),
     });

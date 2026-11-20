@@ -30,6 +30,10 @@ pub struct Start {
     /// Whether what is kept is said the same on every run, for pictures;
     /// clearing the cache stays real.
     pub fixed_storage: bool,
+    /// The moment every screen's words are said against, so a picture of a
+    /// date does not change with the calendar; told one, the app reads
+    /// nothing again by itself.
+    pub fixed_now: Option<i64>,
 }
 
 /// The app, running.
@@ -74,6 +78,9 @@ fn arguments(root: &Path, start: &Start) -> Vec<String> {
     }
     if let Some(locale) = &start.locale {
         args.extend(["--locale".to_string(), locale.clone()]);
+    }
+    if let Some(at) = start.fixed_now {
+        args.extend(["--fixed-now".to_string(), at.to_string()]);
     }
     args
 }

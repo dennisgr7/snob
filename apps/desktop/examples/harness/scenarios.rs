@@ -1072,9 +1072,15 @@ async fn keyboard_alone(stage: &mut Stage<'_>) -> anyhow::Result<()> {
     app.until_screen("settings").await.map(drop)
 }
 
+/// The moment a picture's words are said against (`--fixed-now`): the
+/// afternoon of the day the seeded runs ran.
+pub const FIXED_NOW: i64 = 1_790_010_000;
+
 /// Two automations and a short history of the first, kept where the app
 /// finds them: what a list of them and a page with a history are shown
-/// with. **The same on every run**: the moments are fixed.
+/// with. **The same on every run**: the moments are fixed. The newest run
+/// keeps what it found as data, said in the app's language; the others
+/// only their sentences, as a run kept before that was.
 pub fn seed_automations(root: &Path) -> anyhow::Result<()> {
     use snob_core::Epoch;
     use snob_core::automation::{Account, Automation, Read, Step, Webhook};
@@ -1146,15 +1152,47 @@ Two came, one went.",
 Nothing changed.",
         ),
     ];
+    let found = serde_json::to_string(&[seeded_tick()])?;
     for (at, outcome, requests, summary) in runs {
         let id = shared
             .record_automation_run("00000a01", Epoch::new(at))
             .map_err(|e| anyhow!("a run was not written down: {e}"))?;
+        let found = (at == runs[0].0).then_some(found.as_str());
         shared
-            .finish_automation_run(id, Epoch::new(at + 95), outcome, requests, summary, None)
+            .finish_automation_run(id, Epoch::new(at + 95), outcome, requests, summary, found)
             .map_err(|e| anyhow!("a run was not finished: {e}"))?;
     }
     Ok(())
+}
+
+/// What the newest seeded run found: two came and one went of 120
+/// followers, and the 98 followed did not change.
+fn seeded_tick() -> snob_engine::automations::said::Said {
+    use snob_engine::automations::said::{ListSaid, Said};
+    let list = |basis: &str, total, added: &[&str], removed: &[&str]| ListSaid {
+        basis: basis.to_string(),
+        total,
+        added: added.len(),
+        removed: removed.len(),
+        added_names: added.iter().map(|name| (*name).to_string()).collect(),
+        removed_names: removed.iter().map(|name| (*name).to_string()).collect(),
+    };
+    Said::Tick {
+        account: Some("me".to_string()),
+        pk: snob_core::Pk::new(42),
+        own: true,
+        refused: false,
+        nothing_stored: false,
+        followers: Some(list(
+            "compare",
+            120,
+            &["new_friend", "late_comer"],
+            &["gone_away"],
+        )),
+        following: Some(list("unchanged", 98, &[], &[])),
+        renamed: 0,
+        posts: None,
+    }
 }
 
 /// Left, top, width and height of `id`.

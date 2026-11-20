@@ -951,12 +951,7 @@ impl Shell {
         match &kept {
             Some(_) if page.open.as_ref().is_some_and(|open| open.id == id) => {}
             Some(_) => {
-                page.open = Some(Opened {
-                    id: id.clone(),
-                    runs: None,
-                    next: None,
-                    started: None,
-                });
+                page.open = Some(Opened::new(id.clone()));
             }
             None => page.open = None,
         }

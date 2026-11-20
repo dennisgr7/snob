@@ -12,13 +12,14 @@ use std::time::Duration;
 
 use common::{App, disabled, open_with};
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{Role, TestAppContext, px};
+use gpui_kit::{AppContext as _, Role, TestAppContext, VisualTestContext, px};
 use snob_core::Epoch;
 use snob_core::automation::{Account, Automation, Read, Step};
 use snob_core::watch::schedule::Spec;
 use snob_desktop::backend::scripted::{Asked, Scripted, account};
 use snob_desktop::backend::{Next, Run};
 use snob_desktop::state::flow::Screen;
+use snob_desktop::state::rest::QUIET_FOR;
 use snob_desktop::system::Settings;
 use snob_desktop::theme::tokens::shape::FOCUS_ROOM;
 
@@ -131,7 +132,10 @@ async fn the_list_opens_a_page_with_its_history_its_flow_in_words_and_a_pencil(
     app.in_window(cx, |window, _| {
         let row = window.find(("automation", 0usize));
         assert_eq!(row.role(), Some(Role::Button));
-        assert_eq!(row.label(), Some("Daily lists. Steps: 2"));
+        assert_eq!(
+            row.label(),
+            Some("Daily lists. Followers and following (Your account). Every 6h")
+        );
     });
 
     click(&app, cx, ("automation", 0usize));
@@ -647,4 +651,484 @@ async fn the_bands_way_back_leaves_the_editor_then_the_automations_page(cx: &mut
     app.click(cx, "band-back");
     settle(&app, cx);
     assert!(shown(&app, cx, "automations-create"), "on the list");
+}
+
+/// An automation run only by hand, on the fans of somebody else, that
+/// keeps what changed.
+fn by_hand() -> Automation {
+    let mut automation = Automation::new("a2", "Fans by hand");
+    let trigger = automation.insert(Step::Manual {}, (0, 0));
+    let read = automation.insert(
+        Step::Read {
+            account: Some(Account {
+                viewer: Some(42.into()),
+                username: Some("other".to_string()),
+                consent: None,
+            }),
+            what: Read::Fans,
+        },
+        (260, 0),
+    );
+    let filter = automation.insert(
+        Step::Filter {
+            only: snob_core::automation::Only::Changes,
+        },
+        (520, 0),
+    );
+    automation.connect(trigger, read).unwrap();
+    automation.connect(read, filter).unwrap();
+    automation
+}
+
+/// What a monitor's run found, as the engine keeps it: two came and one
+/// went of 120 followers, and the 98 followed did not change.
+fn found_lists() -> String {
+    use snob_engine::automations::said::{ListSaid, Said};
+    let names = |names: &[&str]| names.iter().map(|name| (*name).to_string()).collect();
+    let said = Said::Tick {
+        account: Some("me".to_string()),
+        pk: 42.into(),
+        own: true,
+        refused: false,
+        nothing_stored: false,
+        followers: Some(ListSaid {
+            basis: "compare".to_string(),
+            total: 120,
+            added: 2,
+            removed: 1,
+            added_names: names(&["new_friend", "late_comer"]),
+            removed_names: names(&["gone_away"]),
+        }),
+        following: Some(ListSaid {
+            basis: "unchanged".to_string(),
+            total: 98,
+            added: 0,
+            removed: 0,
+            added_names: Vec::new(),
+            removed_names: Vec::new(),
+        }),
+        renamed: 0,
+        posts: None,
+    };
+    serde_json::to_string(&[said]).unwrap()
+}
+
+/// 2026-09-21 at 14:13:20 UTC, and an hour later.
+const STARTED: i64 = 1_790_000_000;
+const AN_HOUR_LATER: i64 = STARTED + 3600;
+
+fn going(automation: &str, at: i64) -> Run {
+    Run {
+        summary: String::new(),
+        running: true,
+        ..run_of(automation, at, None)
+    }
+}
+
+/// How many times the history of `id` was read.
+fn reads_of(backend: &Scripted, id: &str) -> usize {
+    backend
+        .asked()
+        .iter()
+        .filter(|asked| **asked == Asked::AutomationRuns(id.to_string()))
+        .count()
+}
+
+/// The lines under the run at `at` of the history, as they are read.
+fn lines_of(app: &App, cx: &mut TestAppContext, at: usize) -> Vec<String> {
+    let name = gpui_kit::SharedString::from(format!("automation-run-{at}-said"));
+    app.in_window(cx, |window, _| {
+        (0..)
+            .map_while(|line| window.try_find((name.clone(), line)))
+            .map(|found| found.label().unwrap_or_default().trim().to_string())
+            .collect()
+    })
+}
+
+fn spanish() -> Settings {
+    Settings {
+        locale: "es".to_string(),
+        ..still()
+    }
+}
+
+#[gpui_kit::test]
+async fn the_list_is_a_grid_of_cards_each_with_its_name_its_steps_and_when_it_runs(
+    cx: &mut TestAppContext,
+) {
+    let app = in_list(cx, scripted(vec![daily(), by_hand()])).await;
+    app.in_window(cx, |window, _| {
+        let first = window.find(("automation", 0usize));
+        let second = window.find(("automation", 1usize));
+        assert_eq!(first.role(), Some(Role::Button));
+        assert_eq!(
+            first.label(),
+            Some("Daily lists. Followers and following (Your account). Every 6h")
+        );
+        assert_eq!(
+            second.label(),
+            Some("Fans by hand. Fans (@other) \u{2192} Only what changed. By hand")
+        );
+        let (one, two) = (first.bounds(), second.bounds());
+        assert_eq!(one.origin.y, two.origin.y, "side by side");
+        assert!(two.origin.x > one.right());
+        assert_eq!(one.size.height, two.size.height, "a row is as tall");
+
+        let search = window.find("automations-search").bounds();
+        let create = window.find("automations-create").bounds();
+        assert!(
+            (create.size.height - search.size.height).abs() <= px(1.),
+            "Create is {:?} tall, the search {:?}",
+            create.size.height,
+            search.size.height
+        );
+        assert!(create.size.width < px(120.), "as wide as its label");
+    });
+}
+
+#[gpui_kit::test]
+async fn a_card_says_its_steps_and_when_it_runs_in_the_apps_language(cx: &mut TestAppContext) {
+    let backend = scripted(vec![daily(), by_hand()]);
+    let app = open_with(cx, backend, spanish());
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    app.click(cx, "rail-automations");
+    app.until_screen(cx, |screen| *screen == Screen::Automations)
+        .await;
+    settle(&app, cx);
+    app.in_window(cx, |window, _| {
+        assert_eq!(
+            window.find(("automation", 0usize)).label(),
+            Some("Daily lists. Seguidores y seguidos (Tu cuenta). Cada 6h") // i18n-allow
+        );
+        assert_eq!(
+            window.find(("automation", 1usize)).label(),
+            Some("Fans by hand. Fans (@other) \u{2192} Solo lo que cambi\u{f3}. A mano") // i18n-allow
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn two_cards_sit_one_under_the_other_when_the_text_is_large(cx: &mut TestAppContext) {
+    let backend = scripted(vec![daily(), by_hand()]);
+    let large = Settings {
+        text_scale: 2.0,
+        ..still()
+    };
+    let app = open_with(cx, backend, large);
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    app.click(cx, "rail-automations");
+    app.until_screen(cx, |screen| *screen == Screen::Automations)
+        .await;
+    settle(&app, cx);
+    app.in_window(cx, |window, _| {
+        let one = window.find(("automation", 0usize)).bounds();
+        let two = window.find(("automation", 1usize)).bounds();
+        assert!(two.origin.y > one.bottom(), "one under the other");
+        assert_eq!(one.origin.x, two.origin.x);
+    });
+}
+
+#[gpui_kit::test]
+async fn a_run_going_says_running_and_is_read_again_until_it_ends(cx: &mut TestAppContext) {
+    let backend = scripted(vec![daily()]);
+    backend.script(|script| {
+        script.run(going("a1", STARTED));
+    });
+    let app = in_list(cx, backend.clone()).await;
+    click(&app, cx, ("automation", 0usize));
+    settle(&app, cx);
+    app.in_window(cx, |window, _| {
+        let row = window.find(("automation-run-row", 0usize));
+        let said = row.label().unwrap_or_default();
+        assert!(said.ends_with(". Running"), "{said}");
+        assert!(!said.contains("Requests"), "{said}");
+    });
+
+    // Read again every two seconds while it goes.
+    let before = reads_of(&backend, "a1");
+    for _ in 0..6 {
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+    }
+    assert!(
+        reads_of(&backend, "a1") >= before + 5,
+        "{} reads in 12 s",
+        reads_of(&backend, "a1") - before
+    );
+
+    // It ends: said once read again, and not read any more.
+    let found = found_lists();
+    backend.script(|script| {
+        script.finish_run(STARTED, "ok", Some(&found));
+    });
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.run_until_parked();
+    app.in_window(cx, |window, _| {
+        let said = window
+            .find(("automation-run-row", 0usize))
+            .label()
+            .unwrap_or_default()
+            .to_string();
+        assert!(said.contains("Finished. Requests: 12"), "{said}");
+    });
+    assert_eq!(
+        lines_of(&app, cx, 0).first().map(String::as_str),
+        Some("Followers \u{b7} Your account: 2 came, 1 went, 120 accounts in all.")
+    );
+    let ended = reads_of(&backend, "a1");
+    cx.executor().advance_clock(Duration::from_secs(10));
+    cx.run_until_parked();
+    assert_eq!(reads_of(&backend, "a1"), ended, "nothing goes on: no read");
+}
+
+#[gpui_kit::test]
+async fn a_page_left_while_a_run_goes_reads_its_runs_no_more(cx: &mut TestAppContext) {
+    let backend = scripted(vec![daily()]);
+    backend.script(|script| {
+        script.run(going("a1", STARTED));
+    });
+    let app = in_list(cx, backend.clone()).await;
+    click(&app, cx, ("automation", 0usize));
+    settle(&app, cx);
+    app.press(cx, "escape");
+    settle(&app, cx);
+    assert!(shown(&app, cx, "automations-create"), "on the list");
+    let left = reads_of(&backend, "a1");
+    cx.executor().advance_clock(Duration::from_secs(10));
+    cx.run_until_parked();
+    assert_eq!(reads_of(&backend, "a1"), left);
+}
+
+#[gpui_kit::test]
+async fn run_now_says_it_started_until_its_run_shows_up_in_the_history(cx: &mut TestAppContext) {
+    let backend = scripted(vec![daily()]);
+    backend.script(|script| {
+        script.run(run_of("a1", STARTED - 3600, Some("ok")));
+    });
+    let app = in_list(cx, backend.clone()).await;
+    click(&app, cx, ("automation", 0usize));
+    settle(&app, cx);
+    backend.script(|script| {
+        script.starts_run(going("a1", STARTED));
+    });
+    app.click(cx, "automation-run");
+    cx.run_until_parked();
+    app.in_window(cx, |_, _| ());
+    cx.run_until_parked();
+    assert!(
+        !shown(&app, cx, "automation-started"),
+        "it is there already"
+    );
+    app.in_window(cx, |window, _| {
+        let said = window
+            .find(("automation-run-row", 0usize))
+            .label()
+            .unwrap_or_default()
+            .to_string();
+        assert!(said.ends_with(". Running"), "{said}");
+    });
+}
+
+#[gpui_kit::test]
+async fn a_run_that_never_shows_up_after_run_now_is_said_to_have_not(cx: &mut TestAppContext) {
+    let backend = scripted(vec![daily()]);
+    let app = in_list(cx, backend.clone()).await;
+    click(&app, cx, ("automation", 0usize));
+    settle(&app, cx);
+    app.click(cx, "automation-run");
+    cx.run_until_parked();
+    assert!(shown(&app, cx, "automation-started"));
+    let before = reads_of(&backend, "a1");
+    for _ in 0..16 {
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+    }
+    app.in_window(cx, |_, _| ());
+    assert!(reads_of(&backend, "a1") > before, "it was looked for");
+    assert!(!shown(&app, cx, "automation-started"));
+    assert!(shown(&app, cx, "automation-not-seen"));
+    let given_up = reads_of(&backend, "a1");
+    cx.executor().advance_clock(Duration::from_secs(10));
+    cx.run_until_parked();
+    assert_eq!(reads_of(&backend, "a1"), given_up, "and no longer");
+}
+
+/// The page of `daily`, told the moment it is an hour after [`STARTED`].
+async fn on_the_page_an_hour_later(
+    cx: &mut TestAppContext,
+    backend: Scripted,
+    settings: Settings,
+) -> App {
+    let app = open_with(cx, backend, settings);
+    cx.update(|cx| snob_desktop::ui::now::fix_now(Epoch::new(AN_HOUR_LATER), cx));
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    app.click(cx, "rail-automations");
+    app.until_screen(cx, |screen| *screen == Screen::Automations)
+        .await;
+    settle(&app, cx);
+    click(&app, cx, ("automation", 0usize));
+    settle(&app, cx);
+    app
+}
+
+fn found_and_kept_before() -> Scripted {
+    let backend = scripted(vec![daily()]);
+    let found = found_lists();
+    backend.script(|script| {
+        script.run(Run {
+            found: Some(found),
+            ..run_of("a1", STARTED, Some("ok"))
+        });
+        // Eleven days before.
+        script.run(run_of("a1", 1_789_000_000, Some("ok")));
+    });
+    backend
+}
+
+#[gpui_kit::test]
+async fn a_run_with_what_it_found_kept_is_said_in_the_apps_words_and_one_kept_before_in_its_own(
+    cx: &mut TestAppContext,
+) {
+    let app = on_the_page_an_hour_later(cx, found_and_kept_before(), still()).await;
+    app.in_window(cx, |window, _| {
+        assert_eq!(
+            window.find(("automation-run-row", 0usize)).label(),
+            Some("Today at 14:13. Finished. Requests: 12")
+        );
+        assert_eq!(
+            window.find(("automation-run-row", 1usize)).label(),
+            Some("September 10 at 00:26. Finished. Requests: 12")
+        );
+    });
+    assert_eq!(
+        lines_of(&app, cx, 0),
+        [
+            "Followers \u{b7} Your account: 2 came, 1 went, 120 accounts in all.",
+            "+ new_friend",
+            "+ late_comer",
+            "- gone_away",
+            "Following \u{b7} Your account: no changes, 98 accounts.",
+        ]
+    );
+    assert_eq!(
+        lines_of(&app, cx, 1),
+        ["Read 120 followers.", "Nobody left."]
+    );
+}
+
+#[gpui_kit::test]
+async fn what_a_run_found_and_when_are_said_in_spanish_too(cx: &mut TestAppContext) {
+    let app = on_the_page_an_hour_later(cx, found_and_kept_before(), spanish()).await;
+    app.in_window(cx, |window, _| {
+        assert_eq!(
+            window.find(("automation-run-row", 0usize)).label(),
+            Some("Hoy a las 14:13. Termin\u{f3}. Peticiones: 12") // i18n-allow
+        );
+    });
+    assert_eq!(
+        lines_of(&app, cx, 0).first().map(String::as_str),
+        Some(
+            "Seguidores \u{b7} Tu cuenta: entraron 2 y salieron 1; 120 cuentas en total." // i18n-allow
+        )
+    );
+}
+
+#[gpui_kit::test]
+async fn a_test_build_told_the_moment_it_is_reads_no_run_again_by_itself(cx: &mut TestAppContext) {
+    let backend = scripted(vec![daily()]);
+    backend.script(|script| {
+        script.run(going("a1", STARTED));
+    });
+    let app = on_the_page_an_hour_later(cx, backend.clone(), still()).await;
+    app.in_window(cx, |window, _| {
+        let said = window
+            .find(("automation-run-row", 0usize))
+            .label()
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(said, "Today at 14:13. Running");
+    });
+    let shown = reads_of(&backend, "a1");
+    cx.executor().advance_clock(Duration::from_secs(10));
+    cx.run_until_parked();
+    assert_eq!(reads_of(&backend, "a1"), shown, "held still for a picture");
+}
+
+#[gpui_kit::test]
+async fn the_pencil_is_a_button_as_tall_as_run_now(cx: &mut TestAppContext) {
+    let app = in_list(cx, scripted(vec![daily()])).await;
+    click(&app, cx, ("automation", 0usize));
+    settle(&app, cx);
+    app.in_window(cx, |window, _| {
+        let pencil = window.find("automation-edit");
+        assert_eq!(pencil.role(), Some(Role::Button));
+        let run = window.find("automation-run").bounds();
+        assert!(
+            (pencil.bounds().size.height - run.size.height).abs() <= px(1.),
+            "as tall as Run now"
+        );
+    });
+}
+
+/// The page of `daily` with a run going, left by the person until the app
+/// rests, with what it read by then.
+async fn resting_on_a_run_going(cx: &mut TestAppContext, backend: &Scripted) -> (App, usize) {
+    backend.script(|script| {
+        script.run(going("a1", STARTED));
+    });
+    let app = in_list(cx, backend.clone()).await;
+    click(&app, cx, ("automation", 0usize));
+    settle(&app, cx);
+    assert!(first_run_said(&app, cx).ends_with(". Running"));
+    VisualTestContext::from_window(app.window, cx).deactivate_window();
+    cx.executor().advance_clock(QUIET_FOR * 2);
+    cx.run_until_parked();
+    assert!(app.system.is_resting());
+    let rested = reads_of(backend, "a1");
+    cx.executor().advance_clock(Duration::from_secs(10));
+    cx.run_until_parked();
+    assert_eq!(reads_of(backend, "a1"), rested, "no read at rest");
+    let found = found_lists();
+    backend.script(|script| {
+        script.finish_run(STARTED, "ok", Some(&found));
+    });
+    (app, rested)
+}
+
+fn first_run_said(app: &App, cx: &mut TestAppContext) -> String {
+    app.in_window(cx, |window, _| {
+        window
+            .find(("automation-run-row", 0usize))
+            .label()
+            .unwrap_or_default()
+            .to_string()
+    })
+}
+
+#[gpui_kit::test]
+async fn a_resting_app_reads_no_run_and_a_frame_that_wakes_it_reads_on(cx: &mut TestAppContext) {
+    let backend = scripted(vec![daily()]);
+    let (app, rested) = resting_on_a_run_going(cx, &backend).await;
+
+    // A frame drawn, the window still not looked at.
+    app.in_window(cx, |_, _| ());
+    assert!(!app.system.is_resting());
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.run_until_parked();
+    assert!(reads_of(&backend, "a1") > rested, "read once awake");
+    let said = first_run_said(&app, cx);
+    assert!(said.contains("Finished"), "{said}");
+}
+
+#[gpui_kit::test]
+async fn a_resting_app_looked_at_again_reads_its_runs_at_once(cx: &mut TestAppContext) {
+    let backend = scripted(vec![daily()]);
+    let (app, rested) = resting_on_a_run_going(cx, &backend).await;
+    cx.update_window(app.window, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert!(!app.system.is_resting());
+    assert!(reads_of(&backend, "a1") > rested, "read once looked at");
+    let said = first_run_said(&app, cx);
+    assert!(said.contains("Finished"), "{said}");
 }

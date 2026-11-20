@@ -1,7 +1,9 @@
 //! The automations section, in three stages (`state::automations::stage`):
 //! the introduction, once an account, its title **centered on the window**,
 //! under the brand, over a grid that drifts; the list, its title at the top
-//! left, a search in the middle and "Create" at the right; and the editor,
+//! left, a search in the middle and "Create" at the right, over a grid of
+//! cards that has as many columns as the panel has room for
+//! (`state::automations::card_columns`); and the editor,
 //! a canvas with no edge that is moved and zoomed, under a floating panel
 //! of the steps an automation can hold (`automation_editor`); and an
 //! automation's own page between the list and the editor
@@ -25,7 +27,7 @@ use crate::state::automations::{self as state, Stage};
 use crate::theme::motion;
 use crate::theme::tokens::{Scheme, shape};
 use crate::ui::assets;
-use crate::ui::automations::Page;
+use crate::ui::automations::{Item, Page};
 use crate::ui::look::{Look, color, color_at, sp};
 use crate::ui::parts::{self, Kind, icon};
 use crate::ui::shell::{Phase, Shell};
@@ -111,7 +113,7 @@ pub fn render(
     let phase = within(phase, came);
     let body = match stage {
         Stage::Intro => intro(shell, phase, off_center, &look, cx),
-        Stage::List => list(shell, phase, &look, cx),
+        Stage::List => list(shell, phase, &look, window, cx),
         Stage::Page => super::automation_page::page(shell, phase, &look, cx),
         Stage::Editor => super::automation_editor::editor(shell, phase, &look, window, cx),
     };
@@ -227,31 +229,66 @@ fn intro(
         .into_any_element()
 }
 
+/// What a card of the list shows of an automation.
+struct Card {
+    id: String,
+    name: String,
+    steps: String,
+    when: String,
+    drawing: &'static str,
+}
+
+impl Card {
+    fn of(automation: &snob_core::automation::Automation, look: &Look) -> Self {
+        Self {
+            id: automation.id.clone(),
+            name: super::words::automation_name(automation, look),
+            steps: super::words::card_steps_words(automation, look),
+            when: super::words::card_when_words(automation, look),
+            drawing: state::card_step(automation)
+                .map_or(assets::AUTOMATIONS, |step| Item::of(step).drawing()),
+        }
+    }
+}
+
+/// How tall the search field is, which "Create" beside it matches: the
+/// toolkit's field of the middle size.
+const SEARCH_HEIGHT: f32 = 32.0;
+
+/// The least a card is wide, the room between two, and the room at the
+/// list's sides.
+const CARD_WIDTH: f32 = 280.0;
+const CARD_GAP: f32 = 12.0;
+const LIST_SIDE: f32 = 32.0;
+
 /// The list: the title, a search in the middle, "Create", and the
-/// automations, each a way to its page.
-fn list(shell: &mut Shell, phase: Phase, look: &Look, cx: &mut Context<Shell>) -> AnyElement {
+/// automations as a grid of cards, each a way to its page.
+fn list(
+    shell: &mut Shell,
+    phase: Phase,
+    look: &Look,
+    window: &mut Window,
+    cx: &mut Context<Shell>,
+) -> AnyElement {
     let palette = look.palette;
+    let panel_width = shell.panel_width(window, cx);
     let Some(page) = &shell.automations else {
         return div().into_any_element();
     };
     let search = page.search.clone();
     let typed = search.read(cx).value().to_string();
-    let found: Vec<(String, String, String)> = state::shown(&page.automations, &typed)
+    let found: Vec<Card> = state::shown(&page.automations, &typed)
         .into_iter()
-        .map(|automation| {
-            let steps = look.tr_with(
-                "automation-steps",
-                &[("count", &automation.nodes.len().to_string())],
-            );
-            (
-                automation.id.clone(),
-                super::words::automation_name(automation, look),
-                steps,
-            )
-        })
+        .map(|automation| Card::of(automation, look))
         .collect();
     let loaded = page.loaded;
     let none_at_all = page.automations.is_empty();
+    let rem = window.rem_size();
+    let columns = state::card_columns(
+        panel_width - 2.0 * f32::from(sp(LIST_SIDE).to_pixels(rem)),
+        f32::from(sp(CARD_WIDTH).to_pixels(rem)),
+        f32::from(sp(CARD_GAP).to_pixels(rem)),
+    );
 
     let create_label = look.tr("automations-create");
     let create = parts::plain_button(
@@ -261,8 +298,12 @@ fn list(shell: &mut Shell, phase: Phase, look: &Look, cx: &mut Context<Shell>) -
         true,
         look,
     )
-    .px(sp(16.))
-    .child(icon(assets::ADD, 16.).text_color(color(palette.on_accent)))
+    .flex_none()
+    .h(sp(SEARCH_HEIGHT))
+    .px(sp(12.))
+    .gap(sp(6.))
+    .text_size(sp(13.))
+    .child(icon(assets::ADD, 14.).text_color(color(palette.on_accent)))
     .child(create_label)
     .on_click(cx.listener(|shell, _, window, cx| shell.create_an_automation(window, cx)));
 
@@ -283,12 +324,17 @@ fn list(shell: &mut Shell, phase: Phase, look: &Look, cx: &mut Context<Shell>) -
             look,
         )))
         .child(
-            div().w(sp(300.)).flex_shrink_1().min_w(sp(140.)).child(
-                Input::new(&search)
-                    .id("automations-search")
-                    .aria_label(look.tr("automations-search"))
-                    .prefix(icon(assets::SEARCH, 15.).text_color(color(palette.secondary))),
-            ),
+            div()
+                .w(sp(300.))
+                .flex_shrink_1()
+                .min_w(sp(140.))
+                .h(sp(SEARCH_HEIGHT))
+                .child(
+                    Input::new(&search)
+                        .id("automations-search")
+                        .aria_label(look.tr("automations-search"))
+                        .prefix(icon(assets::SEARCH, 15.).text_color(color(palette.secondary))),
+                ),
         )
         .child(div().flex_1().flex().justify_end().child(create));
 
@@ -350,6 +396,10 @@ fn list(shell: &mut Shell, phase: Phase, look: &Look, cx: &mut Context<Shell>) -
             }))
             .into_any_element()
     } else {
+        let cards = found
+            .into_iter()
+            .enumerate()
+            .map(|(at, card)| card_view(at, card, look, cx));
         let list = div()
             .id("automations-list")
             .test_support()
@@ -358,40 +408,18 @@ fn list(shell: &mut Shell, phase: Phase, look: &Look, cx: &mut Context<Shell>) -
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap(sp(8.))
-            .px(sp(32.))
-            .children(
-                found
-                    .into_iter()
-                    .enumerate()
-                    .map(|(at, (id, name, steps))| {
-                        let said = format!("{name}. {steps}");
-                        parts::plain_button(("automation", at), said, Kind::Secondary, true, look)
-                            .w_full()
-                            .h_auto()
-                            .py(sp(12.))
-                            .justify_between()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(color(palette.text))
-                                    .child(name),
-                            )
-                            .child(
-                                div()
-                                    .text_size(sp(13.))
-                                    .font_weight(FontWeight::NORMAL)
-                                    .text_color(color(palette.secondary))
-                                    .child(steps),
-                            )
-                            .on_click(cx.listener(move |shell, _, window, cx| {
-                                shell.open_an_automation(id.clone(), window, cx);
-                            }))
-                    }),
+            .px(sp(LIST_SIDE))
+            .child(
+                div()
+                    .grid()
+                    .grid_cols(columns as u16)
+                    .gap(sp(CARD_GAP))
+                    .children(cards),
             );
-        parts::room_above_and_below_for_focus(list).into_any_element()
+        // Room below the last row, so its focus ring is whole.
+        parts::room_above_and_below_for_focus(list)
+            .pb(sp(32.))
+            .into_any_element()
     };
 
     div()
@@ -406,6 +434,84 @@ fn list(shell: &mut Shell, phase: Phase, look: &Look, cx: &mut Context<Shell>) -
         .child(header)
         .child(body)
         .into_any_element()
+}
+
+/// One automation's card: its drawing, its name, its steps in words on two
+/// lines at most, and when it runs beside a clock. **The whole card is the
+/// way to its page**, and a screen reader is told all three.
+fn card_view(at: usize, card: Card, look: &Look, cx: &mut Context<Shell>) -> Button {
+    let palette = look.palette;
+    let Card {
+        id,
+        name,
+        steps,
+        when,
+        drawing,
+    } = card;
+    let said = format!("{name}. {steps}. {when}");
+    let small = |text: String, size: f32, line: f32| {
+        div()
+            .w_full()
+            .text_size(sp(size))
+            .line_height(sp(line))
+            .font_weight(FontWeight::NORMAL)
+            .text_color(color(palette.secondary))
+            .child(text)
+    };
+    parts::plain_button(("automation", at), said, Kind::Secondary, true, look)
+        .w_full()
+        .h_auto()
+        .min_w_0()
+        .p(sp(16.))
+        .items_start()
+        .justify_start()
+        .gap(sp(14.))
+        .rounded(px(shape::CARD_RADIUS))
+        .child(
+            div()
+                .flex_none()
+                .size(sp(40.))
+                .rounded(px(shape::CONTROL_RADIUS))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(color_at(palette.accent, 0.12))
+                .child(icon(drawing, 18.).text_color(color(palette.text))),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(sp(4.))
+                .text_left()
+                .child(
+                    div()
+                        .w_full()
+                        .text_size(sp(15.))
+                        .line_height(sp(20.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(color(palette.text))
+                        .truncate()
+                        .child(name),
+                )
+                .child(small(steps, 13., 18.).line_clamp(2).text_ellipsis())
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .pt(sp(4.))
+                        .flex()
+                        .items_center()
+                        .gap(sp(6.))
+                        .child(icon(assets::SCHEDULE, 14.).text_color(color(palette.secondary)))
+                        .child(small(when, 12.5, 17.).flex_1().min_w_0().truncate()),
+                ),
+        )
+        .on_click(cx.listener(move |shell, _, window, cx| {
+            shell.open_an_automation(id.clone(), window, cx);
+        }))
 }
 
 /// A small square button of the editor's that shows a drawing, named for

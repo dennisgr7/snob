@@ -5,7 +5,7 @@
 //! its editor's person does ([`automations_editor`]); what opens over a
 //! profile ([`overlays`]) and a list moved out to a window of its own
 //! ([`detached`]); and the one way a view asks for its next frame
-//! ([`frames`]).
+//! ([`frames`]); and the moment a screen's words are said against ([`now`]).
 //!
 //! **A view draws what the state says and says what the person did.** What
 //! follows from it is decided in `state` and done by the shell, so a screen
@@ -21,6 +21,7 @@ pub mod frame;
 pub mod frames;
 pub mod look;
 pub mod menu;
+pub mod now;
 pub mod overlays;
 pub mod palette;
 pub mod parts;

@@ -119,7 +119,6 @@ automations-empty-note = Crea una para vigilar cuentas y actuar cuando algo camb
 automations-none = Ninguna automatización se llama «{ $typed }»
 automation-watch-name = snob watch
 automation-new-name = Nueva automatización
-automation-steps = Pasos: { $count }
 automation-back = Volver a la lista
 automation-edit = Editar la automatización
 automation-run = Ejecutar ahora
@@ -605,5 +604,47 @@ people-cancel = Cancelar
 people-choose = Seleccionar a @{ $username }
 
 ## Automatizaciones (automations): la lista, la página de una y sus ejecuciones, y el editor.
+
+automation-card-no-steps = Aún no hace nada. Edítala para añadir pasos.
+automation-card-by-hand = A mano
+automation-not-seen = La ejecución no ha aparecido en el historial: puede que se detuviera antes de empezar.
+run-running = En curso
+run-list-followers = Seguidores
+run-list-following = Seguidos
+# Lo que encontró una ejecución, dicho a partir de lo que guardó como
+# datos. `$whose` es «Tu cuenta» o un nombre de usuario con su arroba.
+run-said-account = La cuenta { $pk }
+run-said-found = { $what } · { $whose }: { $count } cuentas.
+run-said-found-one = { $what } · { $whose }: { $count } cuenta.
+run-said-baseline = { $what } · { $whose }: { $count } cuentas, el punto de partida con el que comparará la próxima ejecución.
+run-said-baseline-one = { $what } · { $whose }: { $count } cuenta, el punto de partida con el que comparará la próxima ejecución.
+run-said-since = { $what } · { $whose }: entraron { $added } y salieron { $removed } desde el último informe ({ $since }).
+run-said-stored = Calculado con listas leídas antes ({ $when }).
+run-said-picture-new = { $what } · { $whose }: es nueva y se guardó.
+run-said-picture-same = { $what } · { $whose }: no ha cambiado.
+run-said-picture-read = { $what } · { $whose }: se leyó.
+run-said-more = y { $count } más
+run-said-more-one = y { $count } más
+run-said-list-baseline = { $list } · { $whose }: primera lectura, { $count } cuentas. La próxima ejecución será la primera que pueda comparar.
+run-said-list-baseline-one = { $list } · { $whose }: primera lectura, { $count } cuenta. La próxima ejecución será la primera que pueda comparar.
+run-said-list-same = { $list } · { $whose }: sin cambios, { $count } cuentas.
+run-said-list-same-one = { $list } · { $whose }: sin cambios, { $count } cuenta.
+run-said-list-changed = { $list } · { $whose }: entraron { $added } y salieron { $removed }; { $count } cuentas en total.
+run-said-list-changed-one = { $list } · { $whose }: entraron { $added } y salieron { $removed }; { $count } cuenta en total.
+run-said-renamed = { $count } usan ahora otro nombre.
+run-said-renamed-one = { $count } usa ahora otro nombre.
+run-said-nothing-stored = { $whose }: aún no se ha leído nada.
+run-said-refused = { $whose }: esta vez no se pudo mirar nada.
+run-said-posts-baseline = Publicaciones · { $whose }: primera lectura. La próxima ejecución será la primera que pueda decir qué hay de nuevo.
+run-said-posts-none = Publicaciones · { $whose }: nada nuevo desde el último informe.
+run-said-posts-new = Publicaciones · { $whose }: { $count } nuevas.
+run-said-posts-new-one = Publicaciones · { $whose }: { $count } nueva.
+run-said-posts-recent = Publicaciones · { $whose }: leídas hace menos de una hora; no se volvieron a leer.
+run-said-posts-skipped = Publicaciones · { $whose }: esta vez no se pudieron leer.
+run-said-posts-incomplete = Solo se leyeron las publicaciones más recientes: puede que alguna anterior no se haya contado.
+run-said-saved = { $count } archivos guardados.
+run-said-saved-one = { $count } archivo guardado.
+run-said-failed = Parte de la ejecución: { $outcome }.
+run-said-cannot-run = No pudo ejecutarse: algo en sus pasos lo impide. Edítala para ver qué.
 
 ## Programación (schedule): cuándo se ejecuta una automatización, elegido en su diálogo y dicho en palabras.

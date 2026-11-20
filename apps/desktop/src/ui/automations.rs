@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{Bounds, Context, Entity, FocusHandle, Pixels, Point, Subscription, Window};
+use gpui_kit::{Bounds, Context, Entity, FocusHandle, Pixels, Point, Subscription, Task, Window};
 use snob_core::Pk;
 use snob_core::automation::{Account, Only, Read, Stage as Kind, Step};
 
@@ -26,8 +26,9 @@ use super::assets;
 use super::look::Look;
 use super::shell::Shell;
 use crate::backend::{Automation, Next, Run};
-use crate::state::automations::{Canvas, Drift, Glide, Stage};
+use crate::state::automations::{Canvas, Drift, Glide, Live, Stage, reads_again};
 use crate::state::editing::Editing;
+use crate::state::flow::Screen;
 use crate::state::shelf::Shelf;
 use crate::state::steps::{ScheduleForm, WebhookForm};
 
@@ -178,6 +179,13 @@ impl Item {
     }
 }
 
+/// How often an open page reads its runs again while one goes.
+pub const LIVE_READ_EVERY: Duration = Duration::from_secs(2);
+
+/// How long a run started by "Run now" is waited for in the history before
+/// the page says it never showed up.
+pub const START_SEEN_WITHIN: Duration = Duration::from_secs(30);
+
 /// What an automation's page holds while it is open.
 pub(crate) struct Opened {
     pub id: String,
@@ -185,8 +193,51 @@ pub(crate) struct Opened {
     pub runs: Option<Vec<Run>>,
     /// When it is next due, once asked.
     pub next: Option<Next>,
-    /// Whether "Run now" was pressed, and how it went.
+    /// Whether "Run now" was pressed, and how it went: said until its run
+    /// shows up.
     pub started: Option<Result<(), String>>,
+    /// The run "Run now" started, until it shows up in the history.
+    pub awaited: Option<Awaited>,
+    /// Whether the run "Run now" started never showed up.
+    pub unseen: bool,
+    /// The next read of its runs, while one goes or is awaited: dropped
+    /// with the page.
+    pub live: Option<Task<()>>,
+}
+
+impl Opened {
+    pub fn new(id: String) -> Self {
+        Self {
+            id,
+            runs: None,
+            next: None,
+            started: None,
+            awaited: None,
+            unseen: false,
+            live: None,
+        }
+    }
+}
+
+/// A run "Run now" started, not yet in the history: the newest run kept
+/// when it was pressed, and when, by the executor's clock.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Awaited {
+    pub after: Option<i64>,
+    /// When it was pressed before the history was read: then a run that
+    /// started since is the one awaited.
+    pub pressed: Option<snob_core::Epoch>,
+    pub since: Instant,
+}
+
+impl Awaited {
+    /// Whether `run` is the one awaited.
+    fn is(&self, run: &Run) -> bool {
+        match self.pressed {
+            Some(pressed) => run.started_at >= pressed,
+            None => self.after.is_none_or(|after| run.id > after),
+        }
+    }
 }
 
 /// The section while it is shown. **Goes with the screen**: what was typed
@@ -426,19 +477,17 @@ impl Shell {
             return;
         };
         tracing::info!(action = "automation_open", "action");
-        page.open = Some(Opened {
-            id: id.clone(),
-            runs: None,
-            next: None,
-            started: None,
-        });
+        page.open = Some(Opened::new(id.clone()));
         let automation = page.automations.iter().find(|one| one.id == id).cloned();
         window.focus(&self.title, cx);
         self.read_the_history(id, automation, window, cx);
         cx.notify();
     }
 
-    /// Reads an open automation's runs and when it is next due.
+    /// Reads an open automation's runs, and when it is next due when
+    /// `automation` is handed in; and reads them again shortly while one
+    /// goes (`state::automations::reads_again`). **Drawn again only when
+    /// something changed**, so a run that goes on keeps nothing moving.
     pub(crate) fn read_the_history(
         &mut self,
         id: String,
@@ -452,24 +501,118 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let runs = runs.await.unwrap_or_default();
             let next = match next {
-                Some(next) => next.await.ok(),
+                Some(next) => Some(next.await.ok()),
                 None => None,
             };
-            this.update(cx, |this, cx| {
-                if let Some(open) = this
-                    .automations
-                    .as_mut()
-                    .and_then(|page| page.open.as_mut())
-                    && open.id == id
-                {
-                    open.runs = Some(runs);
+            this.update_in(cx, |this, window, cx| {
+                let now = cx.background_executor().now();
+                let Some(open) = this.open_automation_mut() else {
+                    return;
+                };
+                if open.id != id {
+                    return;
+                }
+                let mut changed = open.runs.as_ref() != Some(&runs);
+                if let Some(next) = next {
+                    changed |= open.next != next;
                     open.next = next;
+                }
+                if let Some(awaited) = open.awaited {
+                    let came = runs.iter().any(|run| awaited.is(run));
+                    let late = now.saturating_duration_since(awaited.since) >= START_SEEN_WITHIN;
+                    if came || late {
+                        open.awaited = None;
+                        open.started = None;
+                        open.unseen = !came;
+                        changed = true;
+                    }
+                }
+                open.runs = Some(runs);
+                if changed {
                     cx.notify();
                 }
+                this.keep_reading_while_live(window, cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    fn open_automation_mut(&mut self) -> Option<&mut Opened> {
+        self.automations
+            .as_mut()
+            .and_then(|page| page.open.as_mut())
+    }
+
+    /// What decides whether the open page reads its runs again.
+    fn live(&self, cx: &gpui_kit::App) -> Live {
+        let page = self.automations.as_ref();
+        let open = page.and_then(|page| page.open.as_ref());
+        Live {
+            running: open
+                .and_then(|open| open.runs.as_ref())
+                .is_some_and(|runs| runs.iter().any(|run| run.running)),
+            waiting: open.is_some_and(|open| open.awaited.is_some()),
+            shown: *self.shown() == Screen::Automations
+                && page.is_some_and(|page| page.edit.is_none() && page.open.is_some()),
+            resting: self.is_resting(),
+            pinned: crate::ui::now::is_fixed(cx),
+        }
+    }
+
+    /// Reads the open page's runs again in [`LIVE_READ_EVERY`], once, while
+    /// one goes or is awaited; each read decides on the next.
+    pub(crate) fn keep_reading_while_live(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let reads = reads_again(self.live(cx));
+        let Some(open) = self.open_automation_mut() else {
+            return;
+        };
+        if !reads {
+            open.live = None;
+            return;
+        }
+        if open.live.is_some() {
+            return;
+        }
+        let id = open.id.clone();
+        open.live = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(LIVE_READ_EVERY).await;
+            this.update_in(cx, |this, window, cx| {
+                let reads = reads_again(this.live(cx));
+                let Some(open) = this.open_automation_mut() else {
+                    return;
+                };
+                if open.id != id {
+                    return;
+                }
+                if let Some(live) = open.live.take() {
+                    live.detach();
+                }
+                if reads {
+                    this.read_the_history(id, None, window, cx);
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// The window looked at again: the open page reads its runs, which a
+    /// run started meanwhile, here or by the command line, shows in.
+    pub(crate) fn look_at_the_runs_again(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let shown = self.live(cx).shown;
+        let Some(id) = self.open_automation_mut().map(|open| open.id.clone()) else {
+            return;
+        };
+        if shown {
+            self.read_the_history(id, None, window, cx);
+        }
+    }
+
+    /// The app rests: no read of the runs waits on a timer.
+    pub(crate) fn stop_reading_the_runs(&mut self) {
+        if let Some(open) = self.open_automation_mut() {
+            open.live = None;
+        }
     }
 
     /// The way back from an automation's page to the list.
@@ -494,19 +637,33 @@ impl Shell {
             return;
         };
         tracing::info!(action = "automation_run", "action");
+        let runs = self
+            .automations
+            .as_ref()
+            .and_then(|page| page.open.as_ref())
+            .and_then(|open| open.runs.as_ref());
+        let awaited = Awaited {
+            after: runs.and_then(|runs| runs.iter().map(|run| run.id).max()),
+            pressed: runs.is_none().then(snob_core::clock::now),
+            since: cx.background_executor().now(),
+        };
         let starting = self.backend().run_automation(id.clone());
         cx.spawn_in(window, async move |this, cx| {
             let started = starting.await.unwrap_or_else(|_| Err(String::new()));
-            this.update(cx, |this, cx| {
-                if let Some(open) = this
-                    .automations
-                    .as_mut()
-                    .and_then(|page| page.open.as_mut())
-                    && open.id == id
-                {
-                    open.started = Some(started);
-                    cx.notify();
+            this.update_in(cx, |this, window, cx| {
+                let Some(open) = this.open_automation_mut() else {
+                    return;
+                };
+                if open.id != id {
+                    return;
                 }
+                if started.is_ok() {
+                    open.awaited = Some(awaited);
+                }
+                open.unseen = false;
+                open.started = Some(started);
+                cx.notify();
+                this.read_the_history(id, None, window, cx);
             })
             .ok();
         })

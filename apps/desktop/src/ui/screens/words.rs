@@ -7,9 +7,10 @@
 
 use chrono::{Datelike as _, NaiveDate, NaiveDateTime, Timelike as _};
 use snob_core::Epoch;
-use snob_core::automation::{Automation, Problem, Stage, Step, Unjoined, WATCH_TOML};
+use snob_core::automation::{Automation, Problem, Read, Stage, Step, Unjoined, WATCH_TOML};
 use snob_core::duration;
 use snob_core::watch::schedule::{Nth, Spec, Weekday};
+use snob_engine::automations::said::Said;
 
 use crate::ui::automations::Item;
 use crate::ui::look::Look;
@@ -79,19 +80,6 @@ pub fn step_detail(step: &Step, look: &Look) -> Option<String> {
             webhook.url.clone()
         }),
     }
-}
-
-/// A moment as a person reads it on this computer. **A test build reads
-/// it in UTC**, so a picture of one is the same in every time zone.
-pub fn moment(at: Epoch) -> String {
-    let Some(at) = chrono::DateTime::from_timestamp(at.get(), 0) else {
-        return String::new();
-    };
-    #[cfg(feature = "testing")]
-    let at = at.with_timezone(&chrono::Utc);
-    #[cfg(not(feature = "testing"))]
-    let at = at.with_timezone(&chrono::Local);
-    at.format("%Y-%m-%d %H:%M").to_string()
 }
 
 /// Why an arrow was not drawn.
@@ -164,7 +152,7 @@ pub enum Day {
 }
 
 /// `at` on the clock a person reads: this computer's, **UTC in a test
-/// build**, as [`moment`].
+/// build**, so a picture of one is the same in every time zone.
 fn on_the_clock(at: Epoch) -> NaiveDateTime {
     let Some(at) = chrono::DateTime::from_timestamp(at.get(), 0) else {
         return NaiveDateTime::default();
@@ -255,8 +243,8 @@ fn clock(hour: u32, minute: u32, look: &Look) -> (String, u32) {
     }
 }
 
-/// A moment as a person says it against `now`: "Today at 3:05 PM",
-/// "Monday at 9:30 AM", "March 5, 2025 at 11:59 PM".
+/// A moment as a person says it against `now`: "Today at 15:05",
+/// "Monday at 09:30", "March 5, 2025 at 23:59".
 pub fn moment_words(at: Epoch, now: Epoch, look: &Look) -> String {
     moment_between(on_the_clock(at), on_the_clock(now), look)
 }
@@ -372,10 +360,239 @@ pub fn and_list(items: &[String], look: &Look) -> String {
     }
 }
 
+/// What a card of the list says an automation does: its steps after the
+/// triggers, a read with whose account it reads, joined by arrows.
+pub fn card_steps_words(automation: &Automation, look: &Look) -> String {
+    let steps: Vec<String> = crate::state::automations::card_steps(automation)
+        .into_iter()
+        .map(|node| {
+            let name = step_name(&node.step, look);
+            match (&node.step, step_detail(&node.step, look)) {
+                (Step::Read { .. }, Some(detail)) => format!("{name} ({detail})"),
+                _ => name,
+            }
+        })
+        .collect();
+    if steps.is_empty() {
+        return look.tr("automation-card-no-steps");
+    }
+    steps.join(" \u{2192} ")
+}
+
+/// When a card says an automation runs: its schedules, "By hand", or that
+/// it has none.
+pub fn card_when_words(automation: &Automation, look: &Look) -> String {
+    use crate::state::automations::{Runs, card_runs};
+    match card_runs(automation) {
+        Runs::On(specs) => specs
+            .into_iter()
+            .map(|spec| schedule_words(spec, look))
+            .collect::<Vec<_>>()
+            .join(" \u{b7} "),
+        Runs::ByHand => look.tr("automation-card-by-hand"),
+        Runs::Never => look.tr("node-no-schedule"),
+    }
+}
+
+/// What a run found, in the app's language: a line a thing, its accounts
+/// named under it. **`None` when anything in it is not known here**, or it
+/// says nothing, and the run's own sentences are said instead.
+pub fn found_lines(found: &[Said], now: Epoch, look: &Look) -> Option<Vec<String>> {
+    let mut lines = Vec::new();
+    for said in found {
+        lines.extend(said_lines(said, now, look)?);
+    }
+    (!lines.is_empty()).then_some(lines)
+}
+
+/// Whose account a finding is about.
+fn whose(account: Option<&str>, own: bool, look: &Look) -> String {
+    match account {
+        Some(name) if !own => format!("@{name}"),
+        _ => look.tr("node-own-account"),
+    }
+}
+
+/// The accounts named under a line, `sign` before each, and how many more
+/// there were than are named.
+fn named(sign: &str, names: &[String], count: usize, lines: &mut Vec<String>, look: &Look) {
+    for name in names {
+        lines.push(format!("  {sign}{name}"));
+    }
+    if count > names.len() {
+        let more = (count - names.len()) as u64;
+        lines.push(format!("  {}", look.tr_count("run-said-more", more, &[])));
+    }
+}
+
+fn said_lines(said: &Said, now: Epoch, look: &Look) -> Option<Vec<String>> {
+    let mut lines = Vec::new();
+    match said {
+        Said::Found {
+            what,
+            account,
+            count,
+            changes,
+            stored_since,
+            picture,
+            names,
+            ..
+        } => {
+            let read = Read::all().into_iter().find(|read| read.as_str() == what)?;
+            let what = look.tr(Item::Read(read).id());
+            let whose = whose(account.as_deref(), false, look);
+            let values = [("what", what.as_str()), ("whose", whose.as_str())];
+            if let Some(picture) = picture {
+                lines.push(look.tr_with(
+                    match (picture.saved, picture.new) {
+                        (true, true) => "run-said-picture-new",
+                        (true, false) => "run-said-picture-same",
+                        (false, _) => "run-said-picture-read",
+                    },
+                    &values,
+                ));
+                return Some(lines);
+            }
+            match changes {
+                Some(changes) if changes.baseline => {
+                    lines.push(look.tr_count("run-said-baseline", *count as u64, &values));
+                }
+                Some(changes) => {
+                    let since = changes
+                        .since
+                        .map(|since| moment_words(since, now, look))
+                        .unwrap_or_default();
+                    let (added, removed) = (changes.added.to_string(), changes.removed.to_string());
+                    lines.push(look.tr_with(
+                        "run-said-since",
+                        &[
+                            ("what", &what),
+                            ("whose", &whose),
+                            ("added", &added),
+                            ("removed", &removed),
+                            ("since", &since),
+                        ],
+                    ));
+                    named("+ ", &changes.added_names, changes.added, &mut lines, look);
+                    named(
+                        "- ",
+                        &changes.removed_names,
+                        changes.removed,
+                        &mut lines,
+                        look,
+                    );
+                }
+                None => {
+                    lines.push(look.tr_count("run-said-found", *count as u64, &values));
+                    named("", names, *count, &mut lines, look);
+                }
+            }
+            if let Some(at) = stored_since {
+                let when = moment_words(*at, now, look);
+                lines.push(look.tr_with("run-said-stored", &[("when", &when)]));
+            }
+        }
+        Said::Tick {
+            account,
+            pk,
+            own,
+            refused,
+            nothing_stored,
+            followers,
+            following,
+            renamed,
+            posts,
+        } => {
+            let whose = match account {
+                None if !own => look.tr_with("run-said-account", &[("pk", &pk.to_string())]),
+                _ => whose(account.as_deref(), *own, look),
+            };
+            if *refused {
+                lines.push(look.tr_with("run-said-refused", &[("whose", &whose)]));
+                return Some(lines);
+            }
+            if *nothing_stored {
+                lines.push(look.tr_with("run-said-nothing-stored", &[("whose", &whose)]));
+                return Some(lines);
+            }
+            for (list, said) in [
+                ("run-list-followers", followers),
+                ("run-list-following", following),
+            ] {
+                let Some(said) = said else { continue };
+                let list = look.tr(list);
+                let total = said.total as u64;
+                let values = [("list", list.as_str()), ("whose", whose.as_str())];
+                match said.basis.as_str() {
+                    "baseline" => {
+                        lines.push(look.tr_count("run-said-list-baseline", total, &values));
+                    }
+                    "unchanged" => {
+                        lines.push(look.tr_count("run-said-list-same", total, &values));
+                    }
+                    "compare" => {
+                        let (added, removed) = (said.added.to_string(), said.removed.to_string());
+                        lines.push(look.tr_count(
+                            "run-said-list-changed",
+                            total,
+                            &[
+                                ("list", &list),
+                                ("whose", &whose),
+                                ("added", &added),
+                                ("removed", &removed),
+                            ],
+                        ));
+                        named("+ ", &said.added_names, said.added, &mut lines, look);
+                        named("- ", &said.removed_names, said.removed, &mut lines, look);
+                    }
+                    _ => return None,
+                }
+            }
+            if *renamed > 0 {
+                lines.push(look.tr_count("run-said-renamed", *renamed as u64, &[]));
+            }
+            if let Some(posts) = posts {
+                let values = [("whose", whose.as_str())];
+                match (posts.skipped.as_deref(), posts.basis.as_deref()) {
+                    (Some("read_recently"), _) => {
+                        lines.push(look.tr_with("run-said-posts-recent", &values));
+                    }
+                    (Some(_), _) => lines.push(look.tr_with("run-said-posts-skipped", &values)),
+                    (None, Some("baseline")) => {
+                        lines.push(look.tr_with("run-said-posts-baseline", &values));
+                    }
+                    (None, Some("compared")) if posts.new == 0 => {
+                        lines.push(look.tr_with("run-said-posts-none", &values));
+                    }
+                    (None, Some("compared")) => {
+                        let new = posts.new as u64;
+                        lines.push(look.tr_count("run-said-posts-new", new, &values));
+                    }
+                    (None, None) => {}
+                    (None, Some(_)) => return None,
+                }
+                if !posts.complete {
+                    lines.push(look.tr("run-said-posts-incomplete"));
+                }
+                if posts.saved > 0 {
+                    lines.push(look.tr_count("run-said-saved", posts.saved as u64, &[]));
+                }
+            }
+        }
+        Said::Failed { code } => {
+            let outcome = outcome_words(Some(code.as_str()), look);
+            lines.push(look.tr_with("run-said-failed", &[("outcome", &outcome)]));
+        }
+        Said::CannotRun => lines.push(look.tr("run-said-cannot-run")),
+    }
+    Some(lines)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::system::Settings;
+    use snob_engine::automations::said::{ListSaid, PostsSaid};
 
     fn speaking(locale: &str) -> Look {
         Look::of(
@@ -391,6 +608,154 @@ mod tests {
         NaiveDateTime::parse_from_str(&format!("{day} {time}"), "%Y-%m-%d %H:%M").unwrap()
     }
 
+    fn list(basis: &str, total: usize, added: &[&str], removed: &[&str]) -> ListSaid {
+        let names = |names: &[&str]| names.iter().map(|name| (*name).to_string()).collect();
+        ListSaid {
+            basis: basis.to_string(),
+            total,
+            added: added.len(),
+            removed: removed.len(),
+            added_names: names(added),
+            removed_names: names(removed),
+        }
+    }
+
+    fn tick(followers: ListSaid, posts: Option<PostsSaid>) -> Said {
+        Said::Tick {
+            account: Some("someone".to_string()),
+            pk: snob_core::Pk::new(7),
+            own: false,
+            refused: false,
+            nothing_stored: false,
+            followers: Some(followers),
+            following: None,
+            renamed: 1,
+            posts,
+        }
+    }
+
+    #[test]
+    fn what_a_run_found_is_said_in_both_languages_with_the_names_it_kept() {
+        let now = Epoch::new(1_790_000_000);
+        let mut followers = list("compare", 120, &["came"], &["went"]);
+        followers.added = 3;
+        let posts = PostsSaid {
+            basis: Some("compared".to_string()),
+            skipped: None,
+            new: 1,
+            complete: false,
+            saved: 2,
+        };
+        let found = [tick(followers, Some(posts)), Said::CannotRun];
+        assert_eq!(
+            found_lines(&found, now, &speaking("en")).unwrap(),
+            [
+                "Followers \u{b7} @someone: 3 came, 1 went, 120 accounts in all.",
+                "  + came",
+                "  and 2 more",
+                "  - went",
+                "1 now goes by another name.",
+                "Posts \u{b7} @someone: 1 new.",
+                "Only the newest posts were read: an older one may have gone unreported.",
+                "2 files saved.",
+                "It could not run: something in its steps keeps it from running. Edit it to see what.",
+            ]
+        );
+        let spanish = found_lines(&found, now, &speaking("es")).unwrap();
+        assert_eq!(
+            spanish[0],
+            "Seguidores \u{b7} @someone: entraron 3 y salieron 1; 120 cuentas en total." // i18n-allow
+        );
+        assert_eq!(spanish[2], "  y 2 m\u{e1}s"); // i18n-allow
+        assert_eq!(spanish[5], "Publicaciones \u{b7} @someone: 1 nueva."); // i18n-allow
+    }
+
+    #[test]
+    fn what_an_action_found_is_said_with_its_count_and_whose_it_is() {
+        let now = Epoch::new(1_790_000_000);
+        let found = Said::Found {
+            what: "fans".to_string(),
+            account: None,
+            count: 1,
+            total: 4,
+            changes: None,
+            stored_since: Some(Epoch::new(1_790_000_000 - 86_400)),
+            picture: None,
+            names: vec!["only_one".to_string()],
+        };
+        assert_eq!(
+            found_lines(&[found], now, &speaking("en")).unwrap(),
+            [
+                "Fans \u{b7} Your account: 1 account.",
+                "  only_one",
+                "Worked out from lists read earlier (Yesterday at 14:13).",
+            ]
+        );
+        let failed = Said::Failed {
+            code: "rate_limited".to_string(),
+        };
+        assert_eq!(
+            found_lines(&[failed], now, &speaking("en")).unwrap(),
+            ["Part of the run: Paused by Instagram."]
+        );
+    }
+
+    #[test]
+    fn a_finding_this_build_does_not_know_or_nothing_found_is_said_in_the_runs_own_sentences() {
+        let now = Epoch::new(1_790_000_000);
+        let en = speaking("en");
+        let unknown_action = Said::Found {
+            what: "something_new".to_string(),
+            account: None,
+            count: 0,
+            total: 0,
+            changes: None,
+            stored_since: None,
+            picture: None,
+            names: Vec::new(),
+        };
+        assert_eq!(found_lines(&[unknown_action], now, &en), None);
+        let unknown_basis = tick(list("guessed", 1, &[], &[]), None);
+        assert_eq!(found_lines(&[unknown_basis], now, &en), None);
+        assert_eq!(found_lines(&[], now, &en), None, "nothing to say");
+    }
+
+    #[test]
+    fn a_card_says_the_steps_after_its_triggers_and_when_it_runs() {
+        use snob_core::automation::{Account, Only, Webhook};
+        let en = speaking("en");
+        let mut automation = Automation::new("a1", "Daily");
+        assert_eq!(
+            card_steps_words(&automation, &en),
+            "Nothing to do yet. Edit it to add steps."
+        );
+        assert_eq!(card_when_words(&automation, &en), "No schedule yet");
+        let manual = automation.insert(Step::Manual {}, (0, 0));
+        let read = automation.insert(
+            Step::Read {
+                account: Some(Account::own(None)),
+                what: Read::Lists,
+            },
+            (200, 0),
+        );
+        let filter = automation.insert(
+            Step::Filter {
+                only: Only::Changes,
+            },
+            (400, 0),
+        );
+        let hook = automation.insert(Step::Webhook(Webhook::default()), (600, 0));
+        for (from, to) in [(manual, read), (read, filter), (filter, hook)] {
+            automation.connect(from, to).unwrap();
+        }
+        assert_eq!(
+            card_steps_words(&automation, &en),
+            "Followers and following (Your account) \u{2192} Only what changed \u{2192} Send to a webhook"
+        );
+        assert_eq!(card_when_words(&automation, &en), "By hand");
+        assert_eq!(card_when_words(&automation, &speaking("es")), "A mano");
+    }
+
     #[test]
     fn a_moment_is_today_yesterday_a_weekday_this_week_or_a_date_in_both_languages() {
         // A Thursday.
@@ -399,32 +764,32 @@ mod tests {
         for (moment, english, spanish) in [
             (
                 at("2026-09-17", "15:05"),
-                "Today at 3:05 PM",
+                "Today at 15:05",
                 "Hoy a las 15:05", // i18n-allow
             ),
             (
                 at("2026-09-16", "01:05"),
-                "Yesterday at 1:05 AM",
+                "Yesterday at 01:05",
                 "Ayer a la 01:05", // i18n-allow
             ),
             (
                 at("2026-09-14", "09:30"),
-                "Monday at 9:30 AM",
+                "Monday at 09:30",
                 "El lunes a las 09:30", // i18n-allow
             ),
             (
                 at("2026-09-11", "00:00"),
-                "Friday at 12:00 AM",
+                "Friday at 00:00",
                 "El viernes a las 00:00", // i18n-allow
             ),
             (
                 at("2026-09-10", "12:00"),
-                "September 10 at 12:00 PM",
+                "September 10 at 12:00",
                 "El 10 de septiembre a las 12:00", // i18n-allow
             ),
             (
                 at("2025-12-31", "23:59"),
-                "December 31, 2025 at 11:59 PM",
+                "December 31, 2025 at 23:59",
                 "El 31 de diciembre de 2025 a las 23:59", // i18n-allow
             ),
         ] {
@@ -472,10 +837,10 @@ mod tests {
         let (late, early) = (Epoch::new(1_789_687_800), Epoch::new(1_789_691_400));
         assert_eq!(day_of(late, early), Day::Yesterday);
         assert_eq!(clock_words(early, &speaking("es")), "00:30");
-        assert_eq!(clock_words(early, &speaking("en")), "12:30 AM");
+        assert_eq!(clock_words(early, &speaking("en")), "00:30");
         assert_eq!(
             moment_words(late, early, &speaking("en")),
-            "Yesterday at 11:30 PM"
+            "Yesterday at 23:30"
         );
         assert_eq!(
             moment_words(late, early, &speaking("es")),

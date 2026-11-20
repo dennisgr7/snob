@@ -230,6 +230,10 @@ fn main() -> anyhow::Result<()> {
     let listed = value_of(&args, "--browsers").and_then(|count| count.parse().ok());
     #[cfg(feature = "testing")]
     let fixed_storage = args.iter().any(|arg| arg == "--fixed-storage");
+    // The moment every screen's words are said against, in seconds since
+    // the epoch, so a picture does not change with the calendar.
+    #[cfg(feature = "testing")]
+    let fixed_now = value_of(&args, "--fixed-now").and_then(|at| at.parse::<i64>().ok());
     // Read once, before the window opens: it is drawn in the theme chosen
     // from its first frame.
     let prefs = Prefs::load(&paths);
@@ -262,6 +266,10 @@ fn main() -> anyhow::Result<()> {
             "what was chosen over the system"
         );
         ui::window::init(&*system, chosen, testing, cx);
+        #[cfg(feature = "testing")]
+        if let Some(at) = fixed_now {
+            ui::now::fix_now(snob_core::Epoch::new(at), cx);
+        }
         let settings = system.settings();
         tracing::info!(
             dark = settings.dark,

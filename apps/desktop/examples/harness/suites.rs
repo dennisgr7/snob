@@ -638,6 +638,7 @@ async fn visual(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
         instagram: Some(lab.instagram.clone()),
         reduce_motion: true,
         fixed_storage: true,
+        fixed_now: Some(scenarios::FIXED_NOW),
         ..Start::default()
     };
     let mut stage = match stage(lab, &asked.out, "visual", start) {
@@ -943,6 +944,7 @@ fn no_test_mode_in_a_release() -> Outcome {
         "--instagram",
         "--browsers",
         "--fixed-storage",
+        "--fixed-now",
         "desktop-control",
     ] {
         if bytes

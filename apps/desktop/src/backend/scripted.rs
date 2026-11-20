@@ -139,6 +139,9 @@ struct State {
     /// The automations kept, in the order they were kept.
     automations: Vec<Automation>,
     runs: Vec<Run>,
+    /// What "Run now" puts in the history, newest first, as the engine
+    /// would once the run begins.
+    started_runs: Vec<Run>,
     next_run: Next,
     ids_made: u32,
     /// Why every save of an automation fails, when it does.
@@ -212,6 +215,7 @@ impl Scripted {
             highlight_cover: None,
             automations: Vec::new(),
             runs: Vec::new(),
+            started_runs: Vec::new(),
             next_run: Next::Never,
             ids_made: 0,
             save_fails: None,
@@ -483,6 +487,24 @@ impl Script<'_> {
     /// A run in the history of an automation, wherever it is put.
     pub fn run(&mut self, run: Run) -> &mut Self {
         self.0.runs.push(run);
+        self
+    }
+
+    /// A run that "Run now" starts, there in the history once it is pressed.
+    pub fn starts_run(&mut self, run: Run) -> &mut Self {
+        self.0.started_runs.push(run);
+        self
+    }
+
+    /// The run `id` ends with `outcome` and `found`, as the engine writes
+    /// one down: no longer going.
+    pub fn finish_run(&mut self, id: i64, outcome: &str, found: Option<&str>) -> &mut Self {
+        for run in self.0.runs.iter_mut().filter(|run| run.id == id) {
+            run.ended_at = Some(Epoch::new(run.started_at.get() + 60));
+            run.outcome = Some(outcome.to_string());
+            run.running = false;
+            run.found = found.map(str::to_string);
+        }
         self
     }
 
@@ -1173,7 +1195,11 @@ impl Backend for Scripted {
     }
 
     fn run_automation(&self, id: String) -> Answer<Result<(), String>> {
-        self.answer(Asked::RunAutomation(id), |_| Ok(()))
+        self.answer(Asked::RunAutomation(id), |state| {
+            let started = std::mem::take(&mut state.started_runs);
+            state.runs.splice(0..0, started);
+            Ok(())
+        })
     }
 }
 
