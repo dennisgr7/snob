@@ -7,13 +7,14 @@
 
 mod common;
 
-use common::{App, focused, open};
+use common::{App, disabled, focused, open};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{Role, TestAppContext, px};
 use snob_core::Pk;
 use snob_desktop::backend::scripted::{Asked, Scripted, account};
 use snob_desktop::state::flow::Screen;
 use snob_desktop::state::profile::{Side, Tab};
+use snob_desktop::system::{Event, Settings};
 
 /// The app at home, signed in as `me` (42).
 async fn at_home(cx: &mut TestAppContext, backend: Scripted) -> App {
@@ -415,21 +416,227 @@ async fn each_menu_opens_under_what_opened_it_in_both_layouts(cx: &mut TestAppCo
     }
 }
 
+/// The options' items, in the order they are shown and walked.
+const OPTIONS: [&str; 5] = [
+    "profile-open-browser",
+    "profile-about-open",
+    "profile-copy-username",
+    "profile-copy-link",
+    "profile-copy-id",
+];
+
 #[gpui_kit::test]
-async fn the_options_copy_what_is_known_of_the_account(cx: &mut TestAppContext) {
+async fn the_options_are_the_browser_about_and_three_copies_in_that_order_in_both_languages(
+    cx: &mut TestAppContext,
+) {
+    let app = own_profile(cx, me()).await;
+    for (locale, words, unread) in [
+        (
+            "en",
+            [
+                "Open in the browser",
+                "About this account",
+                "Copy username",
+                "Copy profile link",
+                "Copy account ID",
+            ],
+            "Not read yet",
+        ),
+        (
+            "es",
+            [
+                "Abrir en el navegador",
+                "Informaci\u{f3}n sobre esta cuenta", // i18n-allow
+                "Copiar nombre de usuario",           // i18n-allow
+                "Copiar enlace del perfil",
+                "Copiar ID de la cuenta", // i18n-allow
+            ],
+            "A\u{fa}n no se lee",
+        ),
+    ] {
+        app.system.say(Event::Settings(Settings {
+            locale: locale.to_string(),
+            ..Settings::default()
+        }));
+        cx.run_until_parked();
+        app.click(cx, "profile-options");
+        app.in_window(cx, |window, _| {
+            let mut above = None;
+            for (id, said) in OPTIONS.into_iter().zip(words) {
+                let item = window.find(id);
+                assert_eq!(item.role(), Some(Role::MenuItem), "{locale}: {id}");
+                assert_eq!(item.label(), Some(said), "{locale}: {id}");
+                let top = item.bounds().top();
+                if let Some(above) = above {
+                    assert!(top > above, "{locale}: {id} under the item before it");
+                }
+                above = Some(top);
+            }
+        });
+
+        // The arrows walk them in that order, around the ends.
+        for id in OPTIONS {
+            app.press(cx, "down");
+            assert!(focused(&app, cx, id), "{locale}: down to {id}");
+        }
+        app.press(cx, "down");
+        assert!(focused(&app, cx, OPTIONS[0]), "{locale}: around the end");
+        app.press(cx, "up");
+        assert!(
+            focused(&app, cx, OPTIONS[4]),
+            "{locale}: and back around it"
+        );
+        // Tab walks them too, and never leaves the menu.
+        app.press(cx, "tab");
+        assert!(
+            focused(&app, cx, OPTIONS[0]),
+            "{locale}: Tab around the end"
+        );
+        app.press(cx, "shift-tab");
+        assert!(
+            focused(&app, cx, OPTIONS[4]),
+            "{locale}: Shift+Tab back around it"
+        );
+
+        app.click(cx, "profile-about-open");
+        for at in 0..3usize {
+            assert_eq!(
+                app.in_window(cx, |window, _| {
+                    window
+                        .find(("profile-about-value", at))
+                        .label()
+                        .unwrap_or_default()
+                        .to_string()
+                }),
+                unread,
+                "{locale}: row {at}"
+            );
+        }
+        app.press(cx, "escape");
+        assert!(!shown(&app, cx, "profile-about"), "{locale}");
+    }
+}
+
+#[gpui_kit::test]
+async fn the_options_open_the_profile_in_the_person_s_browser_asking_nothing(
+    cx: &mut TestAppContext,
+) {
+    let app = own_profile(cx, me()).await;
+    let before = app.backend.asked().len();
+    app.click(cx, "profile-options");
+    app.click(cx, "profile-open-browser");
+    assert_eq!(app.system.links(), ["https://www.instagram.com/me/"]);
+    assert!(
+        app.label_of(cx, "announcements")
+            .contains("Opened in your browser")
+    );
+    assert!(!shown(&app, cx, "profile-menu"));
+    assert!(focused(&app, cx, "profile-options"), "focus is back");
+    assert_eq!(app.backend.asked().len(), before, "nothing was asked");
+}
+
+#[gpui_kit::test]
+async fn a_name_that_cannot_be_a_username_is_neither_opened_nor_copied_as_a_link(
+    cx: &mut TestAppContext,
+) {
+    let app = own_profile(cx, Scripted::with(vec![account(42, "not a name", true)])).await;
+    app.click(cx, "profile-options");
+    assert!(disabled(&app, cx, "profile-open-browser"));
+    assert!(disabled(&app, cx, "profile-copy-link"));
+    app.click(cx, "profile-open-browser");
+    app.click(cx, "profile-copy-link");
+    assert_eq!(app.system.clipboard(), None);
+    let said = app.label_of(cx, "announcements");
+    assert!(!said.contains("Opened in your browser"), "{said}");
+    assert!(!said.contains("Profile link copied"), "{said}");
+}
+
+#[gpui_kit::test]
+async fn the_options_copy_the_username_the_link_and_the_id_and_say_so(cx: &mut TestAppContext) {
     let app = own_profile(cx, me()).await;
     app.click(cx, "profile-options");
     app.in_window(cx, |window, _| {
         assert_eq!(window.find("profile-menu").label(), Some("Options"));
         assert_eq!(window.find("profile-options").expanded(), Some(true));
     });
-    app.click(cx, "profile-copy-link");
-    assert_eq!(
-        app.system.clipboard().as_deref(),
-        Some("https://www.instagram.com/me/")
-    );
+    app.press(cx, "escape");
+    let before = app.backend.asked().len();
+    for (id, copied, said) in [
+        ("profile-copy-username", "me", "Username copied"),
+        (
+            "profile-copy-link",
+            "https://www.instagram.com/me/",
+            "Profile link copied",
+        ),
+        ("profile-copy-id", "42", "Account ID copied"),
+    ] {
+        app.click(cx, "profile-options");
+        app.click(cx, id);
+        assert_eq!(app.system.clipboard().as_deref(), Some(copied), "{id}");
+        assert!(app.label_of(cx, "announcements").contains(said), "{id}");
+        assert!(!shown(&app, cx, "profile-menu"), "{id}");
+        assert!(focused(&app, cx, "profile-options"), "{id}: focus is back");
+    }
+    assert_eq!(app.backend.asked().len(), before, "nothing was asked");
+}
+
+#[gpui_kit::test]
+async fn about_this_account_says_what_snob_does_not_read_yet_and_closes_on_escape(
+    cx: &mut TestAppContext,
+) {
+    let app = own_profile(cx, me()).await;
+    let before = app.backend.asked().len();
+    app.click(cx, "profile-options");
+    app.click(cx, "profile-about-open");
     assert!(!shown(&app, cx, "profile-menu"));
+    app.in_window(cx, |window, _| {
+        let dialog = window.find("profile-about");
+        assert_eq!(dialog.role(), Some(Role::Dialog));
+        assert_eq!(dialog.label(), Some("About this account"));
+        let heading = window.find("profile-about-title");
+        assert_eq!(heading.role(), Some(Role::Heading));
+        assert_eq!(heading.label(), Some("About this account"));
+        assert_eq!(window.find("profile-about-username").label(), Some("@me"));
+        let rows: Vec<_> = (0..3usize)
+            .map(|at| {
+                let label = window.find(("profile-about-label", at));
+                let value = window.find(("profile-about-value", at));
+                (
+                    label.label().unwrap_or_default().to_string(),
+                    value.label().unwrap_or_default().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("Date joined", "Not read yet"),
+                ("Account based in", "Not read yet"),
+                ("Username changes", "Not read yet"),
+            ]
+            .map(|(label, value)| (label.to_string(), value.to_string()))
+        );
+        assert!(window.try_find(("profile-about-value", 3usize)).is_none());
+    });
+    // The page keeps its one title; the dialog's heading is under it.
+    assert_eq!(app.title(cx).0, "Invented me (@me)");
+    assert!(focused(&app, cx, "profile-about-close"), "focus is in it");
+    // Tab never leaves it: its one control keeps focus.
+    app.press(cx, "tab");
+    assert!(focused(&app, cx, "profile-about-close"), "Tab stays in it");
+    app.press(cx, "shift-tab");
+    assert!(focused(&app, cx, "profile-about-close"), "Shift+Tab too");
+
+    app.press(cx, "escape");
+    assert!(!shown(&app, cx, "profile-about"));
     assert!(focused(&app, cx, "profile-options"), "focus is back");
+
+    app.click(cx, "profile-options");
+    app.click(cx, "profile-about-open");
+    app.click(cx, "profile-about-close");
+    assert!(!shown(&app, cx, "profile-about"));
+    assert!(focused(&app, cx, "profile-options"), "focus is back");
+    assert_eq!(app.backend.asked().len(), before, "nothing was asked");
 }
 
 /// The bounds of `id`, drawn.

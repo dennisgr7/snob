@@ -1,8 +1,8 @@
 //! What opens over a profile, the frame included: the press anywhere that
 //! closes a small menu, the question a list of another account asks first,
-//! and the picture large over a dark backdrop. **Each keeps focus inside it
-//! while it is open, closes on Escape or a press outside, and hands focus
-//! back to what opened it** (`Shell::dismiss`).
+//! "About this account", and the picture large over a dark backdrop. **Each
+//! keeps focus inside it while it is open, closes on Escape or a press
+//! outside, and hands focus back to what opened it** (`Shell::dismiss`).
 
 use gpui_kit::base::{Button, FocusTrapElement as _, TestSupportExt as _};
 use gpui_kit::prelude::*;
@@ -15,9 +15,10 @@ use super::assets;
 use super::look::{Look, color, color_at, sp};
 use super::parts::{self, Kind, icon};
 use super::screens::handle;
-use super::screens::profile::as_account;
+use super::screens::profile::{as_account, grouped};
+use super::screens::words;
 use super::shell::{Shell, eased};
-use crate::state::profile::Side;
+use crate::state::profile::{About, AboutRow, Side};
 use crate::theme::motion;
 use crate::theme::tokens::{Rgb, frame, shape};
 
@@ -57,6 +58,7 @@ pub fn render(
         );
     }
     over.extend(question(shell, look, cx));
+    over.extend(about(shell, look, cx));
     over.extend(viewer(shell, look, window, cx));
     over.extend(super::screens::automation_dialogs(shell, look, cx));
     over
@@ -175,6 +177,182 @@ fn question(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Option<A
             )
             .child(dialog)
             .into_any_element(),
+    )
+}
+
+/// "About this account": the picture, the @username and what Instagram's
+/// own app tells of the account. **snob reads none of it yet and makes none
+/// of it up**: each row says it is not read until the engine reads it.
+fn about(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let palette = look.palette;
+    let about = shell.pages.about.as_ref()?;
+    let title = look.tr("profile-about");
+    let account = as_account(
+        &about.who,
+        about.full_name.as_deref(),
+        about.picture.clone(),
+    );
+    let rows = AboutRow::ALL.into_iter().enumerate().map(|(at, row)| {
+        let (label, value) = about_row(&about.known, row, look);
+        div()
+            .flex()
+            .flex_wrap()
+            .justify_between()
+            .gap_x(sp(16.))
+            .py(sp(10.))
+            .border_t_1()
+            .border_color(color(palette.line))
+            .text_size(sp(14.))
+            .line_height(sp(21.))
+            .child(
+                div()
+                    .id(("profile-about-label", at))
+                    .test_support()
+                    .role(Role::Label)
+                    .aria_label(label.clone())
+                    .text_color(color(palette.text))
+                    .child(label),
+            )
+            .child(
+                div()
+                    .id(("profile-about-value", at))
+                    .test_support()
+                    .role(Role::Label)
+                    .aria_label(value.clone())
+                    .text_color(color(palette.secondary))
+                    .child(value),
+            )
+    });
+
+    let dialog = div()
+        .id("profile-about")
+        .test_support()
+        .role(Role::Dialog)
+        .aria_label(title.clone())
+        .occlude()
+        .w(sp(400.))
+        .max_w_full()
+        .p(sp(24.))
+        .bg(color(palette.panel))
+        .border_1()
+        .border_color(color(palette.control_line))
+        .rounded(px(shape::CARD_RADIUS))
+        .shadow_lg()
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(sp(14.))
+                .child(
+                    div()
+                        .id("profile-about-title")
+                        .test_support()
+                        .role(Role::Heading)
+                        .aria_level(2)
+                        .aria_label(title.clone())
+                        .font_weight(FontWeight::BOLD)
+                        .text_size(sp(18.))
+                        .line_height(sp(26.))
+                        .text_color(color(palette.text))
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(sp(8.))
+                        .child(parts::avatar(&account, 72., look, 1.0))
+                        .child(
+                            div()
+                                .id("profile-about-username")
+                                .test_support()
+                                .role(Role::Label)
+                                .aria_label(handle(&about.who))
+                                .child(
+                                    parts::username(look)
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_size(sp(16.))
+                                        .line_height(sp(24.))
+                                        .child(handle(&about.who)),
+                                ),
+                        ),
+                )
+                .child(div().flex().flex_col().children(rows))
+                .child(
+                    div()
+                        .text_size(sp(13.))
+                        .line_height(sp(19.))
+                        .text_color(color(palette.secondary))
+                        .child(parts::said(
+                            "profile-about-note",
+                            look.tr("profile-about-note"),
+                        )),
+                )
+                .child(
+                    div().flex().justify_end().child(
+                        parts::button(
+                            "profile-about-close",
+                            look.tr("profile-about-close"),
+                            Kind::Secondary,
+                            true,
+                            look,
+                        )
+                        .track_focus(&about.close)
+                        .on_click(cx.listener(|shell, _, window, cx| {
+                            shell.close_about_the_account(window, cx);
+                        })),
+                    ),
+                )
+                .focus_trap("profile-about-items", &about.focus),
+        );
+
+    Some(
+        div()
+            .id("profile-about-backdrop")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .p(px(frame::SIDE * 2.))
+            .bg(color_at(palette.frame, 0.72))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|shell, _, window, cx| shell.close_about_the_account(window, cx)),
+            )
+            .child(dialog)
+            .into_any_element(),
+    )
+}
+
+/// What a row of "About this account" is called, and what it says: the
+/// value once read, and that it is not read until then.
+fn about_row(known: &About, row: AboutRow, look: &Look) -> (String, String) {
+    let label = look.tr(match row {
+        AboutRow::Joined => "profile-about-joined",
+        AboutRow::BasedIn => "profile-about-based",
+        AboutRow::UsernameChanges => "profile-about-usernames",
+    });
+    let value = match row {
+        AboutRow::Joined => known.joined.map(|joined| {
+            look.tr_with(
+                "profile-about-joined-in",
+                &[
+                    ("month", &words::month_words(joined.month, look)),
+                    ("year", &joined.year.to_string()),
+                ],
+            )
+        }),
+        AboutRow::BasedIn => known.based_in.as_deref().map(snob_core::model::printable),
+        AboutRow::UsernameChanges => known
+            .username_changes
+            .map(|count| grouped(count, look.texts.language())),
+    };
+    (
+        label,
+        value.unwrap_or_else(|| look.tr("profile-about-unread")),
     )
 }
 

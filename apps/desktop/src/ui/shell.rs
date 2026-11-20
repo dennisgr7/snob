@@ -746,15 +746,20 @@ impl Shell {
         }
     }
 
-    /// Goes to the next item of the open menu, or the one before, around
-    /// its ends: what the arrows do.
+    /// Goes to the next item of the open menu, the account's or a
+    /// profile's, or the one before, around its ends: what the arrows do.
     pub(crate) fn move_in_the_menu(
         &mut self,
         forward: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(inside) = self.menu.as_ref().map(|menu| menu.focus.clone()) else {
+        let Some(inside) = self
+            .menu
+            .as_ref()
+            .map(|menu| menu.focus.clone())
+            .or_else(|| self.pages.popup.as_ref().map(|popup| popup.focus.clone()))
+        else {
             return;
         };
         // The tab order is the window's: walked until it is back inside.

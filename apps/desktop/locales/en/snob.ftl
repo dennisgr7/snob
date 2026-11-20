@@ -566,6 +566,16 @@ profile-showing-grid = Grid view
 profile-showing-list = List view
 profile-username-copy = Copy @{ $username }
 profile-friend = Friend
+profile-open-browser = Open in the browser
+profile-opened-browser = Opened in your browser
+profile-about = About this account
+profile-about-joined = Date joined
+profile-about-joined-in = { $month } { $year }
+profile-about-based = Account based in
+profile-about-usernames = Username changes
+profile-about-unread = Not read yet
+profile-about-note = Instagram shows these in its own app. snob does not read them yet, and makes none of them up.
+profile-about-close = Close
 
 ## People: the lists of followers and following, and choosing in them.
 

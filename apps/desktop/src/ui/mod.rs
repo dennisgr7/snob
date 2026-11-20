@@ -42,7 +42,7 @@ actions!(
         /// Chooses the command above, or below, in the palette.
         PaletteUp,
         PaletteDown,
-        /// Goes to the item above, or below, in the account's menu.
+        /// Goes to the item above, or below, in the menu open.
         MenuUp,
         MenuDown,
         /// One step back, as the band's arrow does.

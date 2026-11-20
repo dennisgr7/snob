@@ -731,10 +731,12 @@ fn picture(
         .on_click(cx.listener(|shell, _, window, cx| shell.click_the_picture(window, cx)))
 }
 
-/// A small menu under what opened it, over everything else: the story or
-/// the picture, or what can be copied of the account. **Copying is all the
-/// options do**: no follow, no write. The picture's starts at its left edge
-/// and the options' ends at their right one.
+/// A small menu under what opened it, over everything else, walked with
+/// the arrows: the story or the picture, or the options: the profile in
+/// the person's own browser, "About this account", and what can be copied
+/// of the account. **No follow, no write, and nothing read**. The
+/// picture's starts at its left edge and the options' ends at their right
+/// one.
 fn popup_menu(
     shell: &Shell,
     kind: PopupKind,
@@ -754,43 +756,74 @@ fn popup_menu(
     let item = |id: &'static str, label: String, drawing: &'static str| {
         parts::menu_item(id, label, drawing, look)
     };
-    let items: Vec<Button> = match kind {
+    let username = shell
+        .profile_page()
+        .and_then(|page| page.profile.as_ref())
+        .and_then(|profile| profile.named.username.clone());
+    let address = username.as_deref().and_then(crate::system::profile_address);
+    let items: Vec<AnyElement> = match kind {
         PopupKind::Picture => vec![
             item(
                 "profile-open-story",
                 look.tr("profile-open-story"),
                 assets::VIDEO,
             )
-            .on_click(cx.listener(|shell, _, window, cx| shell.open_the_story(window, cx))),
+            .on_click(cx.listener(|shell, _, window, cx| shell.open_the_story(window, cx)))
+            .into_any_element(),
             item(
                 "profile-open-picture",
                 look.tr("profile-open-picture"),
                 assets::PHOTO,
             )
-            .on_click(cx.listener(|shell, _, window, cx| shell.open_the_picture(window, cx))),
+            .on_click(cx.listener(|shell, _, window, cx| shell.open_the_picture(window, cx)))
+            .into_any_element(),
         ],
         PopupKind::Options => vec![
+            item(
+                "profile-open-browser",
+                look.tr("profile-open-browser"),
+                assets::BROWSER,
+            )
+            .disabled(address.is_none())
+            .on_click(cx.listener(|shell, _, window, cx| {
+                shell.open_in_the_browser(window, cx);
+            }))
+            .into_any_element(),
+            item(
+                "profile-about-open",
+                look.tr("profile-about"),
+                assets::PROFILE,
+            )
+            .on_click(cx.listener(|shell, _, window, cx| {
+                shell.open_about_the_account(window, cx);
+            }))
+            .into_any_element(),
+            parts::menu_separator(look).into_any_element(),
             item(
                 "profile-copy-username",
                 look.tr("profile-copy-username"),
                 assets::COPY,
             )
+            .disabled(username.is_none())
             .on_click(cx.listener(|shell, _, window, cx| {
                 shell.copy_of_the_profile("username", window, cx);
-            })),
+            }))
+            .into_any_element(),
             item(
                 "profile-copy-link",
                 look.tr("profile-copy-link"),
                 assets::COPY,
             )
+            .disabled(address.is_none())
             .on_click(cx.listener(|shell, _, window, cx| {
                 shell.copy_of_the_profile("link", window, cx);
-            })),
-            item("profile-copy-id", look.tr("profile-copy-id"), assets::COPY).on_click(
-                cx.listener(|shell, _, window, cx| {
+            }))
+            .into_any_element(),
+            item("profile-copy-id", look.tr("profile-copy-id"), assets::COPY)
+                .on_click(cx.listener(|shell, _, window, cx| {
                     shell.copy_of_the_profile("id", window, cx);
-                }),
-            ),
+                }))
+                .into_any_element(),
         ],
     };
     let name = look.tr(match kind {
@@ -802,6 +835,13 @@ fn popup_menu(
         .test_support()
         .role(Role::Menu)
         .aria_label(name)
+        .key_context("SnobMenu")
+        .on_action(cx.listener(|shell, _: &crate::ui::MenuUp, window, cx| {
+            shell.move_in_the_menu(false, window, cx);
+        }))
+        .on_action(cx.listener(|shell, _: &crate::ui::MenuDown, window, cx| {
+            shell.move_in_the_menu(true, window, cx);
+        }))
         .occlude()
         .w(sp(250.))
         .p(sp(6.))

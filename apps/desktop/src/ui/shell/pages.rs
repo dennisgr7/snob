@@ -158,6 +158,18 @@ pub(crate) struct ListQuestion {
     pub from: Option<FocusHandle>,
 }
 
+/// "About this account", open over a profile: its picture, its username and
+/// what is known of it, **none of which is read yet** (`profile::About`).
+pub(crate) struct AboutAccount {
+    pub who: Named,
+    pub full_name: Option<String>,
+    pub picture: Option<PathBuf>,
+    pub known: profile::About,
+    pub focus: FocusHandle,
+    /// Its button that closes it, where focus starts.
+    pub close: FocusHandle,
+}
+
 /// Everything the pages hold, apart from the rest of the shell.
 #[derive(Default)]
 pub(crate) struct Pages {
@@ -166,6 +178,7 @@ pub(crate) struct Pages {
     pub viewer: Option<PictureViewer>,
     pub popup: Option<Popup>,
     pub asking: Option<ListQuestion>,
+    pub about: Option<AboutAccount>,
     /// How profiles are laid out and their posts shown, the same for every
     /// one this run.
     pub layout: Layout,
@@ -244,6 +257,7 @@ impl Shell {
         });
         self.pages.popup = None;
         self.pages.viewer = None;
+        self.pages.about = None;
         match self.shown.clone() {
             Screen::Profile(who) if !self.pages.profiles.contains_key(&who.pk) => {
                 self.read_the_profile(who, window, cx);
@@ -587,10 +601,13 @@ impl Shell {
         let username = profile.named.username.clone().unwrap_or_default();
         let (text, said) = match what {
             "username" => (username, "profile-copied-username"),
-            "link" => (
-                format!("https://www.instagram.com/{username}/"),
-                "profile-copied-link",
-            ),
+            "link" => {
+                let Some(address) = crate::system::profile_address(&username) else {
+                    self.close_the_popup(window, cx);
+                    return;
+                };
+                (address, "profile-copied-link")
+            }
             _ => (profile.named.pk.to_string(), "profile-copied-id"),
         };
         tracing::info!(action = "copy_from_profile", what, "action");
@@ -598,6 +615,60 @@ impl Shell {
         self.close_the_popup(window, cx);
         let said = Look::now(cx).tr(said);
         self.announce(said, cx);
+    }
+
+    /// Hands the person's own browser the profile's address on Instagram,
+    /// as any link would: **nothing else, and nothing is read from it**. A
+    /// name that cannot be a username opens nothing.
+    pub(crate) fn open_in_the_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(profile) = self.profile_page().and_then(|page| page.profile.clone()) else {
+            return;
+        };
+        self.close_the_popup(window, cx);
+        let Some(address) = profile
+            .named
+            .username
+            .as_deref()
+            .and_then(crate::system::profile_address)
+        else {
+            tracing::warn!("a name that cannot be a username was not opened in the browser");
+            return;
+        };
+        tracing::info!(action = "open_profile_in_browser", "action");
+        self.system.open_url(&address, cx);
+        let said = Look::now(cx).tr("profile-opened-browser");
+        self.announce(said, cx);
+    }
+
+    /// "About this account" over the profile shown, focus on its button
+    /// that closes it. **Nothing is read for it.**
+    pub(crate) fn open_about_the_account(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(profile) = self.profile_page().and_then(|page| page.profile.clone()) else {
+            return;
+        };
+        tracing::info!(action = "open_about_account", "action");
+        self.pages.popup = None;
+        let (focus, close) = (cx.focus_handle(), cx.focus_handle());
+        window.focus(&close, cx);
+        self.pages.about = Some(AboutAccount {
+            who: profile.named,
+            full_name: profile.full_name,
+            picture: profile.picture,
+            known: profile::About::default(),
+            focus,
+            close,
+        });
+        cx.notify();
+    }
+
+    /// Closes "About this account", focus back on the options.
+    pub(crate) fn close_about_the_account(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pages.about.take().is_some() {
+            if let Some(page) = self.profile_page() {
+                window.focus(&page.options_button, cx);
+            }
+            cx.notify();
+        }
     }
 
     /// The picture of the profile shown, large over the screen.
@@ -993,6 +1064,8 @@ impl Shell {
             self.picture_menu(None, window, cx);
         } else if self.pages.viewer.is_some() {
             self.close_the_picture(window, cx);
+        } else if self.pages.about.is_some() {
+            self.close_about_the_account(window, cx);
         } else if self.pages.asking.is_some() {
             self.keep_the_list_closed(window, cx);
         } else if self.pages.popup.is_some() {
@@ -1005,7 +1078,10 @@ impl Shell {
 
     /// Whether something of the pages is open over the screen.
     pub(super) fn a_page_overlay_is_open(&self) -> bool {
-        self.pages.viewer.is_some() || self.pages.asking.is_some() || self.pages.popup.is_some()
+        self.pages.viewer.is_some()
+            || self.pages.asking.is_some()
+            || self.pages.popup.is_some()
+            || self.pages.about.is_some()
     }
 }
 

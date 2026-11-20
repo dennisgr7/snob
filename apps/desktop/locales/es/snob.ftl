@@ -565,6 +565,16 @@ profile-showing-grid = Vista en cuadrícula
 profile-showing-list = Vista en lista
 profile-username-copy = Copiar @{ $username }
 profile-friend = Amigo
+profile-open-browser = Abrir en el navegador
+profile-opened-browser = Abierto en tu navegador
+profile-about = Información sobre esta cuenta
+profile-about-joined = Fecha de registro
+profile-about-joined-in = { $month } de { $year }
+profile-about-based = Ubicación de la cuenta
+profile-about-usernames = Cambios de nombre de usuario
+profile-about-unread = Aún no se lee
+profile-about-note = Instagram los muestra en su propia app. snob aún no los lee y no se inventa ninguno.
+profile-about-close = Cerrar
 
 ## Listas (people): las de seguidores y seguidos, y elegir en ellas.
 

@@ -1,7 +1,7 @@
 //! A profile page and the lists it opens, apart from how they are drawn: how
 //! the page is laid out and what it shows of the posts, what marks the
 //! account, what a click on the picture does, how far the picture is zoomed
-//! and moved in its viewer, and
+//! and moved in its viewer, what "About this account" holds, and
 //! **when a list may be read without asking**: only the account's own
 //! (AGENTS.md, "Consent").
 //!
@@ -201,6 +201,37 @@ pub fn marks(
     .into_iter()
     .flatten()
     .collect()
+}
+
+/// What "About this account" tells of an account, as Instagram's own app
+/// shows it. **The engine reads none of it yet**: each stays `None` until it
+/// does, and a row that is `None` says it is not read. Nothing is made up.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct About {
+    pub joined: Option<Joined>,
+    pub based_in: Option<String>,
+    pub username_changes: Option<u64>,
+}
+
+/// The month an account joined in, as Instagram's app says it: no day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Joined {
+    pub year: i32,
+    /// 1 to 12.
+    pub month: u32,
+}
+
+/// A row of "About this account".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AboutRow {
+    Joined,
+    BasedIn,
+    UsernameChanges,
+}
+
+impl AboutRow {
+    /// The rows in the order they are shown.
+    pub const ALL: [Self; 3] = [Self::Joined, Self::BasedIn, Self::UsernameChanges];
 }
 
 /// How far each of the words naming two views is shown, `t` of the way from
