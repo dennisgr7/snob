@@ -254,6 +254,8 @@ pub fn to_watch(automation: &Automation) -> Result<WatchConfig, Vec<Problem>> {
         every: None,
         on: Vec::new(),
         at: Vec::new(),
+        months: Vec::new(),
+        days: Vec::new(),
         cron: None,
         jitter: None,
         webhook: None,
@@ -274,6 +276,8 @@ pub fn to_watch(automation: &Automation) -> Result<WatchConfig, Vec<Problem>> {
                 config.every = when.every;
                 config.on.clone_from(&when.on);
                 config.at.clone_from(&when.at);
+                config.months.clone_from(&when.months);
+                config.days.clone_from(&when.days);
                 config.cron.clone_from(&when.cron);
                 config.jitter = when.jitter;
             }
@@ -334,6 +338,7 @@ pub fn to_watch(automation: &Automation) -> Result<WatchConfig, Vec<Problem>> {
             _ => {}
         }
     }
+    config.schema = config.written_schema();
     if problems.is_empty() {
         Ok(config)
     } else {
@@ -396,6 +401,26 @@ mod tests {
         );
         assert!(program.reads.iter().all(|read| read.delivered));
         assert_eq!(to_watch(&automation), Ok(config));
+    }
+
+    #[test]
+    fn a_schedule_of_days_of_the_month_goes_to_watch_toml_and_back() {
+        let config = WatchConfig {
+            every: None,
+            at: vec!["09:00".into()],
+            days: vec!["15".into(), "last fri".into()],
+            months: vec!["jan".into(), "jul".into()],
+            schema: crate::config::SCHEMA,
+            ..config()
+        };
+        let automation = from_watch(&config);
+        assert_eq!(automation.problems(), []);
+        let written = to_watch(&automation).unwrap();
+        assert_eq!(written, config);
+        let text = crate::config::template(&written, false, |_| None);
+        let read = crate::config::parse(&text, std::path::Path::new("watch.toml")).unwrap();
+        assert_eq!(read, config);
+        assert_eq!(from_watch(&read), automation);
     }
 
     #[test]

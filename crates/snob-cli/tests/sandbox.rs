@@ -11901,6 +11901,11 @@ async fn the_automations_are_listed_for_nothing_and_a_missing_one_is_not_started
     assert_eq!(listed.len(), 1, "{said}");
     assert_eq!(listed[0]["id"], "watch", "{said}");
     assert_eq!(listed[0]["problems"], serde_json::json!([]), "{said}");
+    assert_eq!(
+        listed[0]["schedules"],
+        serde_json::json!([{ "every": "6h" }]),
+        "{said}"
+    );
     assert!(
         matches!(listed[0]["next"]["when"].as_str(), Some("now" | "at")),
         "{said}"

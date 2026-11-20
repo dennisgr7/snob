@@ -1616,6 +1616,20 @@ fn weekday(text: &str) -> Result<String, String> {
         .ok_or_else(|| format!("\"{text}\" is not a day (try mon, thu)"))
 }
 
+/// `--days`: a date or a weekday of the month, kept as typed.
+fn month_day(text: &str) -> Result<String, String> {
+    snob_core::watch::schedule::MonthDay::parse(text)
+        .map(|_| text.trim().to_string())
+        .ok_or_else(|| format!("\"{text}\" is not a day of the month (try 1, 15 or first mon)"))
+}
+
+/// `--months`: a month, kept as typed.
+fn month(text: &str) -> Result<String, String> {
+    snob_core::watch::schedule::parse_month(text)
+        .map(|_| text.trim().to_string())
+        .ok_or_else(|| format!("\"{text}\" is not a month (try jan, jul)"))
+}
+
 /// `--cron`: five fields that name at least one moment.
 fn cron_expression(text: &str) -> Result<String, String> {
     snob_core::watch::schedule::Schedule::cron(text)
@@ -1658,6 +1672,26 @@ pub struct WatchRunArgs {
         value_parser = weekday
     )]
     pub on: Vec<String>,
+
+    /// Days of the month to run on: 1,15 or "first mon". Not with --on.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_name = "DAYS",
+        conflicts_with_all = ["on", "cron"],
+        value_parser = month_day
+    )]
+    pub days: Vec<String>,
+
+    /// Months to run in: jan,jul. Defaults to every month.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_name = "MONTHS",
+        conflicts_with = "cron",
+        value_parser = month
+    )]
+    pub months: Vec<String>,
 
     /// A five-field cron expression, for a schedule you already have written
     #[arg(long, value_name = "EXPR", conflicts_with = "at", value_parser = cron_expression)]
@@ -1845,8 +1879,8 @@ pub enum WatchCommand {
     )]
     Unit(WatchUnitArgs),
 
-    /// Every automation: what keeps it from running, when it runs next, and
-    /// how its newest runs went
+    /// Every automation: when it runs, what keeps it from running, when it
+    /// runs next, and how its newest runs went
     #[command(
         after_help = "watch.toml's, named \"watch\", and each one made in the app. Reads what is \
                       kept on this computer and sends nothing to Instagram."
@@ -3492,5 +3526,41 @@ mod tests {
         }
         assert!(Cli::try_parse_from(["snob", "watch", "--every", "6h", "--at", "09:00"]).is_ok());
         assert!(Cli::try_parse_from(["snob", "watch", "--on", "mon,thu", "--at", "9:00"]).is_ok());
+        for line in [
+            ["snob", "watch", "--days", "32"],
+            ["snob", "watch", "--days", "fifth mon"],
+            ["snob", "watch", "--months", "smarch"],
+        ] {
+            let refused = Cli::try_parse_from(line).expect_err("refused at the parser");
+            assert_eq!(refused.exit_code(), 2, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn days_conflict_with_on_and_cron_on_the_command_line() {
+        for line in [
+            ["snob", "watch", "--days", "1", "--on", "mon"],
+            ["snob", "watch", "--days", "1", "--cron", "0 9 * * *"],
+            ["snob", "watch", "--months", "jan", "--cron", "0 9 * * *"],
+        ] {
+            let refused = Cli::try_parse_from(line).expect_err("refused at the parser");
+            assert_eq!(refused.exit_code(), 2, "{line:?}");
+        }
+        let parsed = Cli::try_parse_from([
+            "snob",
+            "watch",
+            "--days",
+            "1,first mon",
+            "--months",
+            "jan,jul",
+            "--at",
+            "09:00",
+        ])
+        .expect("days, months and times together");
+        let Command::Watch(watch) = parsed.command else {
+            panic!("not a watch");
+        };
+        assert_eq!(watch.run.days, ["1", "first mon"]);
+        assert_eq!(watch.run.months, ["jan", "jul"]);
     }
 }

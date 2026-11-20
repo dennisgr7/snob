@@ -38,6 +38,12 @@ pub struct WatchConfig {
     /// Days of the week, `mon`.
     #[serde(default)]
     pub on: Vec<String>,
+    /// Months, `jan`. Empty means every month.
+    #[serde(default)]
+    pub months: Vec<String>,
+    /// Days of the month: `15`, or a weekday of the month, `first mon`.
+    #[serde(default)]
+    pub days: Vec<String>,
     /// A five-field cron expression.
     #[serde(default)]
     pub cron: Option<String>,
@@ -153,9 +159,14 @@ fn one() -> u32 {
     1
 }
 
-/// The shape this version writes. [`parse`] also reads schema 1, the
+/// The newest shape this version writes, the first with `months` and
+/// `days`; a file without them is written as schema 2, which older versions
+/// read ([`WatchConfig::written_schema`]). [`parse`] also reads schema 1, the
 /// single-account shape, whose entries name no viewer.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
+
+/// The shape of a file that names no months and no days of the month.
+const WITHOUT_MONTH_DAYS: u32 = 2;
 
 /// Whether this version reads a file of that schema.
 fn understood(schema: u32) -> bool {
@@ -248,18 +259,37 @@ pub fn parse(text: &str, path: &Path) -> Result<WatchConfig, ConfigError> {
         });
     }
 
-    // `cron` and the `at`/`on` pair are two syntaxes for one thing, and only
-    // `cron` would be used while the banner described both. The flags cannot
-    // reach this state; the file can. `every` beside a calendar stays legal:
-    // those combine (`--every 2w --on mon`).
-    if config.cron.is_some() && !(config.at.is_empty() && config.on.is_empty()) {
-        let other = if config.at.is_empty() { "on" } else { "at" };
+    // `cron` and the `at`/`on`/`days`/`months` calendar are two syntaxes for
+    // one thing, and only `cron` would be used while the banner described
+    // both. The flags cannot reach this state; the file can. `every` beside a
+    // calendar stays legal: those combine (`--every 2w --on mon`).
+    let other = [
+        ("at", &config.at),
+        ("on", &config.on),
+        ("days", &config.days),
+        ("months", &config.months),
+    ]
+    .into_iter()
+    .find_map(|(key, values)| (!values.is_empty()).then_some(key));
+    if config.cron.is_some()
+        && let Some(other) = other
+    {
         return Err(ConfigError::Invalid {
             path: path.to_path_buf(),
             message: format!(
                 "\"cron\" and \"{other}\" are two ways of saying the same thing, and only \
                  \"cron\" would be used. Keep whichever one you meant."
             ),
+        });
+    }
+    // Either would allow a day, as cron's rule has it, which nobody writing
+    // both means.
+    if !config.on.is_empty() && !config.days.is_empty() {
+        return Err(ConfigError::Invalid {
+            path: path.to_path_buf(),
+            message: "\"on\" and \"days\" are two ways of choosing days, the days of the week \
+                      and the days of the month. Keep one."
+                .to_string(),
         });
     }
 
@@ -320,7 +350,8 @@ pub fn write(paths: &AppPaths, contents: &str) -> Result<PathBuf, ConfigError> {
 ///
 /// `signed` is not in the file: it says a key went into the keyring, and
 /// only the sentence pointing there is written. `schema` is what this build
-/// writes, whatever the argument holds. `name_of` gives the username written
+/// writes for what the file holds ([`WatchConfig::written_schema`]), whatever
+/// the argument says. `name_of` gives the username written
 /// beside each viewer's id, for the reader.
 pub fn template(
     config: &WatchConfig,
@@ -334,7 +365,7 @@ pub fn template(
          # Times are your local ones. Durations are written the way you would say\n\
          # them: 30m, 6h, 2d, 2w.\n\n",
     );
-    out.push_str(&format!("schema = {SCHEMA}\n\n"));
+    out.push_str(&format!("schema = {}\n\n", config.written_schema()));
 
     out.push_str("# When to run.\n");
     if let Some(every) = config.every {
@@ -342,6 +373,17 @@ pub fn template(
     }
     if !config.on.is_empty() {
         out.push_str(&format!("on = [{}]\n", quoted_list(&config.on)));
+    }
+    if !config.days.is_empty() {
+        out.push_str(
+            "# Days of the month: a date, \"15\", or a weekday of the month, \"first mon\"\n\
+             # to \"fourth mon\" or \"last mon\". A day either one names is a day it runs.\n",
+        );
+        out.push_str(&format!("days = [{}]\n", quoted_list(&config.days)));
+    }
+    if !config.months.is_empty() {
+        out.push_str("# Only in these months.\n");
+        out.push_str(&format!("months = [{}]\n", quoted_list(&config.months)));
     }
     if !config.at.is_empty() {
         out.push_str(&format!("at = [{}]\n", quoted_list(&config.at)));
@@ -441,15 +483,18 @@ pub fn template(
     out
 }
 
-/// A new file as this version writes it: schema [`SCHEMA`] and nothing else.
-/// Not what a file missing the `schema` key reads as, which is schema 1.
+/// A new file as this version writes it: the schema of a file with nothing in
+/// it, and nothing else. Not what a file missing the `schema` key reads as,
+/// which is schema 1.
 impl Default for WatchConfig {
     fn default() -> Self {
         Self {
-            schema: SCHEMA,
+            schema: WITHOUT_MONTH_DAYS,
             every: None,
             at: vec![],
             on: vec![],
+            months: vec![],
+            days: vec![],
             cron: None,
             jitter: None,
             webhook: None,
@@ -465,6 +510,8 @@ impl WatchConfig {
             every: self.every,
             on: self.on.clone(),
             at: self.at.clone(),
+            months: self.months.clone(),
+            days: self.days.clone(),
             cron: self.cron.clone(),
             jitter: self.jitter,
         }
@@ -481,7 +528,19 @@ impl WatchConfig {
         for account in &mut self.accounts {
             account.viewer.get_or_insert(viewer);
         }
-        self.schema = SCHEMA;
+        self.schema = self.written_schema();
+    }
+
+    /// The schema it is written as: [`SCHEMA`] when it names months or days
+    /// of the month, else 2, **so a file that uses neither still reads in a
+    /// version from before them**, and one that does is refused there as a
+    /// newer file rather than for a key it does not know.
+    pub fn written_schema(&self) -> u32 {
+        if self.months.is_empty() && self.days.is_empty() {
+            WITHOUT_MONTH_DAYS
+        } else {
+            SCHEMA
+        }
     }
 }
 
@@ -609,6 +668,13 @@ on = ["thu"]
             .is_err(),
             "the day half names it twice just as much as the time half"
         );
+        for half in [r#"days = ["1"]"#, r#"months = ["jan"]"#] {
+            let error = at(&format!("schema = 3\ncron = \"0 9 * * 1\"\n{half}\n")).unwrap_err();
+            assert!(
+                matches!(error, ConfigError::Invalid { .. }),
+                "{half}: {error}"
+            );
+        }
 
         // An interval alongside a calendar is not the same thing: those combine,
         // which is what `--every 2w --on mon` means.
@@ -620,6 +686,19 @@ every = "2w"
 "#)
             .is_ok()
         );
+    }
+
+    #[test]
+    fn days_of_the_week_beside_days_of_the_month_are_refused() {
+        let error = at(r#"
+schema = 3
+on = ["mon"]
+days = ["15"]
+at = ["09:00"]
+"#)
+        .unwrap_err();
+        assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
+        assert!(error.to_string().contains("\"days\""), "{error}");
     }
 
     #[test]
@@ -721,9 +800,10 @@ agreed_at = 1786925176
     /// The template is written by hand so it can explain itself, so nothing but
     /// a test stops it drifting away from the parser.
     ///
-    /// Two configurations rather than one, because `cron` beside `at` or `on` is
-    /// a file `parse` deliberately refuses -- so the two syntaxes cannot be
-    /// covered by the same round trip and each has to have its own.
+    /// Several configurations rather than one, because `cron` beside `at` or
+    /// `on` is a file `parse` deliberately refuses, and so is `on` beside
+    /// `days` -- so they cannot be covered by the same round trip and each has
+    /// to have its own.
     #[test]
     fn what_the_template_writes_is_what_the_parser_reads() {
         // A whole path on the system the test runs on, which is the only kind
@@ -736,6 +816,8 @@ agreed_at = 1786925176
             every: Some(Duration::from_secs(1_209_600)),
             at: vec!["09:00".to_string(), "21:30".to_string()],
             on: vec!["mon".to_string(), "thu".to_string()],
+            months: vec!["jan".to_string(), "jul".to_string()],
+            days: vec![],
             cron: None,
             jitter: Some(Duration::from_secs(900)),
             webhook: Some(WebhookConfig {
@@ -802,6 +884,20 @@ agreed_at = 1786925176
             ..Default::default()
         };
         assert_eq!(at(&template(&cron, false, name_of)).unwrap(), cron);
+        assert_eq!(cron.schema, 2, "a file without months or days");
+
+        // Days of the month, which are the newer schema.
+        let month_days = WatchConfig {
+            schema: SCHEMA,
+            at: vec!["09:00".to_string()],
+            days: vec!["1".to_string(), "first mon".to_string()],
+            months: vec!["jan".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(
+            at(&template(&month_days, false, name_of)).unwrap(),
+            month_days
+        );
 
         // And `signed` is not in the file: it changes a sentence for the reader
         // and nothing the parser sees.
@@ -815,16 +911,40 @@ agreed_at = 1786925176
     /// The default is the file this version writes with nothing in it.
     #[test]
     fn the_default_is_an_empty_file_of_this_schema() {
+        assert_eq!(at("schema = 2\n").unwrap(), WatchConfig::default());
         assert_eq!(
-            at(&format!("schema = {SCHEMA}\n")).unwrap(),
+            at(&template(&WatchConfig::default(), false, |_| None)).unwrap(),
             WatchConfig::default()
         );
     }
 
-    /// A file written before there were several accounts still reads, with no
-    /// viewer anywhere in it; one from after reads with its viewers.
+    /// A version from before months and days reads up to schema 2, so a file
+    /// that names neither is written as one, whatever it was read as.
     #[test]
-    fn both_schemas_read() {
+    fn a_file_without_months_or_days_still_says_schema_2() {
+        let read = at("schema = 3\nevery = \"6h\"\n").unwrap();
+        assert_eq!(read.schema, 3);
+        assert_eq!(read.written_schema(), 2);
+        assert!(template(&read, false, |_| None).contains("schema = 2\n"));
+
+        let mut upgraded = at("schema = 1\nevery = \"6h\"\n").unwrap();
+        upgraded.upgrade(Pk::new(7));
+        assert_eq!(upgraded.schema, 2);
+
+        let monthly = WatchConfig {
+            at: vec!["09:00".to_string()],
+            months: vec!["jan".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(monthly.written_schema(), SCHEMA);
+        assert!(template(&monthly, false, |_| None).contains(&format!("schema = {SCHEMA}\n")));
+    }
+
+    /// A file written before there were several accounts still reads, with no
+    /// viewer anywhere in it; one from after reads with its viewers, and one
+    /// with months and days with them.
+    #[test]
+    fn every_schema_up_to_this_one_reads() {
         let entry = "[[account]]\ntarget = \"friend\"\n";
         let old = at(&format!("schema = 1\nevery = \"6h\"\n\n{entry}")).unwrap();
         assert_eq!(old.schema, 1);
@@ -837,9 +957,13 @@ agreed_at = 1786925176
         assert_eq!(new.schema, 2);
         assert_eq!(new.accounts[0].viewer, Some(Pk::new(42)));
 
-        let newer = at("schema = 3\n").unwrap_err();
+        let newest = at("schema = 3\ndays = [\"last fri\"]\nat = [\"18:00\"]\n").unwrap();
+        assert_eq!(newest.schema, 3);
+        assert_eq!(newest.days, ["last fri"]);
+
+        let newer = at("schema = 4\n").unwrap_err();
         assert!(
-            matches!(newer, ConfigError::Unknown { found: 3, .. }),
+            matches!(newer, ConfigError::Unknown { found: 4, .. }),
             "{newer}"
         );
     }
@@ -884,7 +1008,7 @@ agreed_at = 1786925176
         )
         .unwrap();
         listed.upgrade(me);
-        assert_eq!(listed.schema, SCHEMA);
+        assert_eq!(listed.schema, 2, "a file without months or days");
         assert!(listed.accounts.iter().all(|a| a.viewer == Some(me)));
         assert_eq!(listed.accounts.len(), 2);
 

@@ -761,8 +761,7 @@ fn next_line(next: NextRun) -> String {
 pub(super) fn describe_config(config: &WatchConfig) -> Vec<String> {
     let mut lines = Vec::new();
 
-    let when =
-        report::schedule_clauses(config.every, &config.on, &config.at, config.cron.as_deref());
+    let when = report::schedule_clauses(&config.spec());
     lines.push(if when.is_empty() {
         "no schedule: it will not run until one is set".to_string()
     } else {

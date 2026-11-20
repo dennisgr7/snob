@@ -17,6 +17,9 @@ pub(super) struct Calendar {
     pub(super) months: FieldSet,
     /// Sunday is 0, the way cron numbers them.
     pub(super) days_of_week: FieldSet,
+    /// Weekdays of the month (`--days "first mon"`): bit `nth * 7 + weekday`,
+    /// `nth` as [`Nth::number`](super::Nth) counts it. Empty for cron.
+    pub(super) nth_weekdays: FieldSet,
 }
 
 /// Which times of day a calendar allows.
@@ -73,13 +76,15 @@ impl Calendar {
     ///
     /// **The day rule is cron's**: when both day fields are restricted, a day
     /// matching **either** is allowed (`0 9 13 * 5` is the 13th and every
-    /// Friday, not Friday the 13th); when one is `*`, the other decides.
+    /// Friday, not Friday the 13th); when one is `*`, the other decides. A
+    /// weekday of the month counts as a day of the month, so dates and
+    /// weekdays of the month combine with OR; the months always with AND.
     pub(super) fn allows_day(&self, at: &impl Datelike) -> bool {
         if !self.months.contains(at.month()) {
             return false;
         }
 
-        let dom = self.days_of_month.contains(at.day());
+        let dom = self.days_of_month.contains(at.day()) || self.nth_allows(at);
         let dow = self
             .days_of_week
             .contains(at.weekday().num_days_from_sunday());
@@ -90,6 +95,22 @@ impl Calendar {
             (false, true) => dow,
             (false, false) => true,
         }
+    }
+
+    /// Whether this day is a weekday of the month the calendar names: the
+    /// first Monday is the Monday among days 1 to 7, the last Friday the one
+    /// with no Friday after it in its month.
+    fn nth_allows(&self, at: &impl Datelike) -> bool {
+        if self.nth_weekdays.is_empty() {
+            return false;
+        }
+        let weekday = at.weekday().num_days_from_sunday();
+        let day = at.day();
+        let nth = (day - 1) / 7;
+        let numbered = nth < 4 && self.nth_weekdays.contains(nth * 7 + weekday);
+        let last = day + 7 > u32::from(at.num_days_in_month())
+            && self.nth_weekdays.contains(4 * 7 + weekday);
+        numbered || last
     }
 
     fn dom_restricted(&self) -> bool {
@@ -148,6 +169,9 @@ impl Calendar {
             // worked out: the answer feeds a refusal and a jitter ceiling,
             // and both have to err towards the tighter number.
             (true, true) => true,
+            // A weekday of the month is taken as possibly next to another
+            // named day, for the same reason.
+            (true, false) if !self.nth_weekdays.is_empty() => true,
             (true, false) => {
                 (1..31).any(|d| self.days_of_month.contains(d) && self.days_of_month.contains(d + 1))
                     // A month's last day, whichever it is, followed by the
@@ -163,11 +187,11 @@ impl Calendar {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{TimeZone, Utc};
+    use chrono::{Datelike, NaiveDate, TimeZone, Utc};
 
     use super::super::parse::parse_cron;
     use super::super::tests::{at, hours};
-    use super::super::{Schedule, ScheduleError, Weekday};
+    use super::super::{Due, Schedule, ScheduleError, Spec, Weekday, due, next_after};
     use crate::Epoch;
 
     /// The midnight wrap is only a gap when there is a next day. Counted
@@ -220,6 +244,112 @@ mod tests {
         // The day half on its own says the same about the days, at any time.
         assert!(date(at(4 * hours(24) + hours(15))));
         assert!(!date(at(hours(15))));
+    }
+
+    fn on_days(days: &[&str], months: &[&str]) -> Schedule {
+        Spec {
+            days: days.iter().map(|day| day.to_string()).collect(),
+            months: months.iter().map(|month| month.to_string()).collect(),
+            at: vec!["09:00".into()],
+            ..Spec::default()
+        }
+        .build()
+        .unwrap()
+    }
+
+    /// The days of a month a schedule allows.
+    fn days_allowed(schedule: &Schedule, year: i32, month: u32) -> Vec<u32> {
+        let calendar = schedule.calendar.as_ref().unwrap();
+        (1..=31)
+            .filter_map(|day| NaiveDate::from_ymd_opt(year, month, day))
+            .filter(|date| calendar.allows_day(date))
+            .map(|date| date.day())
+            .collect()
+    }
+
+    fn moment(year: i32, month: u32, day: u32, hour: u32) -> Epoch {
+        Epoch::new(
+            Utc.with_ymd_and_hms(year, month, day, hour, 0, 0)
+                .unwrap()
+                .timestamp(),
+        )
+    }
+
+    #[test]
+    fn the_first_monday_is_the_monday_among_the_first_seven_days() {
+        let schedule = on_days(&["first mon"], &[]);
+        // 2026-08-01 is a Saturday, so the first Monday is the 3rd.
+        assert_eq!(days_allowed(&schedule, 2026, 8), vec![3]);
+        for year in 2026..=2029 {
+            for month in 1..=12 {
+                let days = days_allowed(&schedule, year, month);
+                let [day] = days.as_slice() else {
+                    panic!("{year}-{month}: {days:?}");
+                };
+                let date = NaiveDate::from_ymd_opt(year, month, *day).unwrap();
+                assert_eq!(date.weekday(), chrono::Weekday::Mon, "{date}");
+                assert!(*day <= 7, "{date}");
+            }
+        }
+        // From the fixture Monday, the 17th, the next is 7 September.
+        assert_eq!(
+            next_after(&schedule, None, at(0), &Utc),
+            Some(moment(2026, 9, 7, 9))
+        );
+    }
+
+    #[test]
+    fn the_last_friday_has_no_friday_after_it_in_its_month() {
+        let schedule = on_days(&["last fri"], &[]);
+        // February in a non-leap year and in a leap one, and every other
+        // month around them.
+        for year in 2026..=2029 {
+            for month in 1..=12 {
+                let days = days_allowed(&schedule, year, month);
+                let [day] = days.as_slice() else {
+                    panic!("{year}-{month}: {days:?}");
+                };
+                let date = NaiveDate::from_ymd_opt(year, month, *day).unwrap();
+                assert_eq!(date.weekday(), chrono::Weekday::Fri, "{date}");
+                assert!(
+                    NaiveDate::from_ymd_opt(year, month, day + 7).is_none(),
+                    "{date} has a Friday after it"
+                );
+            }
+        }
+        // The last Friday of a 28-day February, and of a 29-day one whose
+        // 29th is a Friday.
+        assert_eq!(days_allowed(&schedule, 2027, 2), vec![26]);
+        assert_eq!(days_allowed(&schedule, 2036, 2), vec![29]);
+    }
+
+    #[test]
+    fn dates_and_weekdays_of_the_month_combine_with_or_and_months_with_and() {
+        let schedule = on_days(&["15", "first mon"], &["jan", "jul"]);
+        // 2026-07-01 is a Wednesday: the first Monday is the 6th.
+        assert_eq!(days_allowed(&schedule, 2026, 7), vec![6, 15]);
+        // 2027-01-01 is a Friday: the first Monday is the 4th.
+        assert_eq!(days_allowed(&schedule, 2027, 1), vec![4, 15]);
+        for month in [2, 3, 4, 5, 6, 8, 9, 10, 11, 12] {
+            assert_eq!(days_allowed(&schedule, 2026, month), Vec::<u32>::new());
+        }
+    }
+
+    #[test]
+    fn a_day_some_months_lack_is_skipped_in_them() {
+        let schedule = on_days(&["31"], &[]);
+        assert_eq!(
+            next_after(&schedule, None, moment(2026, 9, 1, 0), &Utc),
+            Some(moment(2026, 10, 31, 9)),
+            "September has no 31st"
+        );
+    }
+
+    #[test]
+    fn a_day_no_chosen_month_has_never_comes() {
+        let schedule = on_days(&["30"], &["feb"]);
+        assert_eq!(next_after(&schedule, None, at(0), &Utc), None);
+        assert_eq!(due(&schedule, None, at(0), &Utc), Due::Never);
     }
 
     /// And when one of them is `*`, only the other decides. Read as OR, `*`

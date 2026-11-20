@@ -1,7 +1,8 @@
 //! When the monitor runs.
 //!
-//! `--every` is a floor measured from the previous run; `--on`/`--at` and
-//! `--cron` both build a `Calendar`, the set of minutes a run may happen in.
+//! `--every` is a floor measured from the previous run; `--on`/`--at`,
+//! `--days`/`--months`/`--at` and `--cron` all build a `Calendar`, the set of
+//! minutes a run may happen in.
 //! Given both, the next run is the first moment that satisfies both
 //! (`--every 2w --on mon --at 09:00`).
 //!
@@ -29,8 +30,19 @@ use next::next_local_midnight;
 use parse::{FieldSet, parse_cron};
 
 pub use next::{due, due_asked_since, due_moment, next_after, wake_at};
-pub use parse::{Weekday, parse_time};
+pub use parse::{MonthDay, Nth, Weekday, month_token, parse_month, parse_time};
 pub use spec::{Spec, calendar_from};
+
+/// The days a calendar names ([`Schedule::on_days`]). Every list may be
+/// empty: no weekdays and no days of the month is every day, and no months
+/// every month.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Days<'a> {
+    pub weekdays: &'a [Weekday],
+    pub of_month: &'a [MonthDay],
+    /// 1 to 12.
+    pub months: &'a [u32],
+}
 
 /// The shortest gap between two runs.
 ///
@@ -107,10 +119,31 @@ impl Schedule {
 
     /// On these weekdays, at these times of day. Empty days means every day.
     pub fn calendar(days: &[Weekday], times: &[(u32, u32)]) -> Result<Self, ScheduleError> {
+        Self::on_days(
+            Days {
+                weekdays: days,
+                of_month: &[],
+                months: &[],
+            },
+            times,
+        )
+    }
+
+    /// On these days, at these times of day: the days of the week, or of the
+    /// month (dates and weekdays of the month, either one allowing a day), in
+    /// the months named (every month when none is). **Days of the week beside
+    /// days of the month are refused**: cron's rule would allow either, and
+    /// nobody writing `--on mon --days 1` means that.
+    pub fn on_days(days: Days, times: &[(u32, u32)]) -> Result<Self, ScheduleError> {
         if times.is_empty() {
-            return Err(ScheduleError::Unreadable(
-                "a calendar needs a time of day: try --at 09:00".to_string(),
-            ));
+            let what = if days.of_month.is_empty() && days.months.is_empty() {
+                "a calendar needs"
+            } else {
+                "days of the month and months need"
+            };
+            return Err(ScheduleError::Unreadable(format!(
+                "{what} a time of day: try --at 09:00"
+            )));
         }
 
         for &(hour, minute) in times {
@@ -121,10 +154,49 @@ impl Schedule {
             }
         }
 
-        let days_of_week = if days.is_empty() {
+        if !days.weekdays.is_empty() && !days.of_month.is_empty() {
+            return Err(ScheduleError::Unreadable(
+                "days of the week and days of the month are two ways of choosing days; keep one"
+                    .to_string(),
+            ));
+        }
+        for &month in days.months {
+            if !(1..=12).contains(&month) {
+                return Err(ScheduleError::Unreadable(format!("{month} is not a month")));
+            }
+        }
+
+        let days_of_week = if days.weekdays.is_empty() {
             FieldSet::all(0..=6)
         } else {
-            FieldSet::weekdays(days)
+            FieldSet::weekdays(days.weekdays)
+        };
+
+        let (days_of_month, nth_weekdays) = if days.of_month.is_empty() {
+            (FieldSet::all(1..=31), FieldSet(0))
+        } else {
+            let mut dates = Vec::new();
+            let mut nths = Vec::new();
+            for day in days.of_month {
+                match *day {
+                    MonthDay::Date(date) if (1..=31).contains(&date) => dates.push(date),
+                    MonthDay::Date(date) => {
+                        return Err(ScheduleError::Unreadable(format!(
+                            "{date} is not a day of the month"
+                        )));
+                    }
+                    MonthDay::Nth(nth, weekday) => nths.push(nth.number() * 7 + weekday.number()),
+                }
+            }
+            // Weekdays of the month alone leave no date allowed, so the
+            // field is still restricted and the weekdays decide.
+            (FieldSet::of(dates), FieldSet::of(nths))
+        };
+
+        let months = if days.months.is_empty() {
+            FieldSet::all(1..=12)
+        } else {
+            FieldSet::of(days.months.iter().copied())
         };
 
         let mut exact: Vec<(u32, u32)> = times.to_vec();
@@ -134,9 +206,10 @@ impl Schedule {
         Self {
             calendar: Some(Calendar {
                 times: Times::Exact(exact),
-                days_of_month: FieldSet::all(1..=31),
-                months: FieldSet::all(1..=12),
+                days_of_month,
+                months,
                 days_of_week,
+                nth_weekdays,
             }),
             every: None,
             jitter: default_jitter(None),
@@ -168,6 +241,7 @@ impl Schedule {
                 days_of_month: FieldSet::all(1..=31),
                 months: FieldSet::all(1..=12),
                 days_of_week: FieldSet::weekdays(days),
+                nth_weekdays: FieldSet(0),
             }),
             every: Some(interval),
             jitter: default_jitter(Some(interval)),

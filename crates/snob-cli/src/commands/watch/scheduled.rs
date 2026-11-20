@@ -35,9 +35,7 @@ pub(super) async fn scheduled(
 
     // Nothing in watch.toml to run, and automations made in the app: this
     // runs those alone, each on its own schedule.
-    let given =
-        args.cron.is_some() || !args.at.is_empty() || !args.on.is_empty() || args.every.is_some();
-    if !given
+    if !super::schedule::typed_a_schedule(&args)
         && args.target.is_none()
         && configured
             .as_ref()

@@ -696,7 +696,7 @@ prints a client's snippet and never writes it.
 | `snob_logout` | `logout --only=<name>` | yes, naming the account | always |
 | `snob_accounts` | `account list --json` | no | with `--any-account` |
 | `snob_account_use`, `snob_logout_all`, `snob_purge` | `account use <name>`, `logout --all`, `purge --yes` (one account's as its `--account`); none takes `as_account` | yes (`About::Accounts`) | with `--any-account` |
-| `snob_automations` | `watch automations --json`: each automation, its problems, its next run and newest runs; nothing sent | no | always |
+| `snob_automations` | `watch automations --json`: each automation, its schedules as `watch.toml` writes them, its problems, its next run and newest runs; nothing sent | no | always |
 | `snob_automation_run` | `watch start <id> --json`: a run started now, apart from the call, which reads what the automation's steps lead to | yes (`About::Automation`) | always |
 
 `snob_list` and `snob_scan` take `same_day` (`--same-day`), always on a yes.
@@ -1003,10 +1003,13 @@ draw pixels it gets kitty's protocol, iTerm2's images or sixel
 - `watch unit` prints, never installs, a unit running `watch once --when-due`
   every 15 minutes; the schedule is evaluated only in snob, and a run not due
   reads no session and sends nothing. **A run counts from its start.**
-- `--every` is a floor from the last run, `--on/--at` or `--cron` a calendar;
-  the next run is on the calendar and past the floor (`--every 2w --on mon`,
-  which cron cannot say), on the wall clock. Cron day-of-month and day-of-week
-  combine with OR.
+- `--every` is a floor from the last run, `--on/--at`, `--days/--months/--at`
+  or `--cron` a calendar; the next run is on the calendar and past the floor
+  (`--every 2w --on mon`, `--days "first mon"`, which cron cannot say), on the
+  wall clock. Cron day-of-month and day-of-week combine with OR; `--days`
+  (dates and weekdays of the month, either one) beside `--on` is refused, and
+  `--months` narrows either. `watch.toml` says `schema = 3` only when it has
+  `days` or `months`.
 - A run records when it was due, began and ended (`RunTiming`); late is past
   `watch::LATE_AFTER` (30 min) beyond its jitter. What it reports as spent is
   what the pacer was charged.

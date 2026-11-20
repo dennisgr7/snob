@@ -215,9 +215,12 @@ is VP9, which QuickTime does not play; `--quality compat` saves the app's
   The first run on an account's posts reports none; each run after costs its
   profile and a page of its grid, at most once an hour.
 - `snob watch automations` lists every automation, `watch.toml`'s as `watch`
-  and each one made in the app: what keeps it from running, its next run and
-  how its newest runs went. `snob watch start <id>` starts a run of one now,
-  in the background.
+  and each one made in the app: when it runs, what keeps it from running, its
+  next run and how its newest runs went. `snob watch start <id>` starts a run
+  of one now, in the background.
+- `snob watch --days 1,15 --at 09:00`, or `--days "first mon"`, runs on days
+  of the month, and `--months jan,jul` only in those months (`days` and
+  `months` in `watch.toml`).
 - `snob watch unit` prints what to give the system's scheduler (a systemd
   timer, a crontab line, a launch agent or a Windows scheduled task, as
   PowerShell commands; installs nothing). Each runs `snob watch once
@@ -369,7 +372,7 @@ It prints what to add to that client's configuration.
 | `snob_logout` | sign one account out of snob | yes, naming the account |
 | `snob_accounts` | the accounts signed in here, with `--any-account` | no |
 | `snob_account_use`, `snob_logout_all`, `snob_purge` | change the active account, sign every account out, or delete what snob keeps (one account's or everything), with `--any-account` | yes |
-| `snob_automations` | the automations: what keeps each from running, its next run and its newest runs | no |
+| `snob_automations` | the automations: when each runs, what keeps it from running, its next run and its newest runs | no |
 | `snob_automation_run` | start a run of one automation now | yes |
 
 - Posts, stories and highlights come back without their picture and video

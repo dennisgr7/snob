@@ -369,6 +369,7 @@ fn ask_schedule() -> Result<WatchConfig> {
         &[
             "Every so often (6h, 2d, 2w)",
             "On certain days, at certain times",
+            "On certain days of the month (1,15 or first mon)",
             "A cron expression I already have",
         ],
     )?
@@ -389,6 +390,20 @@ fn ask_schedule() -> Result<WatchConfig> {
             match calendar_of(&days, &times) {
                 Ok((on, at)) => {
                     config.on = on;
+                    config.at = at;
+                    break;
+                }
+                Err(e) => ui::warn(&format!("{e:#}; once more")),
+            }
+        },
+        2 => loop {
+            let days = ui::prompt_line("Which days of the month? (1,15 or first mon)")?;
+            let months = ui::prompt_line("In which months? (jan,jul -- or blank for every month)")?;
+            let times = ui::prompt_line("At what times? (09:00 or 09:00,21:00)")?;
+            match month_calendar_of(&days, &months, &times) {
+                Ok((days, months, at)) => {
+                    config.days = days;
+                    config.months = months;
                     config.at = at;
                     break;
                 }
@@ -478,8 +493,8 @@ fn room_for(schedule: &schedule::Schedule) -> std::time::Duration {
         .jitter()
 }
 
-// The three below are the whole of what `ask_schedule` decides, split out from
-// the prompting so a test can reach them.
+// The functions below are the whole of what `ask_schedule` decides, split out
+// from the prompting so a test can reach them.
 
 /// The `every` field, or what is wrong with the interval.
 fn interval_of(text: &str) -> Result<std::time::Duration> {
@@ -490,15 +505,16 @@ fn interval_of(text: &str) -> Result<std::time::Duration> {
     Ok(every)
 }
 
+/// The items of a comma-separated answer, blanks left out.
+fn listed(text: &str) -> Vec<&str> {
+    text.split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
 /// The `on` and `at` fields, or what is wrong with the calendar.
 fn calendar_of(days: &str, times: &str) -> Result<(Vec<String>, Vec<String>)> {
-    fn listed(text: &str) -> Vec<&str> {
-        text.split(',')
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-            .collect()
-    }
-
     let days = listed(days);
     let times = listed(times);
 
@@ -510,6 +526,30 @@ fn calendar_of(days: &str, times: &str) -> Result<(Vec<String>, Vec<String>)> {
         days.iter().map(|d| (*d).to_string()).collect(),
         times.iter().map(|t| (*t).to_string()).collect(),
     ))
+}
+
+/// The `days`, `months` and `at` fields, or what is wrong with the calendar.
+fn month_calendar_of(
+    days: &str,
+    months: &str,
+    times: &str,
+) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
+    let owned =
+        |text: &str| -> Vec<String> { listed(text).into_iter().map(String::from).collect() };
+    let spec = schedule::Spec {
+        days: owned(days),
+        months: owned(months),
+        at: owned(times),
+        ..Default::default()
+    };
+    // A blank answer would build a calendar of every day, which is not what
+    // this question asked for.
+    if spec.days.is_empty() {
+        bail!("which days of the month? try 1,15 or first mon");
+    }
+    // Through the one place a run builds a schedule.
+    spec.build()?;
+    Ok((spec.days, spec.months, spec.at))
 }
 
 /// The `cron` field, or what is wrong with the expression.
@@ -1190,6 +1230,54 @@ evry = \"6h\"
                 assert_eq!(a.to_string(), b.to_string(), "{days:?} {times:?}");
             }
         }
+    }
+
+    /// What the wizard writes from its answers about days of the month is
+    /// what a run then builds, and what it refuses a run refuses in the same
+    /// words.
+    #[test]
+    fn the_wizard_reads_days_of_the_month_as_a_run_reads_them() {
+        for (days, months, times) in [
+            ("1, 15", "", "09:00"),
+            ("first mon,last fri", "jan, jul", "09:00,21:00"),
+            ("32", "", "09:00"),
+            ("fifth mon", "", "09:00"),
+            ("1", "smarch", "09:00"),
+            ("1", "", "09:00,09:05"),
+            ("1", "", ""),
+        ] {
+            let typed = |text: &str| -> Vec<String> {
+                text.split(',')
+                    .map(str::trim)
+                    .filter(|item| !item.is_empty())
+                    .map(String::from)
+                    .collect()
+            };
+            let file = WatchConfig {
+                days: typed(days),
+                months: typed(months),
+                at: typed(times),
+                ..Default::default()
+            };
+            let wizard = month_calendar_of(days, months, times);
+            let run = schedule_from(&Default::default(), Some(&file));
+            assert_eq!(
+                wizard.is_ok(),
+                run.is_ok(),
+                "{days:?} {months:?} {times:?}: the wizard and a run disagree"
+            );
+            match (&wizard, &run) {
+                (Ok((d, m, t)), Ok(_)) => {
+                    assert_eq!((d, m, t), (&file.days, &file.months, &file.at));
+                }
+                (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string()),
+                _ => unreachable!(),
+            }
+        }
+        assert!(
+            month_calendar_of("", "jan", "09:00").is_err(),
+            "no day of the month is not every day here"
+        );
     }
 
     /// The wizard offers only the jitter the schedule can absorb.

@@ -107,7 +107,9 @@ pub fn problem_words(problem: &Problem, look: &Look) -> String {
         Problem::NoName => look.tr("problem-no-name"),
         Problem::NoTrigger => look.tr("problem-no-trigger"),
         Problem::NoAction => look.tr("problem-no-action"),
-        Problem::Schedule { why, .. } => look.tr_with("problem-schedule", &[("why", why)]),
+        Problem::Schedule { why, .. } => {
+            look.tr_with("problem-schedule", &[("why", &why.to_string())])
+        }
         Problem::NoAccount { .. } => look.tr("problem-no-account"),
         Problem::BadName { name, .. } => look.tr_with("problem-bad-name", &[("name", name)]),
         Problem::NoConsent { name, .. } => look.tr_with("problem-no-consent", &[("name", name)]),

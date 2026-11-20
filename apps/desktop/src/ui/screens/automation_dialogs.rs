@@ -585,6 +585,7 @@ fn schedule_body(dialog: &Dialog, look: &Look) -> Vec<AnyElement> {
         at,
         cron,
         jitter,
+        ..
     } = &dialog.fields
     else {
         return Vec::new();

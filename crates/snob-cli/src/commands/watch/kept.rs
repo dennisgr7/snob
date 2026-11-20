@@ -1,6 +1,6 @@
-//! `snob watch automations` and `snob watch start`: every automation, what
-//! keeps it from running, when it runs next and how its newest runs went; and
-//! a run of one started now, apart from the command
+//! `snob watch automations` and `snob watch start`: every automation, its
+//! schedules, what keeps it from running, when it runs next and how its
+//! newest runs went; and a run of one started now, apart from the command
 //! (`snob_engine::automations::run_now`). **Neither sends anything to
 //! Instagram**: the run started does, under every rule a run by hand keeps.
 
@@ -8,6 +8,7 @@ use anyhow::Result;
 use serde_json::{Value, json};
 use snob_core::Epoch;
 use snob_core::model::printable;
+use snob_core::watch::schedule::Spec;
 use snob_engine::automations::{self, Next, automation::Automation};
 use snob_engine::exit::{ExitCode, ExitError};
 use snob_store::paths::{AccountPaths, AppPaths};
@@ -94,6 +95,8 @@ pub fn start(
 struct Listed {
     id: String,
     name: String,
+    /// Its enabled triggers' schedules, as written.
+    schedules: Vec<Spec>,
     problems: Vec<String>,
     next: Next,
     runs: Vec<snob_store::store::shared::AutomationRun>,
@@ -109,6 +112,7 @@ impl Listed {
         Ok(Self {
             id: printable(&automation.id),
             name: printable(&automation.name),
+            schedules: automation.schedules().into_iter().map(shown).collect(),
             problems,
             next,
             runs: automations::runs(paths, &automation.id, NEWEST_RUNS)?,
@@ -125,6 +129,7 @@ impl Listed {
         json!({
             "id": self.id,
             "name": self.name,
+            "schedules": self.schedules,
             "problems": self.problems,
             "next": { "when": when, "at": at },
             "runs": self.runs.iter().map(|run| json!({
@@ -143,6 +148,14 @@ impl Listed {
         } else {
             format!("{}  {}", self.id, self.name)
         }];
+        lines.extend(self.schedules.iter().map(|when| {
+            let clauses = crate::report::schedule_clauses(when);
+            if clauses.is_empty() {
+                "  Runs on no schedule yet.".to_string()
+            } else {
+                format!("  Runs {}.", clauses.join(", "))
+            }
+        }));
         lines.push(format!(
             "  Next run: {}.",
             match self.next {
@@ -167,5 +180,53 @@ impl Listed {
             ));
         }
         lines
+    }
+}
+
+/// A schedule as written by a person, each word made printable.
+fn shown(when: &Spec) -> Spec {
+    let all = |words: &[String]| words.iter().map(|word| printable(word)).collect();
+    Spec {
+        on: all(&when.on),
+        at: all(&when.at),
+        months: all(&when.months),
+        days: all(&when.days),
+        cron: when.cron.as_deref().map(printable),
+        ..when.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn listed(schedules: Vec<Spec>) -> Listed {
+        Listed {
+            id: "watch".into(),
+            name: String::new(),
+            schedules,
+            problems: Vec::new(),
+            next: Next::ByHand,
+            runs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn each_schedule_is_a_line_and_an_empty_one_says_so() {
+        let lines = listed(vec![
+            Spec {
+                days: vec!["1".into(), "first mon".into()],
+                months: vec!["jan".into(), "jul".into()],
+                at: vec!["09:00".into()],
+                ..Spec::default()
+            },
+            Spec::default(),
+        ])
+        .lines();
+        assert_eq!(
+            lines[1],
+            "  Runs on the 1, first mon of the month, in jan, jul, at 09:00."
+        );
+        assert_eq!(lines[2], "  Runs on no schedule yet.");
     }
 }

@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::filters::{Attribute, Filter};
 use crate::model::{User, possible_username};
-use crate::watch::schedule::Spec;
+use crate::watch::schedule::{ScheduleError, Spec};
 use crate::{Epoch, Pk};
 
 /// Which shape of the automations' file this is.
@@ -437,7 +437,7 @@ pub enum Problem {
     #[error("no trigger leads to an action, so a run would read nothing")]
     NoAction,
     #[error("the schedule cannot be used: {why}")]
-    Schedule { node: NodeId, why: String },
+    Schedule { node: NodeId, why: ScheduleError },
     #[error("an action does not say whose account it reads")]
     NoAccount { node: NodeId },
     #[error("\"{name}\" cannot be a username")]
@@ -734,10 +734,7 @@ impl Automation {
             match &node.step {
                 Step::Schedule { when } => {
                     if let Err(e) = when.build() {
-                        problems.push(Problem::Schedule {
-                            node: id,
-                            why: e.to_string(),
-                        });
+                        problems.push(Problem::Schedule { node: id, why: e });
                     }
                 }
                 Step::Read { account, what } => {
@@ -840,23 +837,27 @@ impl Automation {
             })
     }
 
+    /// Every enabled trigger's schedule, in the order of their steps,
+    /// whether or not the automation is finished.
+    pub fn schedules(&self) -> Vec<&Spec> {
+        self.nodes
+            .iter()
+            .filter(|node| node.enabled)
+            .filter_map(|node| match &node.step {
+                Step::Schedule { when } => Some(when),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// What it runs, or what keeps it from running.
     pub fn program(&self) -> Result<Program, Vec<Problem>> {
         let problems = self.problems();
         if !problems.is_empty() {
             return Err(problems);
         }
-        let schedules = self
-            .nodes
-            .iter()
-            .filter(|node| node.enabled)
-            .filter_map(|node| match &node.step {
-                Step::Schedule { when } => Some(when.clone()),
-                _ => None,
-            })
-            .collect();
         Ok(Program {
-            schedules,
+            schedules: self.schedules().into_iter().cloned().collect(),
             reads: self.planned_reads(),
             webhook: self.webhook().cloned(),
         })
@@ -1143,13 +1144,28 @@ mod tests {
 
     #[test]
     fn an_automation_reads_back_as_it_was_written() {
-        let (automation, _) = finished();
+        let (mut automation, [_, action, _, _]) = finished();
+        let monthly = automation.insert(
+            Step::Schedule {
+                when: Spec {
+                    days: vec!["1".into(), "first mon".into()],
+                    months: vec!["jan".into(), "jul".into()],
+                    at: vec!["09:00".into()],
+                    ..Spec::default()
+                },
+            },
+            (0, 200),
+        );
+        automation.connect(monthly, action).unwrap();
         let text = serde_json::to_string(&automation).unwrap();
         assert_eq!(
             serde_json::from_str::<Automation>(&text).unwrap(),
             automation
         );
         assert!(text.contains(r#""kind":"schedule""#) && text.contains(r#""what":"unfollowers""#));
+        assert!(text.contains(r#""months":["jan","jul"],"days":["1","first mon"]"#));
+        assert_eq!(automation.schedules().len(), 2);
+        assert!(automation.is_finished());
     }
 
     #[test]

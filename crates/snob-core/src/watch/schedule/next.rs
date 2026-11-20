@@ -1822,6 +1822,7 @@ mod tests {
             Schedule::calendar(&[Weekday::Tue], &[(0, 30)]).unwrap(),
             Schedule::calendar(&[Weekday::Sun], &[(23, 30)]).unwrap(),
             Schedule::cron("0 9 13 * 5").unwrap(),
+            third_monday_and_last_friday(),
         ];
         let from = at(-hours(24)).get().div_euclid(60);
         let to = at(hours(52)).get().div_euclid(60);
@@ -1875,5 +1876,22 @@ mod tests {
             sweep(schedule, &FallsBack, ten_days);
             sweep(schedule, &SpringsForward, ten_days);
         }
+
+        // Weekdays of the month are weeks apart, and the reference walk
+        // has to reach the last Friday of July behind and of August ahead.
+        let forty_days = 40 * 24 * 60;
+        sweep(&third_monday_and_last_friday(), &FallsBack, forty_days);
+        sweep(&third_monday_and_last_friday(), &SpringsForward, forty_days);
+    }
+
+    /// The fixture Monday, 2026-08-17, is a third Monday.
+    fn third_monday_and_last_friday() -> Schedule {
+        super::super::Spec {
+            days: vec!["third mon".into(), "last fri".into()],
+            at: vec!["00:30".into()],
+            ..Default::default()
+        }
+        .build()
+        .unwrap()
     }
 }

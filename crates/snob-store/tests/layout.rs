@@ -442,7 +442,10 @@ fn the_watch_file_names_the_account_it_was_read_as() {
 
     m.assert_settled();
     let watch = m.watch();
-    assert_eq!(watch.schema, config::SCHEMA);
+    assert_eq!(
+        watch.schema, 2,
+        "the schema of a file without months or days"
+    );
     assert_eq!(watch.every, Some(std::time::Duration::from_secs(21_600)));
     assert_eq!(watch.accounts.len(), 1);
     assert_eq!(watch.accounts[0].target, "friend");

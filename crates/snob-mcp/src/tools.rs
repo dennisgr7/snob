@@ -337,7 +337,9 @@ pub fn specs(offer: Offer<'_>) -> Vec<Spec> {
             title: "The automations and how they went",
             description: "Every automation the person set up: the monitor's watch.toml (id \
                           \"watch\") and each one made in the app. For each: its id and name, \
-                          what keeps it from running (problems; empty when it can run), when \
+                          its schedules (each as watch.toml writes it: every, on, at, months, \
+                          days, cron, jitter), what keeps it from running (problems; empty \
+                          when it can run), when \
                           it runs next (next.when: now, at the epoch seconds in next.at, \
                           by_hand, or never), and its newest runs with their outcome, the \
                           requests they spent and what they found. Sends nothing. Setting one \

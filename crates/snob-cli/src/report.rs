@@ -419,23 +419,27 @@ pub fn name_a_few(people: &[User], cap: usize) -> Option<String> {
 }
 
 /// A schedule as clauses, ready to be joined into a sentence.
-pub fn schedule_clauses(
-    every: Option<std::time::Duration>,
-    on: &[String],
-    at: &[String],
-    cron: Option<&str>,
-) -> Vec<String> {
+pub fn schedule_clauses(when: &snob_core::watch::schedule::Spec) -> Vec<String> {
     let mut clauses = Vec::new();
-    if let Some(every) = every {
+    if let Some(every) = when.every {
         clauses.push(format!("every {}", snob_core::duration::format(every)));
     }
-    if !on.is_empty() {
-        clauses.push(format!("on {}", printable(&on.join(", "))));
+    if !when.on.is_empty() {
+        clauses.push(format!("on {}", printable(&when.on.join(", "))));
     }
-    if !at.is_empty() {
-        clauses.push(format!("at {}", printable(&at.join(", "))));
+    if !when.days.is_empty() {
+        clauses.push(format!(
+            "on the {} of the month",
+            printable(&when.days.join(", "))
+        ));
     }
-    if let Some(cron) = cron {
+    if !when.months.is_empty() {
+        clauses.push(format!("in {}", printable(&when.months.join(", "))));
+    }
+    if !when.at.is_empty() {
+        clauses.push(format!("at {}", printable(&when.at.join(", "))));
+    }
+    if let Some(cron) = &when.cron {
         clauses.push(format!("on the schedule \"{}\"", printable(cron)));
     }
     clauses

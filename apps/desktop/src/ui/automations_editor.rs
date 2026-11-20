@@ -61,6 +61,8 @@ pub(crate) enum Fields {
         at: Entity<InputState>,
         cron: Entity<InputState>,
         jitter: Entity<InputState>,
+        /// What the fields do not show, kept as it was written.
+        kept: ScheduleForm,
     },
     Action {
         form: ActionForm,
@@ -95,6 +97,7 @@ impl Dialog {
             at,
             cron,
             jitter,
+            kept,
         } = &self.fields
         else {
             return None;
@@ -106,6 +109,7 @@ impl Dialog {
             at: text(at),
             cron: text(cron),
             jitter: text(jitter),
+            ..kept.clone()
         })
     }
 
@@ -680,6 +684,7 @@ impl Shell {
                     cron: text(&form.cron, "schedule-cron-hint", window, cx),
                     jitter: text(&form.jitter, "schedule-jitter-hint", window, cx),
                     every: every.clone(),
+                    kept: form.clone(),
                 };
                 (fields, Some(every))
             }

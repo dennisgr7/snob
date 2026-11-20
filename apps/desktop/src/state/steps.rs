@@ -39,6 +39,10 @@ pub struct ScheduleForm {
     pub at: String,
     pub cron: String,
     pub jitter: String,
+    /// Months and days of the month, not typed here yet: kept as written,
+    /// so saving the dialog does not drop them.
+    pub months: Vec<String>,
+    pub days: Vec<String>,
 }
 
 impl ScheduleForm {
@@ -50,6 +54,8 @@ impl ScheduleForm {
             at: spec.at.join(", "),
             cron: spec.cron.clone().unwrap_or_default(),
             jitter: spec.jitter.map(duration::format).unwrap_or_default(),
+            months: spec.months.clone(),
+            days: spec.days.clone(),
         }
     }
 
@@ -67,6 +73,8 @@ impl ScheduleForm {
             at: words(&self.at),
             cron: nothing_as_none(&self.cron),
             jitter: span(&self.jitter)?,
+            months: self.months.clone(),
+            days: self.days.clone(),
         })
     }
 
@@ -276,8 +284,20 @@ mod tests {
             at: "09:00".to_string(),
             cron: String::new(),
             jitter: "5m".to_string(),
+            ..ScheduleForm::default()
         };
         assert_eq!(ScheduleForm::of(&form.spec().unwrap()), form);
+    }
+
+    #[test]
+    fn months_and_days_of_the_month_outlive_the_form_they_are_not_typed_in() {
+        let spec = Spec {
+            days: vec!["first mon".to_string(), "15".to_string()],
+            months: vec!["jan".to_string(), "jul".to_string()],
+            at: vec!["09:00".to_string()],
+            ..Spec::default()
+        };
+        assert_eq!(ScheduleForm::of(&spec).spec(), Ok(spec));
     }
 
     #[test]

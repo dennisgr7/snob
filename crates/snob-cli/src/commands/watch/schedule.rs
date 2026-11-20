@@ -15,8 +15,7 @@ pub(super) type When = Spec;
 ///
 /// **It chooses a source; it does not copy fields.**
 pub(super) fn when_from(args: &WatchRunArgs, configured: Option<&WatchConfig>) -> When {
-    let given =
-        args.cron.is_some() || !args.at.is_empty() || !args.on.is_empty() || args.every.is_some();
+    let given = typed_a_schedule(args);
 
     // The schedule halves come as a set, so a flag does not merge into a
     // configured calendar — but the jitter is not one of those halves.
@@ -31,12 +30,20 @@ pub(super) fn when_from(args: &WatchRunArgs, configured: Option<&WatchConfig>) -
     when
 }
 
+/// Whether the command line names any part of a schedule (the jitter is
+/// not one).
+pub(super) fn typed_a_schedule(args: &WatchRunArgs) -> bool {
+    !of_args(args).names_none()
+}
+
 /// The schedule as the command line wrote it.
 fn of_args(args: &WatchRunArgs) -> When {
     Spec {
         cron: args.cron.clone(),
         at: args.at.clone(),
         on: args.on.clone(),
+        months: args.months.clone(),
+        days: args.days.clone(),
         every: args.every,
         jitter: args.jitter,
     }
@@ -44,7 +51,8 @@ fn of_args(args: &WatchRunArgs) -> When {
 
 pub(super) use snob_core::watch::schedule::calendar_from;
 
-/// Whether `config` names no schedule at all: no `every`, `at`, `on` or `cron`.
+/// Whether `config` names no schedule at all: no `every`, `at`, `on`,
+/// `months`, `days` or `cron`.
 pub(super) fn names_no_schedule(config: &WatchConfig) -> bool {
     config.spec().names_none()
 }
@@ -61,7 +69,8 @@ pub(super) fn schedule_from(
         Err(ScheduleError::Empty) => Err(anyhow::anyhow!(
             "how often should this run?\n\
              Run \"snob watch setup\" once, or say it here: \"--every 6h\", \
-             \"--on mon,thu --at 09:00\", or \"--cron '0 9 * * 1,4'\"."
+             \"--on mon,thu --at 09:00\", \"--days 1 --at 09:00\", or \
+             \"--cron '0 9 * * 1,4'\"."
         )),
         built => Ok(built?),
     }
@@ -69,7 +78,7 @@ pub(super) fn schedule_from(
 
 /// The opening line, so somebody starting this can see it understood them.
 pub(super) fn describe_schedule(when: &When, schedule: &Schedule, now: bool) -> String {
-    let parts = report::schedule_clauses(when.every, &when.on, &when.at, when.cron.as_deref());
+    let parts = report::schedule_clauses(when);
 
     let mut line = format!("Running {}.", parts.join(", "));
 
@@ -228,6 +237,8 @@ mod tests {
             every: Some(Duration::from_secs(3_600)),
             at: vec!["09:00".to_string()],
             on: vec!["mon".to_string()],
+            months: vec!["jan".to_string()],
+            days: vec!["15".to_string()],
             cron: Some("0 9 * * 1,4".to_string()),
             jitter: Some(Duration::from_secs(120)),
             webhook: None,
@@ -237,6 +248,8 @@ mod tests {
         assert_eq!(from_file.every, file.every, "the file's interval");
         assert_eq!(from_file.at, file.at, "the file's times of day");
         assert_eq!(from_file.on, file.on, "the file's days");
+        assert_eq!(from_file.months, file.months, "the file's months");
+        assert_eq!(from_file.days, file.days, "the file's days of the month");
         assert_eq!(
             from_file.cron, file.cron,
             "the file's cron expression did not reach the run"
@@ -247,6 +260,8 @@ mod tests {
             every: Some(Duration::from_secs(7_200)),
             at: vec!["21:30".to_string()],
             on: vec!["thu".to_string()],
+            months: vec!["jul".to_string()],
+            days: vec!["last fri".to_string()],
             cron: Some("0 21 * * 4".to_string()),
             jitter: Some(Duration::from_secs(300)),
             ..Default::default()
@@ -255,6 +270,8 @@ mod tests {
         assert_eq!(from_flags.every, typed.every, "the typed interval");
         assert_eq!(from_flags.at, typed.at, "the typed times of day");
         assert_eq!(from_flags.on, typed.on, "the typed days");
+        assert_eq!(from_flags.months, typed.months, "the typed months");
+        assert_eq!(from_flags.days, typed.days, "the typed days of the month");
         assert_eq!(
             from_flags.cron, typed.cron,
             "the typed cron expression did not reach the run"

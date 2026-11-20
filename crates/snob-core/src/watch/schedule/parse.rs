@@ -1,5 +1,5 @@
-//! Reading the two syntaxes, `--on`/`--at` and a five-field cron expression,
-//! into the bitmasks a `Calendar` is made of.
+//! Reading the two syntaxes, `--on`/`--days`/`--months`/`--at` and a
+//! five-field cron expression, into the bitmasks a `Calendar` is made of.
 
 use super::ScheduleError;
 use super::calendar::{Calendar, Times};
@@ -30,6 +30,19 @@ impl FieldSet {
         value < 64 && self.0 & (1 << value) != 0
     }
 
+    pub(super) fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// These numbers; one past 63 has no bit and is left out.
+    pub(super) fn of(values: impl IntoIterator<Item = u32>) -> Self {
+        Self(
+            values
+                .into_iter()
+                .fold(0, |bits, value| bits | 1u64.checked_shl(value).unwrap_or(0)),
+        )
+    }
+
     /// Whether this field is unrestricted over `range`. Asked of the set, not
     /// remembered from the text, so `*` and `1-31` behave alike.
     pub(super) fn is_all(self, range: std::ops::RangeInclusive<u32>) -> bool {
@@ -38,7 +51,7 @@ impl FieldSet {
 }
 
 /// A day of the week, as `--on mon,thu` names them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Weekday {
     Sun,
     Mon,
@@ -50,8 +63,32 @@ pub enum Weekday {
 }
 
 impl Weekday {
+    /// Sunday first, as cron numbers them.
+    pub const ALL: [Weekday; 7] = [
+        Self::Sun,
+        Self::Mon,
+        Self::Tue,
+        Self::Wed,
+        Self::Thu,
+        Self::Fri,
+        Self::Sat,
+    ];
+
+    /// The short name `--on` is written with.
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Sun => "sun",
+            Self::Mon => "mon",
+            Self::Tue => "tue",
+            Self::Wed => "wed",
+            Self::Thu => "thu",
+            Self::Fri => "fri",
+            Self::Sat => "sat",
+        }
+    }
+
     /// Sunday is 0, matching cron and `chrono`'s `num_days_from_sunday`.
-    pub(super) fn number(self) -> u32 {
+    pub fn number(self) -> u32 {
         match self {
             Self::Sun => 0,
             Self::Mon => 1,
@@ -75,6 +112,130 @@ impl Weekday {
             _ => return None,
         })
     }
+}
+
+/// Which of a month's weekdays of one name: the first Monday, the last Friday.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Nth {
+    First,
+    Second,
+    Third,
+    Fourth,
+    Last,
+}
+
+impl Nth {
+    pub const ALL: [Nth; 5] = [
+        Self::First,
+        Self::Second,
+        Self::Third,
+        Self::Fourth,
+        Self::Last,
+    ];
+
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::First => "first",
+            Self::Second => "second",
+            Self::Third => "third",
+            Self::Fourth => "fourth",
+            Self::Last => "last",
+        }
+    }
+
+    /// 0 for the first through 3 for the fourth, and 4 for the last.
+    pub(super) fn number(self) -> u32 {
+        match self {
+            Self::First => 0,
+            Self::Second => 1,
+            Self::Third => 2,
+            Self::Fourth => 3,
+            Self::Last => 4,
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        Some(match text {
+            "first" | "1st" => Self::First,
+            "second" | "2nd" => Self::Second,
+            "third" | "3rd" => Self::Third,
+            "fourth" | "4th" => Self::Fourth,
+            "last" => Self::Last,
+            _ => return None,
+        })
+    }
+}
+
+/// A day of the month, as `--days 1,15` or `--days "first mon"` names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MonthDay {
+    /// A date, 1 to 31.
+    Date(u32),
+    /// A weekday of the month.
+    Nth(Nth, Weekday),
+}
+
+impl MonthDay {
+    /// Reads `15`, `first mon`, `first-mon`, `1st monday` and `last fri`.
+    pub fn parse(text: &str) -> Option<Self> {
+        let text = text.trim().to_ascii_lowercase();
+        if let Ok(date) = text.parse::<u32>() {
+            return (1..=31).contains(&date).then_some(Self::Date(date));
+        }
+        let mut words = text.split([' ', '-']).filter(|word| !word.is_empty());
+        let (Some(nth), Some(day), None) = (words.next(), words.next(), words.next()) else {
+            return None;
+        };
+        Some(Self::Nth(Nth::parse(nth)?, Weekday::parse(day)?))
+    }
+
+    /// The form it is written back in: `15`, `first mon`.
+    pub fn token(self) -> String {
+        match self {
+            Self::Date(date) => date.to_string(),
+            Self::Nth(nth, day) => format!("{} {}", nth.token(), day.token()),
+        }
+    }
+}
+
+const MONTH_TOKENS: [&str; 12] = [
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+];
+
+/// Reads a month, `jan`, `january` or `1`, as 1 to 12.
+pub fn parse_month(text: &str) -> Option<u32> {
+    let text = text.trim().to_ascii_lowercase();
+    if let Ok(number) = text.parse::<u32>() {
+        return (1..=12).contains(&number).then_some(number);
+    }
+    let full = [
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    ];
+    (1..=12u32).find(|&month| {
+        let at = (month - 1) as usize;
+        text == MONTH_TOKENS[at] || text == full[at] || (month == 9 && text == "sept")
+    })
+}
+
+/// The short name a month is written back with, `jan` for 1; empty for a
+/// number that is no month.
+pub fn month_token(month: u32) -> &'static str {
+    month
+        .checked_sub(1)
+        .and_then(|at| MONTH_TOKENS.get(at as usize))
+        .copied()
+        .unwrap_or("")
 }
 
 /// Parses `HH:MM`.
@@ -110,6 +271,7 @@ pub(super) fn parse_cron(expression: &str) -> Result<Calendar, ScheduleError> {
         days_of_month: cron_field(days_of_month, 1..=31, "day of month")?,
         months: cron_field(months, 1..=12, "month")?,
         days_of_week: cron_field(days_of_week, 0..=7, "day of week").map(fold_sunday)?,
+        nth_weekdays: FieldSet(0),
     })
 }
 
@@ -318,6 +480,41 @@ mod tests {
     }
 
     #[test]
+    fn days_of_the_month_are_read_the_ways_people_write_them() {
+        assert_eq!(MonthDay::parse("15"), Some(MonthDay::Date(15)));
+        assert_eq!(MonthDay::parse(" 1 "), Some(MonthDay::Date(1)));
+        for first_monday in ["first mon", "first-mon", "1st Monday", "FIRST  MON"] {
+            assert_eq!(
+                MonthDay::parse(first_monday),
+                Some(MonthDay::Nth(Nth::First, Weekday::Mon)),
+                "{first_monday}"
+            );
+        }
+        assert_eq!(
+            MonthDay::parse("last fri"),
+            Some(MonthDay::Nth(Nth::Last, Weekday::Fri))
+        );
+        for bad in ["0", "32", "fifth mon", "first", "mon", "first mon tue", ""] {
+            assert_eq!(MonthDay::parse(bad), None, "\"{bad}\" should be refused");
+        }
+        assert_eq!(MonthDay::Nth(Nth::Third, Weekday::Wed).token(), "third wed");
+    }
+
+    #[test]
+    fn months_are_read_the_ways_people_write_them() {
+        assert_eq!(parse_month("jan"), Some(1));
+        assert_eq!(parse_month("July"), Some(7));
+        assert_eq!(parse_month("sept"), Some(9));
+        assert_eq!(parse_month("12"), Some(12));
+        for bad in ["0", "13", "smarch", ""] {
+            assert_eq!(parse_month(bad), None, "\"{bad}\" should be refused");
+        }
+        assert_eq!(month_token(1), "jan");
+        assert_eq!(month_token(13), "");
+        assert_eq!(month_token(0), "");
+    }
+
+    #[test]
     fn times_are_read_and_refused_as_written() {
         assert_eq!(parse_time("09:00").unwrap(), (9, 0));
         assert_eq!(parse_time(" 21:30 ").unwrap(), (21, 30));
@@ -331,19 +528,29 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::with_cases(256) })]
 
-        /// User-written weekday names, wall-clock times and five-field cron
-        /// expressions never panic the schedule parsers.
+        /// User-written weekday names, days of the month, months, wall-clock
+        /// times and five-field cron expressions never panic the schedule
+        /// parsers, and a day or month read is written back as one that
+        /// reads the same.
         #[test]
-        fn parsing_a_weekday_time_or_cron_expression_never_panics(
+        fn parsing_a_weekday_day_month_time_or_cron_expression_never_panics(
             text in prop_oneof![
                 any::<String>(),
                 "[0-9A-Za-z*,/: -]{0,40}",
+                "(first|second|third|fourth|last|1st|[0-9]{1,3})[ -]?[a-z]{0,9}",
             ],
         ) {
             let _ = Weekday::parse(&text);
             let _ = parse_time(&text);
             let _ = parse_cron(&text);
             let _ = Schedule::cron(&text);
+            if let Some(day) = MonthDay::parse(&text) {
+                prop_assert_eq!(MonthDay::parse(&day.token()), Some(day));
+            }
+            if let Some(month) = parse_month(&text) {
+                prop_assert!((1..=12).contains(&month));
+                prop_assert_eq!(parse_month(month_token(month)), Some(month));
+            }
         }
     }
 }
