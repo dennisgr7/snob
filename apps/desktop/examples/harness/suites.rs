@@ -9,7 +9,7 @@ use anyhow::{Context as _, bail};
 use snob_desktop::control::{Answer, Said};
 use snob_fake_ig::world::{self, World};
 
-use crate::drive::{Driven, Start, expect, node};
+use crate::drive::{Driven, Start, expect, label, node};
 use crate::scenarios::{self, Lab, Scenario, Stage};
 use crate::{Asked, app_dir, report};
 
@@ -257,7 +257,7 @@ const STDERR_LINES: usize = 40;
 
 /// The screens a picture is taken of and an audit made of, and how each is
 /// reached from the screen before it.
-const SCREENS: [&str; 31] = [
+const SCREENS: [&str; 38] = [
     "start",
     "paste",
     "failed",
@@ -279,15 +279,22 @@ const SCREENS: [&str; 31] = [
     "automations-listed",
     "automation-page",
     "automation-flow",
+    "automation-search",
     "automation-menu",
     "automation-schedule",
+    "automation-schedule-month",
+    "automation-schedule-advanced",
     "automation-leave",
     "profile",
     "profile-split",
     "profile-options",
+    "profile-about",
     "viewer",
     "people",
+    "people-options",
+    "people-selecting",
     "list-question",
+    "automation-suggestions",
     "paste-browsers",
 ];
 
@@ -445,6 +452,18 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
             app.until("the flow", |seen| scenarios::bounds(seen, "node#4").is_ok())
                 .await?;
         }
+        "automation-search" => {
+            // The actions, and the search open over their name, a word
+            // typed in it.
+            let app = stage.app()?;
+            app.click("editor-actions").await?;
+            app.click("editor-shelf-search").await?;
+            app.until("the search open", |seen| {
+                node(seen, "editor-shelf-field").is_ok()
+            })
+            .await?;
+            app.type_in("fol").await?;
+        }
         "automation-menu" => {
             // A step is chosen and its menu opened with the keyboard.
             let app = stage.app()?;
@@ -466,10 +485,33 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
             })
             .await?;
         }
+        "automation-schedule-month" => {
+            // Every month, on one weekday of it.
+            let app = stage.app()?;
+            app.click("schedule-frequency-month").await?;
+            app.click("schedule-by-weekday").await?;
+            app.until("a weekday of the month", |seen| {
+                node(seen, "schedule-nth#0").is_ok()
+            })
+            .await?;
+        }
+        "automation-schedule-advanced" => {
+            // The same schedule, as `watch.toml` writes it.
+            let app = stage.app()?;
+            app.click("schedule-frequency-advanced").await?;
+            app.until("the fields of watch.toml", |seen| {
+                node(seen, "schedule-frequency-advanced").is_ok_and(|one| one.checked == Some(true))
+            })
+            .await?;
+        }
         "automation-leave" => {
             // A step taken off leaves the action without a trigger.
             let app = stage.app()?;
             app.press("escape").await?;
+            app.until("the dialog closed", |seen| {
+                node(seen, "step-dialog").is_err()
+            })
+            .await?;
             app.click("node#1").await?;
             app.press("enter").await?;
             app.click("node-menu-remove").await?;
@@ -481,7 +523,11 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
         }
         "profile" => {
             // The account in use is `someone`. What the editor asked is
-            // answered first.
+            // answered first. **One page of posts**: a test build has no
+            // browser, and the engine reads a profile's posts past their
+            // first page from the browser alone, so what is said while it
+            // reads on, rests or has read them all is not pictured here
+            // (`tests/profile.rs` has each, on the script).
             let app = stage.app()?;
             let seen = app.look().await?;
             if scenarios::bounds(&seen, "leave-discard").is_ok() {
@@ -492,6 +538,7 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
             app.until_screen("profile").await?;
             app.until("the profile read", scenarios::profile_read)
                 .await?;
+            pictures_settled(stage).await;
         }
         "profile-split" => {
             stage.app()?.click("profile-layout").await?;
@@ -500,9 +547,18 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
             // Under its button, in the split layout.
             stage.app()?.click("profile-options").await?;
         }
+        "profile-about" => {
+            // From the options open on the screen before.
+            let app = stage.app()?;
+            app.click("profile-about-open").await?;
+            app.until("about this account", |seen| {
+                node(seen, "profile-about").is_ok()
+            })
+            .await?;
+        }
         "viewer" => {
-            // The options closed first; with a story up, the picture is
-            // chosen in the small menu.
+            // What the screen before opened closed first; with a story up,
+            // the picture is chosen in the small menu.
             let app = stage.app()?;
             app.press("escape").await?;
             let seen = app.click("profile-picture").await?;
@@ -520,15 +576,87 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
             app.click("profile-followers").await?;
             app.until_screen("people").await?;
             app.until("the list read", scenarios::list_read).await?;
+            pictures_settled(stage).await;
+        }
+        "people-options" => {
+            let app = stage.app()?;
+            app.click("people-options").await?;
+            app.until("the list's options", |seen| {
+                node(seen, "people-menu").is_ok()
+            })
+            .await?;
+        }
+        "people-selecting" => {
+            // Three rows chosen, and the bar over the list.
+            let app = stage.app()?;
+            app.click("people-select").await?;
+            app.until("rows to choose", |seen| {
+                node(seen, "people-selection").is_ok()
+            })
+            .await?;
+            for row in ["person#1", "person#2", "person#4"] {
+                app.click(row).await?;
+            }
+            app.until("three rows chosen", |seen| {
+                label(seen, "people-selected").is_ok_and(|said| said.starts_with('3'))
+            })
+            .await?;
         }
         "list-question" => {
-            // Another account's profile, and its list asked about.
+            // No row chosen any more; another account's profile, and its
+            // list asked about.
             let app = stage.app()?;
+            app.click("people-cancel").await?;
+            app.until("no row chosen", |seen| {
+                node(seen, "people-selection").is_err()
+            })
+            .await?;
             app.click("person#0").await?;
             app.until_screen("profile").await?;
             app.until("the profile read", scenarios::profile_read)
                 .await?;
             app.click("profile-followers").await?;
+        }
+        "automation-suggestions" => {
+            // No to the question; back in the editor of the first
+            // automation, its action read of another account, and a name
+            // begun that the accounts the list read go on.
+            let app = stage.app()?;
+            app.press("escape").await?;
+            app.until("the question gone", |seen| {
+                node(seen, "list-question").is_err()
+            })
+            .await?;
+            app.click("rail-automations").await?;
+            app.until_screen("automations").await?;
+            let seen = app
+                .until("the automations or the first one", |seen| {
+                    node(seen, "automation#0").is_ok() || node(seen, "automation-edit").is_ok()
+                })
+                .await?;
+            if node(&seen, "automation#0").is_ok() {
+                app.click("automation#0").await?;
+            }
+            app.until("its page", |seen| node(seen, "automation-edit").is_ok())
+                .await?;
+            app.click("automation-edit").await?;
+            app.until("the flow", |seen| node(seen, "node#2").is_ok())
+                .await?;
+            app.click("node#2").await?;
+            app.press("enter").await?;
+            app.click("node-menu-configure").await?;
+            app.until("the dialog", |seen| node(seen, "step-dialog").is_ok())
+                .await?;
+            app.click("action-other").await?;
+            app.click("action-username").await?;
+            app.type_in("user").await?;
+            // The accounts known, and last the name as typed: no account
+            // is called that.
+            app.until("the accounts known suggested", |seen| {
+                node(seen, "action-suggestion#1").is_ok()
+            })
+            .await?;
+            pictures_settled(stage).await;
         }
         "palette" => {
             let app = stage.app()?;
@@ -563,6 +691,70 @@ async fn reach(stage: &mut Stage<'_>, screen: &str) -> anyhow::Result<()> {
     // Whatever moves has come to rest.
     tokio::time::sleep(Duration::from_millis(350)).await;
     Ok(())
+}
+
+/// Waits until nothing has come into the run's caches for a while: the
+/// pictures a screen asks for are all there before it is pictured. It
+/// gives up waiting, without failing, after [`SETTLED_WITHIN`].
+async fn pictures_settled(stage: &Stage<'_>) {
+    let since = Instant::now();
+    let mut kept = cached(&stage.root);
+    let mut still = Instant::now();
+    while since.elapsed() < SETTLED_WITHIN && still.elapsed() < Duration::from_millis(1200) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let now = cached(&stage.root);
+        if now != kept {
+            kept = now;
+            still = Instant::now();
+        }
+    }
+}
+
+const SETTLED_WITHIN: Duration = Duration::from_secs(20);
+
+/// How many files every `cache` directory under `root` holds, and their
+/// bytes.
+fn cached(root: &Path) -> (usize, u64) {
+    let mut found = (0, 0);
+    let mut folders = vec![(root.to_path_buf(), false)];
+    while let Some((folder, inside)) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let cache = inside || path.file_name().is_some_and(|name| name == "cache");
+                folders.push((path, cache));
+            } else if inside {
+                found.0 += 1;
+                found.1 += entry.metadata().map_or(0, |file| file.len());
+            }
+        }
+    }
+    found
+}
+
+/// A screen not reached, with a picture of where the app was instead and
+/// its log.
+async fn not_reached(
+    stage: &mut Stage<'_>,
+    out: &Path,
+    suite: &str,
+    screen: &str,
+    mut outcome: Outcome,
+) -> Outcome {
+    let failures = out.join("failures");
+    if let Ok(app) = stage.app() {
+        let picture = failures.join(format!("{suite}-{screen}.png"));
+        if app.capture(&picture).await.is_ok() {
+            outcome
+                .pictures
+                .push(("where it was instead".to_string(), picture));
+        }
+        let log = failures.join(format!("{suite}-{screen}.log"));
+        if std::fs::create_dir_all(&failures).is_ok() && std::fs::write(&log, app.log()).is_ok() {
+            outcome.log = Some(log);
+        }
+    }
+    outcome
 }
 
 /// How the system is set up for one picture of a screen.
@@ -623,6 +815,27 @@ async fn look_like(app: &mut Driven, looks: Looks) -> anyhow::Result<Answer> {
     app.look().await
 }
 
+/// A list turned to a part of it, turned again in each look: its scroll is
+/// kept in pixels, which the larger text or the smaller window would leave
+/// on another part. Nothing for any other screen.
+async fn turned_for(app: &mut Driven, screen: &str, looks: Looks) -> anyhow::Result<()> {
+    let by = match screen {
+        "settings-storage" => 330.0 * looks.text_scale,
+        "settings-accounts" => 100_000.0,
+        _ => return Ok(()),
+    };
+    let seen = app.look().await?;
+    let (left, top, width, height) = crate::scenarios::bounds(&seen, "settings-list")?;
+    let (x, y) = (left + width / 2.0, top + height / 2.0);
+    app.point(x, y, snob_desktop::control::Pointing::Wheel(-100_000.0))
+        .await?;
+    app.point(x, y, snob_desktop::control::Pointing::Wheel(by))
+        .await?;
+    // The scrollbar shown by the turn has gone again.
+    tokio::time::sleep(Duration::from_millis(2300)).await;
+    Ok(())
+}
+
 /// Where the approved pictures of this system are kept.
 fn approved_dir() -> PathBuf {
     app_dir()
@@ -651,7 +864,8 @@ async fn visual(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
     for screen in SCREENS {
         let since = Instant::now();
         if let Err(e) = reach(&mut stage, screen).await {
-            outcomes.push(Outcome::of("visual", screen, since).failed(format!("{e:#}")));
+            let failed = Outcome::of("visual", screen, since).failed(format!("{e:#}"));
+            outcomes.push(not_reached(&mut stage, &asked.out, "visual", screen, failed).await);
             break;
         }
         for look in LOOKS {
@@ -662,6 +876,7 @@ async fn visual(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
             let pictured = async {
                 let app = stage.app()?;
                 look_like(app, look).await?;
+                turned_for(app, screen, look).await?;
                 app.capture(&taken).await
             }
             .await;
@@ -693,10 +908,29 @@ fn acted_on(role: Option<&str>) -> bool {
                 | "Link"
                 | "ComboBox"
                 | "RadioButton"
+                | "CheckBox"
                 | "Tab"
         )
     )
 }
+
+/// What holds the controls of something open over a screen: what Tab walks
+/// while it is open, and nothing under it. A list of suggestions or a
+/// select's options is no such thing: **the arrows walk them, not Tab**,
+/// and Tab leaves the field they hang from, which closes them.
+const OVER: [&str; 11] = [
+    "account-menu",
+    "sign-out",
+    "palette",
+    "forget",
+    "photo-viewer",
+    "profile-menu",
+    "profile-about",
+    "people-menu",
+    "list-question",
+    "step-dialog",
+    "node-menu",
+];
 
 /// What is wrong with a screen for somebody who does not see it, does not
 /// use a pointer, or reads it at twice the size.
@@ -787,7 +1021,9 @@ async fn accessibility(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
     for screen in SCREENS {
         let since = Instant::now();
         if let Err(e) = reach(&mut stage, screen).await {
-            outcomes.push(Outcome::of("accessibility", screen, since).failed(format!("{e:#}")));
+            let failed = Outcome::of("accessibility", screen, since).failed(format!("{e:#}"));
+            outcomes
+                .push(not_reached(&mut stage, &asked.out, "accessibility", screen, failed).await);
             break;
         }
         for look in [USUAL, LOOKS[4], LOOKS[5]] {
@@ -834,20 +1070,7 @@ async fn accessibility(lab: &Lab, asked: &Asked) -> Vec<Outcome> {
                     )
             });
             if over {
-                wanted.retain(|path| {
-                    path.iter().any(|above| {
-                        [
-                            "account-menu",
-                            "sign-out",
-                            "palette",
-                            "forget",
-                            "photo-viewer",
-                            "profile-menu",
-                            "list-question",
-                        ]
-                        .contains(&above.as_str())
-                    })
-                });
+                wanted.retain(|path| path.iter().any(|above| OVER.contains(&above.as_str())));
             }
             // Twice around everything Tab can stop at, a list's rows
             // included.
@@ -968,6 +1191,7 @@ pub async fn run(asked: Asked) -> anyhow::Result<bool> {
         World::new()
     };
     let server = world.serve_rest().await;
+    scenarios::Pictures::serve(&server).await;
     let lab = Lab {
         exe,
         world,

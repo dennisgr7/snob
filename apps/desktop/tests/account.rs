@@ -1020,7 +1020,7 @@ async fn the_palette_lists_what_the_screen_can_do_and_finds_it_by_typing(cx: &mu
 }
 
 #[gpui_kit::test]
-async fn the_palette_shows_six_rows_and_a_half_at_any_text_size_with_room_for_a_rows_ring(
+async fn the_palette_shows_six_rows_and_a_half_where_the_window_has_room_and_stays_inside_it(
     cx: &mut TestAppContext,
 ) {
     for text_scale in [1.0, 2.0] {
@@ -1033,19 +1033,25 @@ async fn the_palette_shows_six_rows_and_a_half_at_any_text_size_with_room_for_a_
         app.press(cx, "ctrl-k");
         app.in_window(cx, |window, _| {
             let list = window.find("palette-commands").bounds();
+            let palette = window.find("palette").bounds();
             let first = window.find(("palette-command", 0usize)).bounds();
             let room = px(FOCUS_ROOM);
-            assert_eq!(
-                list.size.height - room * 2.,
-                px(44. * 6.5 * text_scale),
-                "at {text_scale}"
+            let rows = px(44. * 6.5 * text_scale);
+            let bottom = window.viewport_size().height;
+            if palette.bottom() < bottom - px(40.) {
+                assert_eq!(list.size.height - room * 2., rows, "at {text_scale}");
+            } else {
+                assert!(
+                    list.size.height - room * 2. < rows,
+                    "at {text_scale}: fewer rows where the window is too low"
+                );
+            }
+            assert!(
+                palette.bottom() <= bottom,
+                "at {text_scale}: {palette:?} inside a window {bottom:?} tall"
             );
             // Rows are measured in the window's text size, the list in pixels.
-            assert_eq!(
-                first.size.height * 6.5,
-                list.size.height - room * 2.,
-                "at {text_scale}"
-            );
+            assert_eq!(first.size.height * 6.5, rows, "at {text_scale}");
             assert_eq!(first.left() - list.left(), room, "at {text_scale}");
             assert_eq!(list.right() - first.right(), room, "at {text_scale}");
             assert_eq!(first.top() - list.top(), room, "at {text_scale}");

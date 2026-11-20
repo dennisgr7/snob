@@ -64,7 +64,7 @@ pub fn render(
     over.extend(about(shell, look, cx));
     over.extend(viewer(shell, look, window, cx));
     over.extend(leaving(shell, look, window));
-    over.extend(super::screens::automation_dialogs(shell, look, cx));
+    over.extend(super::screens::automation_dialogs(shell, look, window, cx));
     over
 }
 
@@ -174,6 +174,8 @@ fn question(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Option<A
             .items_center()
             .justify_center()
             .p(px(frame::SIDE * 2.))
+            // Below the band, which holds the window's own buttons.
+            .pt(px(frame::BAND + frame::SIDE))
             .bg(color_at(palette.frame, 0.72))
             .on_mouse_down(
                 MouseButton::Left,
@@ -228,38 +230,24 @@ fn about(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Option<AnyE
             )
     });
 
-    let dialog = div()
-        .id("profile-about")
-        .test_support()
-        .role(Role::Dialog)
-        .aria_label(title.clone())
-        .occlude()
-        .w(sp(400.))
-        .max_w_full()
-        .p(sp(24.))
-        .bg(color(palette.panel))
-        .border_1()
-        .border_color(color(palette.control_line))
-        .rounded(px(shape::CARD_RADIUS))
-        .shadow_lg()
+    // What it tells scrolls when the window is too low for it whole; the
+    // title and Close stay.
+    let told = div()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
         .child(
             div()
+                .id("profile-about-body")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .track_scroll(&about.scroll)
                 .flex()
                 .flex_col()
                 .gap(sp(14.))
-                .child(
-                    div()
-                        .id("profile-about-title")
-                        .test_support()
-                        .role(Role::Heading)
-                        .aria_level(2)
-                        .aria_label(title.clone())
-                        .font_weight(FontWeight::BOLD)
-                        .text_size(sp(18.))
-                        .line_height(sp(26.))
-                        .text_color(color(palette.text))
-                        .child(title),
-                )
                 .child(
                     div()
                         .flex()
@@ -292,16 +280,64 @@ fn about(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Option<AnyE
                             "profile-about-note",
                             look.tr("profile-about-note"),
                         )),
-                )
+                ),
+        )
+        .child(parts::scrollbar(
+            "profile-about-scrollbar",
+            &about.scroll,
+            sp(20.),
+            look,
+        ));
+
+    let dialog = div()
+        .id("profile-about")
+        .test_support()
+        .role(Role::Dialog)
+        .aria_label(title.clone())
+        .occlude()
+        .w(sp(400.))
+        .max_w_full()
+        .max_h_full()
+        .flex()
+        .flex_col()
+        .p(sp(24.))
+        .bg(color(palette.panel))
+        .border_1()
+        .border_color(color(palette.control_line))
+        .rounded(px(shape::CARD_RADIUS))
+        .shadow_lg()
+        .child(
+            div()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .gap(sp(14.))
                 .child(
+                    div()
+                        .id("profile-about-title")
+                        .test_support()
+                        .role(Role::Heading)
+                        .aria_level(2)
+                        .aria_label(title.clone())
+                        .font_weight(FontWeight::BOLD)
+                        .text_size(sp(18.))
+                        .line_height(sp(26.))
+                        .text_color(color(palette.text))
+                        .child(title),
+                )
+                .child(told)
+                .child(
+                    // Named apart from the window's own Close, its word in
+                    // the name.
                     div().flex().justify_end().child(
-                        parts::button(
+                        parts::plain_button(
                             "profile-about-close",
-                            look.tr("profile-about-close"),
+                            look.tr("profile-about-close-name"),
                             Kind::Secondary,
                             true,
                             look,
                         )
+                        .child(look.tr("profile-about-close"))
                         .track_focus(&about.close)
                         .on_click(cx.listener(|shell, _, window, cx| {
                             shell.close_about_the_account(window, cx);
@@ -321,6 +357,8 @@ fn about(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Option<AnyE
             .items_center()
             .justify_center()
             .p(px(frame::SIDE * 2.))
+            // Below the band, which holds the window's own buttons.
+            .pt(px(frame::BAND + frame::SIDE))
             .bg(color_at(palette.frame, 0.72))
             .on_mouse_down(
                 MouseButton::Left,
@@ -361,13 +399,15 @@ fn about_row(known: &About, row: AboutRow, look: &Look) -> (String, String) {
 }
 
 /// A round button over the dark backdrop, its drawing light whatever the
-/// theme, its name as its tip.
+/// theme, its name as its tip. **Measured in pixels, as its drawing is**:
+/// it shows no words, and the row of them must fit over the picture at
+/// any text size.
 fn over_button(id: &'static str, label: String, drawing: &'static str, look: &Look) -> Button {
     let palette = look.palette;
     Button::new(id)
         .accessibility_label(label.clone())
         .tooltip(parts::tip(label))
-        .size(sp(40.))
+        .size(px(40.))
         .rounded_full()
         .flex()
         .items_center()
@@ -376,7 +416,11 @@ fn over_button(id: &'static str, label: String, drawing: &'static str, look: &Lo
         .hover(|style| style.bg(color_at(Rgb::hex(0xffffff), 0.22)))
         .focus_visible(parts::focus_ring(&palette))
         .cursor_pointer()
-        .child(icon(drawing, 18.).text_color(color(Rgb::hex(0xffffff))))
+        .child(
+            icon(drawing, 18.)
+                .size(px(18.))
+                .text_color(color(Rgb::hex(0xffffff))),
+        )
 }
 
 /// The picture large over the screen: the wheel zooms it about the pointer,
@@ -488,7 +532,7 @@ fn viewer(
                 div()
                     .occlude()
                     .flex()
-                    .gap(sp(10.))
+                    .gap(px(10.))
                     .child(
                         over_button(
                             "viewer-download",

@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::base::{
     Align, Button, ElementExt as _, FocusTrapElement as _, POPUP_PRIORITY, Placement, Positioner,
-    Scrollbar, TestSupportExt as _,
+    Scrollbar, ScrollbarMode, TestSupportExt as _,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -51,8 +51,14 @@ const RING_GAP: f32 = 3.0;
 /// from and goes back to.
 pub(crate) const AROUND_THE_PICTURE: f32 = RING + RING_GAP;
 
-/// How wide the card at the left is, at the default text size.
+/// How wide the card at the left is, at the default text size, and the
+/// most of the page it takes, so the posts keep the larger part.
 const CARD_WIDTH: f32 = 320.0;
+const CARD_SHARE: f32 = 0.4;
+
+/// How much room the posts need, at the default text size, for their tabs
+/// to show their drawings beside their names.
+const TAB_DRAWINGS_FROM: f32 = 480.0;
 
 /// The widest the page is with the card above the posts, at the default
 /// text size: past it, the page stays in the middle.
@@ -78,7 +84,12 @@ const HIGHLIGHT_RADIUS: f32 = 12.0;
 
 /// How wide the page must be, at the default text size, for the bar to say
 /// in words how the posts are shown: under it, the buttons alone.
-const NAMED_VIEW_FROM: f32 = 560.0;
+const NAMED_VIEW_FROM: f32 = 440.0;
+
+/// The same where the bar is the posts' alone, the card beside them: it
+/// shares its line with nothing, and needs the room of its longest words
+/// (Spanish's, some 125 pixels) and its buttons.
+const NAMED_VIEW_ALONE_FROM: f32 = 300.0;
 
 /// Why something of a profile was not read, said as what happened and what
 /// to do.
@@ -224,11 +235,13 @@ pub fn render(
         Layout::Stacked => page_room.min(STACKED_WIDTH * scale),
         Layout::Split => page_room,
     };
+    let card_width = (CARD_WIDTH * scale).min(page_room * CARD_SHARE);
     let room = match layout {
         Layout::Stacked => page_room,
-        Layout::Split => page_room - CARD_WIDTH * scale,
+        Layout::Split => page_room - card_width,
     };
     let columns = profile::columns(room, WIDEST_TILE);
+    let tab_drawings = room >= TAB_DRAWINGS_FROM * scale;
 
     let options = options(shell, &shown, popup, &look, window, cx);
     let tools = bar(
@@ -236,12 +249,23 @@ pub fn render(
         showing,
         showing_from,
         options,
-        page_room >= NAMED_VIEW_FROM * scale,
+        match layout {
+            Layout::Stacked => page_room >= NAMED_VIEW_FROM * scale,
+            Layout::Split => room >= NAMED_VIEW_ALONE_FROM * scale,
+        },
         &look,
         window,
         cx,
     );
-    let posts = posts(&shown, showing, showing_from, columns, &look, window, cx);
+    let posts = posts(
+        &shown,
+        showing,
+        showing_from,
+        (columns, tab_drawings),
+        &look,
+        window,
+        cx,
+    );
 
     let page = match layout {
         Layout::Stacked => div()
@@ -275,6 +299,9 @@ pub fn render(
         Layout::Split => {
             let bar = Scrollbar::vertical(&shown.scroll)
                 .id("profile-scrollbar")
+                // Shown while there is more than is in sight, never only while
+                // scrolled: what is out of sight is never cut off without a sign.
+                .mode(ScrollbarMode::Always)
                 .viewport_from_layout()
                 .styles(|styles| {
                     let palette = look.palette;
@@ -283,20 +310,14 @@ pub fn render(
                         .thumb_hover(move |thumb| thumb.bg(color(palette.secondary)))
                         .thumb_active(move |thumb| thumb.bg(color(palette.secondary)))
                 });
+            // The bar is the posts' alone, over them, so the card starts
+            // at the top of the page and the bar ends where the posts do.
             div()
                 .id("profile")
                 .size_full()
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .child(
-                    div()
-                        .flex_none()
-                        .px(sp(32.))
-                        .pt(sp(18.))
-                        .pb(sp(12.))
-                        .child(tools),
-                )
                 .child(
                     div()
                         .flex_1()
@@ -307,10 +328,11 @@ pub fn render(
                             // box can reach past it for a focus ring.
                             div()
                                 .flex_none()
-                                .w(sp(CARD_WIDTH))
+                                .w(px(card_width))
                                 .h_full()
                                 .flex()
                                 .flex_col()
+                                .pt(sp(18.))
                                 .border_r_1()
                                 .border_color(color(look.palette.line))
                                 .child(
@@ -336,31 +358,48 @@ pub fn render(
                                 .flex_1()
                                 .min_w_0()
                                 .h_full()
-                                .relative()
                                 .flex()
                                 .flex_col()
                                 .child(
                                     div()
-                                        .id("profile-posts")
-                                        .test_support()
-                                        .flex_1()
-                                        .min_h_0()
-                                        .overflow_y_scroll()
-                                        .track_scroll(&shown.scroll)
-                                        .pt(px(shape::FOCUS_ROOM))
-                                        .mt(px(-shape::FOCUS_ROOM))
+                                        .flex_none()
                                         .px(sp(24.))
-                                        .pb(sp(40.))
-                                        .child(posts),
+                                        .pt(sp(18.))
+                                        .pb(sp(12.))
+                                        .child(tools),
                                 )
                                 .child(
                                     div()
-                                        .absolute()
-                                        .top_0()
-                                        .bottom_0()
-                                        .left_0()
-                                        .right(px(6.))
-                                        .child(bar),
+                                        .flex_1()
+                                        .min_h_0()
+                                        .relative()
+                                        .flex()
+                                        .flex_col()
+                                        .child(
+                                            div()
+                                                .id("profile-posts")
+                                                .test_support()
+                                                .flex_1()
+                                                .min_h_0()
+                                                .overflow_y_scroll()
+                                                .track_scroll(&shown.scroll)
+                                                .pt(px(shape::FOCUS_ROOM))
+                                                .mt(px(-shape::FOCUS_ROOM))
+                                                .px(sp(24.))
+                                                .pb(sp(40.))
+                                                .child(posts),
+                                        )
+                                        .child(
+                                            // Over the posts' box as it is
+                                            // drawn, its room above included.
+                                            div()
+                                                .absolute()
+                                                .top(px(-shape::FOCUS_ROOM))
+                                                .bottom_0()
+                                                .left_0()
+                                                .right(px(6.))
+                                                .child(bar),
+                                        ),
                                 ),
                         ),
                 )
@@ -462,6 +501,13 @@ fn showing_segment(showing: Showing, on: bool, look: &Look) -> Button {
     parts::icon_segment(id, look.tr(id), drawing, on, look)
 }
 
+/// How tall the bar's buttons are: as tall as the choice of how posts are
+/// shown beside them, its segments and its padding and outline, at any text
+/// size.
+fn bar_button_side(look: &Look) -> gpui_kit::Pixels {
+    px(28. * look.settings.text_scale() + 8.)
+}
+
 /// What puts the card beside the posts, or above them.
 fn layout_button(to_split: bool, look: &Look) -> Button {
     parts::icon_button(
@@ -479,8 +525,7 @@ fn layout_button(to_split: bool, look: &Look) -> Button {
         true,
         look,
     )
-    .w(sp(36.))
-    .h(sp(36.))
+    .size(bar_button_side(look))
 }
 
 /// What opens the options, enabled once the profile is known.
@@ -492,8 +537,7 @@ fn options_button(enabled: bool, look: &Look) -> Button {
         enabled,
         look,
     )
-    .w(sp(34.))
-    .h(sp(34.))
+    .size(bar_button_side(look))
 }
 
 /// The options' button, kept where it was drawn, with its menu when open.
@@ -675,6 +719,9 @@ fn card(
             .child(said)
     });
 
+    // The ring's room round the picture reaches out past the card's edge,
+    // so the picture itself lines up with the words under it.
+    let picture = picture.ml(px(-AROUND_THE_PICTURE));
     if split {
         div()
             .flex()
@@ -705,13 +752,16 @@ fn card(
                             .flex()
                             .flex_col()
                             .gap(sp(10.))
+                            // The bar goes under the names when both do not
+                            // fit on one line.
                             .child(
                                 div()
                                     .flex()
+                                    .flex_wrap()
                                     .items_start()
                                     .gap(sp(10.))
-                                    .child(div().flex_1().min_w_0().child(names))
-                                    .children(bar),
+                                    .child(div().flex_grow_1().min_w_0().child(names))
+                                    .children(bar.map(|bar| div().ml_auto().child(bar))),
                             )
                             .children(failed)
                             .child(about)
@@ -976,6 +1026,9 @@ fn names(
         if full.is_some() { 17. } else { 24. },
         look,
     )
+    // GPUI's text tells the row no baseline, so the smaller words sit on
+    // the name's line by a measured lift: 7 pixels at the default size.
+    .when(full.is_some(), |button| button.relative().top(sp(-7.)))
     .on_click(cx.listener(|shell, _, window, cx| {
         shell.copy_of_the_profile("username", window, cx);
     }));
@@ -1011,9 +1064,12 @@ fn names(
                 .flex_wrap()
                 .items_baseline()
                 .gap_x(sp(12.))
-                .gap_y(sp(2.))
+                // The username's lift taken back where it wraps under the name.
+                .gap_y(sp(2. + 7.))
                 .children(full.map(|full| {
+                    // Wraps in a narrow card rather than running past it.
                     div()
+                        .max_w_full()
                         .font_weight(FontWeight::BOLD)
                         .text_size(sp(26.))
                         .line_height(sp(34.))
@@ -1323,7 +1379,7 @@ fn posts(
     shown: &Shown,
     showing: Showing,
     showing_from: Option<(Showing, Instant)>,
-    columns: usize,
+    (columns, drawings): (usize, bool),
     look: &Look,
     window: &mut Window,
     cx: &mut Context<Shell>,
@@ -1358,7 +1414,8 @@ fn posts(
                 .aria_selected(on)
                 .flex_1()
                 .min_w_0()
-                .h(sp(44.))
+                .min_h(sp(44.))
+                .px(sp(4.))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1374,12 +1431,16 @@ fn posts(
                 .focus_visible(parts::focus_ring(&palette))
                 .cursor_pointer()
                 .hover(move |style| style.text_color(color(palette.text)))
-                .child(icon(tab_icon(tab), 15.).text_color(color(if on {
-                    palette.text
-                } else {
-                    palette.secondary
-                })))
-                .child(div().truncate().child(name))
+                // Short of room, the drawings go first, then the names
+                // wrap rather than lose their ends.
+                .when(drawings, |tab_button| {
+                    tab_button.child(icon(tab_icon(tab), 15.).text_color(color(if on {
+                        palette.text
+                    } else {
+                        palette.secondary
+                    })))
+                })
+                .child(div().min_w_0().text_center().child(name))
                 .on_click(cx.listener(move |shell, _, window, cx| {
                     shell.choose_tab(tab, window, cx);
                 }))

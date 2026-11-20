@@ -249,6 +249,8 @@ pub(crate) struct Page {
     /// The automations listed, once read.
     pub automations: Vec<Automation>,
     pub loaded: bool,
+    /// Those of them with a run going when they were read, by id.
+    pub running: Vec<String>,
     /// The automation whose page is open.
     pub open: Option<Opened>,
     /// The automation the editor holds, when it is open.
@@ -334,6 +336,8 @@ pub(crate) struct Editor {
     pub kinds: [FocusHandle; 4],
     pub shelf_back: FocusHandle,
     pub shelf_search: FocusHandle,
+    /// The panel's scrolling, where the window is too low for it whole.
+    pub shelf_scroll: gpui_kit::ScrollHandle,
     /// **Whether the canvas still shows what it was fitted to**: it is
     /// fitted again when the window changes size, until the person moves
     /// or zooms it.
@@ -369,6 +373,7 @@ impl Editor {
             kinds: std::array::from_fn(|_| cx.focus_handle()),
             shelf_back: cx.focus_handle(),
             shelf_search: cx.focus_handle(),
+            shelf_scroll: gpui_kit::ScrollHandle::new(),
             fitted: true,
             fitted_for: Cell::default(),
         }
@@ -424,6 +429,7 @@ impl Page {
             search,
             automations: Vec::new(),
             loaded: false,
+            running: Vec::new(),
             open: None,
             edit: None,
             shown: None,
@@ -452,16 +458,26 @@ impl Shell {
         cx.notify();
     }
 
-    /// Reads the automations kept, for the list.
+    /// Reads the automations kept, for the list, and which of them have a
+    /// run going: all from files, nothing sent.
     pub(crate) fn load_the_automations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let reading = self.backend().automations();
+        let backend = self.backend().clone();
+        let reading = backend.automations();
         cx.spawn_in(window, async move |this, cx| {
             let Ok(all) = reading.await else {
                 return;
             };
+            let mut running = Vec::new();
+            for automation in &all {
+                let runs = backend.automation_runs(automation.id.clone()).await;
+                if runs.is_ok_and(|runs| runs.iter().any(|run| run.running)) {
+                    running.push(automation.id.clone());
+                }
+            }
             this.update(cx, |this, cx| {
                 if let Some(page) = &mut this.automations {
                     page.automations = all;
+                    page.running = running;
                     page.loaded = true;
                     cx.notify();
                 }
@@ -780,7 +796,8 @@ impl Shell {
             .edit
             .as_ref()
             .and_then(|edit| crate::state::automations::content_of(edit.state.automation()));
-        let target = crate::state::automations::fitting(content, size);
+        let scale = Look::now(cx).settings.text_scale();
+        let target = crate::state::automations::fitting(content, size, scale);
         page.editor.fitted_for.set(bounds.size);
         self.place_the_canvas(|_, _| target, glides, cx);
         if let Some(page) = &mut self.automations {

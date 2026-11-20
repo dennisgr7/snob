@@ -306,6 +306,27 @@ async fn a_step_to_disconnect_from_is_named_without_its_detail(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
+async fn a_step_to_connect_to_is_named_without_its_detail(cx: &mut TestAppContext) {
+    let mut automation = daily();
+    automation.insert(
+        Step::Webhook(snob_core::automation::Webhook {
+            url: "https://example.com/hook".to_string(),
+            ..snob_core::automation::Webhook::default()
+        }),
+        (520, 0),
+    );
+    let app = in_editor(cx, scripted(vec![automation])).await;
+    app.in_window(cx, |window, cx| window.right_click(("node", 2usize), cx));
+    settle(&app, cx);
+    app.in_window(cx, |window, _| {
+        assert_eq!(
+            window.find(("node-menu-connect", 3usize)).label(),
+            Some("Connect to Send to a webhook")
+        );
+    });
+}
+
+#[gpui_kit::test]
 async fn two_steps_of_one_name_to_disconnect_from_are_told_apart_without_parentheses(
     cx: &mut TestAppContext,
 ) {
@@ -1380,9 +1401,9 @@ async fn a_run_with_what_it_found_kept_is_said_in_the_apps_words_and_one_kept_be
         lines_of(&app, cx, 0),
         [
             "Followers \u{b7} Your account: 2 came, 1 went, 120 accounts in all.",
-            "+ new_friend",
-            "+ late_comer",
-            "- gone_away",
+            "+ @new_friend",
+            "+ @late_comer",
+            "\u{2212} @gone_away",
             "Following \u{b7} Your account: no changes, 98 accounts.",
         ]
     );
@@ -1889,4 +1910,34 @@ async fn every_steps_dialog_has_one_title_and_tab_reaches_its_controls(cx: &mut 
         settle(&app, cx);
         assert!(!shown(&app, cx, "step-dialog"));
     }
+}
+
+#[gpui_kit::test]
+async fn a_dialog_taller_than_the_window_opens_with_its_focused_field_in_sight_ring_and_all(
+    cx: &mut TestAppContext,
+) {
+    let large = Settings {
+        text_scale: 2.0,
+        ..still()
+    };
+    let app = open_with(cx, scripted(vec![daily()]), large);
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    app.click(cx, "rail-automations");
+    app.until_screen(cx, |screen| *screen == Screen::Automations)
+        .await;
+    settle(&app, cx);
+    click(&app, cx, ("automation", 0usize));
+    settle(&app, cx);
+    app.click(cx, "automation-edit");
+    settle(&app, cx);
+    configure(&app, cx, 1);
+    assert!(focused_at(&app, cx, "schedule-count"));
+    app.in_window(cx, |window, _| {
+        let body = window.find(("step-dialog", 2usize)).bounds();
+        let field = window.find("schedule-count").bounds();
+        assert!(
+            field.top() >= body.top() && field.bottom() <= body.bottom() - px(4.),
+            "{field:?} whole, its ring too, in {body:?}"
+        );
+    });
 }

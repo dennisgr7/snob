@@ -24,8 +24,8 @@ use snob_core::automation::{Node, NodeId, Stage};
 use super::automations::{floating, tool_button};
 use super::words::{stage_name, step_detail, step_name};
 use crate::state::automations::{
-    ARROW_PANS, Bend, Canvas, NODE_H, NODE_W, comes_in_at, head, heading, inputs_for, leaves_at,
-    route,
+    ARROW_PANS, Bend, Canvas, NODE_H, NODE_W, PANEL_INSET, PANEL_WIDTH, comes_in_at, head, heading,
+    inputs_for, leaves_at, panel_width, route,
 };
 use crate::state::shelf::{At, has_a_trigger};
 use crate::theme::motion;
@@ -39,7 +39,14 @@ use crate::ui::shell::{Phase, Shell};
 use super::words::unjoined_words;
 
 /// The space between the editor's floating parts and the panel's edges.
-const INSET: f32 = 16.0;
+const INSET: f32 = PANEL_INSET;
+
+/// How wide the panel of steps is drawn in an editor `width` wide, and the
+/// room left of it for the top bar, in logical pixels.
+fn panel_and_bar(width: f32, look: &Look) -> (f32, f32) {
+    let panel = panel_width(width, look.settings.text_scale());
+    (panel, (width - panel - 3.0 * INSET).max(0.0))
+}
 
 /// How long after one step of the panel the next comes in.
 const STEP_STAGGER: Duration = Duration::from_millis(40);
@@ -121,6 +128,12 @@ const PORT: f32 = 12.0;
 const PORT_OFFERED: f32 = 14.0;
 const PORT_SNAPPED: f32 = 16.0;
 
+/// How much of its size a dot keeps at `zoom`: it shrinks with the steps
+/// zoomed out, so two neighbors' dots never meet, down to half.
+fn port_scale(zoom: f32) -> f32 {
+    zoom.clamp(0.5, 1.0)
+}
+
 /// One arrow: the way it takes, in the canvas's own units, how far before
 /// its end its head stops (the input's dot, in logical pixels), and what
 /// ink.
@@ -171,10 +184,8 @@ fn arrows(canvas_now: Canvas, all: Vec<Arrow>, look: &Look) -> AnyElement {
                     }
                     let way = heading(&arrow.route);
                     let end = on_screen(end);
-                    let tip = (
-                        end.0 - way.0 * arrow.short_of,
-                        end.1 - way.1 * arrow.short_of,
-                    );
+                    let short_of = arrow.short_of * port_scale(zoom);
+                    let tip = (end.0 - way.0 * short_of, end.1 - way.1 * short_of);
                     let [tip, one, other] = head(tip, way, (9.0 * zoom).max(4.0));
                     let mut drawn = PathBuilder::fill();
                     drawn.move_to(point(px(tip.0), px(tip.1)));
@@ -321,7 +332,7 @@ fn node_view(
         .w(px(NODE_W * zoom))
         .h(px(NODE_H * zoom))
         .px(px(10. * zoom))
-        .gap(px(10. * zoom))
+        .gap(px(8. * zoom))
         .flex()
         .items_center()
         .justify_start()
@@ -355,35 +366,45 @@ fn node_view(
         .child(
             div()
                 .flex_none()
-                .size(px(30. * zoom))
+                .size(px(28. * zoom))
                 .rounded(px(shape::CONTROL_RADIUS * zoom))
                 .flex()
                 .items_center()
                 .justify_center()
                 .bg(color_at(palette.accent, 0.14))
-                .child(parts::icon(item.drawing(), 16. * zoom).text_color(color(palette.text))),
+                .child(
+                    parts::icon(item.drawing(), 16.)
+                        .size(px(16. * zoom))
+                        .text_color(color(palette.text)),
+                ),
         )
         .child(
+            // A step's words are measured in the canvas's units, as its box
+            // is, so they stay inside it at any text size; the zoom is what
+            // makes them larger.
             div()
+                .flex_1()
                 .min_w_0()
                 .flex()
                 .flex_col()
                 .items_start()
                 .child(
                     div()
-                        .text_size(sp(13. * zoom))
-                        .line_height(sp(17. * zoom))
+                        .w_full()
+                        .text_size(px(12.5 * zoom))
+                        .line_height(px(17. * zoom))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(color(palette.text))
-                        .overflow_hidden()
+                        .truncate()
                         .child(name),
                 )
                 .children(detail.map(|detail| {
                     div()
-                        .text_size(sp(11.5 * zoom))
-                        .line_height(sp(15. * zoom))
+                        .w_full()
+                        .text_size(px(11. * zoom))
+                        .line_height(px(15. * zoom))
                         .text_color(color(palette.secondary))
-                        .overflow_hidden()
+                        .truncate()
                         .child(detail)
                 })),
         )
@@ -392,7 +413,7 @@ fn node_view(
                 Some(Port::Snapped) => PORT_SNAPPED,
                 Some(Port::Offered) => PORT_OFFERED,
                 Some(Port::Off) | None => PORT,
-            };
+            } * port_scale(zoom);
             div()
                 .id(("node-input", id as usize))
                 .test_support()
@@ -436,7 +457,7 @@ fn node_view(
                         shell.begin_a_wire(id, event.position, cx);
                     }),
                 )
-                .child(port_dot(PORT, look))
+                .child(port_dot(PORT * port_scale(zoom), look))
         }))
         .into_any_element()
 }
@@ -709,7 +730,8 @@ pub fn editor(
         .children(automation.nodes.is_empty().then(|| start(canvas_now, look)))
         .child(layer);
 
-    let top = top_bar(shell, edit, phase, away, look, cx);
+    let (panel_width, bar_room) = panel_and_bar(f32::from(drawn.width), look);
+    let top = top_bar(shell, edit, phase, away, bar_room, look, cx);
     let zoom_bar = zoom_bar(canvas_now, phase, away, look, cx);
 
     let searching = editor.search.is_some();
@@ -719,8 +741,8 @@ pub fn editor(
         .top(px(INSET))
         .bottom(px(INSET))
         .right(px(INSET - 16.0 * away))
-        .w(sp(288.))
-        .max_w(relative(0.5))
+        .w(sp(PANEL_WIDTH))
+        .when(panel_width > 0.0, |panel| panel.max_w(px(panel_width)))
         .opacity(phase.presence)
         .flex()
         .flex_col()
@@ -732,9 +754,9 @@ pub fn editor(
                 .aria_label(look.tr("editor-steps"))
                 .flex_initial()
                 .min_h_0()
-                .overflow_y_scroll()
-                .overflow_x_hidden()
-                .p(sp(8.))
+                .flex()
+                .flex_col()
+                .overflow_hidden()
                 // A press anywhere else closes the search; one in the panel
                 // acts as usual, as a step put on the canvas closes it.
                 .when(searching, |panel| {
@@ -742,7 +764,31 @@ pub fn editor(
                         shell.close_the_search_away(window, cx);
                     }))
                 })
-                .child(shelf),
+                .child(
+                    div()
+                        .relative()
+                        .flex_initial()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .id("editor-steps-scroll")
+                                .flex_initial()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .overflow_x_hidden()
+                                .track_scroll(&editor.shelf_scroll)
+                                .p(sp(8.))
+                                .child(shelf),
+                        )
+                        .child(parts::scrollbar(
+                            "editor-steps-scrollbar",
+                            &editor.shelf_scroll,
+                            sp(0.),
+                            look,
+                        )),
+                ),
         );
 
     div()
@@ -758,12 +804,14 @@ pub fn editor(
 }
 
 /// The way back, undo and redo, the title, and the name's field, at the top
-/// left.
+/// left, **never under the panel**: in the `room` left of it the name's
+/// field narrows, then goes to a line of its own.
 fn top_bar(
     shell: &Shell,
     edit: &Edit,
     phase: Phase,
     away: f32,
+    room: f32,
     look: &Look,
     cx: &mut Context<Shell>,
 ) -> AnyElement {
@@ -771,11 +819,15 @@ fn top_bar(
         .absolute()
         .top(px(INSET - 12.0 * away))
         .left(px(INSET))
+        .when(room > 0.0, |bar| bar.max_w(px(room)))
         .opacity(phase.presence)
         .flex()
+        .flex_wrap()
         .items_center()
         .gap(sp(8.))
-        .p(px(4.))
+        // As much round the name's field, on a line of its own, as round
+        // the buttons.
+        .p(px(8.))
         .pr(sp(10.))
         .child(
             tool_button(
@@ -814,7 +866,7 @@ fn top_bar(
                 .text_left(),
         )
         .child(
-            div().w(sp(220.)).child(
+            div().w(sp(220.)).min_w(sp(120.)).max_w_full().child(
                 Input::new(&edit.name)
                     .id("editor-name")
                     .aria_label(look.tr("editor-name")),
@@ -1205,9 +1257,14 @@ fn steps_of(
         }))
         .child(title_row)
         .child(
+            // Open, it closes the search: named apart from the field.
             tool_button(
                 "editor-shelf-search",
-                look.tr("editor-shelf-search"),
+                look.tr(if search.is_some() {
+                    "editor-shelf-search-close"
+                } else {
+                    "editor-shelf-search"
+                }),
                 assets::SEARCH,
                 true,
                 look,
@@ -1327,7 +1384,11 @@ fn item_row(
         })
         .child(drawing_box(drawing, steps == Steps::Triggers, look))
         .child(
+            // The name wraps in the panel's width, as the note under it does,
+            // its chip beside it, or under it where both do not fit: a name
+            // pressed narrow by its chip would break inside a word.
             div()
+                .flex_1()
                 .min_w_0()
                 .flex()
                 .flex_col()
@@ -1336,11 +1397,15 @@ fn item_row(
                 .text_left()
                 .child(
                     div()
+                        .w_full()
                         .flex()
-                        .items_center()
+                        .flex_wrap()
+                        .items_start()
                         .gap(sp(6.))
                         .child(
                             div()
+                                .flex_initial()
+                                .min_w_0()
                                 .text_size(sp(13.))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(color(palette.text))
@@ -1349,6 +1414,7 @@ fn item_row(
                         .children(soon.then(|| {
                             div()
                                 .flex_none()
+                                .mt(px(1.))
                                 .px(sp(6.))
                                 .rounded_full()
                                 .border_1()

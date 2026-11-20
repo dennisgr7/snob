@@ -15,10 +15,10 @@ use gpui_kit::base::{Button, FocusTrapElement as _, POPUP_PRIORITY, TestSupportE
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Anchor, AnyElement, Context, Entity, FocusHandle, FontWeight, MouseButton, Role, anchored,
-    deferred, div, px,
+    Anchor, AnyElement, Context, Entity, FocusHandle, FontWeight, MouseButton, Role, ScrollHandle,
+    Window, anchored, deferred, div, px,
 };
-use snob_core::automation::{Only, Step, VideoQuality, WATCH_TOML, WebhookFormat, can_join};
+use snob_core::automation::{Node, Only, Step, VideoQuality, WATCH_TOML, WebhookFormat, can_join};
 use snob_core::watch::schedule::Nth;
 
 use super::words::{
@@ -40,10 +40,15 @@ use crate::ui::shell::Shell;
 use crate::ui::{SuggestDown, SuggestUp};
 
 /// Everything of the editor that is open over the window.
-pub fn render(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> {
+pub fn render(
+    shell: &mut Shell,
+    look: &Look,
+    window: &Window,
+    cx: &mut Context<Shell>,
+) -> Vec<AnyElement> {
     let mut over = Vec::new();
-    over.extend(menu(shell, look, cx));
-    over.extend(configuration(shell, look, cx));
+    over.extend(menu(shell, look, window, cx));
+    over.extend(configuration(shell, look, window, cx));
     over.extend(question(shell, look, cx));
     over
 }
@@ -75,11 +80,27 @@ fn item(
                 .flex_none()
                 .text_color(color(palette.text)),
         )
-        .child(div().flex_1().min_w_0().text_left().truncate().child(label))
+        // A line as tall as the words' descenders, which `truncate` clips.
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_left()
+                .line_height(sp(20.))
+                .truncate()
+                .child(label),
+        )
 }
 
-/// The menu of a step, where the press was.
-fn menu(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> {
+/// The least room a step's menu is given under where it opens before it is
+/// pushed up over the step, and the room it keeps from the window's edge.
+const MENU_LEAST: f32 = 120.0;
+const MENU_MARGIN: f32 = 8.0;
+
+/// The menu of a step, where the press was, or under the step: **as tall
+/// as the room under that place**, scrolling when its items need more, so
+/// at a large text size it does not cover the step it is about.
+fn menu(shell: &Shell, look: &Look, window: &Window, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     let palette = look.palette;
     let Some(edit) = shell
         .automations
@@ -95,36 +116,36 @@ fn menu(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> 
     let Some(node) = automation.node(menu.id) else {
         return Vec::new();
     };
-    let named = |other: &snob_core::automation::Node| match step_detail(&other.step, look) {
-        Some(detail) => format!("{} ({detail})", step_name(&other.step, look)),
-        None => step_name(&other.step, look),
-    };
-    // A step taken an arrow off is named alone, as the canvas names it; its
-    // detail follows only to tell it from another joined step of that name,
-    // and its place among them when the detail is the same too.
-    let joined_to = |other: &snob_core::automation::Node| {
+    // A step is named alone, as the canvas names it; its detail follows only
+    // to tell it from another step of that name in the same group of items
+    // (those it is joined to, or those it may be joined to), and its place
+    // among them when the detail is the same too.
+    let joined_to = |other: &Node| {
         automation
             .edges
             .iter()
             .any(|edge| edge.from == node.id && edge.to == other.id)
     };
-    let told_apart = |other: &snob_core::automation::Node| {
+    let joinable = |other: &Node| {
+        !joined_to(other) && other.id != node.id && can_join(node.step.stage(), other.step.stage())
+    };
+    let told_apart = |other: &Node, group: &dyn Fn(&Node) -> bool| {
         let name = step_name(&other.step, look);
         let alike = automation
             .nodes
             .iter()
-            .any(|one| one.id != other.id && joined_to(one) && step_name(&one.step, look) == name);
+            .any(|one| one.id != other.id && group(one) && step_name(&one.step, look) == name);
         match step_detail(&other.step, look).filter(|_| alike) {
             Some(detail) => format!("{name} \u{b7} {detail}"),
             None => name,
         }
     };
-    let named_alone = |other: &snob_core::automation::Node| {
-        let label = told_apart(other);
+    let named_alone = |other: &Node, group: &dyn Fn(&Node) -> bool| {
+        let label = told_apart(other, group);
         let twins: Vec<_> = automation
             .nodes
             .iter()
-            .filter(|one| joined_to(one) && told_apart(one) == label)
+            .filter(|one| group(one) && told_apart(one, group) == label)
             .map(|one| one.id)
             .collect();
         match twins.iter().position(|id| *id == other.id) {
@@ -145,6 +166,7 @@ fn menu(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> 
             if enabled { assets::HIDE } else { assets::SHOW },
             look,
         )
+        .track_focus(&menu.first)
         .on_click(cx.listener(move |shell, _, window, cx| {
             shell.enable_the_step(!enabled, window, cx);
         })),
@@ -174,7 +196,10 @@ fn menu(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> 
             items.push(
                 item(
                     ("node-menu-disconnect", to as usize),
-                    look.tr_with("node-menu-disconnect", &[("step", &named_alone(other))]),
+                    look.tr_with(
+                        "node-menu-disconnect",
+                        &[("step", &named_alone(other, &joined_to))],
+                    ),
                     assets::CLOSE,
                     look,
                 )
@@ -182,11 +207,14 @@ fn menu(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> 
                     shell.join_the_steps(to, false, window, cx);
                 })),
             );
-        } else if other.id != node.id && can_join(node.step.stage(), other.step.stage()) {
+        } else if joinable(other) {
             items.push(
                 item(
                     ("node-menu-connect", to as usize),
-                    look.tr_with("node-menu-connect", &[("step", &named(other))]),
+                    look.tr_with(
+                        "node-menu-connect",
+                        &[("step", &named_alone(other, &joinable))],
+                    ),
                     assets::BRANCH,
                     look,
                 )
@@ -221,6 +249,20 @@ fn menu(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> 
             cx.listener(|shell, _, window, cx| shell.close_the_node_menu(window, cx)),
         )
         .into_any_element();
+    // Where its point of the canvas is drawn now.
+    let at = shell.automations.as_ref().map_or_else(
+        || gpui_kit::point(px(0.), px(0.)),
+        |page| {
+            let (x, y) = page.editor.canvas_here(cx).on_screen(menu.on);
+            page.editor.middle() + gpui_kit::point(px(x), px(y))
+        },
+    );
+    let below = window.viewport_size().height - at.y - px(MENU_MARGIN);
+    let tallest = sp(420.)
+        .to_pixels(window.rem_size())
+        .min(below.max(px(MENU_LEAST)));
+    // The padding and the outline round the items' box.
+    let round = sp(12.).to_pixels(window.rem_size()) + px(2.);
     let shown = div()
         .id("node-menu")
         .test_support()
@@ -228,8 +270,6 @@ fn menu(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> 
         .aria_label(look.tr("node-menu"))
         .occlude()
         .w(sp(300.))
-        .max_h(sp(420.))
-        .overflow_y_scroll()
         .p(sp(6.))
         .bg(color(palette.panel))
         .border_1()
@@ -238,14 +278,32 @@ fn menu(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> 
         .shadow_lg()
         .child(
             div()
+                .relative()
                 .flex()
                 .flex_col()
-                .children(items)
-                .focus_trap("node-menu-items", &menu.focus),
+                .child(
+                    parts::room_for_focus(
+                        div()
+                            .id("node-menu-scroll")
+                            .max_h(tallest - round)
+                            .overflow_y_scroll()
+                            .track_scroll(&menu.scroll),
+                    )
+                    .flex()
+                    .flex_col()
+                    .child(div().flex_none().flex().flex_col().children(items))
+                    .focus_trap("node-menu-items", &menu.focus),
+                )
+                .child(parts::scrollbar_round_room(
+                    "node-menu-scrollbar",
+                    &menu.scroll,
+                    sp(4.),
+                    look,
+                )),
         );
     let placed = deferred(
         anchored()
-            .position(menu.at)
+            .position(at)
             .anchor(Anchor::TopLeft)
             .snap_to_window_with_margin(px(8.))
             .child(shown),
@@ -254,6 +312,9 @@ fn menu(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> 
     .into_any_element();
     vec![backdrop, placed]
 }
+
+/// The room inside a dialog's card, round what it holds.
+const DIALOG_PADDING: f32 = 24.0;
 
 /// A dialog over the whole window: a backdrop that holds the pointer, and
 /// the card, its focus kept inside. **Every dialog of the editor is this
@@ -272,6 +333,7 @@ fn modal(
     body: Vec<AnyElement>,
     actions: Vec<AnyElement>,
     trap: &FocusHandle,
+    scroll: &ScrollHandle,
     look: &Look,
 ) -> AnyElement {
     let palette = look.palette;
@@ -313,18 +375,33 @@ fn modal(
                 }))
                 .child(heading),
         )
-        .child(parts::room_for_focus(
+        .child(
             div()
-                .id((id, 2usize))
-                .test_support()
+                .relative()
                 .flex_1()
                 .min_h_0()
-                .overflow_y_scroll()
                 .flex()
                 .flex_col()
-                .gap(sp(14.))
-                .children(body),
-        ))
+                .child(parts::room_for_focus(
+                    div()
+                        .id((id, 2usize))
+                        .test_support()
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .track_scroll(scroll)
+                        .flex()
+                        .flex_col()
+                        .gap(sp(14.))
+                        .children(body),
+                ))
+                .child(parts::scrollbar_round_room(
+                    "dialog-scrollbar",
+                    scroll,
+                    sp(DIALOG_PADDING - 4.),
+                    look,
+                )),
+        )
         .child(
             div()
                 .flex_none()
@@ -350,7 +427,7 @@ fn modal(
         .max_h_full()
         .flex()
         .flex_col()
-        .p(sp(24.))
+        .p(sp(DIALOG_PADDING))
         .bg(color(palette.panel))
         .border_1()
         .border_color(color(palette.control_line))
@@ -366,6 +443,8 @@ fn modal(
         .items_center()
         .justify_center()
         .p(px(frame::SIDE * 2.))
+        // Below the band, which holds the window's own buttons.
+        .pt(px(frame::BAND + frame::SIDE))
         .bg(color_at(palette.frame, 0.72))
         .child(card)
         .into_any_element()
@@ -454,6 +533,7 @@ fn question(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyEleme
         body,
         actions,
         &leave.focus,
+        &leave.scroll,
         look,
     )]
 }
@@ -524,7 +604,12 @@ fn wrong(id: &'static str, sentences: Vec<String>, look: &Look) -> Option<AnyEle
 }
 
 /// The configuration of a step, over the window.
-fn configuration(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> {
+fn configuration(
+    shell: &Shell,
+    look: &Look,
+    window: &Window,
+    cx: &mut Context<Shell>,
+) -> Vec<AnyElement> {
     let Some(edit) = shell
         .automations
         .as_ref()
@@ -557,17 +642,18 @@ fn configuration(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<Any
         .map(|refused| wrong_words(&refused.wrong, look))
         .or_else(|| problems.first().cloned());
     let valid = why_not.is_none() && typed.is_some();
+    let mut focused = None;
     let (title, body) = match &dialog.fields {
         Fields::Schedule(_) => (
             look.tr("dialog-schedule-title"),
-            schedule_body(dialog, refused.as_ref(), look, cx),
+            schedule_body(dialog, refused.as_ref(), &mut focused, look, window, cx),
         ),
         Fields::Action { .. } => (
             look.tr_with(
                 "dialog-configure-title",
                 &[("name", &step_name(&node.step, look))],
             ),
-            action_body(dialog, look, cx),
+            action_body(dialog, look, window, cx),
         ),
         Fields::Filter { .. } => (
             look.tr_with(
@@ -584,6 +670,12 @@ fn configuration(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<Any
             webhook_body(dialog, automation.id == WATCH_TOML, look, cx),
         ),
     };
+    // What has focus is brought into sight: a dialog taller than the
+    // window may open with it below the fold.
+    match focused {
+        Some(at) => parts::keep_in_sight(&dialog.scroll, at, &dialog.in_sight, window),
+        None => dialog.in_sight.set(None),
+    }
     let mut body = body;
     body.extend(wrong("dialog-problems", problems, look));
     let actions = vec![
@@ -622,6 +714,7 @@ fn configuration(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<Any
         body,
         actions,
         &dialog.focus,
+        &dialog.scroll,
         look,
     )]
 }
@@ -634,6 +727,23 @@ fn label_text(text: String, look: &Look) -> gpui_kit::Div {
         .font_weight(FontWeight::MEDIUM)
         .text_color(color(look.palette.text))
         .child(text)
+}
+
+/// Notes the last thing `body` asks as where focus is, when one of its
+/// `fields` has it.
+fn focus_in(
+    body: &[AnyElement],
+    fields: &[&Entity<InputState>],
+    focused: &mut Option<usize>,
+    window: &Window,
+    cx: &gpui_kit::App,
+) {
+    if fields
+        .iter()
+        .any(|field| gpui_kit::Focusable::focus_handle(field.read(cx), cx).is_focused(window))
+    {
+        *focused = body.len().checked_sub(1);
+    }
 }
 
 /// What is wrong with the schedule, under `field` when it is about it.
@@ -730,6 +840,9 @@ fn times_list(fields: &ScheduleFields, look: &Look, cx: &mut Context<Shell>) -> 
                     true,
                     look,
                 )
+                // As tall as the field it takes away.
+                .w(sp(parts::SMALL_FIELD_HEIGHT))
+                .h(sp(parts::SMALL_FIELD_HEIGHT))
                 .on_click(cx.listener(move |shell, _, _, cx| shell.remove_a_time(at, cx))),
             )
     });
@@ -860,7 +973,9 @@ fn month_days(
 fn schedule_body(
     dialog: &Dialog,
     refused: Option<&Refused>,
+    focused: &mut Option<usize>,
     look: &Look,
+    window: &Window,
     cx: &mut Context<Shell>,
 ) -> Vec<AnyElement> {
     let Fields::Schedule(fields) = &dialog.fields else {
@@ -929,9 +1044,21 @@ fn schedule_body(
                         look,
                         cx,
                     ));
+                    focus_in(&body, &[&fields.count], focused, window, cx);
                     wrong_under(Field::Count, refused, &mut body, look);
                     floor(&mut body);
                     body.push(times_list(fields, look, cx));
+                    focus_in(
+                        &body,
+                        &fields
+                            .times
+                            .iter()
+                            .map(|row| &row.input)
+                            .collect::<Vec<_>>(),
+                        focused,
+                        window,
+                        cx,
+                    );
                     wrong_under(Field::Times, refused, &mut body, look);
                 }
                 DayMode::Repeating => {
@@ -941,6 +1068,7 @@ fn schedule_body(
                         look,
                         cx,
                     ));
+                    focus_in(&body, &[&fields.count], focused, window, cx);
                     body.push(titled(
                         look.tr("schedule-unit"),
                         parts::segmented("schedule-unit", look.tr("schedule-unit"), look)
@@ -967,6 +1095,7 @@ fn schedule_body(
                 look,
                 cx,
             ));
+            focus_in(&body, &[&fields.count], focused, window, cx);
             wrong_under(Field::Count, refused, &mut body, look);
             floor(&mut body);
             body.push(titled(
@@ -989,6 +1118,17 @@ fn schedule_body(
             ));
             wrong_under(Field::Weekdays, refused, &mut body, look);
             body.push(times_list(fields, look, cx));
+            focus_in(
+                &body,
+                &fields
+                    .times
+                    .iter()
+                    .map(|row| &row.input)
+                    .collect::<Vec<_>>(),
+                focused,
+                window,
+                cx,
+            );
             wrong_under(Field::Times, refused, &mut body, look);
         }
         Frequency::Month => {
@@ -1043,6 +1183,7 @@ fn schedule_body(
                             |shell: &mut Shell, window, cx| {
                                 shell.close_the_first_months(window, cx);
                             },
+                            window,
                             cx,
                         ))
                         .into_any_element(),
@@ -1060,6 +1201,17 @@ fn schedule_body(
             }
             month_days(&form, refused, &mut body, look, cx);
             body.push(times_list(fields, look, cx));
+            focus_in(
+                &body,
+                &fields
+                    .times
+                    .iter()
+                    .map(|row| &row.input)
+                    .collect::<Vec<_>>(),
+                focused,
+                window,
+                cx,
+            );
             wrong_under(Field::Times, refused, &mut body, look);
         }
         Frequency::Year => {
@@ -1084,6 +1236,17 @@ fn schedule_body(
             wrong_under(Field::Months, refused, &mut body, look);
             month_days(&form, refused, &mut body, look, cx);
             body.push(times_list(fields, look, cx));
+            focus_in(
+                &body,
+                &fields
+                    .times
+                    .iter()
+                    .map(|row| &row.input)
+                    .collect::<Vec<_>>(),
+                focused,
+                window,
+                cx,
+            );
             wrong_under(Field::Times, refused, &mut body, look);
         }
         Frequency::Advanced => {
@@ -1153,6 +1316,7 @@ fn schedule_body(
                 ),
             ] {
                 body.push(labeled(id, label, input, look));
+                focus_in(&body, &[input], focused, window, cx);
                 wrong_under(field, refused, &mut body, look);
             }
         }
@@ -1201,7 +1365,12 @@ fn known_row(account: &Account, look: &Look) -> (String, String, AnyElement) {
         .items_center()
         .gap(sp(10.))
         .min_w_0()
-        .child(parts::avatar(account, 28., look, 1.0))
+        .child(parts::avatar(
+            account,
+            28. * look.settings.text_scale(),
+            look,
+            1.0,
+        ))
         .child(
             div()
                 .flex()
@@ -1238,11 +1407,15 @@ fn another_row(name: &str, look: &Look) -> (String, String, AnyElement) {
         .gap(sp(10.))
         .min_w_0()
         .child(
+            // Round as the pictures above it, in every look.
             div()
                 .flex_none()
-                .size(px(28.))
+                .size(sp(28.))
                 .rounded_full()
-                .bg(color(palette.frame))
+                .bg(color_at(palette.text, 0.08))
+                .when(look.settings.more_contrast, |circle| {
+                    circle.border_1().border_color(color(palette.line))
+                })
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1262,6 +1435,7 @@ fn username_field(
     typed: &str,
     suggest: &Suggesting,
     look: &Look,
+    window: &Window,
     cx: &mut Context<Shell>,
 ) -> AnyElement {
     let label = look.tr("action-username");
@@ -1303,10 +1477,12 @@ fn username_field(
             look.tr("action-suggestions"),
             &suggest.field,
             vec![moving],
+            &suggest.scroll,
             look,
             |shell: &mut Shell, window, cx| {
                 shell.close_the_suggestions(window, cx);
             },
+            window,
             cx,
         )
     });
@@ -1329,7 +1505,12 @@ fn username_field(
         .into_any_element()
 }
 
-fn action_body(dialog: &Dialog, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> {
+fn action_body(
+    dialog: &Dialog,
+    look: &Look,
+    window: &Window,
+    cx: &mut Context<Shell>,
+) -> Vec<AnyElement> {
     let Fields::Action {
         username,
         save_to,
@@ -1368,7 +1549,14 @@ fn action_body(dialog: &Dialog, look: &Look, cx: &mut Context<Shell>) -> Vec<Any
         );
     }
     if !form.mine {
-        body.push(username_field(username, &form.username, suggest, look, cx));
+        body.push(username_field(
+            username,
+            &form.username,
+            suggest,
+            look,
+            window,
+            cx,
+        ));
     }
     if form.needs_consent() {
         let given = form.given();

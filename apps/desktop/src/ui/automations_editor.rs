@@ -12,7 +12,9 @@ use std::rc::Rc;
 
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{Bounds, Context, Entity, FocusHandle, Pixels, Point, Subscription, Window};
+use gpui_kit::{
+    Bounds, Context, Entity, FocusHandle, Pixels, Point, ScrollHandle, Subscription, Window,
+};
 use snob_core::automation::{NodeId, Only, Problem, Step, WebhookFormat};
 
 use super::automations::{Edit, Grab, Item, Opened, Said};
@@ -38,16 +40,23 @@ pub(crate) struct Wire {
     pub snapped: Option<NodeId>,
 }
 
-/// The small menu of a step, open where the press was.
+/// The small menu of a step, open where the press was. **It is kept at a
+/// point of the canvas**, so it stays by its step when the canvas is
+/// fitted again or the window changes size.
 pub(crate) struct NodeMenu {
     pub id: NodeId,
-    pub at: Point<Pixels>,
+    pub on: (f32, f32),
     pub focus: FocusHandle,
+    /// Its first item's, which a key that opened it focuses.
+    pub first: FocusHandle,
+    /// Its items' scrolling, where the window has too little room for them.
+    pub scroll: ScrollHandle,
 }
 
 /// The question asked on leaving what cannot run.
 pub(crate) struct Leave {
     pub problems: Vec<Problem>,
+    pub scroll: ScrollHandle,
     /// Where the person was going when the question came: done after a
     /// discard.
     pub then: Option<Event>,
@@ -119,6 +128,8 @@ pub(crate) struct Suggesting {
     /// How many times the name changed: an answer to an older change is
     /// dropped.
     pub edits: u64,
+    /// The list's scrolling, where the window has too little room for it.
+    pub scroll: ScrollHandle,
 }
 
 impl Suggesting {
@@ -129,6 +140,7 @@ impl Suggesting {
             field: Rc::default(),
             rows: Vec::new(),
             edits: 0,
+            scroll: ScrollHandle::new(),
         }
     }
 
@@ -150,7 +162,7 @@ pub(crate) enum Fields {
         form: ActionForm,
         username: Entity<InputState>,
         save_to: Entity<InputState>,
-        suggest: Suggesting,
+        suggest: Box<Suggesting>,
     },
     Filter {
         only: Only,
@@ -167,6 +179,11 @@ pub(crate) enum Fields {
 pub(crate) struct Dialog {
     pub node: NodeId,
     pub fields: Fields,
+    pub scroll: ScrollHandle,
+    /// The thing asked that focus was last brought into sight in, by its
+    /// place among them, and how big the dialog's body was then: brought
+    /// there once, so it can be scrolled away.
+    pub in_sight: Cell<Option<(usize, gpui_kit::Size<Pixels>)>>,
     pub focus: FocusHandle,
     pub cancel: FocusHandle,
     _watching: Vec<Subscription>,
@@ -672,13 +689,35 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(page) = &self.automations else {
+            return;
+        };
+        let on = page.editor.under(at, cx);
+        self.open_the_node_menu_on(id, on, false, window, cx);
+    }
+
+    fn open_the_node_menu_on(
+        &mut self,
+        id: NodeId,
+        on: (f32, f32),
+        by_key: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let focus = cx.focus_handle();
-        window.focus(&focus, cx);
+        let first = cx.focus_handle();
+        window.focus(if by_key { &first } else { &focus }, cx);
         if let Some(edit) = self.edit_mut() {
             edit.selected = Some(id);
             edit.grab = None;
             edit.wire = None;
-            edit.menu = Some(NodeMenu { id, at, focus });
+            edit.menu = Some(NodeMenu {
+                id,
+                on,
+                focus,
+                first,
+                scroll: ScrollHandle::new(),
+            });
             cx.notify();
         }
     }
@@ -700,13 +739,11 @@ impl Shell {
         else {
             return;
         };
-        let canvas = page.editor.canvas_here(cx);
-        let (x, y) = canvas.on_screen((
+        let on = (
             node.at.0 as f32,
             node.at.1 as f32 + crate::state::automations::NODE_H,
-        ));
-        let at = page.editor.middle() + gpui_kit::point(gpui_kit::px(x), gpui_kit::px(y * 1.0));
-        self.open_the_node_menu(id, at, window, cx);
+        );
+        self.open_the_node_menu_on(id, on, true, window, cx);
     }
 
     /// Whether the space bar is held over the canvas, which makes a drag
@@ -857,7 +894,7 @@ impl Shell {
                         form,
                         username,
                         save_to,
-                        suggest: Suggesting::new(),
+                        suggest: Box::new(Suggesting::new()),
                     },
                     None,
                 )
@@ -891,6 +928,8 @@ impl Shell {
             edit.dialog = Some(Dialog {
                 node: id,
                 fields,
+                scroll: ScrollHandle::new(),
+                in_sight: Cell::new(None),
                 focus,
                 cancel,
                 _watching: watching,
@@ -1420,6 +1459,7 @@ impl Shell {
                     edit.dialog = None;
                     edit.leaving = Some(Leave {
                         problems,
+                        scroll: ScrollHandle::new(),
                         then,
                         focus,
                         cancel,

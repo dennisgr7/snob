@@ -770,6 +770,8 @@ pub(crate) struct AboutAccount {
     pub focus: FocusHandle,
     /// Its button that closes it, where focus starts.
     pub close: FocusHandle,
+    /// What scrolls when the window is too low for it whole.
+    pub scroll: ScrollHandle,
 }
 
 /// Everything the pages hold, apart from the rest of the shell.
@@ -1560,6 +1562,7 @@ impl Shell {
             known: profile::About::default(),
             focus,
             close,
+            scroll: ScrollHandle::new(),
         });
         cx.notify();
     }

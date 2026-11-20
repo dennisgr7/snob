@@ -189,7 +189,278 @@ pub fn all() -> Vec<Scenario> {
             "3 8",
             profile_and_lists
         ),
+        scenario!(
+            "the keyboard alone copies a profile's username",
+            "3 8",
+            username_copied_by_keys
+        ),
+        scenario!(
+            "about this account opens from the options and Escape gives focus back",
+            "3 8",
+            about_and_back
+        ),
+        scenario!(
+            "the keyboard alone chooses every account of a list and copies them",
+            "3 8",
+            every_account_copied
+        ),
+        scenario!(
+            "an automation's page says a run is going",
+            "2 3",
+            a_run_going
+        ),
+        scenario!(
+            "a schedule chosen every month is saved",
+            "2 3",
+            monthly_schedule_saved
+        ),
     ]
+}
+
+/// Presses Tab until `id` has focus, and answers with the window then.
+async fn tab_to(app: &mut Driven, id: &str) -> anyhow::Result<Answer> {
+    for _ in 0..60 {
+        let seen = app.press("tab").await?;
+        if node(&seen, id).is_ok_and(|found| found.focused == Some(true)) {
+            return Ok(seen);
+        }
+    }
+    bail!("Tab never came to {id}")
+}
+
+/// Presses Down in an open menu until `id` has focus.
+async fn down_to(app: &mut Driven, id: &str) -> anyhow::Result<()> {
+    for _ in 0..8 {
+        let seen = app.look().await?;
+        if node(&seen, id).is_ok_and(|found| found.focused == Some(true)) {
+            return Ok(());
+        }
+        app.press("down").await?;
+    }
+    bail!("Down never came to {id}")
+}
+
+/// `someone` signed in, on its own profile, read.
+async fn on_the_own_profile<'a>(
+    stage: &'a mut Stage<'_>,
+    tag: &str,
+) -> anyhow::Result<&'a mut Driven> {
+    stage.open().await?;
+    stage.sign_in(world::SOMEONE, tag).await?;
+    let app = stage.app()?;
+    app.click("account").await?;
+    app.click("menu-profile").await?;
+    app.until("the own profile read", profile_read).await?;
+    Ok(app)
+}
+
+async fn username_copied_by_keys(stage: &mut Stage<'_>) -> anyhow::Result<()> {
+    let app = on_the_own_profile(stage, "username").await?;
+    tab_to(app, "profile-username").await?;
+    app.press("enter").await?;
+    let seen = app
+        .until("the username copied", |seen| seen.clipboard.is_some())
+        .await?;
+    expect_eq(
+        seen.clipboard.as_deref(),
+        Some("someone"),
+        "what was copied",
+    )?;
+    expect_eq(
+        seen.announced.as_str(),
+        "Username copied",
+        "said to a screen reader",
+    )
+}
+
+async fn about_and_back(stage: &mut Stage<'_>) -> anyhow::Result<()> {
+    let app = on_the_own_profile(stage, "about").await?;
+    tab_to(app, "profile-options").await?;
+    app.press("enter").await?;
+    app.until("the options", |seen| node(seen, "profile-menu").is_ok())
+        .await?;
+    down_to(app, "profile-about-open").await?;
+    app.press("enter").await?;
+    let seen = app
+        .until("about this account", |seen| {
+            node(seen, "profile-about").is_ok()
+        })
+        .await?;
+    expect_eq(
+        node(&seen, "profile-about")?.role.as_deref(),
+        Some("Dialog"),
+        "its role",
+    )?;
+    expect_eq(
+        label(&seen, "profile-about-title")?.as_str(),
+        "About this account",
+        "its title",
+    )?;
+    expect_eq(
+        node(&seen, "profile-about-close")?.focused,
+        Some(true),
+        "focus on its button",
+    )?;
+    // Tab stays inside it.
+    let seen = app.press("tab").await?;
+    expect_eq(
+        node(&seen, "profile-about-close")?.focused,
+        Some(true),
+        "focus after Tab",
+    )?;
+    app.press("escape").await?;
+    let seen = app
+        .until("about this account closed", |seen| {
+            node(seen, "profile-about").is_err()
+        })
+        .await?;
+    expect_eq(
+        node(&seen, "profile-options")?.focused,
+        Some(true),
+        "focus back on the options",
+    )
+}
+
+async fn every_account_copied(stage: &mut Stage<'_>) -> anyhow::Result<()> {
+    let app = on_the_own_profile(stage, "choose").await?;
+    tab_to(app, "profile-followers").await?;
+    app.press("enter").await?;
+    app.until("the own followers read", list_read).await?;
+    tab_to(app, "people-options").await?;
+    app.press("enter").await?;
+    app.until("the list's options", |seen| {
+        node(seen, "people-menu").is_ok()
+    })
+    .await?;
+    down_to(app, "people-select").await?;
+    app.press("enter").await?;
+    app.until("rows to choose", |seen| {
+        node(seen, "people-selection").is_ok()
+    })
+    .await?;
+    tab_to(app, "people-select-all").await?;
+    app.press("enter").await?;
+    app.until("every row chosen", |seen| {
+        node(seen, "people-select-all").is_ok_and(|all| all.disabled == Some(true))
+    })
+    .await?;
+    tab_to(app, "people-copy").await?;
+    app.press("enter").await?;
+    let seen = app
+        .until("the usernames copied", |seen| seen.clipboard.is_some())
+        .await?;
+    let copied = seen.clipboard.unwrap_or_default();
+    let names: Vec<&str> = copied.lines().collect();
+    // `someone` is followed by `user0` to `user24`.
+    expect_eq(names.len(), 25, "usernames copied")?;
+    for name in ["user0", "user24"] {
+        expect(names.contains(&name), || format!("{name} was not copied"))?;
+    }
+    expect_eq(
+        seen.announced.as_str(),
+        "25 usernames copied",
+        "said to a screen reader",
+    )
+}
+
+/// The automations section, past its introduction, on its list.
+async fn to_the_automations(app: &mut Driven) -> anyhow::Result<Answer> {
+    app.click("rail-automations").await?;
+    app.until_screen("automations").await?;
+    let seen = app
+        .until("the introduction or the list", |seen| {
+            node(seen, "automations-begin").is_ok() || node(seen, "automation#0").is_ok()
+        })
+        .await?;
+    if node(&seen, "automations-begin").is_ok() {
+        app.click("automations-begin").await?;
+    }
+    app.until("the automations", |seen| node(seen, "automation#0").is_ok())
+        .await
+}
+
+async fn a_run_going(stage: &mut Stage<'_>) -> anyhow::Result<()> {
+    seed_automations(&stage.root)?;
+    stage.open().await?;
+    stage.sign_in(world::ME, "going").await?;
+    let app = stage.app()?;
+    to_the_automations(app).await?;
+    app.click("automation#0").await?;
+    let seen = app
+        .until("the history", |seen| {
+            node(seen, "automation-run-row#0").is_ok()
+        })
+        .await?;
+    let newest = label(&seen, "automation-run-row#0")?;
+    expect(newest.ends_with(". Running"), || {
+        format!("the newest run is said as {newest:?}")
+    })?;
+    let before = label(&seen, "automation-run-row#1")?;
+    expect(!before.contains("Running"), || {
+        format!("a run that ended is said as {before:?}")
+    })
+}
+
+async fn monthly_schedule_saved(stage: &mut Stage<'_>) -> anyhow::Result<()> {
+    seed_automations(&stage.root)?;
+    stage.open().await?;
+    stage.sign_in(world::ME, "monthly").await?;
+    let app = stage.app()?;
+    to_the_automations(app).await?;
+    app.click("automation#0").await?;
+    app.until("its page", |seen| node(seen, "automation-edit").is_ok())
+        .await?;
+    app.click("automation-edit").await?;
+    app.until("the flow", |seen| node(seen, "node#1").is_ok())
+        .await?;
+    app.click("node#1").await?;
+    app.press("enter").await?;
+    app.click("node-menu-configure").await?;
+    app.until("the dialog", |seen| node(seen, "step-dialog").is_ok())
+        .await?;
+    let seen = app.click("schedule-frequency-month").await?;
+    expect_eq(
+        node(&seen, "schedule-frequency-month")?.checked,
+        Some(true),
+        "every month chosen",
+    )?;
+    // The first of the month is chosen already; the fifteenth too, and a
+    // time typed where only an example of one is shown.
+    app.click("schedule-date#15").await?;
+    app.click("schedule-time#0").await?;
+    app.type_in("09:00").await?;
+    app.click("dialog-save").await?;
+    app.until("the dialog closed", |seen| {
+        node(seen, "step-dialog").is_err()
+    })
+    .await?;
+    // Kept at once, as every change is.
+    let paths = snob_store::paths::AppPaths::rooted_at(&stage.root);
+    let since = std::time::Instant::now();
+    loop {
+        let kept = snob_store::automations::load(&paths, "00000a01")
+            .map_err(|e| anyhow!("the automation was not read back: {e}"))?
+            .ok_or_else(|| anyhow!("the automation is gone"))?;
+        let when = kept.nodes.iter().find_map(|node| match &node.step {
+            snob_core::automation::Step::Schedule { when } => Some(when.clone()),
+            _ => None,
+        });
+        if let Some(when) = when.as_ref().filter(|when| !when.days.is_empty()) {
+            expect(when.every.is_none(), || {
+                format!("every six hours is still kept: {when:?}")
+            })?;
+            expect_eq(when.at.clone(), vec!["09:00".to_string()], "the time kept")?;
+            return expect_eq(
+                when.days.clone(),
+                vec!["1".to_string(), "15".to_string()],
+                "the days of the month kept",
+            );
+        }
+        expect(since.elapsed() < crate::drive::SOON, || {
+            format!("no day of the month was kept: {when:?}")
+        })?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Whether a profile's first read has come: its first tab's posts, or why
@@ -1079,8 +1350,10 @@ pub const FIXED_NOW: i64 = 1_790_010_000;
 /// Two automations and a short history of the first, kept where the app
 /// finds them: what a list of them and a page with a history are shown
 /// with. **The same on every run**: the moments are fixed. The newest run
-/// keeps what it found as data, said in the app's language; the others
-/// only their sentences, as a run kept before that was.
+/// is still going: its sign of life is this computer's moment, which is
+/// what the engine judges a run going against, and is not shown. The one
+/// before it keeps what it found as data, said in the app's language; the
+/// others only their sentences, as a run kept before that was.
 pub fn seed_automations(root: &Path) -> anyhow::Result<()> {
     use snob_core::Epoch;
     use snob_core::automation::{Account, Automation, Read, Step, Webhook};
@@ -1093,26 +1366,26 @@ pub fn seed_automations(root: &Path) -> anyhow::Result<()> {
         ..Spec::default()
     };
     let mut daily = Automation::new("00000a01", "Daily followers");
-    let trigger = daily.insert(Step::Schedule { when: every("6h") }, (-345, -40));
+    let trigger = daily.insert(Step::Schedule { when: every("6h") }, (-420, -40));
     let lists = daily.insert(
         Step::Read {
             account: Some(Account::own(None)),
             what: Read::Lists,
         },
-        (-115, -40),
+        (-140, -40),
     );
     let changes = daily.insert(
         Step::Filter {
             only: snob_core::automation::Only::Changes,
         },
-        (115, -40),
+        (140, -40),
     );
     let hook = daily.insert(
         Step::Webhook(Webhook {
             url: "https://example.com/hook".to_string(),
             ..Webhook::default()
         }),
-        (345, -40),
+        (420, -40),
     );
     for (from, to) in [(trigger, lists), (lists, changes), (changes, hook)] {
         daily.connect(from, to).map_err(|why| anyhow!("{why}"))?;
@@ -1162,6 +1435,12 @@ Nothing changed.",
             .finish_automation_run(id, Epoch::new(at + 95), outcome, requests, summary, found)
             .map_err(|e| anyhow!("a run was not finished: {e}"))?;
     }
+    let going = shared
+        .record_automation_run("00000a01", Epoch::new(FIXED_NOW - 300))
+        .map_err(|e| anyhow!("a run was not written down: {e}"))?;
+    shared
+        .beat_automation_run(going, snob_core::clock::now())
+        .map_err(|e| anyhow!("a run's sign of life was not written down: {e}"))?;
     Ok(())
 }
 
@@ -1192,6 +1471,59 @@ fn seeded_tick() -> snob_engine::automations::said::Said {
         following: Some(list("unchanged", 98, &[], &[])),
         renamed: 0,
         posts: None,
+    }
+}
+
+/// Pictures the app can draw, for every picture the fake Instagram names:
+/// its own are a few bytes that only begin as a JPEG does, which no view
+/// can draw. Each name has its own two colors, **the same on every run**.
+/// Served on the fake's own server, ahead of its answer (`serve`).
+pub struct Pictures;
+
+impl Pictures {
+    pub async fn serve(server: &wiremock::MockServer) {
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(r"^/media/.*\.jpg$"))
+            .respond_with(Self)
+            .with_priority(1)
+            .mount(server)
+            .await;
+    }
+}
+
+impl wiremock::Respond for Pictures {
+    fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+        const COLORS: [[u8; 3]; 6] = [
+            [0xf2, 0x9e, 0x4c],
+            [0x4c, 0x8b, 0xf2],
+            [0x5b, 0xc2, 0x8a],
+            [0xb0, 0x6a, 0xe0],
+            [0xe8, 0x5d, 0x75],
+            [0x3f, 0xb8, 0xc4],
+        ];
+        let seed = request.url.path().bytes().fold(0usize, |seed, byte| {
+            seed.wrapping_mul(31).wrapping_add(usize::from(byte))
+        });
+        // Two colors that are never the same one, so no picture is flat.
+        let first = seed % COLORS.len();
+        let (from, to) = (
+            COLORS[first],
+            COLORS[(first + 1 + seed / COLORS.len() % (COLORS.len() - 1)) % COLORS.len()],
+        );
+        const SIDE: u32 = 96;
+        let picture = image::RgbImage::from_fn(SIDE, SIDE, |x, y| {
+            let along = (x + y) as f32 / (2 * SIDE - 2) as f32;
+            image::Rgb(std::array::from_fn(|at| {
+                (f32::from(from[at]) * (1.0 - along) + f32::from(to[at]) * along) as u8
+            }))
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        match picture.write_to(&mut png, image::ImageFormat::Png) {
+            Ok(()) => {
+                wiremock::ResponseTemplate::new(200).set_body_raw(png.into_inner(), "image/png")
+            }
+            Err(_) => wiremock::ResponseTemplate::new(500),
+        }
     }
 }
 

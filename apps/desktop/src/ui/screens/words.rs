@@ -697,11 +697,14 @@ fn whose(account: Option<&str>, own: bool, look: &Look) -> String {
     }
 }
 
-/// The accounts named under a line, `sign` before each, and how many more
-/// there were than are named.
+/// What stands before an account that went: a minus sign.
+const GONE: &str = "\u{2212} ";
+
+/// The accounts named under a line by their usernames, `sign` before
+/// each, and how many more there were than are named.
 fn named(sign: &str, names: &[String], count: usize, lines: &mut Vec<String>, look: &Look) {
     for name in names {
-        lines.push(format!("  {sign}{name}"));
+        lines.push(format!("  {sign}@{name}"));
     }
     if count > names.len() {
         let more = (count - names.len()) as u64;
@@ -759,7 +762,7 @@ fn said_lines(said: &Said, now: Epoch, look: &Look) -> Option<Vec<String>> {
                     ));
                     named("+ ", &changes.added_names, changes.added, &mut lines, look);
                     named(
-                        "- ",
+                        GONE,
                         &changes.removed_names,
                         changes.removed,
                         &mut lines,
@@ -827,7 +830,7 @@ fn said_lines(said: &Said, now: Epoch, look: &Look) -> Option<Vec<String>> {
                             ],
                         ));
                         named("+ ", &said.added_names, said.added, &mut lines, look);
-                        named("- ", &said.removed_names, said.removed, &mut lines, look);
+                        named(GONE, &said.removed_names, said.removed, &mut lines, look);
                     }
                     _ => return None,
                 }
@@ -935,9 +938,9 @@ mod tests {
             found_lines(&found, now, &speaking("en")).unwrap(),
             [
                 "Followers \u{b7} @someone: 3 came, 1 went, 120 accounts in all.",
-                "  + came",
+                "  + @came",
                 "  and 2 more",
-                "  - went",
+                "  \u{2212} @went",
                 "1 now goes by another name.",
                 "Posts \u{b7} @someone: 1 new.",
                 "Only the newest posts were read: an older one may have gone unreported.",
@@ -971,7 +974,7 @@ mod tests {
             found_lines(&[found], now, &speaking("en")).unwrap(),
             [
                 "Fans \u{b7} Your account: 1 account.",
-                "  only_one",
+                "  @only_one",
                 "Worked out from lists read earlier (Yesterday at 14:13).",
             ]
         );

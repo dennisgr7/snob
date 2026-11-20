@@ -29,7 +29,7 @@ use crate::theme::tokens::{Scheme, shape};
 use crate::ui::assets;
 use crate::ui::automations::{Item, Page};
 use crate::ui::look::{Look, color, color_at, sp};
-use crate::ui::parts::{self, Kind, icon};
+use crate::ui::parts::{self, Kind, Tone, icon};
 use crate::ui::shell::{Phase, Shell};
 
 /// How far a stage has come in `since` it was first drawn, asking for the
@@ -192,6 +192,7 @@ fn intro(
         .child(
             div()
                 .flex_1()
+                .min_w_0()
                 .flex()
                 .flex_col()
                 .items_center()
@@ -208,7 +209,10 @@ fn intro(
                     look,
                 ))
                 .child(
+                    // As wide as the room at most, so it wraps in it at
+                    // any text size.
                     parts::paragraph("automations-intro", look.tr("automations-intro"), look)
+                        .w_full()
                         .max_w(sp(520.)),
                 )
                 .child(
@@ -236,11 +240,14 @@ struct Card {
     steps: String,
     when: String,
     drawing: &'static str,
+    /// Whether a run of it was going when the list was read.
+    running: bool,
 }
 
 impl Card {
-    fn of(automation: &snob_core::automation::Automation, look: &Look) -> Self {
+    fn of(automation: &snob_core::automation::Automation, running: bool, look: &Look) -> Self {
         Self {
+            running,
             id: automation.id.clone(),
             name: super::words::automation_name(automation, look),
             steps: super::words::card_steps_words(automation, look),
@@ -279,7 +286,7 @@ fn list(
     let typed = search.read(cx).value().to_string();
     let found: Vec<Card> = state::shown(&page.automations, &typed)
         .into_iter()
-        .map(|automation| Card::of(automation, look))
+        .map(|automation| Card::of(automation, page.running.contains(&automation.id), look))
         .collect();
     let loaded = page.loaded;
     let none_at_all = page.automations.is_empty();
@@ -362,6 +369,8 @@ fn list(
             .px(sp(32.))
             .pb(sp(56.))
             .child(
+                // A wash of the pink that still shows on the dark panel,
+                // and an outline where the system asks for more contrast.
                 div()
                     .size(sp(52.))
                     .mb(sp(6.))
@@ -369,7 +378,17 @@ fn list(
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(color_at(palette.accent, 0.12))
+                    .bg(color_at(
+                        palette.accent,
+                        if look.scheme == Scheme::Dark {
+                            0.24
+                        } else {
+                            0.12
+                        },
+                    ))
+                    .when(look.settings.more_contrast, |circle| {
+                        circle.border_1().border_color(color(palette.line))
+                    })
                     .child(icon(assets::AUTOMATIONS, 22.).text_color(color(palette.text))),
             )
             .child(
@@ -391,7 +410,8 @@ fn list(
             )
             .children(note.map(|note| {
                 parts::paragraph("automations-empty-note", note, look)
-                    .max_w(sp(380.))
+                    .w_full()
+                    .max_w(sp(400.))
                     .text_size(sp(14.))
             }))
             .into_any_element()
@@ -437,8 +457,9 @@ fn list(
 }
 
 /// One automation's card: its drawing, its name, its steps in words on two
-/// lines at most, and when it runs beside a clock. **The whole card is the
-/// way to its page**, and a screen reader is told all three.
+/// lines at most, and when it runs beside a clock, with a badge while a run
+/// of it goes. **The whole card is the way to its page**, and a screen
+/// reader is told all of it.
 fn card_view(at: usize, card: Card, look: &Look, cx: &mut Context<Shell>) -> Button {
     let palette = look.palette;
     let Card {
@@ -447,8 +468,14 @@ fn card_view(at: usize, card: Card, look: &Look, cx: &mut Context<Shell>) -> But
         steps,
         when,
         drawing,
+        running,
     } = card;
-    let said = format!("{name}. {steps}. {when}");
+    let going = look.tr("run-running");
+    let said = if running {
+        format!("{name}. {steps}. {when}. {going}")
+    } else {
+        format!("{name}. {steps}. {when}")
+    };
     let small = |text: String, size: f32, line: f32| {
         div()
             .w_full()
@@ -479,8 +506,11 @@ fn card_view(at: usize, card: Card, look: &Look, cx: &mut Context<Shell>) -> But
                 .child(icon(drawing, 18.).text_color(color(palette.text))),
         )
         .child(
+            // As tall as the card, which is as tall as its row's tallest,
+            // so every card's clock is on its foot.
             div()
                 .flex_1()
+                .self_stretch()
                 .min_w_0()
                 .flex()
                 .flex_col()
@@ -501,12 +531,16 @@ fn card_view(at: usize, card: Card, look: &Look, cx: &mut Context<Shell>) -> But
                     div()
                         .w_full()
                         .min_w_0()
+                        .mt_auto()
                         .pt(sp(4.))
                         .flex()
                         .items_center()
                         .gap(sp(6.))
                         .child(icon(assets::SCHEDULE, 14.).text_color(color(palette.secondary)))
-                        .child(small(when, 12.5, 17.).flex_1().min_w_0().truncate()),
+                        .child(small(when, 12.5, 17.).flex_1().min_w_0().truncate())
+                        .children(running.then(|| {
+                            parts::badge(("automation-running", at), going, Tone::Friend, look)
+                        })),
                 ),
         )
         .on_click(cx.listener(move |shell, _, window, cx| {

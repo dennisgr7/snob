@@ -258,6 +258,10 @@ fn history(runs: Option<Vec<Run>>, now: Epoch, look: &Look) -> AnyElement {
                     .p(sp(10.))
                     .rounded(px(shape::CONTROL_RADIUS))
                     .bg(color_at(palette.text, 0.04))
+                    // A wash alone is lost under more contrast.
+                    .when(look.settings.more_contrast, |row| {
+                        row.border_1().border_color(color(palette.line))
+                    })
                     .child(
                         div()
                             .flex()

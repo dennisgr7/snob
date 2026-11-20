@@ -210,9 +210,24 @@ const WHEEL_ZOOMS: f32 = 0.002;
 pub const NODE_W: f32 = 210.0;
 pub const NODE_H: f32 = 72.0;
 
+/// How wide the editor's panel of steps is at the default text size, the
+/// most of the editor's width it takes, and the room kept on each side of
+/// it.
+pub const PANEL_WIDTH: f32 = 288.0;
+pub const PANEL_SHARE: f32 = 0.4;
+pub const PANEL_INSET: f32 = 16.0;
+
+/// How wide the panel is drawn in an editor `width` wide, its words
+/// `scale` times their default size.
+pub fn panel_width(width: f32, scale: f32) -> f32 {
+    (PANEL_WIDTH * scale).min(width * PANEL_SHARE)
+}
+
 /// How much of a view's width the editor's panel hides at the right, with
 /// its margins.
-pub const PANEL_RESERVE: f32 = 320.0;
+pub fn panel_reserve(width: f32, scale: f32) -> f32 {
+    panel_width(width, scale) + 2.0 * PANEL_INSET
+}
 
 /// How much of a view's height the editor's top bar and zoom bar hide, each
 /// above and below.
@@ -632,28 +647,56 @@ pub fn content_of(automation: &Automation) -> Option<(f32, f32, f32, f32)> {
     })
 }
 
+/// The least a fit zooms out to at the default text size, and twice the
+/// text doubles it, up to the canvas's own size: **a step's words are still
+/// read there** (its detail is 11 units, some 8 pixels at this zoom).
+pub const FIT_LEAST: f32 = 0.75;
+
 /// The canvas that shows `content` whole, as large as its own size at most,
-/// in what the panel and the bars leave of a view `size` big. With nothing
-/// to show, the canvas at its own size with its middle where that room's is.
-pub fn fitting(content: Option<(f32, f32, f32, f32)>, size: (f32, f32)) -> Canvas {
-    let middle_x = -PANEL_RESERVE / 2.0;
+/// in what the panel and the bars leave of a view `size` big, whose words
+/// are `scale` times their default size. **Not zoomed out past where its
+/// words are read** ([`FIT_LEAST`]) while the whole view holds it: what
+/// does not fit beside the panel is shown from its start, at the left, and
+/// goes on under the panel, never past the view's edge. With nothing to
+/// show, the canvas at its own size with its middle where that room's is.
+pub fn fitting(content: Option<(f32, f32, f32, f32)>, size: (f32, f32), scale: f32) -> Canvas {
+    let reserve = panel_reserve(size.0, scale);
+    let bars = BAR_RESERVE * scale;
+    let middle_x = -reserve / 2.0;
     let Some((left, top, right, bottom)) = content else {
         return Canvas::default().panned((middle_x, 0.0));
     };
     let free = (
-        (size.0 - PANEL_RESERVE).max(100.0),
-        (size.1 - 2.0 * BAR_RESERVE).max(100.0),
+        (size.0 - reserve).max(100.0),
+        (size.1 - 2.0 * bars).max(100.0),
     );
     let whole = (
         right - left + 2.0 * FIT_MARGIN,
         bottom - top + 2.0 * FIT_MARGIN,
     );
+    // The least never puts a step past the window's edge: under the panel
+    // at most, which floats over the canvas.
+    let least = (FIT_LEAST * scale)
+        .min(1.0)
+        .min(size.0 / whole.0)
+        .min(free.1 / whole.1);
     let zoom = (free.0 / whole.0)
         .min(free.1 / whole.1)
+        .max(least)
         .clamp(ZOOM_MIN, 1.0);
-    let center = ((left + right) / 2.0, (top + bottom) / 2.0);
+    // Along each side, the middle of what fits, or its start.
+    let across = |low: f32, high: f32, whole: f32, free: f32, room_from: f32, middle: f32| {
+        if whole * zoom <= free + 0.5 {
+            middle - (low + high) / 2.0 * zoom
+        } else {
+            room_from + (FIT_MARGIN - low) * zoom
+        }
+    };
     Canvas {
-        pan: (middle_x - center.0 * zoom, -center.1 * zoom),
+        pan: (
+            across(left, right, whole.0, free.0, -size.0 / 2.0, middle_x),
+            across(top, bottom, whole.1, free.1, -size.1 / 2.0 + bars, 0.0),
+        ),
         zoom,
     }
 }
@@ -926,18 +969,25 @@ mod tests {
         let step = || Step::Schedule {
             when: Spec::default(),
         };
-        automation.insert(step(), (-345, -40));
-        automation.insert(step(), (345, 120));
+        automation.insert(step(), (-245, -40));
+        automation.insert(step(), (245, 120));
         let content = content_of(&automation).unwrap();
-        assert_eq!(content, (-345.0, -40.0, 345.0 + NODE_W, 120.0 + NODE_H));
+        assert_eq!(content, (-245.0, -40.0, 245.0 + NODE_W, 120.0 + NODE_H));
 
-        for size in [(1028.0, 700.0), (728.0, 520.0), (3000.0, 2000.0)] {
-            let canvas = fitting(Some(content), size);
+        for (size, scale) in [
+            ((1028.0, 700.0), 1.0),
+            ((3000.0, 2000.0), 1.0),
+            ((2400.0, 1400.0), 2.0),
+        ] {
+            let canvas = fitting(Some(content), size, scale);
             assert!(canvas.zoom() <= 1.0 && canvas.zoom() >= ZOOM_MIN);
             let corners = [(content.0, content.1), (content.2, content.3)];
             let room = (
-                (-size.0 / 2.0, size.0 / 2.0 - PANEL_RESERVE),
-                (-size.1 / 2.0 + BAR_RESERVE, size.1 / 2.0 - BAR_RESERVE),
+                (-size.0 / 2.0, size.0 / 2.0 - panel_reserve(size.0, scale)),
+                (
+                    -size.1 / 2.0 + BAR_RESERVE * scale,
+                    size.1 / 2.0 - BAR_RESERVE * scale,
+                ),
             );
             for corner in corners {
                 let at = canvas.on_screen(corner);
@@ -951,10 +1001,48 @@ mod tests {
                 );
             }
         }
-        assert_eq!(fitting(Some(content), (3000.0, 2000.0)).zoom(), 1.0);
-        let empty = fitting(None, (1028.0, 700.0));
+        assert_eq!(fitting(Some(content), (3000.0, 2000.0), 1.0).zoom(), 1.0);
+        let empty = fitting(None, (1028.0, 700.0), 1.0);
         assert_eq!((empty.zoom(), empty.pan().1), (1.0, 0.0));
         assert!(empty.pan().0 < 0.0, "toward the room the panel leaves");
+    }
+
+    #[test]
+    fn a_flow_too_wide_to_read_whole_is_fitted_from_its_start_at_a_zoom_its_words_are_read() {
+        use snob_core::automation::Step;
+        use snob_core::watch::schedule::Spec;
+        let mut automation = Automation::new("a1", "Daily");
+        let step = || Step::Schedule {
+            when: Spec::default(),
+        };
+        for at in 0..4 {
+            automation.insert(step(), (at * 280 - 420, 0));
+        }
+        let content = content_of(&automation).unwrap();
+        let whole = content.2 - content.0 + 2.0 * FIT_MARGIN;
+        for (size, scale, least) in [
+            ((1028.0, 700.0), 1.0, FIT_LEAST),
+            ((728.0, 520.0), 1.0, 728.0 / whole),
+            ((1028.0, 700.0), 2.0, 1028.0 / whole),
+        ] {
+            let canvas = fitting(Some(content), size, scale);
+            assert!(
+                (canvas.zoom() - least).abs() < 1e-4,
+                "{size:?} at {scale}: {}",
+                canvas.zoom()
+            );
+            // The first step whole, at the room's left, the last one inside
+            // the view, and the flow's middle in the middle of its height.
+            let first = canvas.on_screen((content.0, content.1));
+            assert!(
+                (first.0 - (-size.0 / 2.0 + FIT_MARGIN * least)).abs() < 0.5,
+                "{first:?}"
+            );
+            let last = canvas.on_screen((content.2, content.3));
+            assert!(last.0 <= size.0 / 2.0 + 0.5, "{last:?} in {size:?}");
+            let middle = canvas.on_screen((0.0, (content.1 + content.3) / 2.0));
+            assert!(middle.1.abs() < 0.5, "{middle:?}");
+        }
     }
 
     #[test]

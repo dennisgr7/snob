@@ -13,15 +13,15 @@ use std::time::Instant;
 
 use gpui_kit::base::{
     Align, Button, ElementExt as _, ObservedElement, POPUP_PRIORITY, Placement, Positioner,
-    TestSupportExt as _,
+    Scrollbar, ScrollbarMode, TestSupportExt as _,
 };
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, AnyView, App, Bounds, BoxShadow, Context, Div, ElementId, Entity, FocusHandle,
-    FontWeight, MouseDownEvent, PathBuilder, Pixels, Point, Role, SharedString, Stateful,
-    StyleRefinement, Text, Toggled, Window, canvas, deferred, div, img, point, px, svg,
+    FontWeight, MouseDownEvent, PathBuilder, Pixels, Point, Rems, Role, ScrollHandle, SharedString,
+    Stateful, StyleRefinement, Text, Toggled, Window, canvas, deferred, div, img, point, px, svg,
 };
 
 use super::assets;
@@ -84,6 +84,93 @@ pub fn room_above_and_below_for_focus<E: Styled>(e: E) -> E {
     e.py(px(shape::FOCUS_ROOM)).my(px(-shape::FOCUS_ROOM))
 }
 
+/// The scrollbar of `handle`'s box, laid over its right edge, shown for as
+/// long as the box has more than it shows: **what is out of sight is never
+/// cut off without a sign**. `right` moves it out into the padding round
+/// the box.
+pub fn scrollbar(id: &'static str, handle: &ScrollHandle, right: Rems, look: &Look) -> Div {
+    scrollbar_over(id, handle, right, 0.0, look)
+}
+
+/// [`scrollbar`] of a box given [`room_for_focus`]: laid over the box as it
+/// is drawn, room included, since **a bar measured against less than the
+/// box would find more in it than it shows, and stay on with nothing hidden**.
+pub fn scrollbar_round_room(
+    id: &'static str,
+    handle: &ScrollHandle,
+    right: Rems,
+    look: &Look,
+) -> Div {
+    scrollbar_over(id, handle, right, shape::FOCUS_ROOM, look)
+}
+
+fn scrollbar_over(
+    id: &'static str,
+    handle: &ScrollHandle,
+    right: Rems,
+    room: f32,
+    look: &Look,
+) -> Div {
+    let palette = look.palette;
+    div()
+        .absolute()
+        .top(px(-room))
+        .bottom(px(-room))
+        .left_0()
+        .right(-right)
+        .child(
+            Scrollbar::vertical(handle)
+                .id(id)
+                .mode(ScrollbarMode::Always)
+                .viewport_from_layout()
+                .styles(move |styles| {
+                    styles
+                        .thumb(move |thumb| thumb.bg(color(palette.control_line)))
+                        .thumb_hover(move |thumb| thumb.bg(color(palette.secondary)))
+                        .thumb_active(move |thumb| thumb.bg(color(palette.secondary)))
+                }),
+        )
+}
+
+/// Scrolls the box of `scroll`, given [`room_for_focus`], so that its
+/// child `at`, which holds what has focus, is in sight whole with room for
+/// its focus ring: **once each time focus comes to it, or the box changes
+/// size** (`shown`), so the person can scroll away from it. Tried again on
+/// the next frame while the box has not been laid out yet.
+pub fn keep_in_sight(
+    scroll: &ScrollHandle,
+    at: usize,
+    shown: &Cell<Option<(usize, gpui_kit::Size<Pixels>)>>,
+    window: &Window,
+) {
+    let view = scroll.bounds();
+    if shown.get() == Some((at, view.size)) {
+        return;
+    }
+    let Some(child) = scroll
+        .bounds_for_item(at)
+        .filter(|_| view.size.height > px(0.))
+    else {
+        crate::ui::frames::ask(window);
+        return;
+    };
+    let room = px(shape::FOCUS_ROOM);
+    // The offsets that show the child's top at the box's top and its
+    // bottom at the box's bottom; a child taller than the box shows its top.
+    let top = view.top() + room - child.top();
+    let bottom = view.bottom() - room - child.bottom();
+    let mut offset = scroll.offset();
+    if offset.y > bottom {
+        offset.y = bottom;
+    }
+    if offset.y < top {
+        offset.y = top;
+    }
+    offset.y = offset.y.clamp(-scroll.max_offset().y, px(0.));
+    scroll.set_offset(offset);
+    shown.set(Some((at, view.size)));
+}
+
 /// What a control that shows no words says when the pointer rests on it:
 /// its own name. **One per control**: GPUI refuses a second, so a control
 /// built here with its tip is never given another.
@@ -129,6 +216,10 @@ pub fn paragraph(id: impl Into<ElementId>, text: impl Into<SharedString>, look: 
 /// How tall the toolkit's large text field is, which a button beside one
 /// matches.
 pub const FIELD_HEIGHT: f32 = 44.0;
+
+/// How tall the toolkit draws a field of one line of the usual size, at
+/// the default text size: what a button beside one is as tall as.
+pub const SMALL_FIELD_HEIGHT: f32 = 32.0;
 
 /// Which of the two buttons.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -233,7 +324,9 @@ pub fn segmented(
 
 /// One option of a [`segmented`] choice. **The one on is told apart by
 /// more than its color**: it is raised in the panel's color with an
-/// outline, and its words are heavier.
+/// outline, and its words are heavier. The options share what their
+/// choice is given past their words, so a choice as wide as the dialog
+/// has no empty tail.
 pub fn segment(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -250,6 +343,7 @@ pub fn segment(
         } else {
             gpui_kit::Toggled::False
         })
+        .flex_grow_1()
         .h(sp(28.))
         .min_w(px(shape::MIN_TARGET))
         .px(sp(12.))
@@ -581,6 +675,8 @@ pub struct Select {
     pub bounds: Rc<Cell<Bounds<Pixels>>>,
     pub field: FocusHandle,
     pub options: Vec<FocusHandle>,
+    /// Its options' scrolling, where the window has too little room.
+    pub scroll: ScrollHandle,
 }
 
 impl Select {
@@ -591,24 +687,64 @@ impl Select {
             bounds: Rc::default(),
             field: cx.focus_handle(),
             options: (0..options).map(|_| cx.focus_handle()).collect(),
+            scroll: ScrollHandle::new(),
         }
     }
 }
 
+/// How far a popup list stands off what opened it, and the least room it
+/// keeps from the window's edge.
+const POPUP_OFFSET: f32 = 6.0;
+const POPUP_MARGIN: f32 = 8.0;
+
+/// The least height a popup list is given under what opened it before it
+/// opens above instead, where there is more room.
+const POPUP_LEAST: f32 = 160.0;
+
+/// Where a popup list opens beside an opener `under` in a window `height`
+/// tall, and how tall it may grow there: **never over its opener**, which
+/// a list too tall for either side would be pushed onto.
+fn popup_room(under: Bounds<Pixels>, height: Pixels) -> (Placement, Pixels) {
+    let keep = px(POPUP_OFFSET + POPUP_MARGIN);
+    let below = (height - under.bottom() - keep).max(px(0.));
+    let above = (under.top() - keep).max(px(0.));
+    if below >= px(POPUP_LEAST) || below >= above {
+        (Placement::Bottom, below)
+    } else {
+        (Placement::Top, above)
+    }
+}
+
 /// A list over everything else, under what opened it (`opener`, where that
-/// was last drawn), as wide as it: what a [`select`] and [`suggestions`]
-/// open. A press outside both closes it.
+/// was last drawn), as wide as it and a little more, so nothing under it
+/// peeks past its edges: what a [`select`] and [`suggestions`] open. It
+/// scrolls (`scroll`) when the window has no room for it whole, its
+/// scrollbar saying so. A press outside both closes it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a list, what opened it, its rows and the window it opens in"
+)]
 fn popup_list<V: 'static>(
     id: SharedString,
     label: SharedString,
     opener: &Rc<Cell<Bounds<Pixels>>>,
     rows: Vec<AnyElement>,
+    scroll: &ScrollHandle,
     look: &Look,
     close: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+    window: &Window,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let palette = look.palette;
-    let under = opener.get();
+    let drawn = opener.get();
+    let under = Bounds::new(
+        point(drawn.origin.x - px(shape::FOCUS_ROOM), drawn.origin.y),
+        gpui_kit::size(
+            drawn.size.width + px(2. * shape::FOCUS_ROOM),
+            drawn.size.height,
+        ),
+    );
+    let (placement, room) = popup_room(drawn, window.viewport_size().height);
     let opener = opener.clone();
     let outside = cx.listener(move |view, event: &MouseDownEvent, window, cx| {
         // A press on what opened it acts by itself.
@@ -618,30 +754,43 @@ fn popup_list<V: 'static>(
     });
     deferred(
         Positioner::side(under)
-            .placement(Placement::Bottom)
+            .placement(placement)
             .align(Align::Start)
-            .offset(px(6.))
-            .margin(px(8.))
+            .offset(px(POPUP_OFFSET))
+            .margin(px(POPUP_MARGIN))
             .occlude()
             .child(
                 div()
-                    .id(id)
+                    .id(id.clone())
                     .test_support()
                     .role(Role::ListBox)
                     .aria_label(label)
                     .occlude()
+                    .relative()
                     .w(under.size.width)
-                    .p(sp(4.))
+                    .max_h(room)
                     .flex()
                     .flex_col()
-                    .gap(px(2.))
                     .rounded(px(shape::CONTROL_RADIUS + 2.))
                     .border_1()
                     .border_color(color(palette.control_line))
                     .bg(color(palette.panel))
                     .shadow_lg()
                     .on_mouse_down_out(outside)
-                    .children(rows),
+                    .child(
+                        div()
+                            .id((id, 1usize))
+                            .flex_initial()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .track_scroll(scroll)
+                            .p(sp(4.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .children(rows),
+                    )
+                    .child(scrollbar("popup-scrollbar", scroll, sp(0.), look)),
             ),
     )
     .with_priority(POPUP_PRIORITY)
@@ -665,6 +814,7 @@ fn option_row(id: impl Into<ElementId>, label: impl Into<SharedString>, look: &L
         .w_full()
         .min_h(sp(36.))
         .px(sp(10.))
+        .py(sp(5.))
         .gap(sp(8.))
         .justify_start()
         .rounded(px(shape::CONTROL_RADIUS))
@@ -677,16 +827,32 @@ fn option_row(id: impl Into<ElementId>, label: impl Into<SharedString>, look: &L
 /// The choices that match what is being typed in a field, drawn under it
 /// (`field`, where it was last drawn, as [`drawn_at`] keeps it): rows of
 /// [`suggestion`]s.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a list, the field it is under, its rows and the window it opens in"
+)]
 pub fn suggestions<V: 'static>(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     field: &Rc<Cell<Bounds<Pixels>>>,
     rows: Vec<AnyElement>,
+    scroll: &ScrollHandle,
     look: &Look,
     close: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+    window: &Window,
     cx: &mut Context<V>,
 ) -> AnyElement {
-    popup_list(id.into(), label.into(), field, rows, look, close, cx)
+    popup_list(
+        id.into(),
+        label.into(),
+        field,
+        rows,
+        scroll,
+        look,
+        close,
+        window,
+        cx,
+    )
 }
 
 /// A field that opens a list of `options`, one of them `chosen`, for a
@@ -707,6 +873,7 @@ pub fn select<V: 'static>(
     toggle: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
     choose: impl Fn(&mut V, usize, &mut Window, &mut Context<V>) + Clone + 'static,
     close: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+    window: &Window,
     cx: &mut Context<V>,
 ) -> Div {
     let palette = look.palette;
@@ -758,8 +925,10 @@ pub fn select<V: 'static>(
             label.clone(),
             &bounds,
             rows,
+            &state.scroll,
             look,
             close,
+            window,
             cx,
         )
     });
@@ -788,9 +957,10 @@ pub fn select<V: 'static>(
         .children(list)
 }
 
-/// A whole number typed in a field, with a button on each side that takes
-/// one off or adds one: `step` is told -1 or 1. Each button is named for
-/// what it changes, so two steppers on one screen are told apart.
+/// A whole number typed in a field, with a button as tall as it on each
+/// side that takes one off or adds one: `step` is told -1 or 1. Each
+/// button is named for what it changes, so two steppers on one screen are
+/// told apart.
 pub fn stepper<V: 'static>(
     id: &'static str,
     label: impl Into<SharedString>,
@@ -813,6 +983,8 @@ pub fn stepper<V: 'static>(
                 true,
                 look,
             )
+            .w(sp(SMALL_FIELD_HEIGHT))
+            .h(sp(SMALL_FIELD_HEIGHT))
             .on_click(cx.listener(move |view, _, window, cx| less(view, -1, window, cx))),
         )
         .child(
@@ -828,6 +1000,8 @@ pub fn stepper<V: 'static>(
                 true,
                 look,
             )
+            .w(sp(SMALL_FIELD_HEIGHT))
+            .h(sp(SMALL_FIELD_HEIGHT))
             .on_click(cx.listener(move |view, _, window, cx| step(view, 1, window, cx))),
         )
 }
@@ -1001,6 +1175,24 @@ mod tests {
             picture_kept_at: None,
             active: true,
         }
+    }
+
+    #[test]
+    fn a_popup_list_opens_where_it_has_room_and_never_over_what_opened_it() {
+        let field =
+            |top: f32| Bounds::new(point(px(100.), px(top)), gpui_kit::size(px(300.), px(32.)));
+        let height = px(760.);
+        let (side, room) = popup_room(field(200.), height);
+        assert!(matches!(side, Placement::Bottom));
+        assert_eq!(room, height - px(232. + POPUP_OFFSET + POPUP_MARGIN));
+        // Little room below and more above: it opens above, as tall as
+        // that room at most.
+        let (side, room) = popup_room(field(650.), height);
+        assert!(matches!(side, Placement::Top));
+        assert_eq!(room, px(650. - POPUP_OFFSET - POPUP_MARGIN));
+        // Enough below, if less than above: below still.
+        let (side, _) = popup_room(field(500.), height);
+        assert!(matches!(side, Placement::Bottom));
     }
 
     #[test]

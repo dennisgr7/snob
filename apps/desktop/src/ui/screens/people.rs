@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use gpui_kit::base::{
     Align, Button, FocusTrapElement as _, POPUP_PRIORITY, Placement, Positioner, Scrollbar,
-    TestSupportExt as _,
+    ScrollbarMode, TestSupportExt as _,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -346,6 +346,9 @@ pub fn body(
     };
     let bar = Scrollbar::vertical(&handle)
         .id("people-scrollbar")
+        // Shown while there is more than is in sight, never only while
+        // scrolled: what is out of sight is never cut off without a sign.
+        .mode(ScrollbarMode::Always)
         .viewport_from_layout()
         .styles(move |styles| {
             styles
@@ -435,7 +438,7 @@ fn menu(
         parts::menu_item(
             "people-select",
             look.tr("people-select"),
-            assets::CHECK,
+            assets::SELECT,
             look,
         )
         .on_click({
@@ -626,6 +629,12 @@ fn row(
         ));
     }
     let who = person.named.clone();
+    // The wash of a chosen row: stronger on the dark panel, where a faint
+    // pink is near black.
+    let wash = match look.scheme {
+        crate::theme::tokens::Scheme::Light => 0.1,
+        crate::theme::tokens::Scheme::Dark => 0.2,
+    };
     let button = Button::new(("person", at));
     let button = match drawn.chosen {
         Some(chosen) => {
@@ -638,7 +647,7 @@ fn row(
                     Toggled::False
                 })
                 .accessibility_label(look.tr_with("people-choose", &[("username", &username)]))
-                .when(chosen, |row| row.bg(color_at(palette.accent, 0.08)))
+                .when(chosen, |row| row.bg(color_at(palette.accent, wash)))
                 .on_click(move |_, _, cx| list.update(cx, |list, cx| list.toggle(pk, cx)))
         }
         None => button
@@ -653,13 +662,18 @@ fn row(
         .items_center()
         .justify_start()
         .gap(sp(12.))
-        .rounded(px(shape::CONTROL_RADIUS))
+        // Square when chosen, so chosen rows side by side make one band.
+        .rounded(px(if drawn.chosen == Some(true) {
+            0.
+        } else {
+            shape::CONTROL_RADIUS
+        }))
         .relative()
         .top(px(drawn.travels * (1.0 - drawn.here)))
         .opacity(drawn.here)
         .hover(move |style| {
             style.bg(if drawn.chosen == Some(true) {
-                color_at(palette.accent, 0.14)
+                color_at(palette.accent, wash + 0.06)
             } else {
                 color(palette.frame)
             })
@@ -667,7 +681,12 @@ fn row(
         .focus_visible(parts::focus_ring(&palette))
         .cursor_pointer()
         .children(drawn.chosen.map(|chosen| parts::tick_box(chosen, look)))
-        .child(parts::avatar(&account, 40., look, drawn.shown))
+        .child(parts::avatar(
+            &account,
+            40. * look.settings.text_scale(),
+            look,
+            drawn.shown,
+        ))
         .child(
             div()
                 .flex_1()

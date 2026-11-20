@@ -12,7 +12,7 @@
 
 use gpui_kit::base::{
     Align, Button, ElementExt as _, FocusTrapElement as _, ObservedElement, POPUP_PRIORITY,
-    Placement, Positioner, Scrollbar, TestSupportExt as _,
+    Placement, Positioner, Scrollbar, ScrollbarMode, TestSupportExt as _,
 };
 use gpui_kit::component::input::Input;
 use gpui_kit::prelude::*;
@@ -1290,6 +1290,9 @@ pub fn render(
     let outline = outline(&shown, first, &scroll, presence, &look);
     let bar = Scrollbar::vertical(&scroll)
         .id("settings-scrollbar")
+        // Shown while there is more than is in sight, never only while
+        // scrolled: what is out of sight is never cut off without a sign.
+        .mode(ScrollbarMode::Always)
         .viewport_from_layout()
         .styles(|styles| {
             styles

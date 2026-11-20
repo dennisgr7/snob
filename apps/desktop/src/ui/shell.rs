@@ -177,6 +177,8 @@ pub(crate) struct AccountMenu {
     pub focus: FocusHandle,
     /// Since when the other accounts are listed, once they are.
     pub switching: Option<Instant>,
+    /// What scrolls when the window is too low for it whole.
+    pub scroll: ScrollHandle,
 }
 
 /// The question signing out asks first, while it is asked.
@@ -407,6 +409,15 @@ impl Shell {
             if this.automations.is_some() || this.profile_page().is_some() {
                 cx.notify();
             }
+        })
+        .detach();
+
+        // A control that leaves the screen with focus, as a row of a list
+        // scrolled out of sight, leaves the keys nowhere: Tab and Escape are
+        // bound under the window's root, which a key starts from only while
+        // something drawn has focus. **Focus goes back to the title.**
+        cx.on_focus_lost(window, |this, window, cx| {
+            window.focus(&this.title, cx);
         })
         .detach();
 
@@ -768,6 +779,7 @@ impl Shell {
         self.menu = Some(AccountMenu {
             focus,
             switching: None,
+            scroll: ScrollHandle::new(),
         });
         cx.notify();
     }

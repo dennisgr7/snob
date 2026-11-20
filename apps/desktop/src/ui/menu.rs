@@ -90,7 +90,7 @@ fn header(account: &Account, look: &Look, shown: &parts::Shown) -> Div {
                 .flex_none()
                 .child(parts::avatar(
                     account,
-                    56.,
+                    56. * look.settings.text_scale(),
                     look,
                     parts::shown_of(shown, account),
                 )),
@@ -142,7 +142,7 @@ fn stack(others: &[&Account], look: &Look, shown: &parts::Shown) -> Div {
                 .border_color(color(palette.panel))
                 .child(parts::avatar(
                     other,
-                    22.,
+                    22. * look.settings.text_scale(),
                     look,
                     parts::shown_of(shown, other),
                 ))
@@ -172,7 +172,7 @@ pub fn render(
     let Some(account) = shell.active().cloned() else {
         return Vec::new();
     };
-    let (trap, switching) = (menu.focus.clone(), menu.switching);
+    let (trap, switching, scroll) = (menu.focus.clone(), menu.switching, menu.scroll.clone());
     let shown = shell.pictures_shown().clone();
     let others: Vec<Account> = shell
         .accounts()
@@ -242,7 +242,7 @@ pub fn render(
                             .left(px(slide))
                             .child(parts::avatar(
                                 other,
-                                28.,
+                                28. * look.settings.text_scale(),
                                 look,
                                 parts::shown_of(&shown, other),
                             )),
@@ -306,13 +306,23 @@ pub fn render(
         .max_w(px(
             f32::from(window.viewport_size().width) - 2. * frame::SIDE
         ))
+        // Its items scroll where the window is too low for them all.
+        .max_h(px(f32::from(window.viewport_size().height)
+            - frame::BAND
+            - frame::SIDE))
+        .flex()
+        .flex_col()
         .p(sp(6.))
         .bg(color(palette.panel))
         .border_1()
         .border_color(color(palette.control_line))
         .rounded(px(shape::CARD_RADIUS))
         .shadow_lg();
-    let items = div()
+    // Room round its items for their focus rings, which the scrolling clips.
+    // **Its items keep their height** where the window is too low for them,
+    // in a box of their own that scrolls rather than shrinks.
+    let content = div()
+        .flex_none()
         .flex()
         .flex_col()
         .child(header(&account, look, &shown))
@@ -345,9 +355,32 @@ pub fn render(
                 .child(icon(assets::SIGN_OUT, 18.).text_color(color(palette.text)))
                 .child(look.tr("account-sign-out"))
                 .on_click(cx.listener(|shell, _, window, cx| shell.ask_to_sign_out(window, cx))),
-        )
-        .focus_trap("account-menu-items", &trap);
-    let menu = menu.child(items);
+        );
+    let items = parts::room_for_focus(
+        div()
+            .id("account-menu-scroll")
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&scroll),
+    )
+    .flex()
+    .flex_col()
+    .child(content)
+    .focus_trap("account-menu-items", &trap);
+    let menu = menu.child(
+        div()
+            .relative()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(items)
+            .child(parts::scrollbar_round_room(
+                "account-menu-scrollbar",
+                &scroll,
+                sp(4.),
+                look,
+            )),
+    );
 
     vec![
         // A press anywhere else closes it.

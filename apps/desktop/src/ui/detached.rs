@@ -32,7 +32,7 @@ pub struct Detached {
     shell: WeakEntity<Shell>,
     main: AnyWindowHandle,
     title: FocusHandle,
-    _watching: [Subscription; 3],
+    _watching: [Subscription; 4],
 }
 
 impl Render for Detached {
@@ -140,12 +140,17 @@ pub fn open(
                 }),
                 None => cx.observe(&list, |_, _, _| {}),
             };
+            // A row scrolled away with focus leaves it on its title, as the
+            // app's window does (`Shell::new`).
+            let lost = cx.on_focus_lost(window, |detached: &mut Detached, window, cx| {
+                window.focus(&detached.title, cx);
+            });
             Detached {
                 list,
                 shell,
                 main,
                 title: cx.focus_handle(),
-                _watching: [redraw, gone, looked],
+                _watching: [redraw, gone, looked, lost],
             }
         })
     })?;

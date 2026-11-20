@@ -83,7 +83,14 @@ pub fn render(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<An
                 .rounded(px(shape::CONTROL_RADIUS))
                 .text_size(sp(14.))
                 .text_color(color(colors.text))
-                .when(row == selected, |row| row.bg(color(colors.frame)))
+                .when(row == selected, |row| {
+                    // The frame's color is the panel's under more contrast:
+                    // there the outline says which.
+                    row.bg(color(colors.frame))
+                        .when(look.settings.more_contrast, |row| {
+                            row.border_1().border_color(color(colors.text))
+                        })
+                })
                 .hover(move |style| style.bg(color(colors.frame)))
                 .focus_visible(parts::focus_ring(&colors))
                 .cursor_pointer()
@@ -116,6 +123,9 @@ pub fn render(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<An
         .occlude()
         .w(sp(WIDTH))
         .max_w_full()
+        .max_h_full()
+        .flex()
+        .flex_col()
         .p(sp(8.))
         .bg(color(colors.panel))
         .border_1()
@@ -123,6 +133,7 @@ pub fn render(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<An
         .rounded(px(shape::CARD_RADIUS))
         .shadow_lg();
     let inside = div()
+        .min_h_0()
         .flex()
         .flex_col()
         .gap(sp(6.))
@@ -138,10 +149,11 @@ pub fn render(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<An
                 .test_support()
                 .role(Role::ListBox)
                 .aria_label(title)
+                .min_h_0()
                 .flex()
                 .flex_col()
                 // Six rows and a half, and the room each side keeps for
-                // a row's focus ring.
+                // a row's focus ring; less where the window is lower.
                 .max_h(px(
                     ROW * 6.5 * look.settings.text_scale() + 2.0 * shape::FOCUS_ROOM
                 ))
@@ -183,8 +195,10 @@ pub fn render(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<An
             .top(px(frame::BAND + 40.))
             .left(px(frame::SIDE * 2.))
             .right(px(frame::SIDE * 2.))
+            .bottom(px(frame::SIDE * 2.))
             .flex()
             .justify_center()
+            .items_start()
             .child(dialog.child(inside))
             .into_any_element(),
     ]

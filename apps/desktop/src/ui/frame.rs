@@ -388,11 +388,16 @@ fn back(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Option<AnyElemen
                     .active(move |style| style.bg(color_at(palette.text, 0.12)))
             })
             .tooltip(parts::tip(tip))
-            .child(icon(assets::BACK, 16.).text_color(color(if can {
-                palette.text
-            } else {
-                palette.disabled_text
-            })))
+            // The frame's, as the rail's drawings are: not the text's size.
+            .child(
+                icon(assets::BACK, 16.)
+                    .size(px(16.))
+                    .text_color(color(if can {
+                        palette.text
+                    } else {
+                        palette.disabled_text
+                    })),
+            )
             .on_click(cx.listener(|shell, _, window, cx| shell.go_back(window, cx)))
             .into_any_element(),
     )

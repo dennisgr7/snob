@@ -88,9 +88,10 @@ fn column(phase: Phase) -> Div {
 pub fn automation_dialogs(
     shell: &mut Shell,
     look: &crate::ui::look::Look,
+    window: &Window,
     cx: &mut Context<Shell>,
 ) -> Vec<AnyElement> {
-    automation_dialogs::render(shell, look, cx)
+    automation_dialogs::render(shell, look, window, cx)
 }
 
 /// The screen the shell shows.

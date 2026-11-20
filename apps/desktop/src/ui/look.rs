@@ -111,7 +111,9 @@ pub fn wear(look: Look, cx: &mut App) {
     theme.background = color(palette.panel);
     theme.foreground = color(palette.text);
     theme.muted = color(palette.frame);
-    theme.muted_foreground = color(palette.secondary);
+    // A field's example text: apart from what is typed with more contrast
+    // too, where the second text color is the text's own nearly.
+    theme.muted_foreground = color(palette.disabled_text);
     theme.border = color(palette.line);
     theme.input = color(palette.control_line);
     theme.ring = color(palette.accent);

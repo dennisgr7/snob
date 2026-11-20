@@ -864,7 +864,11 @@ async fn the_bar_is_one_row_of_the_view_in_words_its_buttons_and_the_options_bes
                     && bar.left() >= title.right(),
                 "the bar is on the line of the names, after them: {bar:?} beside {title:?}"
             ),
-            _ => assert!(bar.bottom() <= picture.top(), "{bar:?} over {picture:?}"),
+            // Over the posts alone, so the card starts at the page's top.
+            _ => assert!(
+                bar.left() >= picture.right() && bar.top() <= picture.top(),
+                "the bar is beside the card, from its top: {bar:?} beside {picture:?}"
+            ),
         }
         app.click(cx, "profile-layout");
     }
@@ -1551,10 +1555,12 @@ async fn a_list_left_and_opened_again_shows_its_rows_at_once_and_is_read_again(
     app.click(cx, "profile-followers");
     app.until_screen(cx, |screen| matches!(screen, Screen::People { .. }))
         .await;
-    // Before the read answers: the rows and their words, from memory.
-    assert_eq!(
-        app.label_of(cx, "people-progress"),
-        "30 accounts. Last scan on September 21 at 14:13. Updating…"
+    // Before the read answers: the rows and their words, from memory, and
+    // how far the new read is once its first page is in.
+    let said = app.label_of(cx, "people-progress");
+    assert!(
+        said.starts_with("30 accounts. Last scan on September 21 at 14:13. Updating…"),
+        "{said}"
     );
     app.in_window(cx, |window, _| {
         assert!(window.try_find(("person", 0usize)).is_some());
@@ -1670,7 +1676,7 @@ async fn the_options_hold_choosing_and_a_window_of_its_own_and_close_on_escape(
         assert_eq!(select.label(), Some("Select"));
         assert_eq!(
             window.find("people-detach").label(),
-            Some("Open in a new window")
+            Some("Open in another window")
         );
     });
     app.press(cx, "escape");
@@ -2030,6 +2036,37 @@ async fn a_list_in_its_own_window_chooses_copies_and_stops_choosing_on_escape(
         assert!(window.try_find("people-selection").is_none());
         assert_eq!(window.find(("person", 3usize)).role(), Some(Role::Button));
     });
+}
+
+#[gpui_kit::test]
+async fn a_row_scrolled_away_with_focus_leaves_it_on_the_title_and_tab_goes_on(
+    cx: &mut TestAppContext,
+) {
+    let backend = me();
+    backend.script(|script| {
+        script.list_size(40);
+    });
+    let app = own_followers(cx, backend).await;
+    until_said(&app, cx, |said| said.starts_with("40 accounts.")).await;
+    app.click(cx, "people-options");
+    app.click(cx, "people-select");
+    app.in_window(cx, |window, cx| window.click(("person", 1usize), cx));
+    app.in_window(cx, |window, _| {
+        let row = window.find(("person", 1usize));
+        assert_eq!(row.focused(), Some(true), "the row chosen has focus");
+    });
+
+    scroll_the_list_down(&app, cx);
+    cx.run_until_parked();
+    app.in_window(cx, |window, _| {
+        assert!(
+            window.try_find(("person", 1usize)).is_none(),
+            "scrolled away"
+        );
+    });
+    assert!(focused(&app, cx, "title"), "focus is on the title");
+    app.press(cx, "tab");
+    assert!(!focused(&app, cx, "title"), "Tab goes on from it");
 }
 
 #[gpui_kit::test]
