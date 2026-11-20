@@ -41,7 +41,7 @@ fn stage_phase(page: &Page, now: Instant, look: &Look, window: &mut Window) -> P
     let moved = look.moved(motion::ENTER, 14.0, 1.0);
     let at = now.saturating_duration_since(page.since).as_secs_f32() / moved.lasts.as_secs_f32();
     if at < 1.0 {
-        window.request_animation_frame();
+        crate::ui::frames::ask(window);
     }
     let eased = motion::ease_out(at.min(1.0));
     Phase {
@@ -99,7 +99,7 @@ pub fn render(
         // place is worked out from the time, so it moves evenly whatever the
         // rate, and a frame drawn late is never one step behind.
         if running {
-            window.request_animation_frame();
+            crate::ui::frames::ask(window);
         }
         let shown = if stage == Stage::Intro {
             phase.presence

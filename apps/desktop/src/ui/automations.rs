@@ -324,7 +324,7 @@ impl Editor {
         let reduce = Look::now(cx).settings.reduce_motion;
         let elapsed = self.since_glide(cx);
         if self.glide.moving(elapsed, reduce) {
-            window.request_animation_frame();
+            crate::ui::frames::ask(window);
         }
         self.glide.at(elapsed, reduce)
     }

@@ -15,8 +15,8 @@ use std::time::{Duration, Instant, SystemTime};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Bounds, Context, Entity, FocusHandle, ImgResourceLoader, Pixels, Resource,
-    ScrollHandle, SharedString, Subscription, Window, point, px,
+    AnyElement, App, Bounds, Context, Entity, FocusHandle, ImgResourceLoader, Pixels, PowerMode,
+    Resource, ScrollHandle, SharedString, Subscription, Window, point, px,
 };
 use snob_core::secret::Secret;
 use snob_core::{Epoch, Pk};
@@ -32,6 +32,7 @@ use crate::state::automations::Introduced;
 use crate::state::commands::{self, Command};
 use crate::state::flow::{Effect, Event, Flow, Found, Method, Named, Place, Screen, Update};
 use crate::state::frame::{self as shape, Icon, Morph, Pill, SECTIONS};
+use crate::state::frames::FrameMeter;
 use crate::state::paste::{self, Field};
 use crate::state::prefs::{Appearance, ThemeChoice};
 use crate::state::rest::{self, Rest};
@@ -41,8 +42,8 @@ use crate::theme::motion;
 
 mod pages;
 
-pub use pages::PeopleList;
 pub(crate) use pages::{Pages, PopupKind, TabRead, eased};
+pub use pages::{PeopleList, moving};
 
 /// How long the window rests before where it is gets remembered: a drag
 /// says it moved many times a second.
@@ -288,6 +289,10 @@ pub struct Shell {
     /// clock, which a test moves.
     rest: Rest,
     stirred: Instant,
+    /// How often frames come while something moves (`state::frames`),
+    /// and what the last one was drawn in.
+    frames: FrameMeter,
+    drawn_in: Option<DrawnIn>,
     /// Whether a look at the rest is already on its way.
     looking: bool,
     /// Every account picture asked for, and how far each has come in on
@@ -452,6 +457,8 @@ impl Shell {
             report_copied: false,
             rest: Rest::default(),
             stirred: cx.background_executor().now(),
+            frames: FrameMeter::default(),
+            drawn_in: None,
             looking: false,
             pictures: HashMap::new(),
             pictures_in: crate::ui::parts::Shown::new(),
@@ -497,7 +504,7 @@ impl Shell {
         let pill = shape::pill(from, to, sliding, reduce);
         let settled = shape::pill(from, to, motion::INTERACTION, reduce);
         if self.frame.moving(elapsed) || pill != settled {
-            window.request_animation_frame();
+            crate::ui::frames::ask(window);
         }
         FrameNow {
             openness: self.frame.openness(elapsed),
@@ -611,7 +618,7 @@ impl Shell {
             self.pictures_in.insert(account.named.pk, shown);
         }
         if coming {
-            window.request_animation_frame();
+            crate::ui::frames::ask(window);
         }
     }
 
@@ -1995,7 +2002,7 @@ impl Shell {
         };
         let at = (through.as_secs_f32() / moved.lasts.as_secs_f32()).min(1.0);
         if at < 1.0 {
-            window.request_animation_frame();
+            crate::ui::frames::ask(window);
         }
         let eased = motion::ease_out(at);
         if leaving {
@@ -2183,10 +2190,46 @@ struct Picture {
     arrival: Arrival,
 }
 
+/// What a frame was drawn in, kept so a run seen ended at a later frame is
+/// told with what its own last frame had.
+#[derive(Debug, Clone, Copy)]
+struct DrawnIn {
+    display: Option<Duration>,
+    active: bool,
+    power: PowerMode,
+}
+
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let asked = crate::ui::frames::asked(window);
         // A frame is something moving: the app wakes before it is drawn.
         self.stirred = cx.background_executor().now();
+        let drawn_in = DrawnIn {
+            display: window.refresh_interval(cx),
+            active: window.is_window_active(),
+            power: cx.power_mode(),
+        };
+        if let Some(run) = self.frames.drew(self.stirred, asked) {
+            let seen = match run.ended {
+                Some(_) => self.drawn_in.unwrap_or(drawn_in),
+                None => drawn_in,
+            };
+            tracing::debug!(
+                target: "snob_desktop::frames",
+                frames = run.frames,
+                mean_ms = run.mean_ms,
+                p95_ms = run.p95_ms,
+                worst_ms = run.worst_ms,
+                hz = run.hz,
+                ended_ms_ago = run.ended.map(|gap| gap.as_secs_f32() * 1000.0),
+                display = ?seen.display,
+                active = seen.active,
+                power = ?seen.power,
+                thermal = ?cx.thermal_state(),
+                "frames drawn"
+            );
+        }
+        self.drawn_in = Some(drawn_in);
         self.judge_the_rest(window, cx);
         self.see_the_pictures(window, cx);
         let phase = self.phase(window, cx);

@@ -27,6 +27,7 @@ use crate::backend::{Listed, Profile, Tiles, Unread, Walked};
 use crate::state::flow::{Event, Named, Screen};
 use crate::state::profile::{self, Layout, PictureClick, Showing, Side, Tab, Zoom};
 use crate::state::status::Status;
+use crate::theme::motion;
 use crate::ui::look::Look;
 
 /// How a tab's first page stands.
@@ -1009,12 +1010,23 @@ impl Shell {
     }
 }
 
-/// How far `since` is through `lasts`, eased, asking for another frame
-/// while it moves.
+/// How far `since` is through `lasts`, on the standard curve, asking for
+/// another frame while it moves.
 pub(crate) fn eased(since: Instant, lasts: std::time::Duration, window: &mut Window) -> f32 {
-    let at = since.elapsed().as_secs_f32() / lasts.as_secs_f32().max(1e-3);
+    moving(motion::STANDARD, since, lasts, window)
+}
+
+/// How far `since` is through `lasts`, on `curve`, asking for another frame
+/// while it moves and none once it has arrived.
+pub fn moving(
+    curve: motion::Curve,
+    since: Instant,
+    lasts: std::time::Duration,
+    window: &mut Window,
+) -> f32 {
+    let at = motion::progress(since.elapsed(), lasts);
     if at < 1.0 {
-        window.request_animation_frame();
+        crate::ui::frames::ask(window);
     }
-    crate::theme::motion::ease_out(at)
+    curve.at(at)
 }

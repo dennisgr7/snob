@@ -7251,6 +7251,7 @@ dependencies = [
  "fluent-bundle",
  "gpui-kit",
  "image",
+ "proptest",
  "serde",
  "serde_json",
  "snob-core",

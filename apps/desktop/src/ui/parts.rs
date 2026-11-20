@@ -344,7 +344,7 @@ pub fn icon(path: &'static str, size: f32) -> gpui_kit::Svg {
 /// reads as a ring that shimmers rather than one that turns.
 pub fn ring(size: f32, look: &Look, window: &mut Window) -> AnyElement {
     static STARTED: OnceLock<Instant> = OnceLock::new();
-    window.request_animation_frame();
+    crate::ui::frames::ask(window);
     let turned = turn_at(STARTED.get_or_init(Instant::now).elapsed());
     let ink = color(look.palette.accent);
     canvas(

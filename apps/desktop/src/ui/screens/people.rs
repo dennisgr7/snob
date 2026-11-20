@@ -218,7 +218,7 @@ pub fn body(
                     let here = read.arrived_at(at).map_or(1.0, |since| {
                         let since = since + std::time::Duration::from_millis(18) * (at % 12) as u32;
                         if now < since {
-                            window.request_animation_frame();
+                            crate::ui::frames::ask(window);
                             0.0
                         } else {
                             eased(since, moved.lasts, window)

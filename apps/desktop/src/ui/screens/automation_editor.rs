@@ -82,7 +82,7 @@ fn dots(
             // Another size is seen by the next frame, which fits the
             // canvas again when it is to be.
             if bounds.get().size != at.size {
-                window.request_animation_frame();
+                crate::ui::frames::ask(window);
             }
             bounds.set(at);
             let grid = canvas_now.grid((f32::from(at.size.width), f32::from(at.size.height)));
@@ -819,7 +819,7 @@ fn coming_in(
     };
     let through = elapsed.saturating_sub(starts).as_secs_f32() / lasts.as_secs_f32();
     if through < 1.0 {
-        window.request_animation_frame();
+        crate::ui::frames::ask(window);
     }
     motion::ease_out(through)
 }

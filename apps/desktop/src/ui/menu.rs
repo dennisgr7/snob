@@ -187,7 +187,7 @@ pub fn render(
         let moved = look.moved(motion::ENTER, 1.0, 1.0);
         let at = (since.elapsed().as_secs_f32() / moved.lasts.as_secs_f32()).min(1.0);
         if at < 1.0 {
-            window.request_animation_frame();
+            crate::ui::frames::ask(window);
         }
         (motion::ease_out(at), moved.travels)
     });

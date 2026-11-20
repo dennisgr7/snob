@@ -470,7 +470,7 @@ fn languages(
         .on_prepaint(move |drawn, window, _| {
             if bounds.replace(drawn) != drawn && open {
                 // The list follows the field on the next frame.
-                window.request_animation_frame();
+                crate::ui::frames::ask(window);
             }
         })
         .child(
@@ -1097,7 +1097,7 @@ fn outline_presence(
     };
     let through = now.saturating_duration_since(since).as_secs_f32() / lasts.as_secs_f32();
     if through < 1.0 {
-        window.request_animation_frame();
+        crate::ui::frames::ask(window);
     }
     let eased = motion::ease_out(through.min(1.0));
     if coming { eased } else { 1.0 - eased }

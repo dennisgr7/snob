@@ -3,7 +3,9 @@
 //! in a fixed state**; nothing loops but the loading ring, which says that
 //! something is going on and keeps turning either way, and the grid behind
 //! the automations' introduction, which is decoration: it drifts only while
-//! the window is looked at, and never under "reduce motion".
+//! the window is looked at, and never under "reduce motion". **One curve
+//! for every move** ([`STANDARD`]) but the frame's, which starts and ends
+//! slowly ([`ease_in_out`]).
 
 use std::time::Duration;
 
@@ -91,10 +93,127 @@ pub fn moved(reduce: bool, lasts: Duration, travels: f32, scales: f32) -> Move {
     }
 }
 
-/// A curve that brakes at its end: the cubic ease-out, from 0 to 1.
+/// How far through a move time is, from 0 to 1: `elapsed` of `lasts`, and
+/// the end once a move that takes no time has begun.
+pub fn progress(elapsed: Duration, lasts: Duration) -> f32 {
+    if lasts.is_zero() {
+        return 1.0;
+    }
+    (elapsed.as_secs_f32() / lasts.as_secs_f32()).clamp(0.0, 1.0)
+}
+
+/// A cubic Bezier from (0, 0) to (1, 1) through two control points, as CSS's
+/// `cubic-bezier()` names one: how far a move has gone for how far through
+/// its time it is. **The points are held inside the unit square**, so the
+/// curve is a function of time, starts at 0, ends at 1 and never goes back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Curve {
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+}
+
+/// The curve every move takes but the frame's: it leaves at rest, so the
+/// first frame does not jump, and brakes long into its end.
+pub const STANDARD: Curve = Curve::new(0.2, 0.0, 0.0, 1.0);
+
+impl Curve {
+    pub const fn new(x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
+        Self { x1, y1, x2, y2 }
+    }
+
+    /// How far the move has gone at `t` of its time, both from 0 to 1;
+    /// before the start (or not a number) is 0, past the end is 1.
+    pub fn at(self, t: f32) -> f32 {
+        if t.is_nan() || t <= 0.0 {
+            return 0.0;
+        }
+        if t >= 1.0 {
+            return 1.0;
+        }
+        let x = Cubic::through(self.x1, self.x2);
+        let y = Cubic::through(self.y1, self.y2);
+        let along = x.solve(f64::from(t));
+        (y.at(along) as f32).clamp(0.0, 1.0)
+    }
+}
+
+/// One coordinate of the curve as a polynomial of its parameter `s`:
+/// `((a s + b) s + c) s`, in `f64` so the solving is exact to an `f32`.
+struct Cubic {
+    a: f64,
+    b: f64,
+    c: f64,
+}
+
+impl Cubic {
+    fn through(p1: f32, p2: f32) -> Self {
+        let unit = |p: f32| {
+            if p.is_nan() {
+                0.0
+            } else {
+                f64::from(p.clamp(0.0, 1.0))
+            }
+        };
+        let c = 3.0 * unit(p1);
+        let b = 3.0 * (unit(p2) - unit(p1)) - c;
+        Self {
+            a: 1.0 - c - b,
+            b,
+            c,
+        }
+    }
+
+    fn at(&self, s: f64) -> f64 {
+        ((self.a * s + self.b) * s + self.c) * s
+    }
+
+    fn slope(&self, s: f64) -> f64 {
+        (3.0 * self.a * s + 2.0 * self.b) * s + self.c
+    }
+
+    /// The `s` where this coordinate is `t`, in `0..=1`: Newton's method
+    /// from `t`, and halving the interval where it is slow or leaves it
+    /// (a flat start, as `x1 = 0` makes).
+    fn solve(&self, t: f64) -> f64 {
+        const CLOSE: f64 = 1e-12;
+        let mut s = t;
+        for _ in 0..8 {
+            let off = self.at(s) - t;
+            if off.abs() < CLOSE {
+                return s;
+            }
+            let slope = self.slope(s);
+            if slope.abs() < 1e-6 {
+                break;
+            }
+            s -= off / slope;
+            if !(0.0..=1.0).contains(&s) {
+                break;
+            }
+        }
+        let (mut low, mut high) = (0.0, 1.0);
+        s = t;
+        for _ in 0..64 {
+            let off = self.at(s) - t;
+            if off.abs() < CLOSE {
+                break;
+            }
+            if off < 0.0 {
+                low = s;
+            } else {
+                high = s;
+            }
+            s = (low + high) / 2.0;
+        }
+        s
+    }
+}
+
+/// A curve that brakes at its end: [`STANDARD`], from 0 to 1.
 pub fn ease_out(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    1.0 - (1.0 - t).powi(3)
+    STANDARD.at(t)
 }
 
 /// A curve that starts and ends slowly: the cubic ease-in-out, from 0 to 1.
@@ -129,10 +248,11 @@ mod tests {
     }
 
     #[test]
-    fn the_curve_starts_fast_and_brakes_at_its_end() {
+    fn the_curve_starts_at_rest_and_brakes_long_at_its_end() {
         assert_eq!(ease_out(0.0), 0.0);
         assert_eq!(ease_out(1.0), 1.0);
         assert_eq!(ease_out(2.0), 1.0);
+        assert!(ease_out(0.05) < 0.05, "no jump on the first frame");
         let first_half = ease_out(0.5);
         assert!(first_half > 0.8, "most of the way in half the time");
         let mut before = 0.0;
@@ -140,6 +260,103 @@ mod tests {
             let now = ease_out(step as f32 / 20.0);
             assert!(now > before, "never backward");
             before = now;
+        }
+    }
+
+    /// Where the curve is at `t`, found by halving alone, to compare with.
+    fn halved(curve: Curve, t: f64) -> f64 {
+        let x = Cubic::through(curve.x1, curve.x2);
+        let y = Cubic::through(curve.y1, curve.y2);
+        let (mut low, mut high) = (0.0, 1.0);
+        for _ in 0..80 {
+            let middle = (low + high) / 2.0;
+            if x.at(middle) < t {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        y.at((low + high) / 2.0)
+    }
+
+    #[test]
+    fn the_standard_curve_is_the_one_its_points_describe() {
+        // Worked out apart, by halving in f64 on (0.2, 0, 0, 1).
+        for (t, expected) in [
+            (0.05, 0.02853),
+            (0.25, 0.60722),
+            (0.5, 0.87783),
+            (0.75, 0.97548),
+            (0.9, 0.99646),
+        ] {
+            let at = STANDARD.at(t);
+            assert!((at - expected).abs() < 1e-4, "{at} at {t}");
+        }
+        for step in 0..=100 {
+            let t = step as f64 / 100.0;
+            let at = f64::from(STANDARD.at(t as f32));
+            assert!((at - halved(STANDARD, t)).abs() < 1e-3, "{at} at {t}");
+        }
+    }
+
+    #[test]
+    fn a_curve_meets_its_ends_and_holds_them_outside_its_time() {
+        for curve in [
+            STANDARD,
+            Curve::new(0.0, 0.0, 1.0, 1.0),
+            Curve::new(0.0, 0.0, 0.0, 0.0),
+            Curve::new(1.0, 1.0, 1.0, 1.0),
+            Curve::new(0.42, 0.0, 0.58, 1.0),
+        ] {
+            assert_eq!(curve.at(0.0), 0.0, "{curve:?}");
+            assert_eq!(curve.at(1.0), 1.0, "{curve:?}");
+            assert_eq!(curve.at(-3.0), 0.0, "{curve:?}");
+            assert_eq!(curve.at(7.0), 1.0, "{curve:?}");
+            assert_eq!(curve.at(f32::NAN), 0.0, "{curve:?}");
+        }
+        let straight = Curve::new(0.0, 0.0, 1.0, 1.0);
+        assert!((straight.at(0.3) - 0.3).abs() < 1e-5);
+    }
+
+    #[test]
+    fn progress_is_the_share_of_the_time_gone_and_a_move_of_no_time_is_over() {
+        let lasts = Duration::from_millis(200);
+        assert_eq!(progress(Duration::ZERO, lasts), 0.0);
+        assert!((progress(Duration::from_millis(50), lasts) - 0.25).abs() < 1e-6);
+        assert_eq!(progress(Duration::from_secs(9), lasts), 1.0);
+        assert_eq!(progress(Duration::ZERO, Duration::ZERO), 1.0);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn a_curve_never_goes_back_never_leaves_its_square_and_is_always_a_number(
+            x1 in proptest::num::f32::ANY,
+            y1 in proptest::num::f32::ANY,
+            x2 in proptest::num::f32::ANY,
+            y2 in proptest::num::f32::ANY,
+            t in -0.5f32..1.5,
+            later in 0.0f32..0.5,
+        ) {
+            let curve = Curve::new(x1, y1, x2, y2);
+            let now = curve.at(t);
+            let then = curve.at(t + later);
+            proptest::prop_assert!((0.0..=1.0).contains(&now), "{now}");
+            proptest::prop_assert!((0.0..=1.0).contains(&then), "{then}");
+            proptest::prop_assert!(then >= now - 1e-5, "{now} then {then}");
+        }
+
+        #[test]
+        fn a_curve_inside_its_square_is_where_halving_finds_it(
+            x1 in 0.0f32..=1.0,
+            y1 in 0.0f32..=1.0,
+            x2 in 0.0f32..=1.0,
+            y2 in 0.0f32..=1.0,
+            t in 0.0f32..=1.0,
+        ) {
+            let curve = Curve::new(x1, y1, x2, y2);
+            let at = f64::from(curve.at(t));
+            let expected = halved(curve, f64::from(t));
+            proptest::prop_assert!((at - expected).abs() < 1e-3, "{at} against {expected}");
         }
     }
 

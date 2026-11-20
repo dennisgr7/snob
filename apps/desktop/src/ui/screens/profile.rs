@@ -584,7 +584,7 @@ fn drawn_at(drawn: &Rc<Cell<Bounds<Pixels>>>, open: bool, opener: impl IntoEleme
         .flex_none()
         .on_prepaint(move |bounds, window, _| {
             if drawn.replace(bounds) != bounds && open {
-                window.request_animation_frame();
+                crate::ui::frames::ask(window);
             }
         })
         .child(opener)
@@ -924,7 +924,7 @@ fn highlights(shown: &Shown, came: f32, look: &Look, window: &mut Window) -> Opt
             let here = shown.highlights_since.map_or(1.0, |since| {
                 let since = since + delay;
                 if Instant::now() < since {
-                    window.request_animation_frame();
+                    crate::ui::frames::ask(window);
                     0.0
                 } else {
                     eased(since, moved.lasts, window)
@@ -1260,7 +1260,7 @@ fn tile_in(at: usize, since: Instant, look: &Look, window: &mut Window) -> f32 {
     let delay = (TILE_STAGGER * at as u32).min(TILE_STAGGER_MOST);
     let starts = since + delay;
     if Instant::now() < starts {
-        window.request_animation_frame();
+        crate::ui::frames::ask(window);
         return 0.0;
     }
     eased(starts, look.moved(motion::ENTER, 0.0, 1.0).lasts, window)
