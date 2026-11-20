@@ -15,8 +15,13 @@
 //! another account's given in the app before it is called. Its largest
 //! picture is `snob pfp`'s (`profile::picture`). Pictures come from the CDN
 //! into the account's cache (`cache::Keeper`), never from Instagram's API.
+//! A tab reads on a page at a time from the cursor the engine handed out
+//! (`posts::page_after`), which stays here: a view holds only its id. A
+//! list is shown first from what was stored (`cache`, `--offline`'s
+//! answer), and the names typed in a form are suggested from the account's
+//! database (`cache::known_named`): neither sends anything.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -25,17 +30,18 @@ use snob_core::{Epoch, Pk};
 use snob_engine::app::Viewer;
 use snob_engine::cache::Drawing;
 use snob_engine::login::{self, Agent, ByBrowser, Failure, Opened};
+use snob_engine::posts::{After, Grid};
 use snob_engine::{browser, host, log, logout, storage};
 use snob_ig::pace::CancelToken;
 use snob_store::paths::AppPaths;
 use snob_store::registry::Registry;
 use snob_store::secrets::SecretStore;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use super::{
-    Account, AccountStorage, Answer, Automation, Backend, Browsers, Cleared, Forgotten, Highlight,
-    Listed, Loaded, Next, Person, Problem, Profile, Run, SignIn, Storage, Tile, TileKind, Tiles,
-    Unread, Walked, answered,
+    Account, AccountStorage, Answer, Automation, Backend, Browsers, Cleared, Cursor, Forgotten,
+    Highlight, Listed, Loaded, MOST_PICTURES, Next, Person, Problem, Profile, Run, SignIn, Storage,
+    Tile, TileKind, Tiles, Unread, Walked, answered,
 };
 use crate::report;
 use crate::runtime::Runtime;
@@ -51,6 +57,98 @@ struct Largest {
     full_size: Option<String>,
 }
 
+/// How many cursors are held for the views at most: a tab of each profile
+/// page the way back can still show, and more. Past it the oldest goes, and
+/// its tab reads no further.
+const MOST_CURSORS: usize = 64;
+
+/// How many of a list's small pictures are downloaded at once: the three of
+/// the `join!` in [`Engine::pictures`].
+const AT_ONCE: usize = 3;
+
+/// How many known accounts one call answers at most, whatever is asked.
+const MOST_KNOWN: usize = 50;
+
+/// Whose tab a cursor reads on: the account in use it was handed out to,
+/// and the profile and tab it is of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Whose {
+    viewer: Pk,
+    pk: Pk,
+    tab: Tab,
+}
+
+/// Where each tab handed to a view reads on (the engine's [`After`]), by
+/// the id its [`Cursor`] carries, with whose tab it is.
+struct Cursors<T = After> {
+    made: u64,
+    /// Moved on by [`Self::let_go`]: what a page read before it found is
+    /// neither put back nor handed out.
+    era: u64,
+    held: BTreeMap<u64, (Whose, T)>,
+}
+
+impl<T> Default for Cursors<T> {
+    fn default() -> Self {
+        Self {
+            made: 0,
+            era: 0,
+            held: BTreeMap::new(),
+        }
+    }
+}
+
+impl<T> Cursors<T> {
+    /// Keeps `at` for `whose` tab under an id no cursor had, unless the
+    /// cursors were let go of since `era`.
+    fn hand_out(&mut self, era: u64, whose: Whose, at: T) -> Option<Cursor> {
+        if era != self.era {
+            return None;
+        }
+        self.made += 1;
+        self.held.insert(self.made, (whose, at));
+        while self.held.len() > MOST_CURSORS {
+            self.held.pop_first();
+        }
+        Some(Cursor(self.made))
+    }
+
+    /// What `cursor` stands for, taken out while its page is read, and the
+    /// era it was taken in: none when it is not held, or not `whose` tab
+    /// (another account's in use included), which leaves it held.
+    fn take(&mut self, cursor: Cursor, whose: Whose) -> Option<(T, u64)> {
+        match self.held.get(&cursor.0) {
+            Some((of, _)) if *of == whose => {
+                let (_, at) = self.held.remove(&cursor.0)?;
+                Some((at, self.era))
+            }
+            _ => None,
+        }
+    }
+
+    /// Puts `at` back under `cursor`, as its page left it, unless the
+    /// cursors were let go of since it was taken in `era`.
+    fn put_back(&mut self, era: u64, cursor: Cursor, whose: Whose, at: T) {
+        if era == self.era {
+            self.held.insert(cursor.0, (whose, at));
+        }
+    }
+
+    /// Forgets every cursor, and what a page being read would hand back:
+    /// **a browser released or another account's may never have been
+    /// navigated to the tab**, nor see what the account that was handed
+    /// it saw.
+    fn let_go(&mut self) {
+        self.held.clear();
+        self.era += 1;
+    }
+}
+
+/// The cursors, locked whatever a panic elsewhere left.
+fn cursors(cursors: &Mutex<Cursors>) -> std::sync::MutexGuard<'_, Cursors> {
+    cursors.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// The engine, for the data directory `paths` is.
 pub struct Engine {
     runtime: Arc<Runtime>,
@@ -63,6 +161,8 @@ pub struct Engine {
     /// Where each account's largest picture is, as its profile last named
     /// it: what the viewer fetches, with no request of its own.
     addresses: Arc<Mutex<HashMap<Pk, Largest>>>,
+    /// Where the tabs handed to the views read on.
+    cursors: Arc<Mutex<Cursors>>,
     /// How many browsers are listed, whichever machine a test's pictures
     /// are taken on.
     #[cfg(feature = "testing")]
@@ -88,6 +188,7 @@ impl Engine {
             files: log.1,
             about,
             addresses: Arc::default(),
+            cursors: Arc::default(),
             #[cfg(feature = "testing")]
             listed: None,
             #[cfg(feature = "testing")]
@@ -105,14 +206,24 @@ impl Engine {
         self
     }
 
-    /// Says the same sizes on every run, whatever is on disk, so a picture
-    /// of them is the same on every machine. **Only what is shown**:
-    /// clearing the cache still removes it.
+    /// Says the same sizes on every run, whatever is on disk, and the same
+    /// moment for when every list was read, so a picture of them is the
+    /// same on every machine. **Only what is shown**: clearing the cache
+    /// still removes it.
     #[cfg(feature = "testing")]
     #[must_use]
     pub fn fixing_storage(mut self) -> Self {
         self.fixed_storage = true;
         self
+    }
+
+    /// When every list is said to have been read with `fixing_storage`.
+    fn fixed_scan(&self) -> Option<Epoch> {
+        #[cfg(feature = "testing")]
+        if self.fixed_storage {
+            return Some(Epoch::new(1_790_000_000));
+        }
+        None
     }
 }
 
@@ -406,6 +517,7 @@ fn person(user: &snob_core::model::User, picture: Option<PathBuf>) -> Person {
         is_private: user.is_private.unwrap_or(false),
         is_verified: user.is_verified.unwrap_or(false),
         picture,
+        picture_from: user.pfp_url.clone().filter(|address| !address.is_empty()),
     }
 }
 
@@ -506,6 +618,33 @@ fn profile_tab(tab: Tab) -> Option<snob_ig::client::ProfileTab> {
     }
 }
 
+/// The tiles of the posts a page of `grid` read, their small pictures on
+/// disk: one already kept is not downloaded again.
+async fn tiles_of(app: &snob_engine::app::App, grid: &Grid) -> Vec<Tile> {
+    let keeper = app.cache();
+    let mut tiles = Vec::with_capacity(grid.posts.len());
+    for post in &grid.posts {
+        let address = post.items.first().and_then(|item| item.thumb.as_deref());
+        let thumb = match (&keeper, address) {
+            (Some(keeper), Some(address)) => {
+                keeper.fetch_thumb(app.client(), &post.code, address).await
+            }
+            _ => None,
+        };
+        tiles.push(tile_of(snob_engine::cache::kept_post(post), thumb));
+    }
+    tiles
+}
+
+/// When a rest of `left` that begins now ends, to the second after.
+fn rest_ends(left: std::time::Duration) -> Epoch {
+    let seconds = left
+        .as_secs()
+        .saturating_add(u64::from(left.subsec_nanos() > 0));
+    let now = snob_core::clock::now().get();
+    Epoch::new(now.saturating_add(i64::try_from(seconds).unwrap_or(i64::MAX)))
+}
+
 impl Backend for Engine {
     fn load(&self) -> Answer<Loaded> {
         let paths = self.paths.clone();
@@ -572,6 +711,7 @@ impl Backend for Engine {
     }
 
     fn sign_in_with(&self, session_id: Secret, browser: Option<String>) -> Answer<SignIn> {
+        cursors(&self.cursors).let_go();
         let (paths, secrets) = (self.paths.clone(), self.secrets.clone());
         self.runtime.run(move || async move {
             tracing::info!(method = "paste", "signing in");
@@ -620,6 +760,7 @@ impl Backend for Engine {
     }
 
     fn sign_in_in_a_window(&self, renewing: Option<Pk>, stop: CancelToken) -> Answer<SignIn> {
+        cursors(&self.cursors).let_go();
         let (paths, secrets) = (self.paths.clone(), self.secrets.clone());
         self.runtime.run(move || async move {
             tracing::info!(method = "browser", "signing in");
@@ -670,6 +811,7 @@ impl Backend for Engine {
     }
 
     fn sign_out(&self, pk: Pk) -> Answer<Vec<Account>> {
+        cursors(&self.cursors).let_go();
         let (paths, secrets) = (self.paths.clone(), self.secrets.clone());
         self.runtime.run(move || async move {
             tracing::info!("signing out");
@@ -701,6 +843,7 @@ impl Backend for Engine {
     }
 
     fn switch_to(&self, pk: Pk) -> Answer<Vec<Account>> {
+        cursors(&self.cursors).let_go();
         let paths = self.paths.clone();
         self.runtime.run(move || async move {
             tracing::info!("changing the account in use");
@@ -1046,28 +1189,258 @@ impl Backend for Engine {
 
     fn tiles(&self, who: Named, tab: Tab) -> Answer<Result<Tiles, Unread>> {
         let (paths, secrets) = (self.paths.clone(), self.secrets.clone());
+        let held = Arc::clone(&self.cursors);
+        let era = cursors(&held).era;
         self.runtime.run(move || async move {
             let (viewer, app) = opened(&paths, &secrets, None, None)?;
             let username = who.username.clone().ok_or(Unread::Nobody)?;
             let grid = snob_engine::posts::first_page(&app, &username, who.pk, profile_tab(tab))
                 .await
                 .map_err(|e| unread(&paths, viewer, &e))?;
-            let keeper = app.cache();
-            let mut tiles = Vec::with_capacity(grid.posts.len());
-            for post in &grid.posts {
-                let address = post.items.first().and_then(|item| item.thumb.as_deref());
-                let thumb = match (&keeper, address) {
-                    (Some(keeper), Some(address)) => {
-                        keeper.fetch_thumb(app.client(), &post.code, address).await
-                    }
-                    _ => None,
-                };
-                tiles.push(tile_of(snob_engine::cache::kept_post(post), thumb));
-            }
+            let tiles = tiles_of(&app, &grid).await;
+            let whose = Whose {
+                viewer,
+                pk: who.pk,
+                tab,
+            };
+            let next = grid
+                .after()
+                .and_then(|after| cursors(&held).hand_out(era, whose, after));
             Ok(Tiles {
                 tiles,
                 more: grid.next.is_some(),
+                next,
             })
+        })
+    }
+
+    fn more_tiles(
+        &self,
+        who: Named,
+        tab: Tab,
+        after: Cursor,
+        resting: watch::Sender<Option<Epoch>>,
+        stop: CancelToken,
+    ) -> Answer<Result<Tiles, Unread>> {
+        let (paths, secrets) = (self.paths.clone(), self.secrets.clone());
+        let held = Arc::clone(&self.cursors);
+        self.runtime.run(move || async move {
+            let whose = Whose {
+                viewer: in_use(&paths).ok_or(Unread::NoSession)?,
+                pk: who.pk,
+                tab,
+            };
+            let Some((mut at, era)) = cursors(&held).take(after, whose) else {
+                // Spent by the page it led to, let go of, being read, or
+                // handed to another account than the one in use: nothing
+                // is sent from it, and no failure is told.
+                tracing::debug!("a page was asked from a cursor not held for it");
+                return Err(Unread::Failed(String::new()));
+            };
+            let (viewer, app) = match opened(&paths, &secrets, Some(stop.clone()), None) {
+                Ok((viewer, _)) if viewer != whose.viewer => {
+                    cursors(&held).put_back(era, after, whose, at);
+                    return Err(Unread::Failed(String::new()));
+                }
+                Ok(opened) => opened,
+                Err(why) => {
+                    cursors(&held).put_back(era, after, whose, at);
+                    return Err(why);
+                }
+            };
+            // **The cursor as the page left it**, a navigation to the tab
+            // already sent included, whether the page came or not.
+            let read = snob_engine::posts::page_after(&app, &mut at, |left| {
+                resting.send_replace(Some(rest_ends(left)));
+            })
+            .await;
+            resting.send_replace(None);
+            match read {
+                Ok((grid, next)) => {
+                    let tiles = tiles_of(&app, &grid).await;
+                    let next = next.and_then(|next| cursors(&held).hand_out(era, whose, next));
+                    Ok(Tiles {
+                        tiles,
+                        more: grid.next.is_some(),
+                        next,
+                    })
+                }
+                Err(e) => {
+                    cursors(&held).put_back(era, after, whose, at);
+                    if stop.is_canceled() {
+                        return Err(Unread::Failed(String::new()));
+                    }
+                    Err(unread(&paths, viewer, &e))
+                }
+            }
+        })
+    }
+
+    fn known_accounts(&self, typed: String, limit: usize) -> Answer<Vec<Account>> {
+        let paths = self.paths.clone();
+        self.runtime.run(move || async move {
+            let Some(viewer) = in_use(&paths) else {
+                return Vec::new();
+            };
+            let known = match snob_engine::cache::known_named(
+                &paths,
+                viewer,
+                &typed,
+                limit.min(MOST_KNOWN),
+            ) {
+                Ok(known) => known,
+                Err(e) => {
+                    log::failed(&e.context("the accounts known could not be read"));
+                    return Vec::new();
+                }
+            };
+            known
+                .into_iter()
+                .map(|known| {
+                    let kept_at = known
+                        .picture
+                        .as_ref()
+                        .and_then(|picture| std::fs::metadata(picture).ok())
+                        .and_then(|file| file.modified().ok());
+                    Account {
+                        named: Named {
+                            pk: known.pk,
+                            username: Some(known.username).filter(|name| !name.is_empty()),
+                        },
+                        full_name: known.full_name,
+                        biography: None,
+                        picture: known.picture,
+                        picture_kept_at: kept_at,
+                        active: known.pk == viewer,
+                    }
+                })
+                .collect()
+        })
+    }
+
+    fn list_kept(&self, owner: Named, side: Side) -> Answer<Option<Listed>> {
+        let (paths, secrets) = (self.paths.clone(), self.secrets.clone());
+        let fixed = self.fixed_scan();
+        self.runtime.run(move || async move {
+            use snob_core::model::ListKind;
+            let kind = match side {
+                Side::Followers => ListKind::Followers,
+                Side::Following => ListKind::Following,
+            };
+            let viewer = in_use(&paths)?;
+            let account = paths.account(viewer);
+            // Not `opened`: what was stored is served in a pause too, as
+            // `--offline` serves it.
+            let opened = snob_engine::app::App::open(
+                &secrets.session_of(&account),
+                &account,
+                host::Front::quiet,
+            );
+            let mut app = match opened {
+                Ok(Some(app)) => app,
+                Ok(None) => return None,
+                Err(e) => {
+                    tracing::debug!(error = %e, "a stored list could not be read");
+                    return None;
+                }
+            };
+            let target = if owner.pk == viewer {
+                None
+            } else {
+                Some(owner.username.clone()?)
+            };
+            let query = snob_engine::engine::ListQuery {
+                target,
+                // **From storage alone**, which asks nobody anything: no yes
+                // is given here for a list to be walked.
+                yes: false,
+                refresh: false,
+                cache: true,
+                max_age: snob_engine::engine::DEFAULT_MAX_AGE,
+                no_resume: false,
+                max_pages: None,
+                over_budget: None,
+                walk_at_most_every: None,
+            };
+            let (users, outcome) = match snob_engine::engine::list(&mut app, &query, kind).await {
+                Ok(served) => served,
+                // Nothing whole stored is the usual answer, and no failure.
+                Err(e) => {
+                    tracing::debug!(error = %e, "no stored list was served");
+                    return None;
+                }
+            };
+            // A name stored as one account's and now another's.
+            if outcome.account_pk != owner.pk {
+                return None;
+            }
+            let people = users
+                .iter()
+                .map(|user| person(user, snob_engine::cache::picture(&paths, viewer, user.pk)))
+                .collect();
+            Some(Listed {
+                people,
+                whole: outcome.is_complete(),
+                stored_at: outcome
+                    .is_stored()
+                    .then_some(fixed.unwrap_or(outcome.taken_at)),
+                taken_at: fixed.unwrap_or(outcome.taken_at),
+            })
+        })
+    }
+
+    fn pictures(
+        &self,
+        wanted: Vec<(Pk, String)>,
+        came: mpsc::UnboundedSender<(Pk, PathBuf, bool)>,
+        stop: CancelToken,
+    ) -> Answer<()> {
+        let (paths, secrets) = (self.paths.clone(), self.secrets.clone());
+        self.runtime.run(move || async move {
+            let Some(viewer) = in_use(&paths) else {
+                return;
+            };
+            let mut fetch = Vec::new();
+            // The rest are not looked at, as the trait says.
+            for (pk, address) in wanted.into_iter().take(MOST_PICTURES) {
+                match snob_engine::cache::picture(&paths, viewer, pk) {
+                    Some(kept) => {
+                        if came.send((pk, kept, false)).is_err() {
+                            return;
+                        }
+                    }
+                    None if !address.is_empty() => fetch.push((pk, address)),
+                    None => {}
+                }
+            }
+            if fetch.is_empty() || stop.is_canceled() {
+                return;
+            }
+            let Ok((_, app)) = opened(&paths, &secrets, Some(stop.clone()), None) else {
+                return;
+            };
+            let Some(keeper) = app.cache() else {
+                return;
+            };
+            for some in fetch.chunks(AT_ONCE) {
+                if stop.is_canceled() || came.is_closed() {
+                    return;
+                }
+                let one = |at: usize| {
+                    let (keeper, client) = (&keeper, app.client());
+                    async move {
+                        let (pk, address) = some.get(at)?;
+                        let kept = keeper.fetch_picture(client, *pk, address).await?;
+                        Some((*pk, kept))
+                    }
+                };
+                let (first, second, third) = tokio::join!(one(0), one(1), one(2));
+                for (pk, kept) in [first, second, third].into_iter().flatten() {
+                    if came.send((pk, kept, true)).is_err() {
+                        return;
+                    }
+                }
+            }
         })
     }
 
@@ -1088,6 +1461,7 @@ impl Backend for Engine {
             Some(Tiles {
                 tiles,
                 more: grid.more,
+                next: None,
             })
         })
     }
@@ -1179,6 +1553,7 @@ impl Backend for Engine {
         stop: CancelToken,
     ) -> Answer<Result<Listed, Unread>> {
         let (paths, secrets) = (self.paths.clone(), self.secrets.clone());
+        let fixed = self.fixed_scan();
         self.runtime.run(move || async move {
             use snob_core::model::ListKind;
             let kind = match side {
@@ -1225,7 +1600,10 @@ impl Backend for Engine {
             Ok(Listed {
                 people,
                 whole: outcome.is_complete(),
-                stored_at: outcome.is_stored().then_some(outcome.taken_at),
+                stored_at: outcome
+                    .is_stored()
+                    .then_some(fixed.unwrap_or(outcome.taken_at)),
+                taken_at: fixed.unwrap_or(outcome.taken_at),
             })
         })
     }
@@ -1334,5 +1712,74 @@ impl Backend for Engine {
                 why
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn whose(viewer: u64, pk: u64, tab: Tab) -> Whose {
+        Whose {
+            viewer: Pk::new(viewer),
+            pk: Pk::new(pk),
+            tab,
+        }
+    }
+
+    #[test]
+    fn a_cursor_is_taken_by_whose_tab_it_is_alone_and_put_back_under_its_id() {
+        let mut held = Cursors::<&str>::default();
+        let mine = whose(1, 7, Tab::Tagged);
+        let cursor = held.hand_out(held.era, mine, "page 2").unwrap();
+
+        for other in [
+            whose(2, 7, Tab::Tagged),
+            whose(1, 8, Tab::Tagged),
+            whose(1, 7, Tab::Posts),
+        ] {
+            assert_eq!(held.take(cursor, other), None, "{other:?}");
+        }
+        let (at, era) = held.take(cursor, mine).expect("still held");
+        assert_eq!(at, "page 2");
+        assert_eq!(held.take(cursor, mine), None, "out while its page is read");
+
+        held.put_back(era, cursor, mine, "page 2, the tab opened");
+        assert_eq!(
+            held.take(cursor, mine).map(|(at, _)| at),
+            Some("page 2, the tab opened"),
+            "the same cursor, as its page left it"
+        );
+    }
+
+    #[test]
+    fn past_the_most_cursors_the_oldest_goes() {
+        let mut held = Cursors::<usize>::default();
+        let mine = whose(1, 7, Tab::Posts);
+        let first = held.hand_out(held.era, mine, 0).unwrap();
+        let second = held.hand_out(held.era, mine, 1).unwrap();
+        for n in 2..=MOST_CURSORS {
+            held.hand_out(held.era, mine, n);
+        }
+        assert_eq!(held.held.len(), MOST_CURSORS);
+        assert_eq!(held.take(first, mine), None);
+        assert_eq!(held.take(second, mine).map(|(at, _)| at), Some(1));
+    }
+
+    #[test]
+    fn a_page_read_before_the_cursors_were_let_go_of_hands_nothing_back() {
+        let mut held = Cursors::<&str>::default();
+        let mine = whose(1, 7, Tab::Reposts);
+        let era = held.era;
+        let cursor = held.hand_out(era, mine, "page 2").unwrap();
+        let other = held.hand_out(era, mine, "page 3").unwrap();
+        let (at, taken_in) = held.take(cursor, mine).unwrap();
+
+        held.let_go();
+        assert_eq!(held.take(other, mine), None, "every cursor is forgotten");
+        held.put_back(taken_in, cursor, mine, at);
+        assert_eq!(held.take(cursor, mine), None, "nor is a page's put back");
+        assert_eq!(held.hand_out(era, mine, "page 3"), None);
+        assert!(held.hand_out(held.era, mine, "page 2").is_some());
     }
 }

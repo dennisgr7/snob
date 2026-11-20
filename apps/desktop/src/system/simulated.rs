@@ -21,6 +21,8 @@ struct State {
     early: Vec<Event>,
     notified: Vec<Notification>,
     opened: Vec<PathBuf>,
+    /// The addresses opened in the person's browser, refused ones left out.
+    links: Vec<String>,
     clipboard: Option<String>,
     /// The bytes of the last picture put on the clipboard.
     copied_image: Option<Vec<u8>>,
@@ -84,6 +86,12 @@ impl Simulated {
         self.state().opened.clone()
     }
 
+    /// The addresses opened in the person's browser so far: those the real
+    /// system would have opened ([`super::opens`]).
+    pub fn links(&self) -> Vec<String> {
+        self.state().links.clone()
+    }
+
     /// What is on the clipboard.
     pub fn clipboard(&self) -> Option<String> {
         self.state().clipboard.clone()
@@ -102,6 +110,14 @@ impl Simulated {
     /// Opens a folder, which here is keeping its path.
     pub fn open(&self, folder: &Path) {
         self.state().opened.push(folder.to_path_buf());
+    }
+
+    /// Opens `url` in the person's browser, which here is keeping it: the
+    /// real system's refusal, and no browser opened.
+    pub fn link(&self, url: &str) {
+        if super::opens(url) {
+            self.state().links.push(url.to_string());
+        }
     }
 
     /// Every reason a shutdown was held for, and how many holds are in place.
@@ -202,6 +218,10 @@ impl System for Simulated {
         let _ = answer.send(None);
         answered
     }
+
+    fn open_url(&self, url: &str, _: &mut App) {
+        self.link(url);
+    }
 }
 
 impl Simulated {
@@ -275,5 +295,15 @@ mod tests {
         assert_eq!(system.holds(), (vec!["saving".to_string()], 1));
         drop(hold);
         assert_eq!(system.holds().1, 0, "released as soon as it is dropped");
+    }
+
+    #[test]
+    fn a_link_opened_is_read_back_and_one_refused_is_not() {
+        let system = Simulated::new(Settings::default());
+        system.link("https://www.instagram.com/someone/");
+        system.link("https://example.com/someone/");
+        system.link("https://www.instagram.com/someone/?next=x");
+
+        assert_eq!(system.links(), ["https://www.instagram.com/someone/"]);
     }
 }

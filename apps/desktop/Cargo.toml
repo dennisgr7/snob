@@ -70,6 +70,9 @@ tempfile = "3"
 # The fake Instagram the backend is driven against (`tests/engine.rs`), and
 # the one the harness serves to the app it drives.
 snob-fake-ig = { path = "../../crates/snob-fake-ig" }
+# A page of the fake failing once (`tests/engine_reads.rs`), on the server
+# the fake already runs on: the version it locks here.
+wiremock = "0.6"
 # The harness compares a screenshot with the approved one, pixel by pixel:
 # PNG read and written, nothing else of it.
 image = { version = "0.25", default-features = false, features = ["png"] }

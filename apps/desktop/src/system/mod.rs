@@ -1,7 +1,8 @@
 //! What the app asks of the operating system and what the system tells it,
 //! behind one trait: how the person set the machine up (theme, contrast,
 //! motion, transparency, text size), sleep and wake, a shutdown on its way,
-//! the network, notifications, the clipboard and the folders files go to.
+//! the network, notifications, the clipboard, the folders files go to, and
+//! an account's address on Instagram opened in the person's browser.
 //!
 //! **A view never calls Windows, macOS or a Linux desktop itself.** It reads
 //! [`Settings`] and takes [`Event`]s, which the test build's [`simulated`]
@@ -151,6 +152,31 @@ pub trait System {
     /// Asks the person, in the system's own dialog, for a folder to put a
     /// file in: none when they cancel.
     fn choose_folder(&self, cx: &mut App) -> tokio::sync::oneshot::Receiver<Option<PathBuf>>;
+
+    /// Opens `url` in the person's default browser, as any link would:
+    /// **only an account's address on Instagram** ([`profile_address`]),
+    /// anything else refused ([`opens`]). Their browser is handed the
+    /// address and nothing else: snob neither drives it nor reads it.
+    fn open_url(&self, url: &str, cx: &mut App);
+}
+
+/// Where Instagram shows `username`'s profile: none for what cannot be a
+/// username (`snob_core::model::possible_username`), so the address is
+/// never another page's.
+pub fn profile_address(username: &str) -> Option<String> {
+    let name = username.strip_prefix('@').unwrap_or(username);
+    snob_core::model::possible_username(name).then(|| format!("{PROFILES}{name}/"))
+}
+
+/// What every address the app opens begins with.
+const PROFILES: &str = "https://www.instagram.com/";
+
+/// Whether `url` is one the app may open: an account's address on
+/// Instagram, as [`profile_address`] writes it, and nothing more.
+pub fn opens(url: &str) -> bool {
+    url.strip_prefix(PROFILES)
+        .and_then(|rest| rest.strip_suffix('/'))
+        .is_some_and(|name| !name.starts_with('@') && profile_address(name).as_deref() == Some(url))
 }
 
 #[cfg(test)]
@@ -171,5 +197,53 @@ mod tests {
         assert_eq!(at(3.0), 2.0);
         assert_eq!(at(0.5), 1.0);
         assert_eq!(at(f32::NAN), 1.0);
+    }
+
+    #[test]
+    fn an_address_is_made_of_a_name_that_can_be_a_username_alone() {
+        assert_eq!(
+            profile_address("someone").as_deref(),
+            Some("https://www.instagram.com/someone/")
+        );
+        assert_eq!(
+            profile_address("@user.name_9").as_deref(),
+            Some("https://www.instagram.com/user.name_9/")
+        );
+        for wrong in [
+            "",
+            "@",
+            ".",
+            "..",
+            "a/b",
+            "a b",
+            "a?b=c",
+            "\u{e9}mile",
+            &"a".repeat(31),
+        ] {
+            assert_eq!(profile_address(wrong), None, "{wrong:?}");
+        }
+    }
+
+    #[test]
+    fn only_an_account_s_address_on_instagram_is_opened() {
+        assert!(opens("https://www.instagram.com/someone/"));
+        for refused in [
+            "https://www.instagram.com/",
+            "https://www.instagram.com/someone",
+            "https://www.instagram.com/@someone/",
+            "https://www.instagram.com/someone/?next=x",
+            "https://www.instagram.com/someone/p/",
+            "https://www.instagram.com/../",
+            "https://www.instagram.com/a%2Fb/",
+            "http://www.instagram.com/someone/",
+            "https://instagram.com/someone/",
+            "https://www.instagram.com.example.com/someone/",
+            "https://example.com/someone/",
+            "file:///C:/Windows/",
+            "javascript:alert(1)",
+            "",
+        ] {
+            assert!(!opens(refused), "{refused}");
+        }
     }
 }

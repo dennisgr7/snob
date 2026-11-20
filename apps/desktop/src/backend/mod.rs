@@ -6,7 +6,9 @@
 //! them reads a file, the keyring or the network on the window's thread.
 //! **No call takes a path or a credential a view made up**: an account is
 //! named by its pk, and the one secret that crosses is the session ID a
-//! person pasted, on its way to the engine.
+//! person pasted, on its way to the engine. The one address a view hands
+//! back is a row's small picture as its list answered it
+//! ([`Person::picture_from`]), which the engine fetches from the CDN alone.
 
 use std::path::PathBuf;
 
@@ -16,7 +18,7 @@ use snob_engine::login::Failure;
 use snob_engine::storage::Kind;
 use snob_ig::pace::CancelToken;
 use snob_store::disk::{Size, Volume};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::state::flow::{Found, Method, Named, Update};
 use crate::state::prefs::{Appearance, Placement};
@@ -34,8 +36,9 @@ pub mod scripted;
 /// reads as the call having failed.
 pub type Answer<T> = oneshot::Receiver<T>;
 
-/// An account signed in on this computer, as a view shows it. Every string
-/// was made printable where it was kept.
+/// An account signed in on this computer, or one the account in use knows
+/// ([`Backend::known_accounts`]), as a view shows it. Every string was made
+/// printable where it was kept.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
     pub named: Named,
@@ -247,6 +250,53 @@ pub trait Backend: Send + Sync + 'static {
     /// kept.
     fn tiles_kept(&self, who: Named, tab: Tab) -> Answer<Option<Tiles>>;
 
+    /// The page of `who`'s `tab` that `after` points at, handed out by the
+    /// page before ([`Tiles::next`]): **one request, a step after the page
+    /// before and past any rest the account's sitting owes**
+    /// (`snob_engine::posts::page_after`), until `stop`. `resting` says
+    /// until when it rests, and `None` once it no longer does. **A page
+    /// that failed leaves `after` where it was**, to be asked again from;
+    /// one that came hands out the cursor after it, and `after` is spent.
+    /// A cursor is read once at a time, and only as the account in use it
+    /// was handed out to: a signing in or out and a change of account let
+    /// go of every cursor. One not held reads nothing and is answered
+    /// [`Unread::Failed`] with no code, as a page stopped is.
+    fn more_tiles(
+        &self,
+        who: Named,
+        tab: Tab,
+        after: Cursor,
+        resting: watch::Sender<Option<Epoch>>,
+        stop: CancelToken,
+    ) -> Answer<Result<Tiles, Unread>>;
+
+    /// The accounts the account in use already knows whose username begins
+    /// with `typed`, at most `limit`, each with the small picture the cache
+    /// keeps: **read from its database, nothing sent**
+    /// (`snob_engine::cache::known_named`).
+    fn known_accounts(&self, typed: String, limit: usize) -> Answer<Vec<Account>>;
+
+    /// What was stored of `owner`'s `side` list, at once: the engine's list
+    /// served from storage (`cache`, the command line's `--offline`),
+    /// **nothing sent**, so it may be asked before the question another
+    /// account's list needs. None when nothing whole is stored.
+    fn list_kept(&self, owner: Named, side: Side) -> Answer<Option<Listed>>;
+
+    /// The small pictures of `wanted`, rows a list shows, each by its pk and
+    /// the address its list answered ([`Person::picture_from`]): **the one
+    /// the cache keeps at once, else one download from the CDN, never from
+    /// the API**, a few at a time and at most a small picture's weight each
+    /// (`cache::Keeper::fetch_picture`), until `stop`. Each is told on
+    /// `came` as it is on disk, `true` when it was downloaded now; one that
+    /// could not be fetched is not told. **At most [`MOST_PICTURES`] rows a
+    /// call**: those past them are not looked at, to be asked again.
+    fn pictures(
+        &self,
+        wanted: Vec<(Pk, String)>,
+        came: mpsc::UnboundedSender<(Pk, PathBuf, bool)>,
+        stop: CancelToken,
+    ) -> Answer<()>;
+
     /// `who`'s picture at the largest size its profile names, on disk:
     /// fetched from the CDN once, for the viewer. None when there is none.
     fn full_picture(&self, who: Named) -> Answer<Option<PathBuf>>;
@@ -366,13 +416,29 @@ pub struct Tile {
     pub pinned: bool,
 }
 
-/// The first page of a tab.
+/// A page of a tab.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tiles {
     pub tiles: Vec<Tile>,
     /// There are more past it.
     pub more: bool,
+    /// Where the page after it is read from ([`Backend::more_tiles`]):
+    /// none past the tab's end, past the most pages a visit reads, or on a
+    /// page kept from before.
+    pub next: Option<Cursor>,
 }
+
+/// How many rows' small pictures one [`Backend::pictures`] call looks at:
+/// the rows a list's window shows at twice the text size and more, and a
+/// few around them.
+pub const MOST_PICTURES: usize = 48;
+
+/// Where a tab reads on, as the backend handed it out: **a view holds it and
+/// hands it back, and never makes one**. What it stands for (the cursor
+/// Instagram handed out, the pages read, the tab's navigation) stays with
+/// the backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Cursor(u64);
 
 /// Why something was not read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -398,6 +464,9 @@ pub struct Person {
     pub is_verified: bool,
     /// Its small picture on disk, when the cache keeps one.
     pub picture: Option<PathBuf>,
+    /// Where its small picture is on the CDN, as the list answered it:
+    /// what [`Backend::pictures`] is asked for.
+    pub picture_from: Option<String>,
 }
 
 /// A list as far as it is read.
@@ -416,6 +485,8 @@ pub struct Listed {
     pub whole: bool,
     /// Served from what was stored on this date rather than read now.
     pub stored_at: Option<Epoch>,
+    /// When the walk it is the answer of ended, read now or stored.
+    pub taken_at: Epoch,
 }
 
 /// An answer already known.

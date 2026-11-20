@@ -132,6 +132,8 @@ pub struct Answer {
     pub notified: Vec<String>,
     /// The folders opened so far.
     pub opened: Vec<PathBuf>,
+    /// The addresses opened in the person's browser so far.
+    pub links: Vec<String>,
     /// How many times the app asked to be started again.
     pub restarts: usize,
     /// Whether the app is drawn dark, by the system's theme or one chosen.
@@ -242,6 +244,7 @@ impl Driven {
                 .map(|shown| format!("{}: {}", shown.title, shown.body))
                 .collect();
             answer.opened = system.opened();
+            answer.links = system.links();
             answer.restarts = system.restarts();
         }
         let read = self.window.update(cx, |_, window, cx| {

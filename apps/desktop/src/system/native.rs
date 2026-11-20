@@ -253,6 +253,15 @@ impl System for Native {
             .detach();
         answered
     }
+
+    fn open_url(&self, url: &str, cx: &mut App) {
+        if !super::opens(url) {
+            // Not the address itself: it may hold what another person wrote.
+            tracing::warn!("an address that is not an account's on Instagram was not opened");
+            return;
+        }
+        cx.open_url(url);
+    }
 }
 
 #[cfg(test)]

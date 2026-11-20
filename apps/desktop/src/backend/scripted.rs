@@ -10,12 +10,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use snob_core::secret::Secret;
 use snob_core::{Epoch, Pk};
 use snob_ig::pace::CancelToken;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use super::{
-    Account, AccountStorage, Answer, Automation, Backend, Browsers, Cleared, Forgotten, Highlight,
-    Listed, Loaded, Next, Person, Problem, Profile, Run, SignIn, Storage, Tile, TileKind, Tiles,
-    Unread, Walked, answered,
+    Account, AccountStorage, Answer, Automation, Backend, Browsers, Cleared, Cursor, Forgotten,
+    Highlight, Listed, Loaded, MOST_PICTURES, Next, Person, Problem, Profile, Run, SignIn, Storage,
+    Tile, TileKind, Tiles, Unread, Walked, answered,
 };
 use crate::state::flow::{Found, Method, Named, Update};
 use crate::state::prefs::{Appearance, Placement};
@@ -26,8 +26,12 @@ use crate::state::profile::{Side, Tab};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Asked {
     Load,
-    SignInWith { expected: bool },
-    SignInInAWindow { renewing: Option<Pk> },
+    SignInWith {
+        expected: bool,
+    },
+    SignInInAWindow {
+        renewing: Option<Pk>,
+    },
     SignOut(Pk),
     SwitchTo(Pk),
     PausedUntil,
@@ -45,6 +49,12 @@ pub enum Asked {
     RememberIntroduced(Pk),
     Profile(Pk),
     Tiles(Pk, Tab),
+    /// A page past the first, by its number: the second is 2.
+    MoreTiles(Pk, Tab, u32),
+    /// The names known that begin with what was typed.
+    KnownAccounts(String),
+    /// The small pictures of these rows of a list.
+    Pictures(Vec<Pk>),
     FullPicture(Pk),
     PictureBytes(Pk),
     SavePicture(Pk),
@@ -103,6 +113,25 @@ struct State {
     /// The highlights and first pages answered, which the cache keeps.
     kept_trays: HashMap<Pk, Vec<Highlight>>,
     kept_tiles: HashMap<(Pk, Tab), Tiles>,
+    /// How many pages the posts tab has past its first: none unless a test
+    /// says so.
+    more_pages: u32,
+    /// How many of the next pages past the first fail.
+    more_fails: u32,
+    /// Until when the next pages say they rest before they are read.
+    rests_until: Option<Epoch>,
+    /// Each cursor handed out, by its id: whose tab and which page it leads
+    /// to.
+    cursors: HashMap<u64, (Pk, Tab, u32)>,
+    cursors_made: u64,
+    /// The token of the last page past the first asked for.
+    more_stop: Option<CancelToken>,
+    /// The accounts a name typed is suggested from.
+    known: Vec<Account>,
+    /// The lists answered, and those a test said were stored before.
+    kept_lists: HashMap<(Pk, Side), Listed>,
+    /// The pictures a row's is downloaded as, by its pk.
+    pictures: HashMap<Pk, PathBuf>,
     /// The automations kept, in the order they were kept.
     automations: Vec<Automation>,
     runs: Vec<Run>,
@@ -166,6 +195,15 @@ impl Scripted {
             private: None,
             kept_trays: HashMap::new(),
             kept_tiles: HashMap::new(),
+            more_pages: 0,
+            more_fails: 0,
+            rests_until: None,
+            cursors: HashMap::new(),
+            cursors_made: 0,
+            more_stop: None,
+            known: Vec::new(),
+            kept_lists: HashMap::new(),
+            pictures: HashMap::new(),
             automations: Vec::new(),
             runs: Vec::new(),
             next_run: Next::Never,
@@ -205,9 +243,9 @@ impl Scripted {
         self.state().holding = true;
     }
 
-    /// From now on clearing the cache, forgetting history and the end of a
-    /// list's walk wait until [`Self::release`]; everything else is
-    /// answered.
+    /// From now on clearing the cache, forgetting history, the end of a
+    /// list's walk, a page past a tab's first and a list's pictures wait
+    /// until [`Self::release`]; everything else is answered.
     pub fn hold_the_work(&self) {
         self.state().holding_work = true;
     }
@@ -243,6 +281,14 @@ impl Scripted {
             .is_some_and(CancelToken::is_canceled)
     }
 
+    /// Whether the last page past a tab's first asked for was told to stop.
+    pub fn more_stopped(&self) -> bool {
+        self.state()
+            .more_stop
+            .as_ref()
+            .is_some_and(CancelToken::is_canceled)
+    }
+
     fn answer<T: Send + 'static>(
         &self,
         asked: Asked,
@@ -258,7 +304,11 @@ impl Scripted {
             let mut state = self.state();
             let work = matches!(
                 asked,
-                Asked::ClearCache(_) | Asked::ForgetHistory(_) | Asked::List(..)
+                Asked::ClearCache(_)
+                    | Asked::ForgetHistory(_)
+                    | Asked::List(..)
+                    | Asked::MoreTiles(..)
+                    | Asked::Pictures(_)
             );
             state.asked.push(asked);
             if state.holding || (state.holding_work && work) {
@@ -435,6 +485,63 @@ impl Script<'_> {
         self.0.save_fails = Some(why.to_string());
         self
     }
+
+    /// The posts tab has `pages` pages of twelve past its first, read on
+    /// from the cursor each hands out. **None by default**: a first page
+    /// hands out no cursor.
+    pub fn more_pages(&mut self, pages: u32) -> &mut Self {
+        self.0.more_pages = pages;
+        self
+    }
+
+    /// The next `times` pages past a tab's first fail, leaving their cursor
+    /// where it was.
+    pub fn more_fails(&mut self, times: u32) -> &mut Self {
+        self.0.more_fails = times;
+        self
+    }
+
+    /// The next pages past a tab's first say they rest until `until` as
+    /// soon as they are asked for, and stop saying so when they come.
+    pub fn rests_until(&mut self, until: Option<Epoch>) -> &mut Self {
+        self.0.rests_until = until;
+        self
+    }
+
+    /// The accounts a name typed is suggested from, in the order they are
+    /// suggested in.
+    pub fn known(&mut self, accounts: Vec<Account>) -> &mut Self {
+        self.0.known = accounts;
+        self
+    }
+
+    /// `pk`'s `side` list was read before, `size` accounts long, and is
+    /// stored.
+    pub fn kept_list(&mut self, pk: u64, side: Side, size: usize) -> &mut Self {
+        self.0
+            .kept_lists
+            .insert((pk.into(), side), kept(people(size)));
+        self
+    }
+
+    /// The small picture of the row `pk` is downloaded as `picture`.
+    pub fn picture(&mut self, pk: u64, picture: PathBuf) -> &mut Self {
+        self.0.pictures.insert(pk.into(), picture);
+        self
+    }
+}
+
+/// When every scripted list is said to have been read.
+const SCANNED_AT: Epoch = Epoch::new(1_790_000_000);
+
+/// A list stored whole, of `people`.
+fn kept(people: Vec<Person>) -> Listed {
+    Listed {
+        people,
+        whole: true,
+        stored_at: Some(SCANNED_AT),
+        taken_at: SCANNED_AT,
+    }
 }
 
 /// The invented profile of `who`: an account signed in here says its own
@@ -498,39 +605,55 @@ fn people(size: usize) -> Vec<Person> {
             is_private: n % 7 == 3,
             is_verified: false,
             picture: None,
+            picture_from: Some(format!(
+                "https://scontent.cdninstagram.com/v/invented/{n}.jpg"
+            )),
         })
         .collect()
 }
 
-/// The invented first page of a tab: twelve posts, more past them.
-fn tiles(tab: Tab) -> Tiles {
+/// The invented posts `from` to `to` of a tab, numbered from its newest.
+fn posts(tab: Tab, from: usize, to: usize) -> Vec<Tile> {
     let kinds = [
         TileKind::Photo,
         TileKind::Carousel(3),
         TileKind::Reel,
         TileKind::Video,
     ];
+    (from..to)
+        .map(|n| Tile {
+            code: format!("C{n:02}invented"),
+            kind: kinds[n % kinds.len()],
+            thumb: None,
+            caption: Some(format!("an invented caption, number {n}")),
+            owner: (tab != Tab::Posts).then(|| format!("user{n}")),
+            taken_at: Some(Epoch::new(1_790_000_000 - n as i64 * 86_400)),
+            likes: Some(100 + n as u64 * 7),
+            comments: Some(n as u64),
+            pinned: tab == Tab::Posts && n == 0,
+        })
+        .collect()
+}
+
+/// The invented first page of a tab: twelve posts, more past them.
+fn tiles(tab: Tab) -> Tiles {
     let count = match tab {
         Tab::Posts => 12,
         Tab::Reposts => 5,
         Tab::Tagged => 0,
     };
     Tiles {
-        tiles: (0..count)
-            .map(|n| Tile {
-                code: format!("C{n:02}invented"),
-                kind: kinds[n % kinds.len()],
-                thumb: None,
-                caption: Some(format!("an invented caption, number {n}")),
-                owner: (tab != Tab::Posts).then(|| format!("user{n}")),
-                taken_at: Some(Epoch::new(1_790_000_000 - n as i64 * 86_400)),
-                likes: Some(100 + n as u64 * 7),
-                comments: Some(n as u64),
-                pinned: tab == Tab::Posts && n == 0,
-            })
-            .collect(),
+        tiles: posts(tab, 0, count),
         more: count == 12,
+        next: None,
     }
+}
+
+/// A cursor to `pk`'s `tab` at `page`, held by `state`.
+fn hand_out(state: &mut State, pk: Pk, tab: Tab, page: u32) -> Cursor {
+    state.cursors_made += 1;
+    state.cursors.insert(state.cursors_made, (pk, tab, page));
+    Cursor(state.cursors_made)
 }
 
 /// What a sign-in that ended well leaves signed in.
@@ -566,6 +689,7 @@ impl Backend for Scripted {
     }
 
     fn sign_in_with(&self, session_id: Secret, browser: Option<String>) -> Answer<SignIn> {
+        self.state().cursors.clear();
         let expected = session_id.expose() == self.state().session_id;
         self.state().sent_as = browser;
         self.answer(Asked::SignInWith { expected }, |state| {
@@ -576,6 +700,7 @@ impl Backend for Scripted {
     }
 
     fn sign_in_in_a_window(&self, renewing: Option<Pk>, stop: CancelToken) -> Answer<SignIn> {
+        self.state().cursors.clear();
         self.state().window = Some(stop.clone());
         self.answer(Asked::SignInInAWindow { renewing }, move |state| {
             if stop.is_canceled() {
@@ -588,6 +713,7 @@ impl Backend for Scripted {
     }
 
     fn sign_out(&self, pk: Pk) -> Answer<Vec<Account>> {
+        self.state().cursors.clear();
         self.answer(Asked::SignOut(pk), move |state| {
             state.accounts.retain(|account| account.named.pk != pk);
             if let Some(first) = state.accounts.first_mut() {
@@ -598,6 +724,7 @@ impl Backend for Scripted {
     }
 
     fn switch_to(&self, pk: Pk) -> Answer<Vec<Account>> {
+        self.state().cursors.clear();
         self.answer(Asked::SwitchTo(pk), move |state| {
             if state.accounts.iter().any(|account| account.named.pk == pk) {
                 for account in &mut state.accounts {
@@ -735,9 +862,106 @@ impl Backend for Scripted {
             if state.private == Some(who.pk) {
                 return Err(Unread::Hidden);
             }
-            let tiles = tiles(tab);
+            let mut tiles = tiles(tab);
             state.kept_tiles.insert((who.pk, tab), tiles.clone());
+            if tab == Tab::Posts && state.more_pages > 0 {
+                tiles.next = Some(hand_out(state, who.pk, tab, 2));
+            }
             Ok(tiles)
+        })
+    }
+
+    fn more_tiles(
+        &self,
+        who: Named,
+        tab: Tab,
+        after: Cursor,
+        resting: watch::Sender<Option<Epoch>>,
+        stop: CancelToken,
+    ) -> Answer<Result<Tiles, Unread>> {
+        let page = {
+            let mut state = self.state();
+            state.more_stop = Some(stop.clone());
+            if let Some(until) = state.rests_until {
+                resting.send_replace(Some(until));
+            }
+            state
+                .cursors
+                .get(&after.0)
+                .filter(|(pk, on, _)| *pk == who.pk && *on == tab)
+                .map(|(_, _, page)| *page)
+        };
+        // A cursor no longer held is asked as page 0, which reads nothing.
+        let asked = Asked::MoreTiles(who.pk, tab, page.unwrap_or(0));
+        self.answer(asked, move |state| {
+            resting.send_replace(None);
+            let Some(page) = page.filter(|_| state.cursors.contains_key(&after.0)) else {
+                return Err(Unread::Failed(String::new()));
+            };
+            if stop.is_canceled() {
+                return Err(Unread::Failed(String::new()));
+            }
+            if state.more_fails > 0 {
+                state.more_fails -= 1;
+                return Err(Unread::Failed("7K2Q-PAGE".to_string()));
+            }
+            state.cursors.remove(&after.0);
+            let at = (page as usize - 1) * 12;
+            let more = page <= state.more_pages;
+            Ok(Tiles {
+                tiles: posts(tab, at, at + 12),
+                more,
+                next: more.then(|| hand_out(state, who.pk, tab, page + 1)),
+            })
+        })
+    }
+
+    fn known_accounts(&self, typed: String, limit: usize) -> Answer<Vec<Account>> {
+        self.answer(Asked::KnownAccounts(typed.clone()), move |state| {
+            let typed = typed.trim();
+            let typed = typed.strip_prefix('@').unwrap_or(typed).to_lowercase();
+            if typed.is_empty() {
+                return Vec::new();
+            }
+            state
+                .known
+                .iter()
+                .filter(|account| {
+                    account
+                        .named
+                        .username
+                        .as_deref()
+                        .is_some_and(|name| name.to_lowercase().starts_with(&typed))
+                })
+                .take(limit)
+                .cloned()
+                .collect()
+        })
+    }
+
+    // Not among what was asked: it reads files alone.
+    fn list_kept(&self, owner: Named, side: Side) -> Answer<Option<Listed>> {
+        answered(self.state().kept_lists.get(&(owner.pk, side)).cloned())
+    }
+
+    fn pictures(
+        &self,
+        wanted: Vec<(Pk, String)>,
+        came: mpsc::UnboundedSender<(Pk, PathBuf, bool)>,
+        stop: CancelToken,
+    ) -> Answer<()> {
+        let rows = wanted.iter().map(|(pk, _)| *pk).collect();
+        self.answer(Asked::Pictures(rows), move |state| {
+            for (pk, _) in wanted.into_iter().take(MOST_PICTURES) {
+                if stop.is_canceled() {
+                    return;
+                }
+                if let Some(picture) = state.pictures.get(&pk)
+                    && came.send((pk, picture.clone(), true)).is_err()
+                {
+                    return;
+                }
+            }
         })
     }
 
@@ -792,10 +1016,14 @@ impl Backend for Scripted {
                 people: all.clone(),
                 expected,
             });
+            if whole {
+                state.kept_lists.insert((owner.pk, side), kept(all.clone()));
+            }
             Ok(Listed {
                 people: all,
                 whole,
                 stored_at: None,
+                taken_at: SCANNED_AT,
             })
         })
     }
@@ -975,6 +1203,121 @@ mod tests {
         assert!(backend.window_was_stopped());
         backend.release();
         assert_eq!(answer.try_recv().unwrap(), SignIn::GaveUp);
+    }
+
+    fn someone() -> Named {
+        Named {
+            pk: 9001.into(),
+            username: Some("someone".into()),
+        }
+    }
+
+    fn more(backend: &Scripted, after: Cursor) -> Result<Tiles, Unread> {
+        let (resting, _) = watch::channel(None);
+        backend
+            .more_tiles(
+                someone(),
+                Tab::Posts,
+                after,
+                resting,
+                CancelToken::default(),
+            )
+            .blocking_recv()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_first_page_hands_out_no_cursor_unless_a_test_says_there_are_more() {
+        let backend = Scripted::with(vec![account(42, "me", true)]);
+        let first = backend
+            .tiles(someone(), Tab::Posts)
+            .blocking_recv()
+            .unwrap();
+        assert_eq!(first.unwrap().next, None);
+    }
+
+    #[test]
+    fn pages_past_the_first_come_from_each_cursor_and_a_failed_one_keeps_it() {
+        let backend = Scripted::with(vec![account(42, "me", true)]);
+        backend.script(|script| {
+            script.more_pages(2).more_fails(1);
+        });
+        let first = backend
+            .tiles(someone(), Tab::Posts)
+            .blocking_recv()
+            .unwrap();
+        let after = first.unwrap().next.expect("a second page");
+
+        assert!(more(&backend, after).is_err(), "the page fails once");
+        let second = more(&backend, after).expect("asked again from the same place");
+        assert_eq!(second.tiles[0].code, "C12invented");
+        let third = more(&backend, second.next.expect("a third page")).unwrap();
+        assert_eq!(third.tiles[11].code, "C35invented");
+        assert_eq!(third.next, None, "the tab has ended");
+        assert!(more(&backend, after).is_err(), "a cursor is spent once");
+
+        let pages: Vec<u32> = backend
+            .asked()
+            .into_iter()
+            .filter_map(|asked| match asked {
+                Asked::MoreTiles(_, _, page) => Some(page),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pages, [2, 2, 3, 0]);
+    }
+
+    #[test]
+    fn a_list_read_whole_is_kept_and_answered_with_nothing_asked() {
+        let backend = Scripted::with(vec![account(42, "me", true)]);
+        let me = account(42, "me", true).named;
+        assert_eq!(
+            backend
+                .list_kept(me.clone(), Side::Followers)
+                .blocking_recv()
+                .unwrap(),
+            None
+        );
+        let (walked, _) = watch::channel(Walked::default());
+        let read = backend
+            .list(me.clone(), Side::Followers, walked, CancelToken::default())
+            .blocking_recv()
+            .unwrap()
+            .unwrap();
+        let asked = backend.asked();
+
+        let kept = backend
+            .list_kept(me, Side::Followers)
+            .blocking_recv()
+            .unwrap()
+            .expect("kept");
+        assert_eq!(kept.people, read.people);
+        assert_eq!(kept.taken_at, read.taken_at);
+        assert_eq!(backend.asked(), asked, "nothing more was asked");
+    }
+
+    #[test]
+    fn known_accounts_are_the_ones_whose_name_begins_with_what_was_typed() {
+        let backend = Scripted::with(vec![account(42, "me", true)]);
+        backend.script(|script| {
+            script.known(vec![
+                account(1, "anna", false),
+                account(2, "Annabel", false),
+                account(3, "bob", false),
+            ]);
+        });
+        let named = |typed: &str, limit: usize| -> Vec<String> {
+            backend
+                .known_accounts(typed.to_string(), limit)
+                .blocking_recv()
+                .unwrap()
+                .into_iter()
+                .filter_map(|account| account.named.username)
+                .collect()
+        };
+        assert_eq!(named("@ann", 6), ["anna", "Annabel"]);
+        assert_eq!(named("ANN", 1), ["anna"]);
+        assert!(named("", 6).is_empty());
     }
 
     #[test]
