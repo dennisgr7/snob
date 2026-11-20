@@ -293,9 +293,9 @@ webhook-heartbeat = Avisar también cuando nada cambió
 webhook-heartbeat-note = Un mensaje corto en cada ejecución, para saber que se ejecutó.
 webhook-headers = Cabeceras
 webhook-headers-note = Una cabecera de aquí se guarda en un archivo de texto de este ordenador. No es sitio para una contraseña ni un token.
-webhook-header-name = Nombre de la cabecera
-webhook-header-value = Valor de la cabecera
-webhook-header-remove = Quitar esta cabecera
+webhook-header-name = Nombre de la cabecera { $number }
+webhook-header-value = Valor de la cabecera { $number }
+webhook-header-remove = Quitar la cabecera { $number }
 webhook-header-add = Añadir una cabecera
 leave-title = ¿Salir sin terminar?
 leave-body = Esta automatización todavía no puede ejecutarse:
@@ -643,6 +643,14 @@ run-said-saved = { $count } archivos guardados.
 run-said-saved-one = { $count } archivo guardado.
 run-said-failed = Parte de la ejecución: { $outcome }.
 run-said-cannot-run = No pudo ejecutarse: algo en sus pasos lo impide. Edítala para ver qué.
+# Los nombres que se sugieren bajo el nombre de usuario de una acción, de las
+# cuentas que ya conoce la cuenta en uso. `$username` es lo que se escribió.
+action-suggestions = Cuentas que snob ya conoce
+action-someone-else = Otra persona @{ $username }
+# El diálogo de un webhook: el nombre de cada fila de cabecera, y lo que una
+# automatización de la app nunca envía.
+webhook-header-row = Cabecera { $number }
+webhook-keyring-note = Una automatización creada aquí nunca envía el token ni la clave de firma que el llavero del sistema guarda para el webhook de watch.toml: además de las de snob, solo envía las cabeceras escritas aquí.
 
 ## Programación (schedule): cuándo se ejecuta una automatización, elegido en su diálogo y dicho en palabras.
 

@@ -10,8 +10,8 @@ mod common;
 
 use std::time::Duration;
 
-use common::{App, disabled, open_with};
-use gpui_kit::test::TestWindowExt as _;
+use common::{App, disabled, focused, open_with};
+use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{AppContext as _, Role, TestAppContext, VisualTestContext, px};
 use snob_core::Epoch;
 use snob_core::automation::{Account, Automation, Read, Step};
@@ -1507,4 +1507,386 @@ async fn a_resting_app_looked_at_again_reads_its_runs_at_once(cx: &mut TestAppCo
     assert!(reads_of(&backend, "a1") > rested, "read once looked at");
     let said = first_run_said(&app, cx);
     assert!(said.contains("Finished"), "{said}");
+}
+
+/// The dialog of the step `node`, open.
+fn configure(app: &App, cx: &mut TestAppContext, node: usize) {
+    app.in_window(cx, |window, cx| window.right_click(("node", node), cx));
+    app.click(cx, "node-menu-configure");
+    settle(app, cx);
+}
+
+/// What was asked of the accounts known, in order.
+fn asked_known(backend: &Scripted) -> Vec<String> {
+    backend
+        .asked()
+        .into_iter()
+        .filter_map(|asked| match asked {
+            Asked::KnownAccounts(typed) => Some(typed),
+            _ => None,
+        })
+        .collect()
+}
+
+fn label_at(app: &App, cx: &mut TestAppContext, id: impl Into<gpui_kit::ElementId>) -> String {
+    let id = id.into();
+    app.in_window(cx, |window, _| {
+        window.find(id).label().unwrap_or_default().to_string()
+    })
+}
+
+fn focused_at(app: &App, cx: &mut TestAppContext, id: impl Into<gpui_kit::ElementId>) -> bool {
+    let id = id.into();
+    app.in_window(cx, |window, _| window.find(id).focused() == Some(true))
+}
+
+/// `daily` with its action reading `username`'s lists, the yes given at
+/// `consent`.
+fn on_another(username: &str, consent: Option<i64>) -> Automation {
+    let mut automation = daily();
+    automation.nodes[1].step = Step::Read {
+        account: Some(Account {
+            username: Some(username.to_string()),
+            viewer: Some(42.into()),
+            consent: consent.map(Epoch::new),
+        }),
+        what: Read::Lists,
+    };
+    automation
+}
+
+#[gpui_kit::test]
+async fn typing_two_letters_suggests_the_known_accounts_with_another_person_last_and_enter_takes_one(
+    cx: &mut TestAppContext,
+) {
+    let backend = scripted(vec![daily()]);
+    backend.script(|script| {
+        script.known(vec![
+            account(7, "anna", false),
+            account(8, "annabel", false),
+            account(9, "bob", false),
+        ]);
+    });
+    let app = in_editor(cx, backend.clone()).await;
+    configure(&app, cx, 2);
+    app.click(cx, "action-other");
+    settle(&app, cx);
+    click(&app, cx, "action-username");
+    settle(&app, cx);
+    assert!(
+        asked_known(&backend).is_empty(),
+        "nothing typed, nothing asked"
+    );
+    assert!(!shown(&app, cx, "action-suggestions"));
+    let before = backend.asked().len();
+
+    app.in_window(cx, |window, cx| window.input("an", cx));
+    settle(&app, cx);
+    assert_eq!(asked_known(&backend), ["an"], "one ask for the keys typed");
+    assert!(shown(&app, cx, "action-suggestions"));
+    let rows: Vec<String> = (0..3usize)
+        .map(|at| label_at(&app, cx, ("action-suggestion", at)))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "@anna, Invented anna",
+            "@annabel, Invented annabel",
+            "Another person @an",
+        ]
+    );
+    assert!(
+        app.in_window(cx, |window, _| window
+            .try_find(("action-suggestion", 3usize))
+            .is_none()),
+        "bob does not begin with what is typed"
+    );
+
+    app.press(cx, "down");
+    assert!(focused_at(&app, cx, ("action-suggestion", 0usize)));
+    app.press(cx, "down");
+    assert!(focused_at(&app, cx, ("action-suggestion", 1usize)));
+    app.press(cx, "enter");
+    settle(&app, cx);
+    assert!(!shown(&app, cx, "action-suggestions"));
+    assert!(focused(&app, cx, "action-username"), "back in the field");
+    assert_eq!(
+        app.label_of(cx, "action-consent"),
+        "I agree that this automation reads the followers and the following of @annabel each \
+         time it runs."
+    );
+    assert_eq!(
+        backend.asked()[before..],
+        [Asked::KnownAccounts("an".to_string())],
+        "choosing a name sends nothing"
+    );
+}
+
+#[gpui_kit::test]
+async fn a_click_on_a_suggestion_fills_the_field_and_closes_the_list(cx: &mut TestAppContext) {
+    let backend = scripted(vec![daily()]);
+    backend.script(|script| {
+        script.known(vec![
+            account(7, "anna", false),
+            account(8, "annabel", false),
+        ]);
+    });
+    let app = in_editor(cx, backend).await;
+    configure(&app, cx, 2);
+    app.click(cx, "action-other");
+    settle(&app, cx);
+    click(&app, cx, "action-username");
+    app.in_window(cx, |window, cx| window.input("an", cx));
+    settle(&app, cx);
+    assert!(shown(&app, cx, "action-suggestions"));
+    click(&app, cx, ("action-suggestion", 1usize));
+    settle(&app, cx);
+    assert!(!shown(&app, cx, "action-suggestions"));
+    assert_eq!(
+        app.in_window(cx, |window, _| window
+            .find("action-username")
+            .value()
+            .map(str::to_string)),
+        Some("annabel".to_string())
+    );
+}
+
+#[gpui_kit::test]
+async fn escape_closes_the_suggestions_before_the_dialog(cx: &mut TestAppContext) {
+    let backend = scripted(vec![on_another("someone", None)]);
+    let app = in_editor(cx, backend).await;
+    configure(&app, cx, 2);
+    click(&app, cx, "action-username");
+    app.in_window(cx, |window, cx| window.input("x", cx));
+    settle(&app, cx);
+    assert_eq!(
+        label_at(&app, cx, ("action-suggestion", 0usize)),
+        "Another person @someonex"
+    );
+    app.press(cx, "escape");
+    settle(&app, cx);
+    assert!(!shown(&app, cx, "action-suggestions"));
+    assert!(shown(&app, cx, "step-dialog"), "the dialog stays");
+    app.press(cx, "escape");
+    settle(&app, cx);
+    assert!(!shown(&app, cx, "step-dialog"));
+}
+
+#[gpui_kit::test]
+async fn changing_the_account_unticks_the_yes_and_asks_it_again_for_the_new_name(
+    cx: &mut TestAppContext,
+) {
+    let backend = scripted(vec![on_another("anna", Some(100))]);
+    let app = in_editor(cx, backend.clone()).await;
+    configure(&app, cx, 2);
+    let ticked = |app: &App, cx: &mut TestAppContext| {
+        app.in_window(cx, |window, _| window.find("action-consent").checked())
+    };
+    assert_eq!(ticked(&app, cx), Some(true), "the yes kept with anna");
+    assert!(app.label_of(cx, "action-consent").contains("@anna "));
+
+    click(&app, cx, "action-username");
+    app.in_window(cx, |window, cx| {
+        window.press("ctrl-a", cx);
+        window.input("bob", cx);
+    });
+    settle(&app, cx);
+    assert_eq!(ticked(&app, cx), Some(false));
+    assert!(app.label_of(cx, "action-consent").contains("@bob "));
+    assert!(
+        disabled(&app, cx, "dialog-save"),
+        "bob's lists wait for a yes"
+    );
+
+    app.in_window(cx, |window, cx| {
+        window.press("ctrl-a", cx);
+        window.input("anna", cx);
+    });
+    settle(&app, cx);
+    assert_eq!(
+        ticked(&app, cx),
+        Some(false),
+        "a yes taken back is not given again by typing the name"
+    );
+
+    app.press(cx, "tab");
+    settle(&app, cx);
+    assert!(
+        !shown(&app, cx, "action-suggestions"),
+        "the names suggested go once the field is left, and lie over nothing"
+    );
+    assert!(focused(&app, cx, "action-consent"));
+    app.click(cx, "action-consent");
+    settle(&app, cx);
+    assert_eq!(ticked(&app, cx), Some(true));
+    app.click(cx, "dialog-save");
+    settle(&app, cx);
+    let Step::Read {
+        account: Some(saved),
+        ..
+    } = backend.automations()[0].nodes[1].step.clone()
+    else {
+        panic!("an action");
+    };
+    assert_eq!(saved.username.as_deref(), Some("anna"));
+    assert!(saved.consent.is_some());
+}
+
+/// An automation with a step of every kind that has a dialog: a schedule,
+/// an action, a filter and a webhook with two headers.
+fn every_kind() -> Automation {
+    let mut automation = daily();
+    automation.insert(
+        Step::Filter {
+            only: snob_core::automation::Only::Verified,
+        },
+        (520, 0),
+    );
+    automation.insert(
+        Step::Webhook(snob_core::automation::Webhook {
+            url: "https://example.com/hook".to_string(),
+            headers: [("X-One", "1"), ("X-Two", "2")]
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .into(),
+            ..Default::default()
+        }),
+        (780, 0),
+    );
+    automation
+}
+
+#[gpui_kit::test]
+async fn the_headers_of_a_webhook_are_numbered_and_the_keyrings_secrets_are_said_to_stay_out(
+    cx: &mut TestAppContext,
+) {
+    let app = in_editor(cx, scripted(vec![every_kind()])).await;
+    configure(&app, cx, 4);
+    assert_eq!(
+        [
+            label_at(&app, cx, ("webhook-header-name", 0usize)),
+            label_at(&app, cx, ("webhook-header-value", 0usize)),
+            label_at(&app, cx, ("webhook-header-name", 1usize)),
+            label_at(&app, cx, ("webhook-header-remove", 1usize)),
+        ],
+        [
+            "Name of header 1",
+            "Value of header 1",
+            "Name of header 2",
+            "Remove header 2",
+        ]
+    );
+    let said = |app: &App, cx: &mut TestAppContext| {
+        app.in_window(cx, |window, _| {
+            window.try_find("webhook-keyring-note").is_some()
+        })
+    };
+    assert!(said(&app, cx), "an automation made here");
+
+    let mut watched = every_kind();
+    watched.id = snob_core::automation::WATCH_TOML.to_string();
+    let app = in_editor(cx, scripted(vec![watched])).await;
+    configure(&app, cx, 4);
+    assert!(!said(&app, cx), "watch.toml's webhook is given them");
+}
+
+#[gpui_kit::test]
+async fn the_headers_of_a_webhook_are_numbered_in_spanish_too(cx: &mut TestAppContext) {
+    let app = open_with(cx, scripted(vec![every_kind()]), spanish());
+    app.until_screen(cx, |screen| *screen == Screen::Home).await;
+    app.click(cx, "rail-automations");
+    app.until_screen(cx, |screen| *screen == Screen::Automations)
+        .await;
+    settle(&app, cx);
+    click(&app, cx, ("automation", 0usize));
+    settle(&app, cx);
+    app.click(cx, "automation-edit");
+    settle(&app, cx);
+    configure(&app, cx, 4);
+    assert_eq!(
+        [
+            label_at(&app, cx, ("webhook-header-name", 1usize)),
+            label_at(&app, cx, ("webhook-header-value", 1usize)),
+            label_at(&app, cx, ("webhook-header-remove", 0usize)),
+        ],
+        [
+            "Nombre de la cabecera 2", // i18n-allow
+            "Valor de la cabecera 2",  // i18n-allow
+            "Quitar la cabecera 1",    // i18n-allow
+        ]
+    );
+}
+
+#[gpui_kit::test]
+async fn every_steps_dialog_has_one_title_and_tab_reaches_its_controls(cx: &mut TestAppContext) {
+    let app = in_editor(cx, scripted(vec![every_kind()])).await;
+    let dialogs: [(usize, &str, &[&'static str]); 4] = [
+        (
+            1,
+            "Trigger configuration",
+            &["schedule-frequency-day", "schedule-count", "dialog-cancel"],
+        ),
+        (
+            2,
+            "Configure: Followers and following",
+            &[
+                "action-mine",
+                "action-other",
+                "dialog-cancel",
+                "dialog-save",
+            ],
+        ),
+        (
+            3,
+            "Configure: Verified accounts",
+            &["filter-verified", "dialog-cancel", "dialog-save"],
+        ),
+        (
+            4,
+            "Configure: Send to a webhook",
+            &[
+                "webhook-url",
+                "webhook-heartbeat",
+                "webhook-header-add",
+                "dialog-cancel",
+                "dialog-save",
+            ],
+        ),
+    ];
+    for (node, title, controls) in dialogs {
+        configure(&app, cx, node);
+        app.in_window(cx, |window, _| {
+            let dialog = gpui_kit::ElementId::from("step-dialog");
+            let titles: Vec<String> = window
+                .elements()
+                .iter()
+                .filter(|element| {
+                    element.role() == Some(Role::Heading) && element.path().contains(&dialog)
+                })
+                .filter_map(|element| element.label().map(str::to_string))
+                .collect();
+            // The webhook's headers are a section of its body, a level below.
+            let headings: &[&str] = if node == 4 {
+                &[title, "Headers"]
+            } else {
+                &[title]
+            };
+            assert_eq!(titles, headings, "node {node}");
+            assert_eq!(window.find("step-dialog").label(), Some(title));
+        });
+        let mut wanted = controls.to_vec();
+        for _ in 0..60 {
+            app.press(cx, "tab");
+            wanted.retain(|id| !focused(&app, cx, id));
+            if wanted.is_empty() {
+                break;
+            }
+        }
+        assert!(
+            wanted.is_empty(),
+            "Tab never comes to {wanted:?} in {title}"
+        );
+        app.press(cx, "escape");
+        settle(&app, cx);
+        assert!(!shown(&app, cx, "step-dialog"));
+    }
 }

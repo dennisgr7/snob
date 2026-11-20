@@ -7,19 +7,24 @@
 //! command that would leave the editor is held until that question is
 //! answered** (`Shell::guard_the_editor`).
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, FocusHandle, Pixels, Point, Subscription, Window};
+use gpui_kit::{Bounds, Context, Entity, FocusHandle, Pixels, Point, Subscription, Window};
 use snob_core::automation::{NodeId, Only, Problem, Step, WebhookFormat};
 
 use super::automations::{Edit, Grab, Item, Opened, Said};
 use super::look::Look;
 use super::shell::Shell;
-use crate::backend::Automation;
+use crate::backend::{Account, Automation};
 use crate::state::editing::{Discard, Leaving, Order, suggested_place};
 use crate::state::flow::Event;
 use crate::state::schedule::{Advanced, Choices, MOST_COUNT, ScheduleForm};
-use crate::state::steps::{ActionForm, WebhookForm};
+use crate::state::steps::{
+    ActionForm, MOST_SUGGESTED, SUGGESTED_AFTER, Suggestion, WebhookForm, suggested, wanted,
+};
 use crate::ui::parts::Select;
 use snob_core::automation::VideoQuality;
 
@@ -100,6 +105,44 @@ pub(crate) struct ScheduleFields {
     _watching: Vec<Subscription>,
 }
 
+/// The accounts suggested under an action's username as it is typed: what
+/// the account in use already knows, **read from its database, nothing
+/// sent** (`Backend::known_accounts`).
+pub(crate) struct Suggesting {
+    /// The accounts found for what was typed when they were asked for.
+    pub found: Vec<Account>,
+    pub open: bool,
+    /// Where the field was last drawn: the list opens under it.
+    pub field: Rc<Cell<Bounds<Pixels>>>,
+    /// The focus of each row, in the order they are drawn.
+    pub rows: Vec<FocusHandle>,
+    /// How many times the name changed: an answer to an older change is
+    /// dropped.
+    pub edits: u64,
+}
+
+impl Suggesting {
+    fn new() -> Self {
+        Self {
+            found: Vec::new(),
+            open: false,
+            field: Rc::default(),
+            rows: Vec::new(),
+            edits: 0,
+        }
+    }
+
+    /// The rows for `typed`, from what was found.
+    pub fn rows_for(&self, typed: &str) -> Vec<Suggestion> {
+        suggested(
+            typed,
+            self.found
+                .iter()
+                .map(|account| account.named.username.as_deref()),
+        )
+    }
+}
+
 /// What a dialog asks for, which depends on the step.
 pub(crate) enum Fields {
     Schedule(Box<ScheduleFields>),
@@ -107,6 +150,7 @@ pub(crate) enum Fields {
         form: ActionForm,
         username: Entity<InputState>,
         save_to: Entity<InputState>,
+        suggest: Suggesting,
     },
     Filter {
         only: Only,
@@ -156,6 +200,7 @@ impl Dialog {
             form,
             username,
             save_to,
+            ..
         } = &self.fields
         else {
             return None;
@@ -792,13 +837,27 @@ impl Shell {
             }
             Step::Read { account, what } => {
                 let form = ActionForm::of(account.as_ref(), what);
-                let username = text(&form.username, "action-username-hint", window, cx);
                 let save_to = text(&form.save_to, "action-folder-hint", window, cx);
+                let username = cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .placeholder(look.tr("action-username-hint"))
+                        .default_value(form.username.clone())
+                });
+                watching.push(cx.subscribe_in(
+                    &username,
+                    window,
+                    |shell, _, event: &InputEvent, window, cx| match event {
+                        InputEvent::Change => shell.the_name_changed(window, cx),
+                        InputEvent::Blur => shell.the_name_left(window, cx),
+                        _ => {}
+                    },
+                ));
                 (
                     Fields::Action {
                         form,
                         username,
                         save_to,
+                        suggest: Suggesting::new(),
                     },
                     None,
                 )
@@ -1044,18 +1103,205 @@ impl Shell {
 
     /// Whose account an action reads: the viewer's own, or another's.
     pub(crate) fn read_as_mine(&mut self, mine: bool, cx: &mut Context<Self>) {
-        if let Some(Fields::Action { form, .. }) = self.fields_mut() {
+        if let Some(Fields::Action { form, suggest, .. }) = self.fields_mut() {
             form.mine = mine;
+            suggest.open = false;
             cx.notify();
         }
     }
 
-    /// The yes to walking another account's lists, ticked or not.
+    /// The yes to walking another account's lists, ticked or not, for the
+    /// name typed now.
     pub(crate) fn consent_to_the_lists(&mut self, consent: bool, cx: &mut Context<Self>) {
-        if let Some(Fields::Action { form, .. }) = self.fields_mut() {
-            form.consent = consent;
+        if let Some(Fields::Action { form, username, .. }) = self.fields_mut() {
+            let typed = username.read(cx).value().to_string();
+            form.rename(&typed);
+            form.consent_to(consent);
             cx.notify();
         }
+    }
+
+    /// The username typed changed: a yes given for another name goes, and
+    /// the accounts known are asked for once the typing stays still.
+    fn the_name_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Fields::Action {
+            form,
+            username,
+            suggest,
+            ..
+        }) = self.fields_mut()
+        else {
+            return;
+        };
+        let typed = username.read(cx).value().to_string();
+        form.rename(&typed);
+        suggest.edits += 1;
+        let edits = suggest.edits;
+        suggest.open = wanted(&typed).is_some();
+        cx.notify();
+        if !suggest.open {
+            suggest.found.clear();
+            return;
+        }
+        // "Another person" is reached by the arrows before any answer comes.
+        if suggest.rows.is_empty() {
+            suggest.rows.push(cx.focus_handle());
+        }
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(SUGGESTED_AFTER).await;
+            this.update_in(cx, |shell, window, cx| {
+                shell.ask_the_known_accounts(edits, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Asks for the accounts known whose name begins with what is typed,
+    /// unless the name changed again meanwhile or the app rests.
+    fn ask_the_known_accounts(&mut self, edits: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_resting() {
+            return;
+        }
+        let backend = self.backend().clone();
+        let Some(Fields::Action {
+            username, suggest, ..
+        }) = self.fields_mut()
+        else {
+            return;
+        };
+        let typed = wanted(&username.read(cx).value());
+        let Some(typed) = typed.filter(|_| suggest.edits == edits) else {
+            return;
+        };
+        let asking = backend.known_accounts(typed, MOST_SUGGESTED);
+        cx.spawn_in(window, async move |this, cx| {
+            let found = asking.await.unwrap_or_default();
+            this.update(cx, |shell, cx| {
+                let Some(Fields::Action { suggest, .. }) = shell.fields_mut() else {
+                    return;
+                };
+                if suggest.edits != edits {
+                    return;
+                }
+                suggest.found = found;
+                let rows = suggest.found.len() + 1;
+                if suggest.rows.len() < rows {
+                    suggest.rows.resize_with(rows, || cx.focus_handle());
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// A row of the suggestions chosen: its name is the field's, focus goes
+    /// back to the field, and the list closes.
+    pub(crate) fn take_the_suggestion(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Fields::Action {
+            form,
+            username,
+            suggest,
+            ..
+        }) = self.fields_mut()
+        else {
+            return;
+        };
+        form.rename(&name);
+        suggest.open = false;
+        suggest.edits += 1;
+        let username = username.clone();
+        username.update(cx, |input, cx| {
+            input.set_value(name, window, cx);
+            input.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// Closes the suggestions, focus back on the field when it was in the
+    /// list. Whether they were open.
+    pub(crate) fn close_the_suggestions(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(Fields::Action {
+            username, suggest, ..
+        }) = self.fields_mut()
+        else {
+            return false;
+        };
+        if !suggest.open {
+            return false;
+        }
+        suggest.open = false;
+        let in_the_list = suggest.rows.iter().any(|row| row.is_focused(window));
+        if in_the_list {
+            let username = username.clone();
+            username.update(cx, |input, cx| input.focus(window, cx));
+        }
+        cx.notify();
+        true
+    }
+
+    /// Focus left the username field: the suggestions close unless it went
+    /// into them, so they never lie over the control Tab came to.
+    fn the_name_left(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Fields::Action { suggest, .. }) = self.fields_mut() else {
+            return;
+        };
+        if suggest.open && !suggest.rows.iter().any(|row| row.is_focused(window)) {
+            suggest.open = false;
+            cx.notify();
+        }
+    }
+
+    /// Up or down the suggestions: from the field to the first row, from a
+    /// row to the next, and from the first back to the field.
+    pub(crate) fn move_in_the_suggestions(
+        &mut self,
+        down: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Fields::Action {
+            username, suggest, ..
+        }) = self.fields_mut()
+        else {
+            return;
+        };
+        let typed = username.read(cx).value().to_string();
+        let count = suggest.rows_for(&typed).len().min(suggest.rows.len());
+        if !suggest.open || count == 0 {
+            return;
+        }
+        let at = suggest.rows[..count]
+            .iter()
+            .position(|row| row.is_focused(window));
+        let next = match (at, down) {
+            (None, true) => Some(0),
+            (None, false) => return,
+            (Some(at), true) => Some((at + 1).min(count - 1)),
+            (Some(0), false) => None,
+            (Some(at), false) => Some(at - 1),
+        };
+        match next {
+            Some(next) => {
+                let row = suggest.rows[next].clone();
+                window.focus(&row, cx);
+            }
+            None => {
+                let username = username.clone();
+                username.update(cx, |input, cx| input.focus(window, cx));
+            }
+        }
+        cx.notify();
     }
 
     pub(crate) fn choose_the_quality(
@@ -1316,8 +1562,8 @@ impl Shell {
         if leaving {
             self.keep_editing(window, cx);
         } else if dialog {
-            // Escape closes the open month list before the dialog.
-            if !self.close_the_first_months(window, cx) {
+            // Escape closes an open list before the dialog.
+            if !self.close_the_first_months(window, cx) && !self.close_the_suggestions(window, cx) {
                 self.close_the_configuration(window, cx);
             }
         } else if menu {

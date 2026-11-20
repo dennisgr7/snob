@@ -1,7 +1,7 @@
 //! What the editor's dialogs turn what is typed into: a webhook's address
 //! and headers, and whose account an action reads, with the yes that
-//! another account's lists need. A schedule is its own
-//! ([`super::schedule`]).
+//! another account's lists need and the names suggested as one is typed.
+//! A schedule is its own ([`super::schedule`]).
 //!
 //! **What is wrong with it is the engine's to say**: it is judged by
 //! `Automation::problems` on a copy that holds the step as typed
@@ -11,15 +11,29 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use snob_core::automation::{
     Account, Automation, NodeId, Problem, Read, Step, VideoQuality, Webhook, WebhookFormat,
 };
+use snob_core::model::possible_username;
 use snob_core::{Epoch, Pk};
 
 fn nothing_as_none(text: &str) -> Option<String> {
     let text = text.trim();
     (!text.is_empty()).then(|| text.to_string())
+}
+
+/// A name typed without its blanks and its at sign.
+fn bare(typed: &str) -> &str {
+    let typed = typed.trim();
+    typed.strip_prefix('@').unwrap_or(typed)
+}
+
+/// Whether two names are one account's: a username is the same whatever
+/// its case.
+fn same_name(one: &str, other: &str) -> bool {
+    bare(one).eq_ignore_ascii_case(bare(other))
 }
 
 /// An action's settings as they are chosen and typed.
@@ -28,8 +42,10 @@ pub struct ActionForm {
     /// Whose account is read: the viewer's own, or `username`'s.
     pub mine: bool,
     pub username: String,
-    /// The yes to walking another account's lists.
-    pub consent: bool,
+    /// The name the yes to walking another account's lists was given for.
+    /// **It is that name's alone**: another name typed takes it away
+    /// ([`Self::rename`]), and the question is asked again of the new one.
+    pub consent: Option<String>,
     pub save_to: String,
     pub quality: Option<VideoQuality>,
     what: Read,
@@ -48,8 +64,10 @@ impl ActionForm {
         };
         Self {
             mine: username.is_empty() && !what.is_about_another(),
+            consent: account
+                .filter(|account| account.consent.is_some())
+                .map(|_| username.clone()),
             username,
-            consent: account.is_some_and(|account| account.consent.is_some()),
             save_to: save_to
                 .map(|path| path.display().to_string())
                 .unwrap_or_default(),
@@ -72,6 +90,37 @@ impl ActionForm {
         &self.what
     }
 
+    /// The name typed, as the yes and the question name it: no blanks and
+    /// no at sign.
+    pub fn name(&self) -> &str {
+        bare(&self.username)
+    }
+
+    /// Whether the yes was given, and for the name typed now.
+    pub fn given(&self) -> bool {
+        self.consent
+            .as_deref()
+            .is_some_and(|given| same_name(given, &self.username))
+    }
+
+    /// The yes ticked for the name typed now, or taken back.
+    pub fn consent_to(&mut self, yes: bool) {
+        self.consent = yes.then(|| self.username.clone());
+    }
+
+    /// Another name typed or chosen: a yes given for the one before goes,
+    /// so typing that one again does not tick it back.
+    pub fn rename(&mut self, username: &str) {
+        if !self
+            .consent
+            .as_deref()
+            .is_some_and(|given| same_name(given, username))
+        {
+            self.consent = None;
+        }
+        self.username = username.to_string();
+    }
+
     /// Whether the yes is asked for: somebody else's lists are walked.
     pub fn needs_consent(&self) -> bool {
         !self.mine && !self.username.trim().is_empty() && self.what.walks_lists()
@@ -92,7 +141,7 @@ impl ActionForm {
         let username = (!self.mine)
             .then(|| nothing_as_none(&self.username))
             .flatten();
-        let consent = (self.consent && self.needs_consent()).then(|| {
+        let consent = (self.given() && self.needs_consent()).then(|| {
             before
                 .filter(|before| before.name() == username.as_deref())
                 .and_then(|before| before.consent)
@@ -158,6 +207,61 @@ impl WebhookForm {
     }
 }
 
+/// How long typing in an account's field stays still before the accounts
+/// known are asked for: one ask for a burst of keys, not one a key.
+pub const SUGGESTED_AFTER: Duration = Duration::from_millis(150);
+
+/// The most known accounts suggested under a field at once.
+pub const MOST_SUGGESTED: usize = 6;
+
+/// What the accounts known are asked for while `typed` is in an account's
+/// field: nothing while nothing is typed.
+pub fn wanted(typed: &str) -> Option<String> {
+    let name = bare(typed);
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// A row of the list under an account's field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Suggestion {
+    /// The account found at this place.
+    Known(usize),
+    /// "Another person": the name typed, taken as it is.
+    Another(String),
+}
+
+/// The rows under an account's field for `typed`, from the usernames of
+/// the accounts found for it (`found`, in order): each one whose name
+/// begins with what is typed now, then, **always last**, "another person"
+/// when what is typed can be a username and no row has exactly that name.
+pub fn suggested<'a>(
+    typed: &str,
+    found: impl IntoIterator<Item = Option<&'a str>>,
+) -> Vec<Suggestion> {
+    let Some(wanted) = wanted(typed) else {
+        return Vec::new();
+    };
+    let lower = wanted.to_ascii_lowercase();
+    let mut exact = false;
+    let mut rows: Vec<Suggestion> = found
+        .into_iter()
+        .enumerate()
+        .filter_map(|(at, name)| {
+            let name = name?;
+            exact |= same_name(name, &wanted);
+            name.to_ascii_lowercase()
+                .starts_with(&lower)
+                .then_some(Suggestion::Known(at))
+        })
+        .collect();
+    // Judged as typed: `wanted` lost an at sign already, and the rule takes
+    // off one more.
+    if possible_username(typed.trim()) && !exact {
+        rows.push(Suggestion::Another(wanted));
+    }
+    rows
+}
+
 /// What `automation` would be told is wrong with the step `id` if it held
 /// `step`: the engine's rules, applied to a copy.
 pub fn problems_of(automation: &Automation, id: NodeId, step: Step) -> Vec<Problem> {
@@ -193,7 +297,7 @@ mod tests {
         assert_eq!(asked.consent, None, "no yes was ticked");
         assert_eq!(asked.viewer, Some(Pk::new(42)));
 
-        form.consent = true;
+        form.consent_to(true);
         let given = account_of(form.step(Some(&asked), Some(Pk::new(7)), Epoch::new(100)));
         assert_eq!(given.consent, Some(Epoch::new(100)));
         assert_eq!(given.viewer, Some(Pk::new(42)), "the reader stays");
@@ -204,6 +308,97 @@ mod tests {
         form.mine = true;
         let own = account_of(form.step(None, None, Epoch::new(1)));
         assert_eq!((own.username, own.consent), (None, None));
+    }
+
+    #[test]
+    fn the_yes_belongs_to_the_name_it_was_given_for_and_goes_when_another_is_typed() {
+        let mut form = ActionForm::of(None, &Read::Lists);
+        form.mine = false;
+        form.rename("anna");
+        assert_eq!(form.consent, None, "nothing is ticked before it is asked");
+        form.consent_to(true);
+        assert!(form.given());
+
+        form.rename("@ANNA ");
+        assert!(form.given(), "the same account, however it is written");
+        form.rename("annabel");
+        assert!(!form.given());
+        assert_eq!(form.consent, None);
+        form.rename("anna");
+        assert!(
+            !form.given(),
+            "typing the first name again does not tick it back"
+        );
+        let asked = account_of(form.step(None, None, Epoch::new(5)));
+        assert_eq!(asked.consent, None);
+
+        let kept = Account {
+            username: Some("anna".to_string()),
+            viewer: None,
+            consent: Some(Epoch::new(1)),
+        };
+        let opened = ActionForm::of(Some(&kept), &Read::Lists);
+        assert!(opened.given(), "a yes kept is the name's it was kept with");
+        assert!(!opened.typed("bob".to_string(), String::new()).given());
+    }
+
+    #[test]
+    fn known_accounts_are_suggested_by_their_first_letters_and_another_person_comes_last() {
+        let found = [Some("anna"), Some("Annabel"), None, Some("bob")];
+        assert_eq!(
+            suggested("@An", found),
+            [
+                Suggestion::Known(0),
+                Suggestion::Known(1),
+                Suggestion::Another("An".to_string()),
+            ]
+        );
+        assert_eq!(
+            suggested(" ANNA", found),
+            [Suggestion::Known(0), Suggestion::Known(1)],
+            "a row already has that name"
+        );
+        assert_eq!(
+            suggested("annab", [Some("anna"), Some("Annabel")]),
+            [
+                Suggestion::Known(1),
+                Suggestion::Another("annab".to_string())
+            ],
+            "what was found for fewer letters is held to what is typed now"
+        );
+        assert_eq!(
+            suggested("ana", []),
+            [Suggestion::Another("ana".to_string())]
+        );
+    }
+
+    #[test]
+    fn another_person_is_offered_only_for_what_can_be_a_username() {
+        let none: [Option<&str>; 0] = [];
+        for typed in [
+            "",
+            "  ",
+            "@",
+            "@@anna",
+            "an a",
+            "ana!",
+            ".",
+            "..",
+            &"a".repeat(31),
+        ] {
+            assert!(
+                !suggested(typed, none)
+                    .iter()
+                    .any(|row| matches!(row, Suggestion::Another(_))),
+                "{typed:?}"
+            );
+        }
+        assert_eq!(wanted("  "), None, "nothing typed asks for nothing");
+        assert_eq!(wanted(" @ana "), Some("ana".to_string()));
+        assert_eq!(
+            suggested("ana.b_1", none),
+            [Suggestion::Another("ana.b_1".to_string())]
+        );
     }
 
     #[test]

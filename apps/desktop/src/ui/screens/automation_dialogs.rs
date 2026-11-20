@@ -6,6 +6,10 @@
 //! **A dialog holds its fields until "Save"**: nothing of what is typed is
 //! kept before, and "Save" is there only while the engine's own rules find
 //! nothing wrong with what was typed.
+//!
+//! **Every step's dialog is laid out one way** ([`modal`], [`group`]): the
+//! step's drawing and name on top, each thing asked under its label with
+//! its help below it, and Cancel left of Save, which says why it is off.
 
 use gpui_kit::base::{Button, FocusTrapElement as _, POPUP_PRIORITY, TestSupportExt as _};
 use gpui_kit::component::input::{Input, InputState};
@@ -14,24 +18,26 @@ use gpui_kit::{
     Anchor, AnyElement, Context, Entity, FocusHandle, FontWeight, MouseButton, Role, anchored,
     deferred, div, px,
 };
-use snob_core::automation::{Only, Step, VideoQuality, WebhookFormat, can_join};
+use snob_core::automation::{Only, Step, VideoQuality, WATCH_TOML, WebhookFormat, can_join};
 use snob_core::watch::schedule::Nth;
 
 use super::words::{
     MONDAY_FIRST, and_list, month_short_words, month_words, problem_words, step_detail, step_name,
     weekday_short_words, weekday_words, wrong_words,
 };
+use crate::backend::Account;
 use crate::state::schedule::{
     By, DayMode, EVERY_MONTHS, Field, Frequency, Refused, ScheduleForm, Unit, toggle,
 };
-use crate::state::steps::problems_of;
+use crate::state::steps::{Suggestion, problems_of};
 use crate::theme::tokens::{frame, shape};
 use crate::ui::assets;
 use crate::ui::automations::Item;
-use crate::ui::automations_editor::{Dialog, Fields, ScheduleFields};
+use crate::ui::automations_editor::{Dialog, Fields, ScheduleFields, Suggesting};
 use crate::ui::look::{Look, color, color_at, sp};
 use crate::ui::parts::{self, Kind, icon};
 use crate::ui::shell::Shell;
+use crate::ui::{SuggestDown, SuggestUp};
 
 /// Everything of the editor that is open over the window.
 pub fn render(shell: &mut Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> {
@@ -250,10 +256,18 @@ fn menu(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> 
 }
 
 /// A dialog over the whole window: a backdrop that holds the pointer, and
-/// the card, its focus kept inside.
+/// the card, its focus kept inside. **Every dialog of the editor is this
+/// one shape**: its title on top, beside the step's `drawing` when it is
+/// about a step, the body under it with room for every focus ring, and the
+/// buttons at the foot, the one that does it last.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a dialog's title, drawing, width, body, buttons and focus"
+)]
 fn modal(
     id: &'static str,
     title: String,
+    drawing: Option<&'static str>,
     wide: bool,
     body: Vec<AnyElement>,
     actions: Vec<AnyElement>,
@@ -261,25 +275,43 @@ fn modal(
     look: &Look,
 ) -> AnyElement {
     let palette = look.palette;
+    let heading = div()
+        .id((id, 1usize))
+        .test_support()
+        .role(Role::Heading)
+        .aria_level(2)
+        .aria_label(title.clone())
+        .flex_1()
+        .min_w_0()
+        .font_weight(FontWeight::BOLD)
+        .text_size(sp(18.))
+        .line_height(sp(26.))
+        .text_color(color(palette.text))
+        .child(title.clone());
     let inner = div()
         .flex()
         .flex_col()
-        .gap(sp(14.))
+        .gap(sp(16.))
         .min_h_0()
         .max_h_full()
         .child(
             div()
                 .flex_none()
-                .id((id, 1usize))
-                .test_support()
-                .role(Role::Heading)
-                .aria_level(2)
-                .aria_label(title.clone())
-                .font_weight(FontWeight::BOLD)
-                .text_size(sp(18.))
-                .line_height(sp(26.))
-                .text_color(color(palette.text))
-                .child(title.clone()),
+                .flex()
+                .items_center()
+                .gap(sp(12.))
+                .children(drawing.map(|drawing| {
+                    div()
+                        .flex_none()
+                        .size(sp(26.))
+                        .rounded(px(shape::CONTROL_RADIUS))
+                        .bg(color_at(palette.accent, 0.12))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon(drawing, 16.).text_color(color(palette.accent)))
+                }))
+                .child(heading),
         )
         .child(parts::room_for_focus(
             div()
@@ -290,7 +322,7 @@ fn modal(
                 .overflow_y_scroll()
                 .flex()
                 .flex_col()
-                .gap(sp(12.))
+                .gap(sp(14.))
                 .children(body),
         ))
         .child(
@@ -300,7 +332,9 @@ fn modal(
                 .flex_wrap()
                 .justify_end()
                 .gap(sp(10.))
-                .pt(sp(6.))
+                .pt(sp(12.))
+                .border_t_1()
+                .border_color(color(palette.line))
                 .children(actions),
         )
         .focus_trap((id, 3usize), trap);
@@ -311,6 +345,7 @@ fn modal(
         .aria_label(title)
         .occlude()
         .w(sp(if wide { 540. } else { 460. }))
+        .min_w(sp(320.))
         .max_w_full()
         .max_h_full()
         .flex()
@@ -414,6 +449,7 @@ fn question(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyEleme
     vec![modal(
         "leave-question",
         look.tr("leave-title"),
+        None,
         false,
         body,
         actions,
@@ -422,24 +458,29 @@ fn question(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyEleme
     )]
 }
 
-/// A field with its label above it.
-fn labeled(id: &'static str, label: String, input: &Entity<InputState>, look: &Look) -> AnyElement {
+/// One thing a dialog asks: its label above it, when it has one, then
+/// what the caller puts in, the control and the help under it.
+fn group(label: Option<String>, look: &Look) -> gpui_kit::Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(4.))
-        .child(
-            div()
-                .text_size(sp(13.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(color(look.palette.text))
-                .child(label.clone()),
-        )
+        .gap(sp(4.))
+        .children(label.map(|label| label_text(label, look)))
+}
+
+/// A choice with its label above it.
+fn titled(label: String, control: AnyElement, look: &Look) -> AnyElement {
+    group(Some(label), look).child(control).into_any_element()
+}
+
+/// A field with its label above it.
+fn labeled(id: &'static str, label: String, input: &Entity<InputState>, look: &Look) -> AnyElement {
+    group(Some(label.clone()), look)
         .child(Input::new(input).id(id).aria_label(label))
         .into_any_element()
 }
 
-/// Small print under a field.
+/// Help under what it is about.
 fn small(id: &'static str, text: String, look: &Look) -> AnyElement {
     div()
         .text_size(sp(12.5))
@@ -540,7 +581,7 @@ fn configuration(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<Any
                 "dialog-configure-title",
                 &[("name", &step_name(&node.step, look))],
             ),
-            webhook_body(dialog, look, cx),
+            webhook_body(dialog, automation.id == WATCH_TOML, look, cx),
         ),
     };
     let mut body = body;
@@ -576,6 +617,7 @@ fn configuration(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<Any
     vec![modal(
         "step-dialog",
         title,
+        Some(Item::of(&node.step).drawing()),
         true,
         body,
         actions,
@@ -588,6 +630,7 @@ fn configuration(shell: &Shell, look: &Look, cx: &mut Context<Shell>) -> Vec<Any
 fn label_text(text: String, look: &Look) -> gpui_kit::Div {
     div()
         .text_size(sp(13.))
+        .line_height(sp(18.))
         .font_weight(FontWeight::MEDIUM)
         .text_color(color(look.palette.text))
         .child(text)
@@ -650,11 +693,7 @@ fn counted(
     look: &Look,
     cx: &mut Context<Shell>,
 ) -> AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(4.))
-        .child(label_text(label.clone(), look))
+    group(Some(label.clone()), look)
         .child(parts::stepper(
             "schedule-count",
             label,
@@ -694,11 +733,7 @@ fn times_list(fields: &ScheduleFields, look: &Look, cx: &mut Context<Shell>) -> 
                 .on_click(cx.listener(move |shell, _, _, cx| shell.remove_a_time(at, cx))),
             )
     });
-    div()
-        .flex()
-        .flex_col()
-        .gap(sp(6.))
-        .child(label_text(look.tr("schedule-times"), look))
+    group(Some(look.tr("schedule-times")), look)
         .children(rows)
         .child(
             div().child(
@@ -724,7 +759,7 @@ fn month_days(
 ) {
     let choices = &form.choices;
     let by = choices.by;
-    body.push(
+    let days = group(Some(look.tr("schedule-by")), look).child(
         parts::segmented("schedule-by", look.tr("schedule-by"), look)
             .flex_wrap()
             .child(
@@ -748,14 +783,13 @@ fn month_days(
                 .on_click(cx.listener(|shell, _, _, cx| {
                     shell.change_the_schedule(|choices| choices.by = By::Weekday, cx);
                 })),
-            )
-            .into_any_element(),
+            ),
     );
-    match by {
-        By::Date => {
-            body.push(
-                parts::chips("schedule-dates", look.tr("schedule-dates"), look)
-                    .children((1..=31u32).map(|date| {
+    let days = match by {
+        By::Date => days
+            .child(
+                parts::chips("schedule-dates", look.tr("schedule-dates"), look).children(
+                    (1..=31u32).map(|date| {
                         let day = date.to_string();
                         parts::chip(
                             ("schedule-date", date as usize),
@@ -770,19 +804,18 @@ fn month_days(
                                 cx,
                             );
                         }))
-                    }))
-                    .into_any_element(),
-            );
-            if form.some_months_lack_a_date() {
-                body.push(small(
+                    }),
+                ),
+            )
+            .when(form.some_months_lack_a_date(), |days| {
+                days.child(small(
                     "schedule-short-months",
                     look.tr("schedule-short-months"),
                     look,
-                ));
-            }
-        }
-        By::Weekday => {
-            body.push(
+                ))
+            }),
+        By::Weekday => days
+            .child(
                 parts::segmented("schedule-nth", look.tr("schedule-nth"), look)
                     .flex_wrap()
                     .children(Nth::ALL.into_iter().enumerate().map(|(at, nth)| {
@@ -795,10 +828,9 @@ fn month_days(
                         .on_click(cx.listener(move |shell, _, _, cx| {
                             shell.change_the_schedule(|choices| choices.nth = nth, cx);
                         }))
-                    }))
-                    .into_any_element(),
-            );
-            body.push(
+                    })),
+            )
+            .child(
                 parts::segmented(
                     "schedule-nth-weekday",
                     look.tr("schedule-nth-weekday"),
@@ -815,11 +847,10 @@ fn month_days(
                     .on_click(cx.listener(move |shell, _, _, cx| {
                         shell.change_the_schedule(|choices| choices.nth_weekday = weekday, cx);
                     }))
-                }))
-                .into_any_element(),
-            );
-        }
-    }
+                })),
+            ),
+    };
+    body.push(days.into_any_element());
     wrong_under(Field::Dates, refused, body, look);
 }
 
@@ -840,7 +871,8 @@ fn schedule_body(
     };
     let choices = &form.choices;
     let frequency = choices.frequency;
-    let mut body: Vec<AnyElement> = vec![
+    let mut body: Vec<AnyElement> = vec![titled(
+        look.tr("schedule-frequency"),
         parts::segmented("schedule-frequency", look.tr("schedule-frequency"), look)
             .flex_wrap()
             .children(Frequency::ALL.into_iter().map(|one| {
@@ -850,7 +882,8 @@ fn schedule_body(
                 ))
             }))
             .into_any_element(),
-    ];
+        look,
+    )];
     let floor = |body: &mut Vec<AnyElement>| {
         if form.counts_from_the_last_run() {
             body.push(small("schedule-floor", look.tr("schedule-floor"), look));
@@ -859,7 +892,8 @@ fn schedule_body(
     match frequency {
         Frequency::Day => {
             let mode = choices.day_mode;
-            body.push(
+            body.push(titled(
+                look.tr("schedule-day-mode"),
                 parts::segmented("schedule-day-mode", look.tr("schedule-day-mode"), look)
                     .flex_wrap()
                     .child(
@@ -885,7 +919,8 @@ fn schedule_body(
                         })),
                     )
                     .into_any_element(),
-            );
+                look,
+            ));
             match mode {
                 DayMode::AtTimes => {
                     body.push(counted(
@@ -906,7 +941,8 @@ fn schedule_body(
                         look,
                         cx,
                     ));
-                    body.push(
+                    body.push(titled(
+                        look.tr("schedule-unit"),
                         parts::segmented("schedule-unit", look.tr("schedule-unit"), look)
                             .flex_wrap()
                             .children(Unit::ALL.into_iter().map(|unit| {
@@ -917,7 +953,8 @@ fn schedule_body(
                                     }))
                             }))
                             .into_any_element(),
-                    );
+                        look,
+                    ));
                     wrong_under(Field::Count, refused, &mut body, look);
                     floor(&mut body);
                 }
@@ -932,7 +969,8 @@ fn schedule_body(
             ));
             wrong_under(Field::Count, refused, &mut body, look);
             floor(&mut body);
-            body.push(
+            body.push(titled(
+                look.tr("schedule-weekdays"),
                 parts::chips("schedule-weekdays", look.tr("schedule-weekdays"), look)
                     .children(MONDAY_FIRST.into_iter().enumerate().map(|(at, weekday)| {
                         parts::chip(
@@ -947,14 +985,16 @@ fn schedule_body(
                         }))
                     }))
                     .into_any_element(),
-            );
+                look,
+            ));
             wrong_under(Field::Weekdays, refused, &mut body, look);
             body.push(times_list(fields, look, cx));
             wrong_under(Field::Times, refused, &mut body, look);
         }
         Frequency::Month => {
             let every = choices.every_months;
-            body.push(
+            body.push(titled(
+                look.tr("schedule-every-months"),
                 parts::segmented(
                     "schedule-every-months",
                     look.tr("schedule-every-months"),
@@ -978,18 +1018,15 @@ fn schedule_body(
                     }))
                 }))
                 .into_any_element(),
-            );
+                look,
+            ));
             if every > 1 {
                 let options: Vec<String> = (1..=12)
                     .map(|month| capitalized(&month_words(month, look)))
                     .collect();
                 let chosen = choices.first_month.clamp(1, 12) as usize - 1;
                 body.push(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .child(label_text(look.tr("schedule-first-month"), look))
+                    group(Some(look.tr("schedule-first-month")), look)
                         .child(parts::select(
                             "schedule-first-month",
                             look.tr("schedule-first-month"),
@@ -1026,7 +1063,8 @@ fn schedule_body(
             wrong_under(Field::Times, refused, &mut body, look);
         }
         Frequency::Year => {
-            body.push(
+            body.push(titled(
+                look.tr("schedule-months"),
                 parts::chips("schedule-months", look.tr("schedule-months"), look)
                     .children((1..=12u32).map(|month| {
                         parts::chip(
@@ -1041,7 +1079,8 @@ fn schedule_body(
                         }))
                     }))
                     .into_any_element(),
-            );
+                look,
+            ));
             wrong_under(Field::Months, refused, &mut body, look);
             month_days(&form, refused, &mut body, look, cx);
             body.push(times_list(fields, look, cx));
@@ -1128,24 +1167,174 @@ fn filter_body(dialog: &Dialog, look: &Look, cx: &mut Context<Shell>) -> Vec<Any
     };
     let chosen = *only;
     vec![
-        parts::segmented("filter-choice", look.tr("filter-choice"), look)
-            .flex_wrap()
-            .children(Only::ALL.into_iter().map(|one| {
-                parts::segment(
-                    Item::Filter(one).id(),
-                    look.tr(Item::Filter(one).id()),
-                    one == chosen,
-                    look,
-                )
-                .on_click(cx.listener(move |shell, _, _, cx| shell.choose_the_filter(one, cx)))
-            }))
+        group(Some(look.tr("filter-choice")), look)
+            .child(
+                parts::segmented("filter-choice", look.tr("filter-choice"), look)
+                    .flex_wrap()
+                    .children(Only::ALL.into_iter().map(|one| {
+                        parts::segment(
+                            Item::Filter(one).id(),
+                            look.tr(Item::Filter(one).id()),
+                            one == chosen,
+                            look,
+                        )
+                        .on_click(
+                            cx.listener(move |shell, _, _, cx| shell.choose_the_filter(one, cx)),
+                        )
+                    })),
+            )
             .into_any_element(),
     ]
 }
 
+/// A row of the names suggested under an account's field: the account's
+/// picture as the cache keeps it, its username and its name.
+fn known_row(account: &Account, look: &Look) -> (String, String, AnyElement) {
+    let palette = look.palette;
+    let name = account.named.username.clone().unwrap_or_default();
+    let label = match &account.full_name {
+        Some(full) => format!("@{name}, {full}"),
+        None => format!("@{name}"),
+    };
+    let shown = div()
+        .flex()
+        .items_center()
+        .gap(sp(10.))
+        .min_w_0()
+        .child(parts::avatar(account, 28., look, 1.0))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .text_left()
+                .child(
+                    div()
+                        .text_size(sp(13.5))
+                        .line_height(sp(19.))
+                        .truncate()
+                        .child(format!("@{name}")),
+                )
+                .children(account.full_name.clone().map(|full| {
+                    div()
+                        .text_size(sp(12.5))
+                        .line_height(sp(17.))
+                        .text_color(color(palette.secondary))
+                        .truncate()
+                        .child(full)
+                })),
+        )
+        .into_any_element();
+    (name, label, shown)
+}
+
+/// The row that takes what is typed as it is: somebody snob has not read.
+fn another_row(name: &str, look: &Look) -> (String, String, AnyElement) {
+    let palette = look.palette;
+    let label = look.tr_with("action-someone-else", &[("username", name)]);
+    let shown = div()
+        .flex()
+        .items_center()
+        .gap(sp(10.))
+        .min_w_0()
+        .child(
+            div()
+                .flex_none()
+                .size(px(28.))
+                .rounded_full()
+                .bg(color(palette.frame))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon(assets::PROFILE, 16.).text_color(color(palette.secondary))),
+        )
+        .child(div().min_w_0().truncate().child(label.clone()))
+        .into_any_element();
+    (name.to_string(), label, shown)
+}
+
+/// The username of an action, and under it, while it is typed, the accounts
+/// known whose name begins with it, then "another person". Up and Down go
+/// from the field into the list and along it, Enter or a press takes a row,
+/// Escape closes it.
+fn username_field(
+    username: &Entity<InputState>,
+    typed: &str,
+    suggest: &Suggesting,
+    look: &Look,
+    cx: &mut Context<Shell>,
+) -> AnyElement {
+    let label = look.tr("action-username");
+    let rows = suggest.rows_for(typed);
+    let open = suggest.open && !rows.is_empty();
+    let list = open.then(|| {
+        let rows: Vec<AnyElement> = rows
+            .into_iter()
+            .enumerate()
+            .map(|(at, row)| {
+                let (name, label, shown) = match row {
+                    Suggestion::Known(found) => known_row(&suggest.found[found], look),
+                    Suggestion::Another(name) => another_row(&name, look),
+                };
+                parts::suggestion(("action-suggestion", at), label, look)
+                    .when_some(suggest.rows.get(at), |row, focus| row.track_focus(focus))
+                    .child(shown)
+                    .on_click(cx.listener(move |shell, _, window, cx| {
+                        shell.take_the_suggestion(name.clone(), window, cx);
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        let moving = div()
+            .key_context("SnobSuggest")
+            .on_action(cx.listener(|shell, _: &SuggestUp, window, cx| {
+                shell.move_in_the_suggestions(false, window, cx);
+            }))
+            .on_action(cx.listener(|shell, _: &SuggestDown, window, cx| {
+                shell.move_in_the_suggestions(true, window, cx);
+            }))
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .children(rows)
+            .into_any_element();
+        parts::suggestions(
+            "action-suggestions",
+            look.tr("action-suggestions"),
+            &suggest.field,
+            vec![moving],
+            look,
+            |shell: &mut Shell, window, cx| {
+                shell.close_the_suggestions(window, cx);
+            },
+            cx,
+        )
+    });
+    let field = div()
+        .key_context("SnobSuggest")
+        .on_action(cx.listener(|shell, _: &SuggestUp, window, cx| {
+            shell.move_in_the_suggestions(false, window, cx);
+        }))
+        .on_action(cx.listener(|shell, _: &SuggestDown, window, cx| {
+            shell.move_in_the_suggestions(true, window, cx);
+        }))
+        .child(
+            Input::new(username)
+                .id("action-username")
+                .aria_label(label.clone()),
+        );
+    group(Some(label), look)
+        .child(parts::drawn_at(&suggest.field, open, field).w_full())
+        .children(list)
+        .into_any_element()
+}
+
 fn action_body(dialog: &Dialog, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     let Fields::Action {
-        username, save_to, ..
+        username,
+        save_to,
+        suggest,
+        ..
     } = &dialog.fields
     else {
         return Vec::new();
@@ -1156,89 +1345,111 @@ fn action_body(dialog: &Dialog, look: &Look, cx: &mut Context<Shell>) -> Vec<Any
     let mut body: Vec<AnyElement> = Vec::new();
     if !form.what().is_about_another() {
         body.push(
-            parts::segmented("action-whose", look.tr("action-whose"), look)
+            group(Some(look.tr("action-whose")), look)
                 .child(
-                    parts::segment("action-mine", look.tr("action-mine"), form.mine, look)
-                        .on_click(cx.listener(|shell, _, _, cx| shell.read_as_mine(true, cx))),
-                )
-                .child(
-                    parts::segment("action-other", look.tr("action-other"), !form.mine, look)
-                        .on_click(cx.listener(|shell, _, _, cx| shell.read_as_mine(false, cx))),
+                    parts::segmented("action-whose", look.tr("action-whose"), look)
+                        .child(
+                            parts::segment("action-mine", look.tr("action-mine"), form.mine, look)
+                                .on_click(
+                                    cx.listener(|shell, _, _, cx| shell.read_as_mine(true, cx)),
+                                ),
+                        )
+                        .child(
+                            parts::segment(
+                                "action-other",
+                                look.tr("action-other"),
+                                !form.mine,
+                                look,
+                            )
+                            .on_click(cx.listener(|shell, _, _, cx| shell.read_as_mine(false, cx))),
+                        ),
                 )
                 .into_any_element(),
         );
     }
     if !form.mine {
-        body.push(labeled(
-            "action-username",
-            look.tr("action-username"),
-            username,
-            look,
-        ));
+        body.push(username_field(username, &form.username, suggest, look, cx));
     }
     if form.needs_consent() {
-        let name = form.username.trim().trim_start_matches('@').to_string();
+        let given = form.given();
         body.push(
-            parts::checkbox(
-                "action-consent",
-                look.tr_with("action-consent", &[("name", &name)]),
-                form.consent,
-                look,
-            )
-            .on_click(cx.listener(move |shell, _, _, cx| {
-                shell.consent_to_the_lists(!form.consent, cx);
-            }))
-            .into_any_element(),
-        );
-        body.push(small(
-            "action-consent-note",
-            look.tr("action-consent-note"),
-            look,
-        ));
-    }
-    if form.saves_files() {
-        body.push(
-            div()
-                .flex()
-                .items_end()
-                .gap(sp(8.))
-                .child(div().flex_1().child(labeled(
-                    "action-folder",
-                    look.tr("action-folder"),
-                    save_to,
-                    look,
-                )))
+            group(None, look)
                 .child(
-                    parts::small_button("action-choose", look.tr("action-choose"), true, look)
-                        .mb(px(7.))
-                        .on_click(cx.listener(|shell, _, window, cx| {
-                            shell.choose_the_folder(window, cx);
-                        })),
+                    parts::checkbox(
+                        "action-consent",
+                        look.tr_with("action-consent", &[("name", form.name())]),
+                        given,
+                        look,
+                    )
+                    .on_click(cx.listener(move |shell, _, _, cx| {
+                        shell.consent_to_the_lists(!given, cx);
+                    })),
                 )
+                .child(small(
+                    "action-consent-note",
+                    look.tr("action-consent-note"),
+                    look,
+                ))
                 .into_any_element(),
         );
-        body.push(small(
-            "action-folder-note",
-            look.tr("action-folder-note"),
-            look,
-        ));
+    }
+    if form.saves_files() {
+        let label = look.tr("action-folder");
+        body.push(
+            group(Some(label.clone()), look)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(sp(8.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(Input::new(save_to).id("action-folder").aria_label(label)),
+                        )
+                        .child(
+                            parts::small_button(
+                                "action-choose",
+                                look.tr("action-choose"),
+                                true,
+                                look,
+                            )
+                            .flex_none()
+                            .on_click(cx.listener(
+                                |shell, _, window, cx| {
+                                    shell.choose_the_folder(window, cx);
+                                },
+                            )),
+                        ),
+                )
+                .child(small(
+                    "action-folder-note",
+                    look.tr("action-folder-note"),
+                    look,
+                ))
+                .into_any_element(),
+        );
     }
     if form.saves_videos() {
         let compat = form.quality == Some(VideoQuality::Compat);
         body.push(
-            parts::segmented("action-quality", look.tr("action-quality"), look)
+            group(Some(look.tr("action-quality")), look)
                 .child(
-                    parts::segment("action-best", look.tr("action-best"), !compat, look).on_click(
-                        cx.listener(|shell, _, _, cx| {
-                            shell.choose_the_quality(Some(VideoQuality::Best), cx);
-                        }),
-                    ),
-                )
-                .child(
-                    parts::segment("action-compat", look.tr("action-compat"), compat, look)
-                        .on_click(cx.listener(|shell, _, _, cx| {
-                            shell.choose_the_quality(Some(VideoQuality::Compat), cx);
-                        })),
+                    parts::segmented("action-quality", look.tr("action-quality"), look)
+                        .flex_wrap()
+                        .child(
+                            parts::segment("action-best", look.tr("action-best"), !compat, look)
+                                .on_click(cx.listener(|shell, _, _, cx| {
+                                    shell.choose_the_quality(Some(VideoQuality::Best), cx);
+                                })),
+                        )
+                        .child(
+                            parts::segment("action-compat", look.tr("action-compat"), compat, look)
+                                .on_click(cx.listener(|shell, _, _, cx| {
+                                    shell.choose_the_quality(Some(VideoQuality::Compat), cx);
+                                })),
+                        ),
                 )
                 .into_any_element(),
         );
@@ -1246,7 +1457,27 @@ fn action_body(dialog: &Dialog, look: &Look, cx: &mut Context<Shell>) -> Vec<Any
     body
 }
 
-fn webhook_body(dialog: &Dialog, look: &Look, cx: &mut Context<Shell>) -> Vec<AnyElement> {
+/// What a webhook's format is called.
+fn format_id(format: WebhookFormat) -> &'static str {
+    match format {
+        WebhookFormat::Json => "webhook-format-json",
+        WebhookFormat::Slack => "webhook-format-slack",
+        WebhookFormat::Discord => "webhook-format-discord",
+        WebhookFormat::Ntfy => "webhook-format-ntfy",
+        WebhookFormat::Text => "webhook-format-text",
+    }
+}
+
+/// A webhook's dialog. `watched` is whether it is `watch.toml`'s, the one
+/// automation whose webhook is given the token and the signing key the
+/// keyring keeps; **an automation made in the app never gets them**, and its
+/// dialog says so.
+fn webhook_body(
+    dialog: &Dialog,
+    watched: bool,
+    look: &Look,
+    cx: &mut Context<Shell>,
+) -> Vec<AnyElement> {
     let Fields::Webhook {
         url,
         format,
@@ -1259,92 +1490,123 @@ fn webhook_body(dialog: &Dialog, look: &Look, cx: &mut Context<Shell>) -> Vec<An
     let (chosen, beating) = (*format, *heartbeat);
     let mut body = vec![
         labeled("webhook-url", look.tr("webhook-url"), url, look),
-        parts::segmented("webhook-format", look.tr("webhook-format"), look)
-            .flex_wrap()
-            .children(WebhookFormat::ALL.into_iter().map(|one| {
-                parts::segment(
-                    ("webhook-format-one", one as usize),
-                    look.tr(&format!("webhook-format-{}", one.as_str())),
-                    one == chosen,
+        group(Some(look.tr("webhook-format")), look)
+            .child(
+                parts::segmented("webhook-format", look.tr("webhook-format"), look)
+                    .flex_wrap()
+                    .children(WebhookFormat::ALL.into_iter().map(|one| {
+                        parts::segment(
+                            ("webhook-format-one", one as usize),
+                            look.tr(format_id(one)),
+                            one == chosen,
+                            look,
+                        )
+                        .on_click(
+                            cx.listener(move |shell, _, _, cx| shell.choose_the_format(one, cx)),
+                        )
+                    })),
+            )
+            .into_any_element(),
+        group(None, look)
+            .child(
+                parts::checkbox(
+                    "webhook-heartbeat",
+                    look.tr("webhook-heartbeat"),
+                    beating,
                     look,
                 )
-                .on_click(cx.listener(move |shell, _, _, cx| shell.choose_the_format(one, cx)))
-            }))
+                .on_click(cx.listener(|shell, _, _, cx| shell.toggle_the_heartbeat(cx))),
+            )
+            .child(small(
+                "webhook-heartbeat-note",
+                look.tr("webhook-heartbeat-note"),
+                look,
+            ))
             .into_any_element(),
-        parts::checkbox(
-            "webhook-heartbeat",
-            look.tr("webhook-heartbeat"),
-            beating,
-            look,
-        )
-        .on_click(cx.listener(|shell, _, _, cx| shell.toggle_the_heartbeat(cx)))
-        .into_any_element(),
-        small(
-            "webhook-heartbeat-note",
-            look.tr("webhook-heartbeat-note"),
-            look,
-        ),
-        div()
-            .id("webhook-headers-title")
-            .test_support()
-            .role(Role::Heading)
-            .aria_level(3)
-            .aria_label(look.tr("webhook-headers"))
-            .text_size(sp(13.))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(color(look.palette.text))
-            .child(look.tr("webhook-headers"))
-            .into_any_element(),
-        small(
-            "webhook-headers-note",
-            look.tr("webhook-headers-note"),
-            look,
-        ),
     ];
-    for (at, row) in headers.iter().enumerate() {
-        body.push(
-            div()
-                .id(("webhook-header", at))
-                .flex()
-                .items_center()
-                .gap(sp(8.))
-                .child(
-                    div().flex_1().child(
-                        Input::new(&row.name)
-                            .id(("webhook-header-name", at))
-                            .aria_label(look.tr("webhook-header-name")),
+    let rows = headers.iter().enumerate().map(|(at, row)| {
+        let number = (at + 1).to_string();
+        let numbered = |id: &'static str| look.tr_with(id, &[("number", &number)]);
+        group(Some(numbered("webhook-header-row")), look)
+            .id(("webhook-header", at))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(sp(8.))
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Input::new(&row.name)
+                                .id(("webhook-header-name", at))
+                                .aria_label(numbered("webhook-header-name")),
+                        ),
+                    )
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Input::new(&row.value)
+                                .id(("webhook-header-value", at))
+                                .aria_label(numbered("webhook-header-value")),
+                        ),
+                    )
+                    .child(
+                        parts::icon_button(
+                            ("webhook-header-remove", at),
+                            numbered("webhook-header-remove"),
+                            assets::CLOSE,
+                            true,
+                            look,
+                        )
+                        .flex_none()
+                        .on_click(
+                            cx.listener(move |shell, _, _, cx| shell.remove_a_header(at, cx)),
+                        ),
                     ),
+            )
+    });
+    body.push(
+        group(None, look)
+            .child(
+                div()
+                    .id("webhook-headers-title")
+                    .test_support()
+                    .role(Role::Heading)
+                    .aria_level(3)
+                    .aria_label(look.tr("webhook-headers"))
+                    .text_size(sp(13.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(color(look.palette.text))
+                    .child(look.tr("webhook-headers")),
+            )
+            .child(small(
+                "webhook-headers-note",
+                look.tr("webhook-headers-note"),
+                look,
+            ))
+            .when(!watched, |headers| {
+                let note = look.tr("webhook-keyring-note");
+                headers.child(
+                    div()
+                        .id("webhook-keyring-note")
+                        .test_support()
+                        .role(Role::Note)
+                        .aria_label(note.clone())
+                        .text_size(sp(12.5))
+                        .line_height(sp(18.))
+                        .text_color(color(look.palette.secondary))
+                        .child(note),
                 )
-                .child(
-                    div().flex_1().child(
-                        Input::new(&row.value)
-                            .id(("webhook-header-value", at))
-                            .aria_label(look.tr("webhook-header-value")),
-                    ),
-                )
-                .child(
-                    parts::icon_button(
-                        ("webhook-header-remove", at),
-                        look.tr("webhook-header-remove"),
-                        assets::CLOSE,
-                        true,
+            })
+            .children(rows)
+            .child(
+                div().pt(sp(2.)).child(
+                    parts::small_icon_button(
+                        "webhook-header-add",
+                        look.tr("webhook-header-add"),
+                        assets::ADD,
                         look,
                     )
-                    .on_click(cx.listener(move |shell, _, _, cx| shell.remove_a_header(at, cx))),
-                )
-                .into_any_element(),
-        );
-    }
-    body.push(
-        div()
-            .child(
-                parts::small_icon_button(
-                    "webhook-header-add",
-                    look.tr("webhook-header-add"),
-                    assets::ADD,
-                    look,
-                )
-                .on_click(cx.listener(|shell, _, window, cx| shell.add_a_header(window, cx))),
+                    .on_click(cx.listener(|shell, _, window, cx| shell.add_a_header(window, cx))),
+                ),
             )
             .into_any_element(),
     );

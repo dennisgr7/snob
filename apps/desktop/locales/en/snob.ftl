@@ -294,9 +294,9 @@ webhook-heartbeat = Also tell it when nothing changed
 webhook-heartbeat-note = A short message on every run, so you know it ran.
 webhook-headers = Headers
 webhook-headers-note = A header here is kept in a plain file on this computer. It is not a place for a password or a token.
-webhook-header-name = Header name
-webhook-header-value = Header value
-webhook-header-remove = Remove this header
+webhook-header-name = Name of header { $number }
+webhook-header-value = Value of header { $number }
+webhook-header-remove = Remove header { $number }
 webhook-header-add = Add a header
 leave-title = Leave without finishing?
 leave-body = This automation cannot run yet:
@@ -644,6 +644,14 @@ run-said-saved = { $count } files saved.
 run-said-saved-one = { $count } file saved.
 run-said-failed = Part of the run: { $outcome }.
 run-said-cannot-run = It could not run: something in its steps keeps it from running. Edit it to see what.
+# The names suggested under an action's username, from the accounts the
+# account in use already knows. `$username` is what was typed.
+action-suggestions = Accounts snob already knows
+action-someone-else = Another person @{ $username }
+# A webhook's dialog: each header row's name, and what an app automation
+# never sends.
+webhook-header-row = Header { $number }
+webhook-keyring-note = An automation made here never sends the token or the signing key the system's keyring keeps for watch.toml's webhook: besides snob's own, it sends only the headers written here.
 
 ## Schedule: when an automation runs, chosen in its dialog and said in words.
 

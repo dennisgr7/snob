@@ -46,6 +46,10 @@ actions!(
         /// Goes to the item above, or below, in the menu open.
         MenuUp,
         MenuDown,
+        /// Goes to the name above, or below, among those suggested under a
+        /// field.
+        SuggestUp,
+        SuggestDown,
         /// One step back, as the band's arrow does.
         GoBack
     ]
@@ -92,5 +96,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", PaletteDown, Some("SnobPalette")),
         KeyBinding::new("up", MenuUp, Some("SnobMenu")),
         KeyBinding::new("down", MenuDown, Some("SnobMenu")),
+        KeyBinding::new("up", SuggestUp, Some("SnobSuggest")),
+        KeyBinding::new("down", SuggestDown, Some("SnobSuggest")),
     ]);
 }
