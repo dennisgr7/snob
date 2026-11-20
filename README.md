@@ -15,7 +15,9 @@ a story as seen.
 
 > [!NOTE]
 > The desktop app is not released yet. It signs in, handles several accounts,
-> signs out and has a command palette, and its home screen is still a title.
+> signs out and has a command palette; it shows an account's profile, its
+> posts and its two lists, and makes automations. Its home screen is still a
+> title.
 > What you can install today is the command line and the MCP server, which are
 > the same `snob` program.
 

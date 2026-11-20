@@ -61,9 +61,16 @@ Chromium-based browser installed on the machine, on a profile of its own.
   - MCP never takes a path or file name as an argument, nor sets up or
     changes an automation (`watch setup`, the app's editor): it lists them and
     starts a run.
-  - The app alone suggests names as one is typed
-    (`snob_engine::cache::known_named`, read from the account's database,
+  - The app alone suggests names as one is typed (`Backend::known_accounts`,
+    on `snob_engine::cache::known_named`, read from the account's database,
     nothing sent): the command line and MCP take a name as written.
+  - The app alone copies a username, a profile's link or ID, or the
+    usernames of the rows chosen in a list, and shows "About this account",
+    whose rows the engine does not read yet; a view alone (the terminal
+    list's `w`, the app's profile menu) opens a profile in the system's
+    browser. None is an action of the engine and none sends anything: the
+    command line prints the username and pk (the link too in its table, md
+    and xlsx outputs), and MCP answers the username and pk.
 
   A new exception goes in this list in the same change. An unlisted gap is a bug.
 - Parity is a review rule, not yet a test: nothing fails when a front falls
@@ -77,7 +84,7 @@ Each is enforced by code or a test, never by convention alone.
 |---|---|
 | **Two writes, ever: follow and unfollow.** No block, remove-follower, like, comment, message, share. | `snob_ig::graphql::Mutation` has two variants and no wildcard arm in its matches, so a third is a compile error; a test in `graphql.rs` pins `Mutation::ALL`. `crates/snob-ig/src/client/write.rs` is the only file that writes; `IgClient::post` takes a `Mutation`, never a path. |
 | **Nothing ever marks anything as seen**: stories, reels, posts, the activity feed, threads, search history, time spent, view counts. | `crates/snob-core/tests/no_seen.rs` fails on any known spelling of such a call in any `.rs` file (it alone may name them); `snob_ig::allowlist` refuses every call it does not name. |
-| **The user's own browser is never touched**, its cookie store included. | Login is a window on snob's own profile, a pasted `sessionid`, or `login --remote`, which relays snob's browser; the password reaches snob only as keystrokes relayed there, kept nowhere. |
+| **The user's own browser is never touched**, its cookie store included. | Login is a window on snob's own profile, a pasted `sessionid`, or `login --remote`, which relays snob's browser; the password reaches snob only as keystrokes relayed there, kept nowhere. Opening a profile in the browser (the terminal list's `w`, the app's "Open in the browser") hands the system's default browser an account's address on instagram.com and nothing else, as any link would, and reads nothing from it; the app refuses any other address (its `system::profile_address` and `opens`, tested). |
 | **A human pace, and a hard stop on the first push-back.** Slower is always acceptable; faster is argued for in the code, next to the number. | "Talking to Instagram". |
 | **Consent before enumerating someone else's lists**, asked before the account is resolved. | `engine::list`; `crates/snob-cli/tests/consent.rs`. |
 
@@ -572,20 +579,27 @@ compile; the session is an explicit header on the one client meant to carry it.
   (`pictures/<pk>.jpg`), and the other pictures a view drew
   (`cache::Drawing`: an account's largest, a highlight's cover, a post's
   thumbnail), so a view shows the last known values at once while its
-  usual requests run. **It adds no request, and takes none away but a
-  post's thumbnail already kept**, which never changes
-  (`Keeper::fetch_thumb`; a highlight's cover is downloaded again, as it
-  can change): filled only where an answer already arrives
-  (`App::profile_named`, which a list's resolve, a profile read and the
-  monitor read through; the tray `profile::read` asks for; the first page
-  `posts::first_page` reads; the counter poll; a picture a view downloads
-  from the CDN, `Keeper::fetch_picture` and `fetch_drawing`), never read
-  to decide whether to ask, so it has no refresh rule. **Kept by
-  the account that saw it**, so what a private account showed one account
-  is never another's; nothing is kept once the session is signed out, and
-  the directory is never made where the account's is not. One sweep: 30
-  days unrenewed, then the oldest past 32 MiB (`cache::KEPT_FOR`,
-  `AT_MOST`). It goes whole on a sign-out and a `purge`.
+  usual requests run. **It adds no request, and spares none but a
+  picture already kept**, which is not downloaded again: a post's
+  thumbnail, which never changes (`Keeper::fetch_thumb`), and the small
+  and the largest picture the app draws of an account (the app's
+  `Backend::profile`, `pictures` and `full_picture`), so a changed one is
+  shown once the kept one is swept; a highlight's cover is downloaded
+  again, as it can change. Without a browser (`SNOB_NO_BROWSER`) a kept
+  largest picture also spares the by-id request that names its address.
+  It is filled only where an answer already arrives (`App::profile_named`,
+  which a list's resolve, a profile read and the monitor read through; the
+  tray `profile::read` asks for; the first page `posts::first_page` reads;
+  the counter poll; a picture a view downloads from the CDN,
+  `Keeper::fetch_picture`, `fetch_drawing` and `fetch_thumb`, the small
+  pictures of a list's rows looked at and the thumbnails of a tab's later
+  pages included), and **but for those pictures it is never read to
+  decide whether to ask**, so it has no refresh rule but the sweep.
+  **Kept by the account that saw it**, so what a private account showed
+  one account is never another's; nothing is kept once the session is
+  signed out, and the directory is never made where the account's is
+  not. One sweep: 30 days unrenewed, then the oldest past 32 MiB
+  (`cache::KEPT_FOR`, `AT_MOST`). It goes whole on a sign-out and a `purge`.
 - **What is kept, measured** (`snob_engine::storage::measure`): by kind
   (databases, cache, browser profiles, jobs, logs, update, scratch, other)
   and per account, **from metadata only**, no database opened.
@@ -1195,23 +1209,35 @@ holds a way back over every step taken (`state::flow`'s trail, at most
 `MOST_STEPS_BACK`; also Alt+Left and the pointer's back button), out of
 the editor and an automation's page first. Home and search
 are a title until what a scan shows comes next; automations has an
-introduction shown once an account, a list with its search, an
-automation's page (its runs on the left, its flow in words, a pencil to
-edit, a run now), and an editor on the engine's automations ("Automations"):
-steps put from the panel (a kind of step at a time, searched, and held
-at the triggers until the automation has one), moved, joined and
-configured in a dialog (a schedule, an action's account and consent, a
-webhook), disabled from a
+introduction shown once an account, a grid of cards with its search (each
+the automation's steps in words and when it runs), an automation's page
+(its runs on the left, each said in the app's language with what it
+found, and "Running" while one goes; its flow in words, a pencil to
+edit, a run now), and an editor on the engine's automations
+("Automations"): steps put from the panel (a kind of step at a time,
+searched on the panel's title line, and held at the triggers until the
+automation has one), moved, joined by an arrow that sticks to a step it
+may join (`state::automations::snapped`) and configured in a dialog (a
+schedule, an action's account and consent, a webhook), disabled from a
 node's menu, **kept at every change** with undo, and an unfinished one
-asked about on leaving (discard, or back to the editor). The automations
-run in the command line's scheduler, never in the app. From the account's menu
-(and the palette), the account's own **profile page**, the same page for
-any other account opened from one of its lists: the picture (large,
-zoomed, copied or saved from a viewer of its own), the names, the bio, the
-counters that open the two lists, the highlights and the first page of
-three tabs, laid out with the card above the posts or beside them. A
-list's rows come in as the walk reads them, and a list can move out to a
-window of its own.
+asked about on leaving (discard, or back to the editor). A schedule is
+chosen by how often it repeats (a year, a month, a week, a day) or typed
+as `watch.toml` writes it (Advanced); **what the choices cannot show
+opens in Advanced and is kept as written** (`state::schedule`). An
+action's account is suggested as its name is typed. The automations run
+in the command line's scheduler, never in the app. From the account's
+menu (and the palette), the account's own **profile page**, the same page
+for any other account opened from one of its lists: the picture (grown from the page into a
+viewer of its own and back, zoomed, copied or saved there), the names,
+the bio, a bar with the view, the layout and the options (open in the
+browser, "About this account", whose three rows are not read yet, and
+copying the username, the profile's link or its ID), the counters that
+open the two lists, the highlights, and three tabs whose posts read on
+as their end nears, laid out with the card above the posts or beside
+them. A list shows what was stored of it at once, with when it was last
+read, and is read again behind it; its rows' small pictures come as they
+are looked at, the usernames of the rows chosen are copied, and a list
+can move out to a window of its own.
 
 **A workspace of its own**, with its own `Cargo.lock`: GPUI brings some 500
 crates and does not build for musl. Build and test it from that directory;
@@ -1225,7 +1251,9 @@ its version is the release's ("Release and packaging"). GPUI comes through
 - **Every rule of this file holds there through the engine.** It builds no
   Instagram client and opens no database of its own: `backend/engine.rs`
   calls what a command calls (`snob_engine::login`, `logout`, `app`,
-  `viewer`, `log`, `browser`).
+  `viewer`, `account`, `jobs`, `log`, `browser`, `profile`, `posts`,
+  `engine::list`, `cache`, `media`, `files`, `storage`, `automations`,
+  `exit`).
 - **A view never waits on the engine**, which runs on a tokio runtime of two
   threads of the app's own (`runtime.rs`). A view asks through
   `backend::Backend` and is answered on a channel; the trait is the engine
@@ -1238,9 +1266,21 @@ its version is the release's ("Release and packaging"). GPUI comes through
   hold and what their search shows (`settings.rs`, `storage.rs`), what is
   remembered between runs (`prefs.rs`), when the app rests (`rest.rs`),
   the automations section (`automations.rs`), the automation being edited
-  with its undo and its saves (`editing.rs`), and how a profile is laid
-  out, zoomed and when its lists ask first (`profile.rs`). No window, clock
-  or network there.
+  with its undo and its saves (`editing.rs`), its panel of steps
+  (`shelf.rs`), what its dialogs turn what is typed into (`steps.rs`), a
+  schedule as its dialog chooses it (`schedule.rs`), how a profile is laid
+  out, zoomed, when its tabs read on and when its lists ask first
+  (`profile.rs`), which pictures a list asks for and what it copies
+  (`people.rs`), and how often the window is drawn while something moves
+  (`frames.rs`). No window, clock or network there.
+- **Every moment a screen says is said against one clock** (`ui::now`),
+  read where a view is drawn, in this computer's zone; a test build says
+  it in UTC.
+- **An automation's page reads its runs again every 2 s only while one
+  goes** or a run started there has not shown up
+  (`ui::automations::LIVE_READ_EVERY`, `state::automations::reads_again`),
+  never while the app rests or the page is not shown. A run goes while
+  the engine says so (`AutomationRun::running`, its sign of life).
 - **A theme or a language chosen holds whatever the system says**; the
   contrast is always the system's (`ui/look.rs`). **What is kept is measured
   from the files' sizes** and clearing it removes the cache alone
@@ -1277,21 +1317,34 @@ its version is the release's ("Release and packaging"). GPUI comes through
   app's.** The report makes accounts anonymous and is copied by the person,
   never sent.
 - **A profile page reads what `snob profile` reads, less the stories**
-  (`Backend::profile`, `tiles`, `list`), and shows what the cache kept of
-  it, its highlights and its tabs' first pages at once while those reads
-  run (`profile_kept`, `tiles_kept`, which send nothing), the band saying
-  it loads until they answer: a ring says a story is up and its
-  menu's "Open story" opens nothing, reads nothing and marks nothing as
-  seen. **Another account's list is asked about in the app's own question
-  before anything of it is sent**, and only a yes calls `engine::list`
-  (`state::profile::asks_first`). A post, a highlight and a story are not
-  opened; a row of a list shows a picture only when the cache already holds
-  one; the large picture comes from the CDN, never from the API. No follow
-  or unfollow is offered.
+  (`Backend::profile`, `tiles`, `list`), **and a tab's next page only as
+  the person nears its end** (`more_tiles`: one at a time, from the
+  engine's cursor, at the engine's pace and past any sitting's rest, which
+  the page shows, at most `posts::MOST_PAGES`, stopped when the page is
+  left; one that failed is asked again only by the person). It shows what
+  the cache kept of it, its highlights and its tabs' first pages at once
+  while those reads run (`profile_kept`, `tiles_kept`, and a list's
+  `list_kept`, the engine's list served from what is stored; none sends
+  anything), the band saying it loads until they answer: a ring says a
+  story is up and its menu's "Open story" opens nothing, reads nothing and
+  marks nothing as seen. **Another account's list is asked about in the
+  app's own question before anything of it is shown or sent**, and only a
+  yes opens it and calls `engine::list` (`state::profile::asks_first`);
+  shown again any other way, it shows what is stored and is not read. A
+  post, a highlight and a story are not opened, and nothing is read for
+  "About this account". A row of a list on screen shows the small picture
+  the cache holds or one downloaded from the CDN at the address its list
+  answered, none in a pause (`Backend::pictures`). Every picture comes
+  from the CDN, fetched through the account's tab
+  (`IgClient::download_capped`), so the rows of a list looked at, a stored
+  one too, can start its browser; only without a browser does a largest
+  picture's address cost the by-id request (`profile::picture`). No follow
+  or unfollow is offered: rows chosen are only copied.
 - **A build without the feature `testing` has no test mode**: no
-  `--test-root`, no simulated system, no control channel
-  (`src/control.rs`). The harness's privacy suite reads both of these off
-  the real binary.
+  `--test-root` or other start flag of a test build, no simulated system,
+  no control channel (`src/control.rs`). The harness's privacy suite reads
+  both of these off the real binary, and `crates/snob-core/tests/sandbox.rs`
+  holds every start flag behind the feature in the sources.
 
 ### Its tests
 
@@ -1334,8 +1387,13 @@ pictures, one of the window when it failed, and the app's log.
   picture is of the same ones on every machine. That changes the list alone:
   a session is still sent as a browser that is installed.
 - **A test build says the same sizes of what is kept when told**
-  (`--fixed-storage`), for the same reason. That changes what is shown
+  (`--fixed-storage`), for the same reason, and that every list was last
+  read at one fixed moment (`fixed_scan`). That changes what is shown
   alone: clearing the cache still removes it.
+- **A test build says every moment against the now it is told**
+  (`--fixed-now`, `ui::now`), so a picture says the same whatever the day
+  it is taken; told one, an automation's page does not read its runs
+  again by itself.
 - `.github/workflows/desktop.yml` runs the lines above on the five runners of
   `ci.yml`, the nightly suites on a timer; `bash tools/ci/run-desktop.sh`
   runs the Linux ones in Docker under Xvfb, with a browser in the image
@@ -1359,7 +1417,13 @@ pictures, one of the window when it failed, and the app's log.
 | System notifications | shown through GPUI; on macOS only from inside a bundle |
 | `cargo deny` for this workspace, packaging, signing, an installer | none |
 
-**At rest the app asks for no frame** and holds about 85 MiB. **Not looked
+**At rest the app asks for no frame** and holds about 85 MiB. Every frame
+a view asks for is asked through `ui::frames::ask`, and a run of them is
+logged at the debug level under the target `snob_desktop::frames`
+(`state::frames`), at its end or every 2 s while it goes: `frames`,
+`mean_ms`, `p95_ms`, `worst_ms`, `hz`, `ended_ms_ago`, the `display`,
+whether the window was `active` and the `power` mode at its last frame,
+and the `thermal` state. **Not looked
 at and still for ten seconds, it rests** (`state/rest.rs`): its own process
 goes to EcoQoS and the lowest priority on Windows, which Task Manager marks
 with its efficiency leaf, and to `SCHED_BATCH` on Linux; macOS's App Nap
