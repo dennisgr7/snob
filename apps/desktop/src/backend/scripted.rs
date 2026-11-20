@@ -98,6 +98,8 @@ struct State {
     holding: bool,
     /// Whether clearing and forgetting do.
     holding_work: bool,
+    /// Whether what was stored of a list does.
+    holding_kept: bool,
     held: Vec<Held>,
     /// The token of the window login in flight, to see it stopped.
     window: Option<CancelToken>,
@@ -188,6 +190,7 @@ impl Scripted {
             asked: Vec::new(),
             holding: false,
             holding_work: false,
+            holding_kept: false,
             held: Vec::new(),
             window: None,
             storage: Storage::default(),
@@ -253,12 +256,18 @@ impl Scripted {
         self.state().holding_work = true;
     }
 
+    /// From now on what was stored of a list waits until [`Self::release`].
+    pub fn hold_the_kept_lists(&self) {
+        self.state().holding_kept = true;
+    }
+
     /// Lets every answer held go, and stops holding.
     pub fn release(&self) {
         let held = {
             let mut state = self.state();
             state.holding = false;
             state.holding_work = false;
+            state.holding_kept = false;
             std::mem::take(&mut state.held)
         };
         for answer in held {
@@ -527,6 +536,16 @@ impl Script<'_> {
         self
     }
 
+    /// What was stored of `pk`'s `side` list: `size` accounts from the
+    /// `first`th of those a read finds, as if the ones before came since.
+    pub fn kept_list_from(&mut self, pk: u64, side: Side, first: usize, size: usize) -> &mut Self {
+        let mut rows = people(first + size);
+        self.0
+            .kept_lists
+            .insert((pk.into(), side), kept(rows.split_off(first)));
+        self
+    }
+
     /// The small picture of the row `pk` is downloaded as `picture`.
     pub fn picture(&mut self, pk: u64, picture: PathBuf) -> &mut Self {
         self.0.pictures.insert(pk.into(), picture);
@@ -548,7 +567,6 @@ fn kept(people: Vec<Person>) -> Listed {
     Listed {
         people,
         whole: true,
-        stored_at: Some(SCANNED_AT),
         taken_at: SCANNED_AT,
     }
 }
@@ -952,7 +970,20 @@ impl Backend for Scripted {
 
     // Not among what was asked: it reads files alone.
     fn list_kept(&self, owner: Named, side: Side) -> Answer<Option<Listed>> {
-        answered(self.state().kept_lists.get(&(owner.pk, side)).cloned())
+        let (answer, answered) = oneshot::channel();
+        let backend = self.clone();
+        let send = move || {
+            let kept = backend.state().kept_lists.get(&(owner.pk, side)).cloned();
+            let _ = answer.send(kept);
+        };
+        let mut state = self.state();
+        if state.holding_kept {
+            state.held.push(Box::new(send));
+        } else {
+            drop(state);
+            send();
+        }
+        answered
     }
 
     fn pictures(
@@ -1033,7 +1064,6 @@ impl Backend for Scripted {
             Ok(Listed {
                 people: all,
                 whole,
-                stored_at: None,
                 taken_at: SCANNED_AT,
             })
         })

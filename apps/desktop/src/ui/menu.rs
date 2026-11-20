@@ -257,12 +257,14 @@ pub fn render(
                                 div()
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_size(sp(14.))
+                                    .line_height(sp(20.))
                                     .truncate()
                                     .child(named),
                             )
                             .children(other.full_name.clone().map(|name| {
                                 div()
                                     .text_size(sp(12.))
+                                    .line_height(sp(16.))
                                     .text_color(color(palette.secondary))
                                     .truncate()
                                     .child(name)

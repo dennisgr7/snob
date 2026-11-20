@@ -13,7 +13,7 @@ pub const QUIET_FOR: Duration = Duration::from_secs(10);
 /// What is known of the window now.
 #[derive(Debug, Clone, Copy)]
 pub struct Seen {
-    /// Whether its window is the one in front, not minimized.
+    /// Whether one of its windows is the one in front, not minimized.
     pub looked_at: bool,
     /// Whether somebody is waiting on something the app does meanwhile: the
     /// login window it opened.

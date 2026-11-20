@@ -207,7 +207,8 @@ pub fn profile_read(seen: &Answer) -> bool {
         })
 }
 
-/// Whether the list shown was read to its end.
+/// Whether the list shown was read to its end: it says when it was last
+/// scanned, and is no longer being read.
 pub fn list_read(seen: &Answer) -> bool {
     seen.screen == "people"
         && seen.nodes.iter().any(|node| {
@@ -215,7 +216,7 @@ pub fn list_read(seen: &Answer) -> bool {
                 && node
                     .label
                     .as_deref()
-                    .is_some_and(|said| said.ends_with("accounts"))
+                    .is_some_and(|said| said.contains("Last scan") && !said.contains("Updating"))
         })
 }
 

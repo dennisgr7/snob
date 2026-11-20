@@ -12,13 +12,14 @@ use std::time::{Duration, Instant};
 use common::{App, disabled, focused, open};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    PlatformInput, Role, ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext, point, px,
-    size,
+    AppContext as _, PlatformInput, Role, ScrollDelta, ScrollEvent, TestAppContext,
+    VisualTestContext, point, px, size,
 };
 use snob_core::Pk;
 use snob_desktop::backend::scripted::{Asked, Scripted, account};
 use snob_desktop::state::flow::Screen;
 use snob_desktop::state::profile::{self, Side, Tab};
+use snob_desktop::state::rest::QUIET_FOR;
 use snob_desktop::system::{Event, Settings};
 use snob_desktop::theme::tokens::frame;
 
@@ -237,10 +238,9 @@ async fn the_own_list_opens_at_once_and_its_rows_come_as_they_are_read(cx: &mut 
         let row = window.find(("person", 0usize));
         assert_eq!(row.role(), Some(Role::Button));
         assert_eq!(row.label(), Some("Open the profile of @user0"));
-        assert_eq!(
-            window.find("people-detach").label(),
-            Some("Open in a new window")
-        );
+        let options = window.find("people-options");
+        assert_eq!(options.label(), Some("Options"));
+        assert_eq!(options.expanded(), Some(false));
     });
     assert!(
         backend
@@ -250,11 +250,15 @@ async fn the_own_list_opens_at_once_and_its_rows_come_as_they_are_read(cx: &mut 
 
     backend.release();
     app.until(cx, |window, _| {
-        window
-            .try_find("people-progress")
-            .is_some_and(|progress| progress.label() == Some("40 accounts"))
+        window.try_find("people-progress").is_some_and(|progress| {
+            progress
+                .label()
+                .is_some_and(|said| said.starts_with("40 accounts. Last scan on September 21"))
+        })
     })
     .await;
+    let said = app.label_of(cx, "people-progress");
+    assert!(said.ends_with(" at 2:13 PM."), "{said}");
 
     // A row opens its account's profile.
     app.in_window(cx, |window, cx| window.click(("person", 3usize), cx));
@@ -314,6 +318,11 @@ async fn another_account_s_list_is_asked_about_first_and_a_no_reads_nothing(
     app.click(cx, "list-question-confirm");
     app.until_screen(cx, |screen| {
         matches!(screen, Screen::People { owner, side: Side::Followers } if owner.pk == Pk::new(1000))
+    })
+    .await;
+    // Read once what was stored of it is shown, which here is nothing.
+    app.until(cx, |window, _| {
+        window.try_find(("person", 0usize)).is_some()
     })
     .await;
     assert!(theirs(&app), "a yes reads it");
@@ -1355,4 +1364,663 @@ async fn switching_account_lets_go_of_the_page_on_its_way_and_of_where_the_tab_r
             "the page let go of is not shown"
         );
     });
+}
+
+/// The followers of the account in use, opened from its profile, once
+/// their first row is drawn.
+async fn own_followers(cx: &mut TestAppContext, backend: Scripted) -> App {
+    let app = own_profile(cx, backend).await;
+    app.click(cx, "profile-followers");
+    app.until(cx, |window, _| {
+        window.try_find(("person", 0usize)).is_some()
+    })
+    .await;
+    app
+}
+
+/// Turns the wheel far down over a list's rows.
+fn scroll_the_list_down(app: &App, cx: &mut TestAppContext) {
+    app.in_window(cx, |window, cx| {
+        let seen = window.viewport_size();
+        window.dispatch_event(
+            PlatformInput::Scroll(ScrollEvent {
+                position: point(seen.width * 0.5, seen.height * 0.7),
+                delta: ScrollDelta::Pixels(point(px(0.), px(-100_000.))),
+                ..ScrollEvent::default()
+            }),
+            cx,
+        );
+    });
+}
+
+/// What the backend was asked, but the rows' pictures.
+fn asked_but_pictures(backend: &Scripted) -> Vec<Asked> {
+    backend
+        .asked()
+        .into_iter()
+        .filter(|asked| !matches!(asked, Asked::Pictures(_)))
+        .collect()
+}
+
+/// How many times `pk`'s `side` list was read.
+fn lists_read(backend: &Scripted, pk: u64, side: Side) -> usize {
+    backend
+        .asked()
+        .into_iter()
+        .filter(|asked| *asked == Asked::List(Pk::new(pk), side))
+        .count()
+}
+
+/// Waits until the line under a list's title says something `wanted`
+/// takes.
+async fn until_said(app: &App, cx: &mut TestAppContext, wanted: impl Fn(&str) -> bool) {
+    app.until(cx, |window, _| {
+        window
+            .try_find("people-progress")
+            .is_some_and(|progress| progress.label().is_some_and(&wanted))
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn a_list_stored_before_shows_at_once_and_is_read_again_behind_it(cx: &mut TestAppContext) {
+    let backend = me();
+    backend.script(|script| {
+        script.kept_list(42, Side::Followers, 30).list_size(40);
+    });
+    let app = own_profile(cx, backend.clone()).await;
+    backend.hold_the_work();
+    app.click(cx, "profile-followers");
+    until_said(&app, cx, |said| said.ends_with("Updating… 12 of 40")).await;
+    let said = app.label_of(cx, "people-progress");
+    assert!(
+        said.starts_with("30 accounts. Last scan on September 21"),
+        "{said}"
+    );
+    assert_eq!(lists_read(&backend, 42, Side::Followers), 1);
+    // The rows stored stay while the read goes on, past its first page.
+    scroll_the_list_down(&app, cx);
+    frames(&app, cx, 2);
+    app.in_window(cx, |window, _| {
+        assert!(window.try_find(("person", 29usize)).is_some());
+        assert!(window.try_find(("person", 30usize)).is_none());
+    });
+
+    backend.release();
+    until_said(&app, cx, |said| said.starts_with("40 accounts.")).await;
+    assert!(!app.label_of(cx, "people-progress").contains("Updating"));
+}
+
+#[gpui_kit::test]
+async fn a_list_left_and_opened_again_shows_its_rows_at_once_and_is_read_again(
+    cx: &mut TestAppContext,
+) {
+    let backend = me();
+    let app = own_followers(cx, backend.clone()).await;
+    until_said(&app, cx, |said| said.starts_with("30 accounts.")).await;
+
+    app.click(cx, "band-back");
+    app.until_screen(cx, |screen| matches!(screen, Screen::Profile(_)))
+        .await;
+    backend.hold_the_work();
+    app.click(cx, "profile-followers");
+    app.until_screen(cx, |screen| matches!(screen, Screen::People { .. }))
+        .await;
+    // Before the read answers: the rows and their words, from memory.
+    let said = app.label_of(cx, "people-progress");
+    assert!(said.starts_with("30 accounts."), "{said}");
+    assert!(said.contains("Updating"), "{said}");
+    app.in_window(cx, |window, _| {
+        assert!(window.try_find(("person", 0usize)).is_some());
+    });
+    assert_eq!(lists_read(&backend, 42, Side::Followers), 2);
+    backend.release();
+}
+
+#[gpui_kit::test]
+async fn another_account_s_stored_list_is_read_again_only_after_its_yes(cx: &mut TestAppContext) {
+    let backend = me();
+    backend.script(|script| {
+        script.kept_list(1000, Side::Followers, 5);
+    });
+    let app = own_profile(cx, backend.clone()).await;
+    app.click(cx, "profile-following");
+    app.until(cx, |window, _| {
+        window.try_find(("person", 0usize)).is_some()
+    })
+    .await;
+    app.in_window(cx, |window, cx| window.click(("person", 0usize), cx));
+    app.until(cx, |window, _| {
+        window.try_find(("profile-tile", 0usize)).is_some()
+    })
+    .await;
+
+    // Its stored rows are shown at once after the yes, while it is read.
+    backend.hold_the_work();
+    app.click(cx, "profile-followers");
+    assert_eq!(lists_read(&backend, 1000, Side::Followers), 0);
+    app.click(cx, "list-question-confirm");
+    until_said(&app, cx, |said| said.starts_with("5 accounts.")).await;
+    assert_eq!(lists_read(&backend, 1000, Side::Followers), 1);
+    backend.release();
+    until_said(&app, cx, |said| said.starts_with("30 accounts.")).await;
+
+    // Left and asked for again: nothing is read before the yes.
+    app.click(cx, "band-back");
+    app.until_screen(
+        cx,
+        |screen| matches!(screen, Screen::Profile(who) if who.pk == Pk::new(1000)),
+    )
+    .await;
+    app.click(cx, "profile-followers");
+    assert!(shown(&app, cx, "list-question"));
+    app.press(cx, "escape");
+    assert_eq!(
+        lists_read(&backend, 1000, Side::Followers),
+        1,
+        "a no reads nothing"
+    );
+    app.click(cx, "profile-followers");
+    app.click(cx, "list-question-confirm");
+    until_said(&app, cx, |said| said.starts_with("30 accounts.")).await;
+    assert_eq!(lists_read(&backend, 1000, Side::Followers), 2);
+}
+
+#[gpui_kit::test]
+async fn the_line_under_the_title_says_how_many_and_when_they_were_scanned_in_both_languages(
+    cx: &mut TestAppContext,
+) {
+    for (locale, one, scanned, at) in [
+        (
+            "en",
+            "1 account.",
+            "Last scan on September 21",
+            " at 2:13 PM.",
+        ),
+        (
+            "es",
+            "1 cuenta.",                          // i18n-allow
+            "Último escaneo el 21 de septiembre", // i18n-allow
+            " a las 14:13.",                      // i18n-allow
+        ),
+    ] {
+        let backend = me();
+        backend.script(|script| {
+            script.list_size(1);
+        });
+        let app = common::open_with(
+            cx,
+            backend,
+            Settings {
+                locale: locale.to_string(),
+                ..Default::default()
+            },
+        );
+        app.until_screen(cx, |screen| *screen == Screen::Home).await;
+        app.click(cx, "account");
+        app.click(cx, "menu-profile");
+        app.until(cx, |window, _| {
+            window.try_find(("profile-tile", 0usize)).is_some()
+        })
+        .await;
+        app.click(cx, "profile-followers");
+        until_said(&app, cx, |said| said.starts_with(one)).await;
+        let said = app.label_of(cx, "people-progress");
+        assert!(said.starts_with(&format!("{one} {scanned}")), "{said}");
+        assert!(said.ends_with(at), "{said}");
+    }
+}
+
+#[gpui_kit::test]
+async fn the_options_hold_choosing_and_a_window_of_its_own_and_close_on_escape(
+    cx: &mut TestAppContext,
+) {
+    let app = own_followers(cx, me()).await;
+    app.click(cx, "people-options");
+    app.in_window(cx, |window, _| {
+        let menu = window.find("people-menu");
+        assert_eq!(menu.role(), Some(Role::Menu));
+        assert_eq!(menu.label(), Some("List options"));
+        assert_eq!(window.find("people-options").expanded(), Some(true));
+        let select = window.find("people-select");
+        assert_eq!(select.role(), Some(Role::MenuItem));
+        assert_eq!(select.label(), Some("Select"));
+        assert_eq!(
+            window.find("people-detach").label(),
+            Some("Open in a new window")
+        );
+    });
+    app.press(cx, "escape");
+    assert!(!shown(&app, cx, "people-menu"));
+    assert!(focused(&app, cx, "people-options"), "focus is back");
+    assert!(matches!(
+        app.shell.read_with(cx, |shell, _| shell.shown().clone()),
+        Screen::People { .. }
+    ));
+
+    // The second moves the list out, and the panel goes back.
+    app.click(cx, "people-options");
+    app.click(cx, "people-detach");
+    app.until_screen(cx, |screen| matches!(screen, Screen::Profile(_)))
+        .await;
+}
+
+#[gpui_kit::test]
+async fn rows_chosen_and_all_of_them_have_their_usernames_copied_sending_nothing(
+    cx: &mut TestAppContext,
+) {
+    let backend = me();
+    backend.script(|script| {
+        script.list_size(5);
+    });
+    let app = own_followers(cx, backend.clone()).await;
+    until_said(&app, cx, |said| said.starts_with("5 accounts.")).await;
+    let before = asked_but_pictures(&backend);
+
+    app.click(cx, "people-options");
+    app.click(cx, "people-select");
+    assert_eq!(app.label_of(cx, "people-selected"), "0 selected");
+    assert!(disabled(&app, cx, "people-copy"));
+    app.in_window(cx, |window, cx| {
+        let row = window.find(("person", 2usize));
+        assert_eq!(row.role(), Some(Role::CheckBox));
+        assert_eq!(row.label(), Some("Select @user2"));
+        assert_eq!(row.checked(), Some(false));
+        window.click(("person", 2usize), cx);
+    });
+    app.in_window(cx, |window, _| {
+        assert_eq!(window.find(("person", 2usize)).checked(), Some(true));
+    });
+    assert_eq!(app.label_of(cx, "people-selected"), "1 selected");
+    assert!(
+        matches!(
+            app.shell.read_with(cx, |shell, _| shell.shown().clone()),
+            Screen::People { .. }
+        ),
+        "a row chosen opens nothing"
+    );
+
+    app.click(cx, "people-copy");
+    assert_eq!(app.system.clipboard().as_deref(), Some("user2"));
+    assert_eq!(app.label_of(cx, "people-selected"), "1 username copied");
+
+    app.click(cx, "people-select-all");
+    assert_eq!(app.label_of(cx, "people-selected"), "5 selected");
+    assert!(disabled(&app, cx, "people-select-all"));
+    app.click(cx, "people-copy");
+    assert_eq!(
+        app.system.clipboard().as_deref(),
+        Some("user0\nuser1\nuser2\nuser3\nuser4")
+    );
+    assert!(
+        app.label_of(cx, "announcements")
+            .contains("5 usernames copied")
+    );
+    assert_eq!(asked_but_pictures(&backend), before, "nothing was asked");
+
+    app.press(cx, "escape");
+    assert!(!shown(&app, cx, "people-selection"));
+    app.in_window(cx, |window, _| {
+        assert_eq!(window.find(("person", 2usize)).role(), Some(Role::Button));
+    });
+}
+
+#[gpui_kit::test]
+async fn pictures_are_asked_for_the_rows_on_screen_and_a_few_around_once_each(
+    cx: &mut TestAppContext,
+) {
+    let backend = me();
+    backend.script(|script| {
+        script.list_size(200);
+    });
+    let app = own_followers(cx, backend.clone()).await;
+    until_said(&app, cx, |said| said.starts_with("200 accounts.")).await;
+    cx.executor().advance_clock(Duration::from_millis(200));
+    frames(&app, cx, 2);
+
+    let asked = |backend: &Scripted| -> Vec<Vec<u64>> {
+        backend
+            .asked()
+            .into_iter()
+            .filter_map(|asked| match asked {
+                Asked::Pictures(rows) => Some(rows.into_iter().map(|pk| pk.get() - 1000).collect()),
+                _ => None,
+            })
+            .collect()
+    };
+    let drawn: Vec<u64> = app.in_window(cx, |window, _| {
+        (0..200u64)
+            .filter(|at| window.try_find(("person", *at as usize)).is_some())
+            .collect()
+    });
+    let last = *drawn.last().expect("rows drawn");
+    let batches = asked(&backend);
+    let mut wanted: Vec<u64> = batches.last().expect("pictures asked for").clone();
+    wanted.sort_unstable();
+    assert_eq!(
+        wanted,
+        (0..=last + 4).collect::<Vec<_>>(),
+        "the rows drawn, {drawn:?}, and four below"
+    );
+
+    // Far down: the rows there, and none asked for twice.
+    scroll_the_list_down(&app, cx);
+    frames(&app, cx, 2);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    frames(&app, cx, 2);
+    let batches = asked(&backend);
+    let all: Vec<u64> = batches.iter().flatten().copied().collect();
+    let mut once = all.clone();
+    once.sort_unstable();
+    once.dedup();
+    assert_eq!(once.len(), all.len(), "a row's picture is asked for once");
+    assert!(all.contains(&199), "the last rows, once drawn");
+    assert!(!all.contains(&100), "rows never drawn are not asked for");
+}
+
+/// The rows of each batch of pictures asked for, by their place in the list.
+fn pictures_asked(backend: &Scripted) -> Vec<Vec<u64>> {
+    backend
+        .asked()
+        .into_iter()
+        .filter_map(|asked| match asked {
+            Asked::Pictures(rows) => Some(rows.into_iter().map(|pk| pk.get() - 1000).collect()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Turns the wheel `by` pixels over the rows of a list in `window`: down
+/// when negative.
+fn wheel(window: &mut gpui_kit::Window, cx: &mut gpui_kit::App, by: f32) {
+    let seen = window.viewport_size();
+    window.dispatch_event(
+        PlatformInput::Scroll(ScrollEvent {
+            position: point(seen.width * 0.5, seen.height * 0.7),
+            delta: ScrollDelta::Pixels(point(px(0.), px(by))),
+            ..ScrollEvent::default()
+        }),
+        cx,
+    );
+}
+
+/// Lets the rows drawn stay still past the wait for their pictures.
+fn settle(app: &App, cx: &mut TestAppContext) {
+    frames(app, cx, 2);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    frames(app, cx, 2);
+}
+
+/// The first row drawn, and what a screen reader is told of it.
+fn top_row(app: &App, cx: &mut TestAppContext) -> (usize, String) {
+    app.in_window(cx, |window, _| {
+        let at = (0..400usize)
+            .find(|at| window.try_find(("person", *at)).is_some())
+            .expect("a row drawn");
+        let row = window.find(("person", at));
+        (at, row.label().unwrap_or_default().to_string())
+    })
+}
+
+/// The list shown moved out to a window of its own, and that window.
+async fn moved_out(app: &App, cx: &mut TestAppContext) -> gpui_kit::AnyWindowHandle {
+    app.click(cx, "people-options");
+    app.click(cx, "people-detach");
+    app.until_screen(cx, |screen| matches!(screen, Screen::Profile(_)))
+        .await;
+    let main = app.window;
+    cx.update(|cx| cx.windows())
+        .into_iter()
+        .find(|window| *window != main)
+        .expect("the list's own window")
+}
+
+/// Draws `window` and acts on it.
+fn in_its_window<R>(
+    cx: &mut TestAppContext,
+    window: gpui_kit::AnyWindowHandle,
+    act: impl FnOnce(&mut gpui_kit::Window, &mut gpui_kit::App) -> R,
+) -> R {
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        act(window, cx)
+    })
+    .expect("the list's window is open")
+}
+
+#[gpui_kit::test]
+async fn a_batch_of_pictures_a_scroll_stopped_is_asked_again_and_one_batch_goes_at_a_time(
+    cx: &mut TestAppContext,
+) {
+    let backend = me();
+    backend.script(|script| {
+        script.list_size(200);
+    });
+    let app = own_followers(cx, backend.clone()).await;
+    until_said(&app, cx, |said| said.starts_with("200 accounts.")).await;
+    backend.hold_the_work();
+    settle(&app, cx);
+    let asked = pictures_asked(&backend);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(asked[0].contains(&0));
+
+    // Down while it is on its way: it is stopped, and the next waits for it.
+    scroll_the_list_down(&app, cx);
+    settle(&app, cx);
+    assert_eq!(pictures_asked(&backend).len(), 1, "one batch at a time");
+    backend.release();
+    frames(&app, cx, 2);
+    let asked = pictures_asked(&backend);
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!(asked[1].contains(&199) && !asked[1].contains(&0));
+
+    // Back up: what the batch stopped never brought is asked for again.
+    app.in_window(cx, |window, cx| wheel(window, cx, 100_000.));
+    settle(&app, cx);
+    let asked = pictures_asked(&backend);
+    assert_eq!(asked.len(), 3, "{asked:?}");
+    assert!(asked[2].contains(&0));
+}
+
+#[gpui_kit::test]
+async fn pictures_are_asked_for_only_once_the_rows_have_stayed_still(cx: &mut TestAppContext) {
+    let backend = me();
+    backend.script(|script| {
+        script.list_size(200);
+    });
+    let app = own_followers(cx, backend.clone()).await;
+    until_said(&app, cx, |said| said.starts_with("200 accounts.")).await;
+    settle(&app, cx);
+    let before = pictures_asked(&backend).len();
+
+    scroll_the_list_down(&app, cx);
+    frames(&app, cx, 2);
+    cx.executor().advance_clock(Duration::from_millis(100));
+    frames(&app, cx, 2);
+    assert_eq!(pictures_asked(&backend).len(), before, "not while it moves");
+    cx.executor().advance_clock(Duration::from_millis(100));
+    frames(&app, cx, 2);
+    assert_eq!(pictures_asked(&backend).len(), before + 1);
+}
+
+#[gpui_kit::test]
+async fn no_picture_is_asked_for_while_the_app_rests_and_they_are_once_it_wakes(
+    cx: &mut TestAppContext,
+) {
+    let backend = me();
+    backend.script(|script| {
+        script.list_size(200);
+    });
+    let app = own_followers(cx, backend.clone()).await;
+    until_said(&app, cx, |said| said.starts_with("200 accounts.")).await;
+    backend.hold_the_work();
+    settle(&app, cx);
+    let asked = pictures_asked(&backend);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    let below = asked[0].iter().max().copied().unwrap_or_default();
+    // A taller window draws more rows while the first batch is on its way:
+    // the next waits for it.
+    cx.simulate_window_resize(app.window, size(px(900.), px(2400.)));
+    settle(&app, cx);
+    assert_eq!(pictures_asked(&backend).len(), 1);
+
+    VisualTestContext::from_window(app.window, cx).deactivate_window();
+    cx.executor().advance_clock(QUIET_FOR * 2);
+    cx.run_until_parked();
+    assert!(app.system.is_resting());
+    // The batch on its way ends while it rests: the next asks nothing.
+    backend.release();
+    cx.run_until_parked();
+    assert_eq!(pictures_asked(&backend).len(), 1, "nothing while it rests");
+
+    cx.update_window(app.window, |_, window, _| window.activate_window())
+        .expect("the window is open");
+    cx.run_until_parked();
+    assert!(!app.system.is_resting());
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    let asked = pictures_asked(&backend);
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!(asked[1].iter().any(|row| *row > below), "{asked:?}");
+}
+
+#[gpui_kit::test]
+async fn a_list_in_its_own_window_keeps_the_app_awake_and_its_pictures_coming(
+    cx: &mut TestAppContext,
+) {
+    let backend = me();
+    backend.script(|script| {
+        script.list_size(200);
+    });
+    let app = own_followers(cx, backend.clone()).await;
+    until_said(&app, cx, |said| said.starts_with("200 accounts.")).await;
+    settle(&app, cx);
+    let before = pictures_asked(&backend).len();
+    let alone = moved_out(&app, cx).await;
+    cx.update_window(alone, |_, window, _| window.activate_window())
+        .expect("the list's window is open");
+    cx.run_until_parked();
+
+    cx.executor().advance_clock(QUIET_FOR * 2);
+    cx.run_until_parked();
+    assert!(
+        !app.system.is_resting(),
+        "the list's own window is looked at"
+    );
+    in_its_window(cx, alone, |_, _| ());
+    in_its_window(cx, alone, |window, cx| wheel(window, cx, -100_000.));
+    in_its_window(cx, alone, |_, _| ());
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    let asked = pictures_asked(&backend);
+    assert_eq!(asked.len(), before + 1, "{asked:?}");
+    assert!(asked[before].contains(&199));
+}
+
+#[gpui_kit::test]
+async fn a_list_in_its_own_window_chooses_copies_and_stops_choosing_on_escape(
+    cx: &mut TestAppContext,
+) {
+    let backend = me();
+    backend.script(|script| {
+        script.list_size(5);
+    });
+    let app = own_followers(cx, backend.clone()).await;
+    until_said(&app, cx, |said| said.starts_with("5 accounts.")).await;
+    let alone = moved_out(&app, cx).await;
+    let before = asked_but_pictures(&backend);
+
+    in_its_window(cx, alone, |window, cx| window.click("people-options", cx));
+    in_its_window(cx, alone, |window, cx| window.click("people-select", cx));
+    in_its_window(cx, alone, |window, cx| window.click(("person", 3usize), cx));
+    in_its_window(cx, alone, |window, _| {
+        assert_eq!(window.find(("person", 3usize)).checked(), Some(true));
+        assert_eq!(window.find("people-selected").label(), Some("1 selected"));
+    });
+    in_its_window(cx, alone, |window, cx| window.click("people-copy", cx));
+    assert_eq!(app.system.clipboard().as_deref(), Some("user3"));
+    assert_eq!(asked_but_pictures(&backend), before, "nothing was asked");
+
+    in_its_window(cx, alone, |window, cx| window.press("escape", cx));
+    in_its_window(cx, alone, |window, _| {
+        assert!(window.try_find("people-selection").is_none());
+        assert_eq!(window.find(("person", 3usize)).role(), Some(Role::Button));
+    });
+}
+
+#[gpui_kit::test]
+async fn a_list_shown_again_before_its_stored_rows_arrive_is_read_once(cx: &mut TestAppContext) {
+    let backend = me();
+    backend.script(|script| {
+        script.kept_list(42, Side::Followers, 30).list_size(40);
+    });
+    let app = own_profile(cx, backend.clone()).await;
+    backend.hold_the_kept_lists();
+    app.click(cx, "profile-followers");
+    app.until_screen(cx, |screen| matches!(screen, Screen::People { .. }))
+        .await;
+    cx.run_until_parked();
+    assert_eq!(lists_read(&backend, 42, Side::Followers), 0);
+
+    app.click(cx, "band-back");
+    app.until_screen(cx, |screen| matches!(screen, Screen::Profile(_)))
+        .await;
+    app.click(cx, "profile-followers");
+    app.until_screen(cx, |screen| matches!(screen, Screen::People { .. }))
+        .await;
+    cx.run_until_parked();
+    assert_eq!(lists_read(&backend, 42, Side::Followers), 1);
+    backend.release();
+    frames(&app, cx, 2);
+    until_said(&app, cx, |said| said.starts_with("40 accounts.")).await;
+    assert_eq!(lists_read(&backend, 42, Side::Followers), 1, "read once");
+}
+
+#[gpui_kit::test]
+async fn rows_chosen_stay_chosen_when_the_read_behind_them_ends(cx: &mut TestAppContext) {
+    let backend = me();
+    backend.script(|script| {
+        script.kept_list(42, Side::Followers, 30).list_size(40);
+    });
+    let app = own_profile(cx, backend.clone()).await;
+    backend.hold_the_work();
+    app.click(cx, "profile-followers");
+    until_said(&app, cx, |said| said.starts_with("30 accounts.")).await;
+    app.click(cx, "people-options");
+    app.click(cx, "people-select");
+    app.in_window(cx, |window, cx| window.click(("person", 2usize), cx));
+    assert_eq!(app.label_of(cx, "people-selected"), "1 selected");
+
+    backend.release();
+    until_said(&app, cx, |said| said.starts_with("40 accounts.")).await;
+    app.in_window(cx, |window, _| {
+        assert_eq!(window.find(("person", 2usize)).checked(), Some(true));
+    });
+    assert_eq!(app.label_of(cx, "people-selected"), "1 selected");
+}
+
+#[gpui_kit::test]
+async fn the_row_at_the_top_stays_there_when_the_read_brings_rows_above_it(
+    cx: &mut TestAppContext,
+) {
+    let backend = me();
+    backend.script(|script| {
+        script
+            .kept_list_from(42, Side::Followers, 10, 30)
+            .list_size(40);
+    });
+    let app = own_profile(cx, backend.clone()).await;
+    backend.hold_the_work();
+    app.click(cx, "profile-followers");
+    until_said(&app, cx, |said| said.starts_with("30 accounts.")).await;
+    app.in_window(cx, |window, cx| wheel(window, cx, -400.));
+    frames(&app, cx, 2);
+    let (at, said) = top_row(&app, cx);
+    assert!(at > 0, "scrolled");
+
+    backend.release();
+    until_said(&app, cx, |said| said.starts_with("40 accounts.")).await;
+    frames(&app, cx, 2);
+    assert_eq!(top_row(&app, cx), (at + 10, said));
 }

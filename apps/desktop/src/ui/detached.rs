@@ -1,8 +1,9 @@
-//! A list moved out to a window of its own: the same rows as in the panel
-//! (`screens::people::body`), still coming in as the walk reads them, and a
-//! click on one opens that profile in the app's window. **The walk is the
-//! one the panel started**: moving the list out reads nothing again, and
-//! closing its window stops it, as leaving its page does.
+//! A list moved out to a window of its own: the same rows, words, pictures
+//! and choosing as in the panel (`screens::people::body`), still coming in
+//! as the walk reads them, and a click on one opens that profile in the
+//! app's window. **The walk is the one the panel started**: moving the list
+//! out reads nothing again, and closing its window stops it, as leaving its
+//! page does. Escape closes its options, then stops choosing.
 
 use std::rc::Rc;
 
@@ -12,6 +13,7 @@ use gpui_kit::{
     TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions, div, size,
 };
 
+use super::Dismiss;
 use super::look::{Look, color};
 use super::screens::people;
 use super::shell::{PeopleList, Shell};
@@ -30,7 +32,7 @@ pub struct Detached {
     shell: WeakEntity<Shell>,
     main: AnyWindowHandle,
     title: FocusHandle,
-    _watching: [Subscription; 2],
+    _watching: [Subscription; 3],
 }
 
 impl Render for Detached {
@@ -38,6 +40,14 @@ impl Render for Detached {
         let look = Look::now(cx).clone();
         let palette = look.palette;
         let (shell, main) = (self.shell.clone(), self.main);
+        let copy = {
+            let (shell, list) = (shell.clone(), self.list.clone());
+            Rc::new(move |_: &mut Window, cx: &mut App| {
+                shell
+                    .update(cx, |shell, cx| shell.copy_the_usernames(&list, cx))
+                    .ok();
+            })
+        };
         let open: people::Open = Rc::new(move |who, _, cx| {
             main.update(cx, |_, window, cx| {
                 window.activate_window();
@@ -47,8 +57,18 @@ impl Render for Detached {
             })
             .ok();
         });
+        let acts = people::Acts {
+            open,
+            copy,
+            detach: None,
+        };
+        let list = self.list.clone();
         div()
             .id("detached")
+            .key_context("Snob")
+            .on_action(move |_: &Dismiss, window, cx| {
+                list.update(cx, |list, cx| list.dismiss(window, cx));
+            })
             .size_full()
             .flex()
             .flex_col()
@@ -58,9 +78,8 @@ impl Render for Detached {
             .text_color(color(palette.text))
             .child(people::body(
                 &self.list,
-                None,
+                acts,
                 &self.title,
-                open,
                 &look,
                 window,
                 cx,
@@ -98,6 +117,22 @@ pub fn open(
     let (handle, _) = gpui_kit::open_window(options, cx, move |window, cx| {
         cx.new(|cx| {
             let redraw = cx.observe(&list, |_, _, cx| cx.notify());
+            // Looked at or away from, the app's rest is judged again: this
+            // window in front keeps it awake, and its pictures coming.
+            let looked = {
+                let shell = shell.clone();
+                cx.observe_window_activation(window, move |_, _, cx| {
+                    let shell = shell.clone();
+                    cx.defer(move |cx| {
+                        main.update(cx, |_, window, cx| {
+                            shell
+                                .update(cx, |shell, cx| shell.stirred_elsewhere(window, cx))
+                                .ok();
+                        })
+                        .ok();
+                    });
+                })
+            };
             // The app's window gone, its view goes, and this window with it.
             let gone = match shell.upgrade() {
                 Some(shell) => cx.observe_release_in(&shell, window, |_, _, window, _| {
@@ -110,7 +145,7 @@ pub fn open(
                 shell,
                 main,
                 title: cx.focus_handle(),
-                _watching: [redraw, gone],
+                _watching: [redraw, gone, looked],
             }
         })
     })?;

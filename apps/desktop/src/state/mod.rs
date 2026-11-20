@@ -9,7 +9,8 @@
 //! the automation the editor holds ([`editing`]), its panel of steps
 //! ([`shelf`]) and what its dialogs turn what is typed into ([`steps`]),
 //! how a profile page is laid out and what it reads without asking
-//! ([`profile`]), and how often the window is drawn while something moves
+//! ([`profile`]), what a list of followers asks for and copies
+//! ([`people`]), and how often the window is drawn while something moves
 //! ([`frames`]).
 //! No window, no clock and no network in any of it.
 
@@ -20,6 +21,7 @@ pub mod flow;
 pub mod frame;
 pub mod frames;
 pub mod paste;
+pub mod people;
 pub mod prefs;
 pub mod profile;
 pub mod rest;

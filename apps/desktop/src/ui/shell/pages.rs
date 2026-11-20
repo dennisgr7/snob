@@ -11,24 +11,29 @@
 //! pace**, which the page only shows.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyWindowHandle, Bounds, Context, Entity, FocusHandle, Pixels, Point, ScrollHandle,
+    AnyWindowHandle, App, Bounds, Context, Entity, FocusHandle, Pixels, Point, ScrollHandle,
     SharedString, UniformListScrollHandle, WeakEntity, Window,
 };
 use snob_core::{Epoch, Pk};
 use snob_ig::pace::CancelToken;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use super::Shell;
-use crate::backend::{Cursor, Listed, Profile, Tiles, Unread, Walked};
+use crate::backend::{
+    Backend, Cursor, Listed, MOST_PICTURES, Person, Profile, Tiles, Unread, Walked,
+};
 use crate::state::flow::{Event, Named, Screen};
+use crate::state::people;
 use crate::state::profile::{self, Layout, PictureClick, Rect, Run, Showing, Side, Tab, Way, Zoom};
 use crate::state::status::Status;
 use crate::theme::motion;
@@ -168,23 +173,117 @@ impl Drop for ProfilePage {
     }
 }
 
-/// One of an account's lists, as far as it is read. **Read on until nothing
-/// shows it any more**: the page it is on left and its window closed, it
-/// stops, and what it read is kept for the next time.
+/// One of an account's lists: what was stored of it, shown at once, then
+/// the rows its read brings. **Read on until nothing shows it any more**:
+/// its page left (kept in memory, `state::people::Parked`) or its window
+/// closed, it stops, and what it read is kept for the next time.
 pub struct PeopleList {
     pub owner: Named,
     pub side: Side,
-    pub walked: Walked,
-    pub ended: Option<Result<Listed, Unread>>,
+    /// The account in use when it was opened, whose list it is shown to.
+    pub viewer: Pk,
+    /// The rows shown.
+    pub people: Vec<Person>,
+    /// What the rows are the answer of, once they are a whole one: stored,
+    /// or read to its end. **None while they come in as a first read
+    /// reads them.**
+    pub answered: Option<people::Answered>,
+    /// The read going, as far as it is.
+    pub reading: Option<Walked>,
+    pub failed: Option<Unread>,
     /// When each run of rows came: the first `n` by then.
     pub arrived: Vec<(usize, Instant)>,
     /// Its own window, once it was moved out to one.
     pub window: Option<AnyWindowHandle>,
     pub scroll: UniformListScrollHandle,
+    /// The rows drawn on the last frame.
+    pub drawn: Rc<Cell<Range<usize>>>,
+    /// Since when each picture downloaded while it is shown came in.
+    pub came: HashMap<Pk, Instant>,
+    pub selection: people::Selection,
+    /// How many usernames the last copy put on the clipboard, until the
+    /// rows chosen change.
+    pub copied: Option<usize>,
+    /// Its options, while they are open.
+    pub menu: Option<ListMenu>,
+    pub options_button: FocusHandle,
+    pub options_drawn: Rc<Cell<Bounds<Pixels>>>,
+    /// Left, and kept in memory: it reads nothing.
+    parked: bool,
+    /// The address each row's picture was asked for at, this showing.
+    tried: HashMap<Pk, String>,
+    /// The rows the batch of pictures on its way asked for that have not
+    /// come yet: **a batch stopped gives them back to be asked for again**.
+    asking: HashSet<Pk>,
+    /// The rows drawn when that batch was asked for.
+    asked_for: Range<usize>,
+    /// Which batch of pictures is the last asked for.
+    batch: u64,
+    /// Whether to look for pictures again once the batch on its way ends.
+    look_after: bool,
+    /// Every picture known this run, which a row read again takes.
+    pictures: HashMap<Pk, PathBuf>,
+    /// Which read the rows heard are of: an answer of one let go is not
+    /// shown.
+    read_id: u64,
+    /// Which look for pictures is the last: one the rows moved after asks
+    /// nothing.
+    looked: u64,
     stop: CancelToken,
+    picture_stop: Option<CancelToken>,
+    backend: Arc<dyn Backend>,
+    shell: WeakEntity<Shell>,
+}
+
+/// A list's options, open under their button.
+pub struct ListMenu {
+    pub focus: FocusHandle,
+    pub since: Instant,
 }
 
 impl PeopleList {
+    fn new(
+        owner: Named,
+        side: Side,
+        viewer: Pk,
+        backend: Arc<dyn Backend>,
+        shell: WeakEntity<Shell>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            owner,
+            side,
+            viewer,
+            people: Vec::new(),
+            answered: None,
+            reading: None,
+            failed: None,
+            arrived: Vec::new(),
+            window: None,
+            scroll: UniformListScrollHandle::new(),
+            drawn: Rc::default(),
+            came: HashMap::new(),
+            selection: people::Selection::default(),
+            copied: None,
+            menu: None,
+            options_button: cx.focus_handle(),
+            options_drawn: Rc::default(),
+            parked: false,
+            tried: HashMap::new(),
+            asking: HashSet::new(),
+            asked_for: 0..0,
+            batch: 0,
+            look_after: false,
+            pictures: HashMap::new(),
+            read_id: 0,
+            looked: 0,
+            stop: CancelToken::default(),
+            picture_stop: None,
+            backend,
+            shell,
+        }
+    }
+
     /// When the row at `at` came.
     pub fn arrived_at(&self, at: usize) -> Option<Instant> {
         self.arrived
@@ -193,12 +292,369 @@ impl PeopleList {
             .map(|(_, when)| *when)
     }
 
-    fn take(&mut self, walked: Walked) {
-        let before = self.walked.people.len();
-        if walked.people.len() > before {
-            self.arrived.push((walked.people.len(), Instant::now()));
+    /// The rows drawn on the last frame.
+    fn drawn(&self) -> Range<usize> {
+        let drawn = self.drawn.take();
+        self.drawn.set(drawn.clone());
+        drawn
+    }
+
+    /// What the line under its title says.
+    pub fn said(&self) -> people::Said {
+        let going = self.reading.as_ref().map(|walked| people::Going {
+            read: walked.people.len(),
+            expected: walked.expected,
+        });
+        people::said(self.answered, going, self.failed.is_some())
+    }
+
+    /// What was stored of it, shown at once while nothing else is.
+    fn show_kept(&mut self, listed: Listed, cx: &mut Context<Self>) {
+        if !self.people.is_empty() || self.answered.is_some() {
+            return;
         }
-        self.walked = walked;
+        self.answered = Some(answered_of(&listed));
+        self.people = listed.people;
+        self.take_the_pictures();
+        cx.notify();
+        self.look_for_pictures(cx);
+    }
+
+    /// A read starts, under `stop`: what it hears is told by its id.
+    fn start_reading(&mut self, stop: CancelToken) -> u64 {
+        self.stop.cancel();
+        self.stop = stop;
+        self.read_id += 1;
+        self.reading = Some(Walked::default());
+        self.failed = None;
+        self.read_id
+    }
+
+    /// What the read `id` has read so far. **Rows a whole answer shows stay
+    /// until the read ends**; a first read's come in as they are read.
+    fn heard(&mut self, id: u64, walked: Walked, cx: &mut Context<Self>) {
+        if id != self.read_id || self.reading.is_none() {
+            return;
+        }
+        // A walk shown again after it was left starts over: the rows it
+        // had read stay until it has read as many.
+        if self.answered.is_none() && walked.people.len() >= self.people.len() {
+            if walked.people.len() > self.people.len() {
+                self.arrived.push((walked.people.len(), Instant::now()));
+            }
+            self.people.clone_from(&walked.people);
+            self.take_the_pictures();
+            self.look_for_pictures(cx);
+        }
+        self.reading = Some(walked);
+        cx.notify();
+    }
+
+    /// The read `id` ended: its rows replace those shown, the row at the
+    /// top staying there and what was chosen staying chosen. One that failed
+    /// leaves the rows shown and says why. Whether it was this list's read.
+    fn read_ended(
+        &mut self,
+        id: u64,
+        ended: Result<Listed, Unread>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if id != self.read_id || self.reading.is_none() {
+            return false;
+        }
+        self.reading = None;
+        match ended {
+            Ok(listed) => {
+                let before: Vec<Pk> = self.people.iter().map(|person| person.named.pk).collect();
+                let after: Vec<Pk> = listed.people.iter().map(|person| person.named.pk).collect();
+                if self.answered.is_some()
+                    && let Some(by) = people::moved_by(self.drawn().start, &before, &after)
+                {
+                    self.scroll_rows(by, before.len());
+                }
+                if self.answered.is_none() && listed.people.len() > self.people.len() {
+                    self.arrived.push((listed.people.len(), Instant::now()));
+                }
+                self.answered = Some(answered_of(&listed));
+                self.people = listed.people;
+                self.selection.keep_among(after);
+                self.take_the_pictures();
+                self.look_for_pictures(cx);
+            }
+            Err(why) => self.failed = Some(why),
+        }
+        cx.notify();
+        true
+    }
+
+    /// Moves the scroll by `rows` rows of the `count` laid out last, as far
+    /// into the row at the top as it was.
+    fn scroll_rows(&self, rows: isize, count: usize) {
+        let state = self.scroll.0.borrow();
+        // `item` is the list's own size; `contents`, all its rows'.
+        let Some(size) = state.last_item_size.filter(|_| count > 0) else {
+            return;
+        };
+        let offset = state.base_handle.offset();
+        let by = size.contents.height / count as f32 * rows as f32;
+        state
+            .base_handle
+            .set_offset(gpui_kit::point(offset.x, offset.y - by));
+    }
+
+    /// Gives each row with no picture the one known of it.
+    fn take_the_pictures(&mut self) {
+        for person in &mut self.people {
+            if person.picture.is_none()
+                && let Some(picture) = self.pictures.get(&person.named.pk)
+            {
+                person.picture = Some(picture.clone());
+            }
+        }
+    }
+
+    /// Asks for the pictures of the rows drawn once they have stayed the
+    /// same for `state::people::SETTLES_AFTER`: a scroll going on asks for
+    /// nothing.
+    pub fn look_for_pictures(&mut self, cx: &mut Context<Self>) {
+        if self.parked {
+            return;
+        }
+        self.looked += 1;
+        let looked = self.looked;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(people::SETTLES_AFTER).await;
+            this.update(cx, |list, cx| {
+                if list.looked == looked {
+                    list.ask_for_pictures(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Asks the backend for the small pictures of the rows drawn and
+    /// `state::people::AROUND` either side: **one download each from the
+    /// CDN, never the API, and never while the app rests**, which looks
+    /// again once it wakes. A picture that did not come keeps the row's
+    /// initial and is not asked for again this showing. **One batch at a
+    /// time**, so no more than the engine's own few downloads run at once:
+    /// one wanted meanwhile waits for it to end, and stops it first when
+    /// the rows drawn moved.
+    fn ask_for_pictures(&mut self, cx: &mut Context<Self>) {
+        let resting = self
+            .shell
+            .upgrade()
+            .is_some_and(|shell| shell.read(cx).is_resting());
+        if self.parked || resting {
+            return;
+        }
+        let drawn = self.drawn();
+        let mut wanted =
+            people::wanted_pictures(&self.people, drawn.clone(), &self.tried, |person| {
+                let from = person
+                    .picture
+                    .is_none()
+                    .then_some(person.picture_from.as_deref());
+                (person.named.pk, from.flatten())
+            });
+        if wanted.is_empty() {
+            return;
+        }
+        if self.picture_stop.is_some() {
+            if drawn != self.asked_for {
+                self.let_go_of_the_pictures();
+            }
+            self.look_after = true;
+            return;
+        }
+        // The backend reads no more of a batch: the rest is asked next.
+        wanted.truncate(MOST_PICTURES);
+        for (pk, from) in &wanted {
+            self.tried.insert(*pk, from.clone());
+        }
+        self.asking = wanted.iter().map(|(pk, _)| *pk).collect();
+        self.asked_for = drawn;
+        self.batch += 1;
+        let batch = self.batch;
+        let stop = CancelToken::default();
+        self.picture_stop = Some(stop.clone());
+        let (came, mut heard) = mpsc::unbounded_channel();
+        let answer = self.backend.pictures(wanted, came, stop);
+        cx.spawn(async move |this, cx| {
+            while let Some((pk, picture, fetched)) = heard.recv().await {
+                let told = this.update(cx, |list, cx| list.picture_came(pk, picture, fetched, cx));
+                if told.is_err() {
+                    return;
+                }
+            }
+            let _ = answer.await;
+            this.update(cx, |list, cx| list.pictures_ended(batch, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// The batch `batch` ended: what it did not bring could not be had, and
+    /// a look waiting for it asks now.
+    fn pictures_ended(&mut self, batch: u64, cx: &mut Context<Self>) {
+        if batch != self.batch {
+            return;
+        }
+        self.picture_stop = None;
+        self.asking.clear();
+        if std::mem::take(&mut self.look_after) {
+            self.ask_for_pictures(cx);
+        }
+    }
+
+    /// Stops the batch on its way, which ends once its downloads going end:
+    /// the rows it has not brought are asked for again.
+    fn let_go_of_the_pictures(&mut self) {
+        if let Some(stop) = &self.picture_stop {
+            stop.cancel();
+        }
+        for pk in self.asking.drain() {
+            self.tried.remove(&pk);
+        }
+    }
+
+    /// A row's picture is on disk: it comes in when it was downloaded now,
+    /// and is there at once when it was kept.
+    fn picture_came(&mut self, pk: Pk, picture: PathBuf, fetched: bool, cx: &mut Context<Self>) {
+        self.asking.remove(&pk);
+        self.pictures.insert(pk, picture.clone());
+        if let Some(person) = self.people.iter_mut().find(|person| person.named.pk == pk) {
+            person.picture = Some(picture);
+        }
+        let now = Instant::now();
+        self.came
+            .retain(|_, since| now.saturating_duration_since(*since) < Duration::from_secs(1));
+        if fetched {
+            self.came.insert(pk, now);
+        }
+        cx.notify();
+    }
+
+    /// Left, and kept in memory: its read and its pictures stop, its menu
+    /// closes; its rows, scroll and choice stay.
+    fn park(&mut self) {
+        self.parked = true;
+        self.stop.cancel();
+        self.reading = None;
+        self.let_go_of_the_pictures();
+        self.look_after = false;
+        self.menu = None;
+    }
+
+    /// Shown again: a picture that did not come is asked for again.
+    fn unpark(&mut self, cx: &mut Context<Self>) {
+        self.parked = false;
+        self.tried.clear();
+        self.came.clear();
+        self.look_for_pictures(cx);
+    }
+
+    /// Opens its options, or closes them.
+    pub fn toggle_the_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.is_some() {
+            self.close_the_menu(window, cx);
+            return;
+        }
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        self.menu = Some(ListMenu {
+            focus,
+            since: Instant::now(),
+        });
+        cx.notify();
+    }
+
+    /// Closes its options, focus back on their button.
+    pub fn close_the_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            window.focus(&self.options_button, cx);
+            cx.notify();
+        }
+    }
+
+    /// Goes to the next of its options, or the one before, around the ends.
+    pub fn move_in_the_menu(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(inside) = self.menu.as_ref().map(|menu| menu.focus.clone()) else {
+            return;
+        };
+        let mut seen = Vec::new();
+        loop {
+            if forward {
+                window.focus_next(cx);
+            } else {
+                window.focus_prev(cx);
+            }
+            if inside.contains_focused(window, cx) {
+                break;
+            }
+            let focused = window.focused(cx);
+            if seen.contains(&focused) {
+                window.focus(&inside, cx);
+                break;
+            }
+            seen.push(focused);
+        }
+    }
+
+    /// Starts choosing rows, from its options: **nothing is sent for it**.
+    pub fn choose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        tracing::info!(action = "choose_in_list", "action");
+        self.close_the_menu(window, cx);
+        self.selection.start();
+        self.copied = None;
+        cx.notify();
+    }
+
+    /// Chooses the row `pk`, or leaves it.
+    pub fn toggle(&mut self, pk: Pk, cx: &mut Context<Self>) {
+        self.selection.toggle(pk);
+        self.copied = None;
+        cx.notify();
+    }
+
+    /// Chooses every row shown.
+    pub fn choose_all(&mut self, cx: &mut Context<Self>) {
+        self.selection
+            .all(self.people.iter().map(|person| person.named.pk));
+        self.copied = None;
+        cx.notify();
+    }
+
+    /// Stops choosing, focus back on the options' button.
+    pub fn stop_choosing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.selection.stop();
+        self.copied = None;
+        window.focus(&self.options_button, cx);
+        cx.notify();
+    }
+
+    /// Closes what of it is open, its options first, then the choosing:
+    /// whether anything was.
+    pub fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.menu.is_some() {
+            self.close_the_menu(window, cx);
+        } else if self.selection.choosing() {
+            self.stop_choosing(window, cx);
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// The usernames of the rows chosen, one a line, and how many.
+    pub fn chosen_usernames(&self) -> (String, usize) {
+        self.selection.usernames(
+            self.people
+                .iter()
+                .map(|person| (person.named.pk, person.named.username.as_deref())),
+        )
     }
 }
 
@@ -206,6 +662,18 @@ impl Drop for PeopleList {
     fn drop(&mut self) {
         // What it read is saved page by page: stopping keeps it.
         self.stop.cancel();
+        if let Some(stop) = &self.picture_stop {
+            stop.cancel();
+        }
+    }
+}
+
+/// What a list answered whole says of itself.
+fn answered_of(listed: &Listed) -> people::Answered {
+    people::Answered {
+        count: listed.people.len(),
+        whole: listed.whole,
+        taken_at: listed.taken_at,
     }
 }
 
@@ -326,6 +794,13 @@ pub(crate) struct Pages {
     /// The lists moved out to windows of their own: **one walk per list**,
     /// so opening one of them again shows the one going.
     pub detached: Vec<WeakEntity<PeopleList>>,
+    /// The lists left, kept in memory to be shown again at once: of the
+    /// account in use only.
+    pub parked: people::Parked<(Pk, Side)>,
+    pub parked_lists: HashMap<(Pk, Side), Entity<PeopleList>>,
+    /// The list another account's yes was just given for: **the one list
+    /// of another account that may be read when it is shown next**.
+    pub consented: Option<(Pk, Side)>,
 }
 
 impl Shell {
@@ -372,7 +847,9 @@ impl Shell {
     }
 
     /// The page of the screen just shown, made when it is new, and every
-    /// page the way back no longer holds let go: **a list let go stops**.
+    /// page the way back no longer holds let go: **a list let go stops**,
+    /// and is kept in memory to be shown again at once
+    /// (`state::people::Parked`).
     pub(super) fn settle_the_pages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let held: Vec<Screen> = self
             .flow
@@ -389,11 +866,21 @@ impl Shell {
             held.iter()
                 .any(|screen| matches!(screen, Screen::Profile(who) if who.pk == *pk))
         });
-        self.pages.lists.retain(|(pk, side), _| {
-            held.iter().any(|screen| {
+        let mut left = Vec::new();
+        self.pages.lists.retain(|(pk, side), list| {
+            let kept = held.iter().any(|screen| {
                 matches!(screen, Screen::People { owner, side: shown } if owner.pk == *pk && shown == side)
-            })
+            });
+            if !kept {
+                left.push(((*pk, *side), list.clone()));
+            }
+            kept
         });
+        self.park_the_lists(left, cx);
+        for list in self.pages.lists.values() {
+            list.update(cx, |list, _| list.menu = None);
+        }
+        let consented = self.pages.consented.take();
         self.pages.popup = None;
         self.pages.viewer = None;
         self.pages.leaving = None;
@@ -403,6 +890,12 @@ impl Shell {
                 self.read_the_profile(who, window, cx);
             }
             Screen::People { owner, side } if !self.pages.lists.contains_key(&(owner.pk, side)) => {
+                // **Another account's list is read only right after its
+                // yes**: shown again any other way, it shows what is kept.
+                let may_read = consented == Some((owner.pk, side))
+                    || self
+                        .active()
+                        .is_some_and(|viewer| !profile::asks_first(owner.pk, viewer.named.pk));
                 self.pages.detached.retain(|list| list.upgrade().is_some());
                 let going = self.pages.detached.iter().find_map(|list| {
                     let list = list.upgrade()?;
@@ -412,11 +905,26 @@ impl Shell {
                     };
                     same.then_some(list)
                 });
-                match going {
-                    Some(list) => {
-                        self.pages.lists.insert((owner.pk, side), list);
+                let key = (owner.pk, side);
+                let parked = going
+                    .is_none()
+                    .then(|| {
+                        self.pages.parked.take(&key);
+                        self.pages.parked_lists.remove(&key)
+                    })
+                    .flatten();
+                match (going, parked) {
+                    (Some(list), _) => {
+                        self.pages.lists.insert(key, list);
                     }
-                    None => self.walk_the_list(owner, side, window, cx),
+                    (None, Some(list)) => {
+                        self.pages.lists.insert(key, list.clone());
+                        list.update(cx, |list, cx| list.unpark(cx));
+                        if may_read {
+                            self.read_the_rows(&list, window, cx);
+                        }
+                    }
+                    (None, None) => self.open_the_list(owner, side, may_read, window, cx),
                 }
             }
             _ => {}
@@ -1410,6 +1918,7 @@ impl Shell {
 
     /// The answer was no: nothing is read.
     pub(crate) fn keep_the_list_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pages.consented = None;
         if let Some(asked) = self.pages.asking.take() {
             tracing::info!(action = "decline_list", "action");
             if let Some(from) = asked.from {
@@ -1423,6 +1932,7 @@ impl Shell {
     pub(crate) fn read_the_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(asked) = self.pages.asking.take() {
             tracing::info!(action = "consent_to_list", "action");
+            self.pages.consented = Some((asked.owner.pk, asked.side));
             self.happened(
                 Event::OpenList {
                     owner: asked.owner,
@@ -1434,27 +1944,63 @@ impl Shell {
         }
     }
 
-    /// Starts reading a list, its rows shown as they come.
-    fn walk_the_list(
+    /// Opens a list: what was stored of it shown at once (**nothing sent**
+    /// for it), then read again behind it when `may_read`, its rows coming
+    /// in as they are read when nothing was stored.
+    fn open_the_list(
         &mut self,
         owner: Named,
         side: Side,
+        may_read: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(viewer) = self.active().map(|account| account.named.pk) else {
+            return;
+        };
+        let (backend, shell) = (self.backend.clone(), cx.entity().downgrade());
+        let list = cx.new(|cx| PeopleList::new(owner.clone(), side, viewer, backend, shell, cx));
+        self.pages.lists.insert((owner.pk, side), list.clone());
+        let kept = self.backend.list_kept(owner, side);
+        cx.spawn_in(window, async move |this, cx| {
+            let kept = kept.await.ok().flatten();
+            this.update_in(cx, |this, window, cx| {
+                // Left before it was answered: kept, the list shows it when
+                // it is shown again.
+                if let Some(kept) = kept {
+                    list.update(cx, |list, cx| list.show_kept(kept, cx));
+                }
+                let shown = this
+                    .pages
+                    .lists
+                    .values()
+                    .any(|held| held.entity_id() == list.entity_id());
+                // Shown again meanwhile, it may already be read.
+                let unread = list.read(cx).read_id == 0;
+                if may_read && shown && unread {
+                    this.read_the_rows(&list, window, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Reads `list` now, behind what it shows: **another account's only
+    /// right after its yes** (`settle_the_pages`).
+    fn read_the_rows(
+        &mut self,
+        list: &Entity<PeopleList>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let stop = CancelToken::default();
         let (said, mut heard) = watch::channel(Walked::default());
-        let list = cx.new(|_| PeopleList {
-            owner: owner.clone(),
-            side,
-            walked: Walked::default(),
-            ended: None,
-            arrived: Vec::new(),
-            window: None,
-            scroll: UniformListScrollHandle::new(),
-            stop: stop.clone(),
+        let (id, owner, side) = list.update(cx, |list, cx| {
+            let id = list.start_reading(stop.clone());
+            cx.notify();
+            (id, list.owner.clone(), list.side)
         });
-        self.pages.lists.insert((owner.pk, side), list.clone());
         let walking = self.backend.list(owner, side, said, stop);
         self.engine_asked(cx);
         let weak = list.downgrade();
@@ -1465,11 +2011,10 @@ impl Shell {
                     this.update(cx, |this, cx| this.engine_answered(cx)).ok();
                 }
                 let walked = heard.borrow_and_update().clone();
-                let told = weak.update(cx, |list, cx| {
-                    list.take(walked);
-                    cx.notify();
-                });
-                if told.is_err() {
+                if weak
+                    .update(cx, |list, cx| list.heard(id, walked, cx))
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -1482,35 +2027,86 @@ impl Shell {
                 .unwrap_or_else(|_| Err(Unread::Failed(String::new())));
             let said = weak
                 .update(cx, |list, cx| {
-                    if let Ok(listed) = &ended {
-                        let walked = Walked {
-                            people: listed.people.clone(),
-                            expected: list.walked.expected,
-                        };
-                        list.take(walked);
-                    }
-                    list.ended = Some(ended.clone());
-                    cx.notify();
-                    ended
+                    list.read_ended(id, ended, cx).then(|| {
+                        let look = Look::now(cx).clone();
+                        super::super::screens::people::progress_words(list, &look)
+                    })
                 })
-                .ok();
-            if let Some(ended) = said {
-                this.update(cx, |this, cx| {
-                    this.engine_answered(cx);
-                    let look = Look::now(cx).clone();
-                    let said = match ended {
-                        Ok(listed) => look.tr_with(
-                            "people-read",
-                            &[("count", &listed.people.len().to_string())],
-                        ),
-                        Err(why) => super::super::screens::profile::unread_words(&why, &look),
-                    };
+                .ok()
+                .flatten();
+            this.update(cx, |this, cx| {
+                this.engine_answered(cx);
+                if let Some(said) = said {
                     this.announce(said, cx);
-                })
-                .ok();
-            }
+                }
+            })
+            .ok();
         })
         .detach();
+    }
+
+    /// Keeps the lists `left` in memory, read no further, to be shown again
+    /// at once: the newest [`people::PARKED_AT_MOST`] of the account in
+    /// use. A list in a window of its own reads on there.
+    fn park_the_lists(&mut self, left: Vec<((Pk, Side), Entity<PeopleList>)>, cx: &mut App) {
+        let viewer = self.active().map(|account| account.named.pk);
+        for (key, list) in left {
+            let (alone, theirs) = {
+                let read = list.read(cx);
+                (read.window.is_some(), Some(read.viewer) == viewer)
+            };
+            if alone || !theirs {
+                continue;
+            }
+            list.update(cx, |list, _| list.park());
+            for gone in self.pages.parked.park(key) {
+                self.pages.parked_lists.remove(&gone);
+            }
+            self.pages.parked_lists.insert(key, list);
+        }
+        let lists = &self.pages.parked_lists;
+        let others = self.pages.parked.let_go(|key| {
+            lists
+                .get(key)
+                .is_some_and(|list| Some(list.read(cx).viewer) == viewer)
+        });
+        for gone in others {
+            self.pages.parked_lists.remove(&gone);
+        }
+    }
+
+    /// The pictures of every list shown looked for again: what the app
+    /// waking does, since a list asks for none while it rests.
+    pub(super) fn look_for_the_lists_pictures(&mut self, cx: &mut Context<Self>) {
+        self.pages.detached.retain(|list| list.upgrade().is_some());
+        let shown = self
+            .people_list()
+            .into_iter()
+            .chain(self.pages.detached.iter().filter_map(WeakEntity::upgrade));
+        for list in shown.collect::<Vec<_>>() {
+            list.update(cx, |list, cx| list.look_for_pictures(cx));
+        }
+    }
+
+    /// Puts the usernames of the rows chosen in `list` on the clipboard,
+    /// one a line and without their at sign, and says how many: **nothing
+    /// is sent**, and nothing else is done with them.
+    pub(crate) fn copy_the_usernames(&mut self, list: &Entity<PeopleList>, cx: &mut Context<Self>) {
+        let (text, count) = list.read(cx).chosen_usernames();
+        if count == 0 {
+            return;
+        }
+        tracing::info!(action = "copy_usernames", count, "action");
+        self.system.copy(&text, cx);
+        list.update(cx, |list, cx| {
+            list.copied = Some(count);
+            cx.notify();
+        });
+        let look = Look::now(cx);
+        let count = count as u64;
+        let grouped = crate::ui::screens::profile::grouped(count, look.texts.language());
+        let said = look.tr_count("people-copied", count, &[("count", &grouped)]);
+        self.announce(said, cx);
     }
 
     /// The list shown, when one is.
@@ -1527,6 +2123,7 @@ impl Shell {
             return;
         };
         tracing::info!(action = "detach_list", "action");
+        list.update(cx, |list, _| list.menu = None);
         let main = window.window_handle();
         let shell = cx.entity().downgrade();
         let opened = crate::ui::detached::open(list.clone(), shell, main, cx);
@@ -1562,18 +2159,24 @@ impl Shell {
             self.keep_the_list_closed(window, cx);
         } else if self.pages.popup.is_some() {
             self.close_the_popup(window, cx);
+        } else if let Some(list) = self.people_list().filter(|_| self.menu.is_none()) {
+            return list.update(cx, |list, cx| list.dismiss(window, cx));
         } else {
             return false;
         }
         true
     }
 
-    /// Whether something of the pages is open over the screen.
-    pub(super) fn a_page_overlay_is_open(&self) -> bool {
+    /// Whether something of the pages is open over the screen: a list's
+    /// options included.
+    pub(super) fn a_page_overlay_is_open(&self, cx: &App) -> bool {
         self.pages.viewer.is_some()
             || self.pages.asking.is_some()
             || self.pages.popup.is_some()
             || self.pages.about.is_some()
+            || self
+                .people_list()
+                .is_some_and(|list| list.read(cx).menu.is_some())
     }
 }
 

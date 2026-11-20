@@ -464,8 +464,6 @@ people-followers-title = Followers of { $account }
 people-following-title = Accounts { $account } follows
 people-reading = Reading… { $count } so far
 people-reading-of = Reading… { $count } of { $total }
-people-read = { $count } accounts
-people-stored = As stored at { $time }.
 people-not-whole = The list was not read to its end.
 people-detach = Open in a new window
 people-list = Accounts
@@ -584,6 +582,28 @@ profile-most-pages = snob reads at most { $count } pages of a tab in one visit.
 profile-all-read = That is everything.
 
 ## People: the lists of followers and following, and choosing in them.
+people-accounts = { $count } accounts.
+people-accounts-one = { $count } account.
+people-scanned-today = Last scan at { $time }.
+people-scanned-today-one = Last scan at { $time }.
+people-scanned-yesterday = Last scan yesterday at { $time }.
+people-scanned-yesterday-one = Last scan yesterday at { $time }.
+people-scanned-on = Last scan on { $date } at { $time }.
+people-scanned-on-one = Last scan on { $date } at { $time }.
+people-updating = Updating…
+people-updating-of = Updating… { $count } of { $total }
+people-options = Options
+people-options-menu = List options
+people-select = Select
+people-selection = Selection
+people-selected = { $count } selected
+people-selected-one = { $count } selected
+people-select-all = Select all
+people-copy = Copy usernames
+people-copied = { $count } usernames copied
+people-copied-one = { $count } username copied
+people-cancel = Cancel
+people-choose = Select @{ $username }
 
 ## Automations: the list, an automation's page and its runs, and the editor.
 

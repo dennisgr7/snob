@@ -463,8 +463,6 @@ people-followers-title = Seguidores de { $account }
 people-following-title = Cuentas que sigue { $account }
 people-reading = Leyendo… { $count } por ahora
 people-reading-of = Leyendo… { $count } de { $total }
-people-read = { $count } cuentas
-people-stored = Tal como se guardó a las { $time }.
 people-not-whole = La lista no se ha leído hasta el final.
 people-detach = Abrir en otra ventana
 people-list = Cuentas
@@ -583,6 +581,28 @@ profile-most-pages = snob lee como mucho { $count } páginas de una pestaña en 
 profile-all-read = No hay nada más.
 
 ## Listas (people): las de seguidores y seguidos, y elegir en ellas.
+people-accounts = { $count } cuentas.
+people-accounts-one = { $count } cuenta.
+people-scanned-today = Último escaneo a las { $time }.
+people-scanned-today-one = Último escaneo a la { $time }.
+people-scanned-yesterday = Último escaneo ayer a las { $time }.
+people-scanned-yesterday-one = Último escaneo ayer a la { $time }.
+people-scanned-on = Último escaneo el { $date } a las { $time }.
+people-scanned-on-one = Último escaneo el { $date } a la { $time }.
+people-updating = Actualizando…
+people-updating-of = Actualizando… { $count } de { $total }
+people-options = Opciones
+people-options-menu = Opciones de la lista
+people-select = Seleccionar
+people-selection = Selección
+people-selected = { $count } seleccionadas
+people-selected-one = { $count } seleccionada
+people-select-all = Seleccionar todas
+people-copy = Copiar nombres de usuario
+people-copied = { $count } nombres de usuario copiados
+people-copied-one = { $count } nombre de usuario copiado
+people-cancel = Cancelar
+people-choose = Seleccionar a @{ $username }
 
 ## Automatizaciones (automations): la lista, la página de una y sus ejecuciones, y el editor.
 

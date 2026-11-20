@@ -1381,9 +1381,6 @@ impl Backend for Engine {
             Some(Listed {
                 people,
                 whole: outcome.is_complete(),
-                stored_at: outcome
-                    .is_stored()
-                    .then_some(fixed.unwrap_or(outcome.taken_at)),
                 taken_at: fixed.unwrap_or(outcome.taken_at),
             })
         })
@@ -1600,9 +1597,6 @@ impl Backend for Engine {
             Ok(Listed {
                 people,
                 whole: outcome.is_complete(),
-                stored_at: outcome
-                    .is_stored()
-                    .then_some(fixed.unwrap_or(outcome.taken_at)),
                 taken_at: fixed.unwrap_or(outcome.taken_at),
             })
         })

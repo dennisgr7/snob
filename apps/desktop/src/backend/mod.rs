@@ -483,8 +483,6 @@ pub struct Listed {
     pub people: Vec<Person>,
     /// It is the whole list.
     pub whole: bool,
-    /// Served from what was stored on this date rather than read now.
-    pub stored_at: Option<Epoch>,
     /// When the walk it is the answer of ended, read now or stored.
     pub taken_at: Epoch,
 }

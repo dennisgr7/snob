@@ -633,8 +633,10 @@ impl Shell {
 
     /// Rests the app, or wakes it, as `state::rest` judges what is seen now.
     fn judge_the_rest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Any of the app's windows in front counts: a list moved out to its
+        // own reads its pictures there.
         let seen = rest::Seen {
-            looked_at: window.is_window_active(),
+            looked_at: window.is_window_active() || cx.active_window().is_some(),
             waited_on: self.browser.is_some(),
             still_for: cx
                 .background_executor()
@@ -644,7 +646,10 @@ impl Shell {
         loop {
             match self.rest.judge(seen) {
                 rest::Next::Rest => self.system.rest(true),
-                rest::Next::Wake => self.system.rest(false),
+                rest::Next::Wake => {
+                    self.system.rest(false);
+                    self.look_for_the_lists_pictures(cx);
+                }
                 rest::Next::LookIn(after) => {
                     self.look_at_the_rest_in(after, window, cx);
                     break;
@@ -675,6 +680,13 @@ impl Shell {
             .ok();
         })
         .detach();
+    }
+
+    /// Another of the app's windows was looked at or away from: the rest is
+    /// judged again from now.
+    pub(crate) fn stirred_elsewhere(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.stirred = cx.background_executor().now();
+        self.judge_the_rest(window, cx);
     }
 
     /// Whether the app rests now.
@@ -822,7 +834,7 @@ impl Shell {
         if !settled
             || self.signing_out.is_some()
             || asking
-            || self.a_page_overlay_is_open()
+            || self.a_page_overlay_is_open(cx)
             || commands::offered(self.flow.screen(), &[]).is_empty()
         {
             return;
