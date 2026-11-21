@@ -1155,6 +1155,24 @@ Assumptions not yet confirmed against the real app. Settle them with a capture
   and logs the answer's keys when it says there is more;
 - whether the document's `PolarisViewer` carries the account's bio, as it does
   its name and picture (`page_values::Face`): read when there, never needed;
+- **what the desktop app waits for, to record next**:
+  - "About this account": the operation, its `doc_id`, its variables and the
+    answer's fields (the date joined, where the account is based, its former
+    usernames). The app's dialog says "Not read yet" on those three rows
+    until the engine has a read on the allowlist, offered on every front;
+  - whether a row of a followers or following list carries how the viewer
+    and that account stand: the app marks a friend on a profile, where it is
+    derived, and never on a list's row;
+  - whether the highlights tray offers a cover taller than the 150 by 150
+    one the app draws cut to 72 by 100;
+  - whether the web app opens a profile's tab again when its later pages
+    are read from another session of the browser (`posts::grid::After`,
+    `tab_opened`);
+  - how long the signed address of a list row's picture holds: the app
+    downloads the pictures of the rows in sight after the walk that named
+    them;
+  - whether the web app searches accounts snob has never read, to suggest
+    beside `cache::known_named`;
 - keys the fake Instagram sends that two captures never showed
   (`snob-fake-ig`'s drift test lists them): the hover card's `biography`,
   `category`, `external_url`, `is_business` and `friendship_status.muting`;
